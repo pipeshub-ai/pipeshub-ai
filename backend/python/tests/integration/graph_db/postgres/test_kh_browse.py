@@ -598,6 +598,10 @@ async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_orga
                 statements += [(f"children {at}", kgl.children_sql(where, links), ch.values), (f"children_held {at}", kgl.children_held_sql(where, links), held.values),
                                (f"undecided {at}", kgl.browse_undecided_sql(where, und.add([3]), und.add(app_sk), und_links), und.values),
                                (f"count {at}", kgl.browse_count_sql(where, cnt.add([1]), cnt.add([2]), cnt.add(["x"]), cnt.add([3]), cnt.add(app_sk), cnt_links), cnt.values)]
+                probe, _, probe_links = params(201)
+                kinds, _, kinds_links = params(10_001)
+                statements += [(f"undecided probe {at}", kgl.browse_undecided_probe_sql(where, probe.add(app_sk), probe_links, probe.add([]) if probe_links else None), probe.values),
+                               (f"count classes {at}", kgl.browse_classes_sql(where, kinds_links), kinds.values)]
                 for boundary in (None, {"nullRank": 0, "sortKey": "child 0100", "id": "c0100"}):
                     one, _, one_links = params(204)
                     branches = kgl.after("name", "ASC", "next", boundary, one) if boundary else None
@@ -634,6 +638,8 @@ async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_orga
                 if name.startswith("wide"):      # the parent's children are read by an index on the parent (the children index, in its order, once the node is wide: the latency run's plans)
                     used = {n.get("Index Name") for n in _nodes(plan)}
                     assert any(str(u).startswith(("records_children_", "records_parent")) for u in used), f"{at}: {used}"
+                if name.startswith("undecided probe"):      # another connector's children of the node by records_child_app, whose predicate the statement implies
+                    assert "records_child_app" in {n.get("Index Name") for n in _nodes(plan)}, f"{at}: {[n.get('Index Name') for n in _nodes(plan)]}"
     finally:
         await con.close()
 
@@ -1058,6 +1064,89 @@ async def test_a_wide_node_of_a_connector_with_more_classes_than_a_page_evaluate
     assert not set(walked) & set(KIDS), walked
 
 
+def _record_prologues(monkeypatch, ran: list[tuple[object, str, tuple]]) -> None:
+    """Record each unit's prologue (``KernelDB._prologue``: its role, plan cache mode, JIT and work_mem, run on the raw connection, not through ``Tx._run``) in ``ran``,
+    first among its transaction's statements, so a replay plans each read with the settings the request planned it with."""
+    import app.core.db.uow as uow
+    real = uow.KernelDB._prologue
+
+    class _Recorded:
+        def __init__(self, con, tx) -> None:
+            self._con, self._tx = con, tx
+
+        async def fetchrow(self, sql, *args) -> object:
+            ran.append((self._tx, sql, args))
+            return await self._con.fetchrow(sql, *args)
+
+    async def prologue(self, con, tx, *a, **kw) -> None:
+        await real(self, _Recorded(con, tx), tx, *a, **kw)
+    monkeypatch.setattr(uow.KernelDB, "_prologue", prologue)
+
+
+async def _children_rows_read(org: str, statements: list[tuple[object, str, tuple]]) -> dict[str, int]:
+    """The kg.records rows each statement reads (scans and index scans of the table, from EXPLAIN ANALYZE: returned and removed by a filter), by its site. Each transaction
+    of the request is replayed in one of its own, every statement in order (its prologue, settings and savepoints too: :func:`_record_prologues`), so a read is planned as it
+    was: as the request's role, under the profile it ran with."""
+    import asyncpg
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    read: dict[str, int] = {}
+    try:
+        for tx in dict.fromkeys(t for t, _, _ in statements):
+            async with con.transaction():
+                await con.execute("SELECT set_config('app.org_id', $1, true)", org)
+                for t, sql, args in statements:
+                    if t is not tx:
+                        continue
+                    body = sql.lstrip("/* ").split("*/", 1)[-1].lstrip().upper()
+                    if "kg.records" not in sql or not body.startswith(("SELECT", "WITH")) or "SET_CONFIG(" in body[:200]:
+                        await con.execute(sql, *args) if args else await con.execute(sql)
+                        continue
+                    plan = json.loads(await con.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *args))
+                    # the rows a scan examined: those it returned and those its filter (or a bitmap's recheck) rejected, so a scan that reads everything and keeps nothing counts
+                    n = sum(int((x.get("Actual Rows", 0) + x.get("Rows Removed by Filter", 0) + x.get("Rows Removed by Index Recheck", 0)) * x.get("Actual Loops", 1))
+                            for x in _nodes(plan) if x.get("Relation Name") == "records")
+                    site = re.search(r"pipeshub:(\S+)", sql)
+                    read[site.group(1) if site else sql[:40]] = read.get(site.group(1) if site else sql[:40], 0) + n
+    finally:
+        await con.close()
+    return read
+
+
+# The statements that read a node's children for its page, total and undecided rows: what this test holds to about a page whatever the width. (The start, its trail and
+# the hidden rows are read by their keys; with no statistics for a new organisation the planner may read them otherwise, which the plan gate covers.)
+CHILD_READS = {"kg.browse_once", "kg.browse_undecided_probe", "kg.browse_undecided", "kg.browse_count", "kg.listing_page", "kg.browse_children_held", "kg.browse_classes"}
+
+
+async def test_a_wide_nodes_page_and_total_read_about_the_page_and_the_count_whatever_its_width(pg_db, monkeypatch) -> None:
+    """A wide folder whose children kg decides, every one readable, of 300 and of 3,000 children. Its first page, its total (capped) and its undecided children (none) are read
+    by the children indexes: about a page and the count's cap of rows, the same at either width, not every child of the folder (the one read of every child is for classes no
+    index can find undecided: kgl.browse_once_sql)."""
+    import app.core.db.uow as uow
+    monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 5)
+    monkeypatch.setattr(kh_browse, "COUNT_CAP", 40)
+    monkeypatch.setattr(kh_listing, "COUNT_CAP", 40)
+    real = uow.Tx._run
+    read: dict[int, dict[str, int]] = {}
+    for width in (300, 3000):
+        p, org = prov(pg_db), new_org()
+        kids = [f"c{i:04d}" for i in range(width)]
+        await seed_folder(p, pg_db, org, width, readable_kids=kids)
+        ran: list[tuple[object, str, tuple]] = []
+
+        async def spy(self, op, sql, *args, internal=False, ran=ran) -> object:
+            ran.append((self, sql, args))      # the Tx itself: an id() of a finished one could be reused by the next
+            return await real(self, op, sql, *args, internal=internal)
+        monkeypatch.setattr(uow.Tx, "_run", spy)
+        _record_prologues(monkeypatch, ran)
+        page = await browse(p, org, "fold", ["fold", *kids], limit=10)
+        monkeypatch.setattr(uow.Tx, "_run", real)
+        assert [r["id"] for r in page["rows"]] == kids[:10] and page["total"] == 40 and page.get("totalCapped"), (width, page["total"], page.get("totalCapped"))
+        assert all(any(x is t and q is uow.PROLOGUE_READ for x, q, _ in ran) for t in {id(t): t for t, _, _ in ran}.values()), "a unit replayed without its prologue"
+        read[width] = await _children_rows_read(org, ran)
+    small, large = (sum(v for k, v in read[w].items() if k in CHILD_READS) for w in (300, 3000))
+    assert large < small + 50, read      # ten times the children, about the same reads
+
+
 async def test_a_wide_nodes_child_of_a_class_its_sample_did_not_read_is_asked_of_the_check(pg_db, monkeypatch) -> None:
     """The classes of a wide node's children are read from a sample of them (``kgl.browse_classes_sql``, up to the count's cap): a child of a class the sample missed is
     undecided (``_browse_undecided``'s ``known``): left out of the count by class and asked of the access check, which admits it. Here the readable children's class is
@@ -1373,3 +1462,195 @@ async def test_a_wide_folder_with_more_undecided_children_than_the_classes_count
     assert len(body) == 1 and body[0].get("Actual Rows", 0) * max(1, body[0].get("Actual Loops", 1)) <= 14, body
     read = [n for n in _nodes(plan) if n.get("Node Type") == "CTE Scan"]
     assert read and max((n.get("Actual Rows", 0) + n.get("Rows Removed by Filter", 0)) * max(1, n.get("Actual Loops", 1)) for n in read) <= 14, read
+
+
+async def _page_rows_read(org: str, statements: list[tuple[object, str, tuple]], sites: tuple[str, ...] = ("kg.listing_page", "kg.listing_page_admitted")) -> list[int]:
+    """The kg.records rows each read of ``sites`` (by default the page's windows, kg.listing_page) examined, from EXPLAIN ANALYZE: each replayed after its unit's prologue
+    (:func:`_record_prologues`: the request's role, plan cache mode, JIT and work_mem) and the settings its transaction set before it."""
+    import asyncpg
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    read: list[int] = []
+    try:
+        for tx in dict.fromkeys(t for t, _, _ in statements):
+            async with con.transaction():
+                await con.execute("SELECT set_config('app.org_id', $1, true)", org)
+                for t, sql, args in statements:
+                    if t is not tx:
+                        continue
+                    if "set_config(" in sql:      # the prologue, a profile or its restore
+                        await con.fetch(sql, *args)
+                    elif (site := re.search(r"pipeshub:(\S+)", sql[:80])) and site.group(1) in sites:
+                        plan = json.loads(await con.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *args))
+                        assert "JIT" not in plan[0], sql[:80]      # a sort the profile leaves (of the window) is not compiled
+                        read.append(sum(int((x.get("Actual Rows", 0) + x.get("Rows Removed by Filter", 0)) * x.get("Actual Loops", 1))
+                                        for x in _nodes(plan) if x.get("Relation Name") == "records"))
+    finally:
+        await con.close()
+    return read
+
+
+@pytest.mark.pg_table_lock      # analyses kg.records
+@pytest.mark.parametrize(("field", "way"), [("name", "ASC"), ("name", "DESC"), ("updatedAt", "DESC"), ("updatedAt", "ASC")])
+async def test_a_wide_nodes_page_reads_a_window_of_its_children_once_the_table_is_analysed(pg_db, monkeypatch, field: str, way: str) -> None:
+    """A wide folder of 300 and of 3,000 children, every one readable, browsed by each order the children indexes serve after kg.records is analysed (autovacuum does, once the
+    sync has written enough). Each window read of the page reads about its window (100 rows) by the children index of the order, not every child of the folder and a sort:
+    the statistics put a new organisation's folder at a row or two, so without its profile the planner took the narrowest index and sorted what it read."""
+    import app.core.db.uow as uow
+    monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 5)
+    real = uow.Tx._run
+    for width in (300, 3000):
+        p, org = prov(pg_db), new_org()
+        kids = [f"c{i:04d}" for i in range(width)]
+        await seed_folder(p, pg_db, org, width, readable_kids=kids)
+        await _admin("ANALYZE kg.records")
+        ran: list[tuple[object, str, tuple]] = []
+
+        async def spy(self, op, sql, *args, internal=False, ran=ran) -> object:
+            ran.append((self, sql, args))
+            return await real(self, op, sql, *args, internal=internal)
+        monkeypatch.setattr(uow.Tx, "_run", spy)
+        _record_prologues(monkeypatch, ran)
+        page = await browse(p, org, "fold", ["fold", *kids], limit=10, sort_field=field, sort_dir=way, include_total=False)      # a page with no total: windows only
+        monkeypatch.setattr(uow.Tx, "_run", real)
+        assert len(page["rows"]) == 10, page["rows"]
+        assert all(any(x is t and q is uow.PROLOGUE_READ for x, q, _ in ran) for t in {id(t): t for t, _, _ in ran}.values()), "a unit replayed without its prologue"
+        read = await _page_rows_read(org, ran, ("kg.listing_page", "kg.browse_children_held"))      # the held check (is it wide?) too
+        assert read and all(n <= 150 for n in read), (width, read)
+
+
+@pytest.mark.pg_table_lock      # analyses kg.records
+@pytest.mark.parametrize(("field", "way"), [("name", "ASC"), ("name", "DESC"), ("updatedAt", "DESC"), ("createdAt", "ASC"), ("sizeInBytes", "DESC")])
+async def test_a_connectors_flat_listing_reads_a_window_per_page_once_the_table_is_analysed(pg_db, monkeypatch, field: str, way: str) -> None:
+    """The flat listing of a connector of 300 and of 3,000 records, after kg.records is analysed: each window read of the page reads about its window by the connector's index
+    of the order, in every order the listing serves, not every record of the connector and a sort."""
+    import app.core.db.uow as uow
+    real = uow.Tx._run
+    for width in (300, 3000):
+        p, org = prov(pg_db), new_org()
+        kids = [f"c{i:04d}" for i in range(width)]
+        await seed_folder(p, pg_db, org, width, readable_kids=kids)
+        await _admin("ANALYZE kg.records")
+        ran: list[tuple[object, str, tuple]] = []
+
+        async def spy(self, op, sql, *args, internal=False, ran=ran) -> object:
+            ran.append((self, sql, args))
+            return await real(self, op, sql, *args, internal=internal)
+        monkeypatch.setattr(uow.Tx, "_run", spy)
+        _record_prologues(monkeypatch, ran)
+        with ctx(org):
+            page = await p.get_knowledge_hub_connector_page_v3(app_id="app1", org_id=org, grantee_ids=["u1"], gated_app_ids=["app1"], granted_ids=["fold", *kids], limit=10,
+                                                                sort_field=field, sort_dir=way, include_total=False)
+        monkeypatch.setattr(uow.Tx, "_run", real)
+        assert len(page["rows"]) == 10, page["rows"]
+        assert all(any(x is t and q is uow.PROLOGUE_READ for x, q, _ in ran) for t in {id(t): t for t, _, _ in ran}.values()), "a unit replayed without its prologue"
+        read = await _page_rows_read(org, ran)
+        assert read and all(n <= 150 for n in read), (width, read)
+
+
+@pytest.mark.pg_table_lock      # analyses kg.records
+async def test_a_flat_listing_of_a_small_scope_in_a_large_connector_reads_its_keys_not_the_connector(pg_db, monkeypatch) -> None:
+    """The flat listing below a folder of 5 records, in a connector of 3,000, after kg.records is analysed: the scope's rows are read by their keys (``r.sk = ANY(scope)``),
+    about the 5 of them, not the connector in the order's index (the profile that turns sorts off for an unscoped window would make that the plan); so are the rows no class
+    decides (kg.listing_undecided: here the class of the connector's other 3,000 rows is one kg cannot vouch for) and the page's total (kg.listing_count): as a filter on
+    the connector's rows (by the class's index, records_list_class), a scope read every row of the class."""
+    import app.core.db.uow as uow
+    p, org = prov(pg_db), new_org()
+    kids = [f"c{i:04d}" for i in range(3000)]
+    await seed_folder(p, pg_db, org, 3000, readable_kids=kids)
+    small = [f"s{i}" for i in range(5)]
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "small", "recordName": "Small", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR", "mimeType": "application/vnd.folder"},
+                                    *({"_key": k, "recordName": f"Small {k}", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"} for k in small)], "records")
+        await p.batch_create_edges([edge("small", "records", k, "records", relationshipType="PARENT_CHILD") for k in small], "nodeRelations")
+        await p.batch_create_edges([edge("u1", "users", k, "records", type="USER", role="READER") for k in ["small", *small]], "permission")
+    await flip(pg_db, org)
+    await _admin("ANALYZE kg.records")
+    import asyncpg
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:      # the class of the connector's 3,000 other rows, made one kg cannot vouch for: its rows are undecided, those of the scope none
+        shared = await con.fetchval("SELECT class_id FROM kg.records WHERE org_id = $1 AND coll = 3 AND id = 'c0000'", org)
+        assert shared is not None
+    finally:
+        await con.close()
+    real_sets = kh_listing.class_sets
+
+    async def unvouched(*a, **kw) -> object:
+        got = await real_sets(*a, **kw)
+        return None if got is None else {**got, "unvouched": {*got["unvouched"], shared}}
+    monkeypatch.setattr(kh_listing, "class_sets", unvouched)
+    real = uow.Tx._run
+    for field, way in (("name", "ASC"), ("updatedAt", "DESC"), ("sizeInBytes", "DESC")):
+        ran: list[tuple[object, str, tuple]] = []
+
+        async def spy(self, op, sql, *args, internal=False, ran=ran) -> object:
+            ran.append((self, sql, args))
+            return await real(self, op, sql, *args, internal=internal)
+        monkeypatch.setattr(uow.Tx, "_run", spy)
+        _record_prologues(monkeypatch, ran)
+        with ctx(org):
+            page = await p.get_knowledge_hub_connector_page_v3(app_id="app1", org_id=org, grantee_ids=["u1"], gated_app_ids=["app1"], granted_ids=["small", *small], limit=10,
+                                                                start_id="small", start_type="folder", sort_field=field, sort_dir=way)
+            # a page past a cursor counts its total (kg.listing_count): the first page's windows reach the end of the scope, and count it themselves
+            at = page["rows"][1]
+            later = await p.get_knowledge_hub_connector_page_v3(app_id="app1", org_id=org, grantee_ids=["u1"], gated_app_ids=["app1"], granted_ids=["small", *small], limit=2,
+                                                                 start_id="small", start_type="folder", sort_field=field, sort_dir=way,
+                                                                 after={"nullRank": at["nullRank"], "sortKey": at["sortKey"], "id": at["id"]})
+        monkeypatch.setattr(uow.Tx, "_run", real)
+        assert sorted(r["id"] for r in page["rows"]) == small, page["rows"]
+        assert [r["id"] for r in later["rows"]] == [r["id"] for r in page["rows"][2:4]] and later["total"] == 5, (later["rows"], later["total"])
+        assert any("pipeshub:kg.listing_count" in q[:60] for _, q, _ in ran), "the scoped total was not counted"
+        assert all(any(x is t and q is uow.PROLOGUE_READ for x, q, _ in ran) for t in {id(t): t for t, _, _ in ran}.values()), "a unit replayed without its prologue"
+        read = await _page_rows_read(org, ran, ("kg.listing_page", "kg.listing_page_admitted", "kg.listing_undecided", "kg.listing_count"))
+        assert read and all(n <= 20 for n in read), (field, way, read)
+
+
+# The reads of a wide node's children for its first page: its window, its undecided children and its count (and whether it is wide at all).
+FIRST_PAGE_READS = ("kg.browse_once", "kg.browse_undecided_probe", "kg.browse_undecided", "kg.browse_count", "kg.listing_page", "kg.browse_children_held", "kg.browse_classes")
+
+
+@pytest.mark.pg_table_lock      # analyses kg.records
+async def test_a_wide_nodes_first_page_reads_its_window_and_the_counts_cap_once_the_table_is_analysed(pg_db, monkeypatch) -> None:
+    """The page a folder opens on (no cursor, with its total), for a wide folder of 300 and of 3,000 children, every one readable, after kg.records is analysed: its children
+    are read about as far as its window (100 rows) and the count's cap (40 here), the same at either width, not every child of the folder."""
+    import app.core.db.uow as uow
+    monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 5)
+    monkeypatch.setattr(kh_browse, "COUNT_CAP", 40)
+    monkeypatch.setattr(kh_listing, "COUNT_CAP", 40)
+    real = uow.Tx._run
+    read: dict[int, int] = {}
+    for width in (300, 3000):
+        p, org = prov(pg_db), new_org()
+        kids = [f"c{i:04d}" for i in range(width)]
+        await seed_folder(p, pg_db, org, width, readable_kids=kids)
+        await _admin("ANALYZE kg.records")
+        ran: list[tuple[object, str, tuple]] = []
+
+        async def spy(self, op, sql, *args, internal=False, ran=ran) -> object:
+            ran.append((self, sql, args))
+            return await real(self, op, sql, *args, internal=internal)
+        monkeypatch.setattr(uow.Tx, "_run", spy)
+        _record_prologues(monkeypatch, ran)
+        page = await browse(p, org, "fold", ["fold", *kids], limit=10)
+        monkeypatch.setattr(uow.Tx, "_run", real)
+        assert [r["id"] for r in page["rows"]] == kids[:10] and page["total"] == 40 and page.get("totalCapped"), (width, page["total"], page.get("totalCapped"))
+        assert all(any(x is t and q is uow.PROLOGUE_READ for x, q, _ in ran) for t in {id(t): t for t, _, _ in ran}.values()), "a unit replayed without its prologue"
+        read[width] = sum(await _page_rows_read(org, ran, FIRST_PAGE_READS))
+    assert read[3000] <= 250 and read[3000] < read[300] + 50, read
+
+
+async def test_a_page_read_in_a_callers_transaction_leaves_its_settings_as_they_were(pg_db) -> None:
+    """A page's windows are read with sorts, sequential and bitmap scans and JIT off (``kgl.PAGE_PROFILE``): in the page's transaction (here a caller's) all four are put back after the read, so what runs next plans as
+    it would have."""
+    p, org = prov(pg_db), new_org()
+    await seed_folder(p, pg_db, org, 8, readable_kids=KIDS)
+    with ctx(org):
+        t = await p.begin_transaction([], [])
+        try:
+            await p._q(lambda tx: tx.fetchval("SELECT set_config('jit', 'on', true)"), t)
+            page = await p.get_knowledge_hub_connector_page_v3(app_id="app1", org_id=org, grantee_ids=["u1"], gated_app_ids=["app1"], granted_ids=KIDS, limit=3, transaction=t)
+            got = await p._q(lambda tx: tx.fetchrow("SELECT current_setting('enable_sort') AS s, current_setting('enable_seqscan') AS q, "
+                                                    "current_setting('enable_bitmapscan') AS b, current_setting('jit') AS j"), t)
+        finally:
+            await p.rollback_transaction(t)
+    assert page["rows"] and tuple(got.values()) == ("on", "on", "on", "on"), dict(got)
+

@@ -2579,6 +2579,8 @@ index kg.principal_closure_by_principal on kg.principal_closure unique=false exc
 index kg.principal_closure_pkey on kg.principal_closure unique=true exclusion=false valid=true def=36e6794459f60325d29802e5fbe2bafd
 index kg.projection_state_pkey on kg.projection_state unique=true exclusion=false valid=true def=6c3a596dbc76e1bea0f0f52ea51235ae
 index kg.records_app on kg.records unique=false exclusion=false valid=true def=4fb41a24de7b34a871580791308043fc
+index kg.records_child_app on kg.records unique=false exclusion=false valid=true def=443dd7e14998024f7ef0861a96f68a5a
+index kg.records_child_undecided on kg.records unique=false exclusion=false valid=true def=cf80aca642ba8cf1d437075211930b8a
 index kg.records_children_name_asc on kg.records unique=false exclusion=false valid=true def=3a9e3a2e3062bcb2f893958ba9521e24
 index kg.records_children_name_desc on kg.records unique=false exclusion=false valid=true def=7f9672dee90fb95483eb67efbbed96d4
 index kg.records_children_updated_asc on kg.records unique=false exclusion=false valid=true def=84cf4379c58cd3c42b788447233e2769

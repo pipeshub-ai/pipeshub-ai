@@ -245,6 +245,15 @@ def where_of(org: str, app_sk: int, app_doc: dict, filters: dict[str, Any], hidd
     return base, where
 
 
+async def indexed_fetch(tx: Tx, sql: str, *values: Any) -> list[Any]:  # noqa: ANN401
+    """``sql`` under ``kgl.PAGE_PROFILE``: a page's window, or a node's children read up to a bound. The page's other reads share its transaction (its snapshot), so the
+    settings come back once the read answered (a failed read aborts the transaction anyway)."""
+    was = await tx.fetchrow(kgl.PAGE_PROFILE)
+    got = list(await tx.fetch(sql, *values))
+    await tx.fetchval(kgl.PAGE_RESTORE, was["o"], was["q"], was["b"], was["j"])
+    return got
+
+
 def capped_counts(rows: list[Any]) -> tuple[dict[str, int], bool]:
     """The counts by type of a count statement's rows (``count_sql``, ``browse_count_sql``: read up to COUNT_CAP + 1), and whether they reached past the cap. A count past it keeps
     COUNT_CAP: the row past the cap is dropped from its largest type, so the counts add up to what the total reports."""
@@ -263,6 +272,10 @@ class KhListingMixin(PgBase):
         if transaction:
             return await self._q(fn, transaction)
         return await self._db.run(fn, jobs=current_or_system().kind == "system", custom_plan=True)
+
+    async def _kq_page(self, sql: str, values: tuple[Any, ...], transaction: str | None) -> list[Any]:
+        """A read of :func:`indexed_fetch` in the page's transaction."""
+        return await self._kq(lambda tx: indexed_fetch(tx, sql, *values), transaction)
 
     async def get_knowledge_hub_connector_page_v3(
         self, app_id: str, org_id: str, grantee_ids: list[str], gated_app_ids: list[str], granted_ids: list[str] | None = None, limit: int = 50, *, flatten: bool = True,
@@ -341,10 +354,12 @@ class KhListingMixin(PgBase):
         if filtered_out(app_id, app_doc, filters):
             return self._kh_v3_empty_page(start_id, include_scope=include_scope, include_total=include_total, admitted=True)
         base, where = where_of(org, app_sk, app_doc, filters, hidden)
+        keys = None
         if scope is not None:
-            where += f" AND r.sk = ANY({base.add(scope)}::bigint[])"
+            keys = base.add(scope)
+            where += f" AND r.sk = ANY({keys}::bigint[])"
         admitted_of = self._kh_admitted_of(sets, gset, admit)
-        viewer = await self._kh_flat_viewer(sets, where, base, admit, gset, transaction)
+        viewer = await self._kh_flat_viewer(sets, where, base, admit, gset, transaction, keys)
         admit_sql, pbase, page_where = None, kgl.Params(list(base.values)), where
         if viewer is not None and scope is not None:
             # The rows of a scope are read by their keys whatever the window, so each window read them all again: the classes admit inside the read, and one window is the page.
@@ -362,8 +377,11 @@ class KhListingMixin(PgBase):
             p = kgl.Params(list(pbase.values))
             p.values[2] = window
             branches = kgl.after(sort_field, order, direction, boundary, p) if boundary is not None else None
-            sql = kgl.page_sql(sort_field, order, direction, page_where, branches, admit_sql)
-            got = await self._kq(lambda tx, s=sql, v=tuple(p.values): tx.fetch(s, *v), transaction)
+            if scope is None:
+                got = await self._kq_page(kgl.page_sql(sort_field, order, direction, page_where, branches, admit_sql), tuple(p.values), transaction)
+            else:      # a scope's rows by their keys, then sorted: as a condition, a new organisation's connector looked small enough to read whole in the order's index
+                sql = kgl.page_sql(sort_field, order, direction, page_where, branches, admit_sql, kgl.keyed_scope(keys))
+                got = await self._kq(lambda tx, s=sql, v=tuple(p.values): tx.fetch(s, *v), transaction)
             allowed = None if viewer is not None else await admit([r["id"] for r in got]) if got else set()
             kept += [r for r in got if (r["ok"] if allowed is None else r["id"] in allowed)][:need - len(kept)]
             if found is not None:
@@ -388,7 +406,7 @@ class KhListingMixin(PgBase):
         if whole and found is not None and sum(found.values()) <= COUNT_CAP:
             total, counts = sum(found.values()), {k: v for k, v in found.items() if v}
         elif include_total:
-            total, counts, capped = await self._kh_flat_exact(org, app_sk, where, base, viewer, transaction) if viewer is not None else await self._kh_flat_count(org, app_sk, where, base, admit, transaction)
+            total, counts, capped = await self._kh_flat_exact(org, app_sk, where, base, viewer, transaction, keys) if viewer is not None else await self._kh_flat_count(org, app_sk, where, base, admit, transaction)
         # the arrow of a group or a folder: on exactly when a browse of it lists something
         containers = [c for c in kept[:need] if c["kind"] == 2 or c["folder"]]
         top = await self._kh_top_grants(org, app_id, user_key, gset, transaction) if chain_tops_apply(app_doc) and containers else None
@@ -791,7 +809,8 @@ class KhListingMixin(PgBase):
                 undecided |= {p for sk in unsure for p in by_stub[sk]} - lists
         return lists
 
-    async def _kh_flat_viewer(self, sets: dict[str, set[int]] | None, where: str, base: kgl.Params, admit: Any, granted: KhGrants, transaction: str | None) -> dict[str, Any] | None:  # noqa: ANN401
+    async def _kh_flat_viewer(self, sets: dict[str, set[int]] | None, where: str, base: kgl.Params, admit: Any, granted: KhGrants, transaction: str | None,  # noqa: ANN401
+                              keys: str | None = None) -> dict[str, Any] | None:
         """What the viewer's grants open of a connector kg serves, by class: the classes met with no grant of the row's own (``plain``), the classes that need the row's own grant (``own``), the classes
         kg cannot vouch for (``unvouched``) and the few rows no class decides, with the ones among them the access check admits (``walked``). None when the connector is not served or too many rows are
         left to the check: the rows are then asked of the access check one window at a time."""
@@ -800,14 +819,15 @@ class KhListingMixin(PgBase):
         plain, own, unvouched = sorted(sets["plain"]), sorted(sets["own"]), sorted(sets["unvouched"])
         p = kgl.Params(list(base.values))
         p.values[2] = UNDECIDED_MAX + 1
-        sql = kgl.undecided_sql(where, p.add(unvouched))
+        sql = kgl.undecided_sql(where, p.add(unvouched), keys)
         left = [r["id"] for r in await self._kq(lambda tx, s=sql, v=tuple(p.values): tx.fetch(s, *v), transaction)]
         if len(left) > UNDECIDED_MAX:
             return None
         return {"plain": plain, "own": own, "unvouched": unvouched, "left": left, "walked": await admit(left) if left else set(), "granted": sorted(granted.own),
                 "by_sk": granted.by_sk}
 
-    async def _kh_flat_exact(self, org: str, app_sk: int, where: str, base: kgl.Params, viewer: dict[str, Any], transaction: str | None) -> tuple[int, dict[str, int], bool]:
+    async def _kh_flat_exact(self, org: str, app_sk: int, where: str, base: kgl.Params, viewer: dict[str, Any], transaction: str | None,
+                             keys: str | None = None) -> tuple[int, dict[str, int], bool]:
         """The total of a connector kg serves, from the stamped classes: what the viewer's grants open by class are counted where the rows are, up to COUNT_CAP, and the few rows kg does not decide
         are counted from the access check's answer. Rows the counters count are exact and come on top of the capped scan, so a capped total is a lower bound that can pass COUNT_CAP;
         the counts by type always add up to the total."""
@@ -820,7 +840,7 @@ class KhListingMixin(PgBase):
             folded = await self._kq(lambda tx: kg_counts.class_rows(tx, org, app_sk, plain), transaction)
         q = kgl.Params(list(base.values))
         q.values[2] = COUNT_CAP + 1
-        sql = kgl.count_sql(where, q.add([] if folded is not None else viewer["plain"]), q.add(viewer["own"]), q.add(viewer["granted"]), q.add(viewer["unvouched"]),
+        sql = kgl.count_sql(where, q.add([] if folded is not None else viewer["plain"]), q.add(viewer["own"]), q.add(viewer["granted"]), q.add(viewer["unvouched"]), keys,
                             by_sk=viewer["by_sk"])
         counts, capped = capped_counts(await self._kq(lambda tx, s=sql, v=tuple(q.values): tx.fetch(s, *v), transaction))
         for (kind, folder), n in (folded or {}).items():

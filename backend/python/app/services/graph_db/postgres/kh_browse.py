@@ -48,6 +48,7 @@ from app.services.graph_db.postgres.kh_listing import (
     class_sets,
     filtered_out,
     head,
+    indexed_fetch,
     where_of,
 )
 from app.utils import error_class
@@ -147,7 +148,7 @@ class KhBrowseMixin(PgBase):
             if at_app and len(tops) > BROWSE_MEMORY_MAX and where == bare:
                 rows = None      # with no filter every chain-top (live, listed, not hidden, not the App's own child) is a child the browse reads: more than it holds
             elif len(links) <= kgl.LINKS_MAX and (at_app or not start["hide_children"]):
-                got = await tx.fetch(kgl.children_held_sql(where, links_param), *p.values)
+                got = await indexed_fetch(tx, kgl.children_held_sql(where, links_param), *p.values)
                 rows = None if got[0]["n"] > BROWSE_MEMORY_MAX else [r for r in got if r["sk"] is not None]
             ancestors = [r for sk, r in (trail[4] if trail else {}).items() if sk != start["sk"] and r["kind"] != 1]
             # a node held whole is decided by the classes of the rows it reads (its arrows add their children's: ``cover_children``); a wider one by every class of the connector
@@ -157,7 +158,7 @@ class KhBrowseMixin(PgBase):
                 # a connector with more classes than a page evaluates: those of the children the page reads (any other child is undecided, ``_browse_undecided``)
                 c = kgl.Params(list(p.values))
                 c.values[2] = COUNT_CAP + 1
-                kids = await tx.fetchval(kgl.browse_classes_sql(where, links_param), *c.values)
+                kids = (await indexed_fetch(tx, kgl.browse_classes_sql(where, links_param), *c.values))[0][0]
                 sets = await class_sets(tx, org, app_sk, held, sorted({*kids, *(r["class_id"] for r in [*([] if at_app else [start]), *ancestors] if r["class_id"] is not None)}))
             ok, left = self._kh_class_split(rows or [], sets, gs)
             # the children the classes do not decide are asked here only when they are few; otherwise (kg does not serve the connector, or it is mid-sync) they are asked a page at a time
@@ -289,8 +290,10 @@ class KhBrowseMixin(PgBase):
             raise KnowledgeHubListingTooLarge
         else:
             # the first window, the undecided children and the count in one read of the children, where the classes count them (``_kh_browse_total``)
+            # the one read of every child is for classes that can leave a child undecided in ways no index finds; otherwise the undecided are probed by index
+            # (``_kh_browse_total``) and the window read from the children index of the sort, and neither reads every child
             first, pre = (await self._kh_browse_once(p, where, links, limit, sort_field, order, after, direction, sets, gset, walk)
-                          if include_total and sets is not None and not side else (None, None))
+                          if include_total and sets is not None and not side and not _probed(sets) else (None, None))
             page, resume = await self._kh_browse_wide(p, where, links, limit, sort_field, order, after, direction, walk, first=first)
             total, counts, capped = (await self._kh_browse_total(p, where, links, sets, gset, walk, pre=pre)) if include_total else (0, dict(NO_COUNTS), False)
         capped = capped or bool(shown)      # a record listed with its arrow undecided: the total is no more exact than the arrow
@@ -432,7 +435,7 @@ class KhBrowseMixin(PgBase):
             else:
                 branches = kgl.after(sort_field, order, direction, boundary, q) if boundary is not None else None
                 sql = kgl.page_sql(sort_field, order, direction, where, branches, None, kgl.browse_scopes(links))
-                got = list(await self._kq(lambda tx, s=sql, v=tuple(q.values): tx.fetch(s, *v), transaction))
+                got = await self._kq_page(sql, tuple(q.values), transaction)
             listed, n = await self._kh_listed(got, *walk, want=need - len(kept))
             kept += listed[:need - len(kept)]
             if len(kept) < need and n < len(got):      # the walks stopped before a placeholder: resume there (where the window began, if they decided none of it)
@@ -455,9 +458,10 @@ class KhBrowseMixin(PgBase):
             if pre is None:
                 u = kgl.Params(list(p.values))
                 u.values[2] = UNDECIDED_MAX + 1
-                sql = kgl.browse_undecided_sql(where, u.add(sorted(sets["unvouched"])), u.add(sets["app_sk"]), links,
-                                               None if sets["known"] is None else u.add(sorted(sets["known"])))
-                left = list(await self._kq(lambda tx, s=sql, v=tuple(u.values): tx.fetch(s, *v), transaction))
+                sql = (kgl.browse_undecided_probe_sql(where, u.add(sets["app_sk"]), links, u.add(sorted(sets["unvouched"])) if links else None) if _probed(sets) else
+                       kgl.browse_undecided_sql(where, u.add(sorted(sets["unvouched"])), u.add(sets["app_sk"]), links,
+                                                None if sets["known"] is None else u.add(sorted(sets["known"]))))
+                left = await self._kq_page(sql, tuple(u.values), transaction)
             else:
                 left = pre[0]
             if len(left) <= UNDECIDED_MAX:
@@ -466,13 +470,13 @@ class KhBrowseMixin(PgBase):
                 sql = kgl.browse_count_sql(where, c.add(sorted(sets["plain"])), c.add(sorted(sets["own"])), c.add(sorted(gset.own)), c.add(sorted(sets["unvouched"])),
                                            c.add(sets["app_sk"]), links, by_sk=gset.by_sk)
                 listed, n = await self._kh_listed(left, *walk)
-                counts, capped = capped_counts(pre[1] if pre is not None else await self._kq(lambda tx, s=sql, v=tuple(c.values): tx.fetch(s, *v), transaction))
+                counts, capped = capped_counts(pre[1] if pre is not None else await self._kq_page(sql, tuple(c.values), transaction))
                 for k, v in self._kh_counts(listed).items():
                     counts[k] += v
                 return sum(counts.values()), counts, capped or n < len(left)
         c = kgl.Params(list(p.values))
         c.values[2] = COUNT_SCAN + 1
-        first = list(await self._kq(lambda tx, s=kgl.children_sql(where, links), v=tuple(c.values): tx.fetch(s, *v), transaction))
+        first = await self._kq_page(kgl.children_sql(where, links), tuple(c.values), transaction)
         counted, n = await self._kh_listed(first[:COUNT_SCAN], *walk)
         return len(counted), self._kh_counts(counted), len(first) > COUNT_SCAN or n < len(first[:COUNT_SCAN])
 
@@ -660,6 +664,11 @@ async def _chain_nodes(tx: Tx, org: str, rows: list[Any]) -> dict[int, dict[str,
         out[r["sk"]] = {"sk": r["sk"], "id": r["id"], "kind": r["kind"], "parents": [keys[s][1] for s in hier[r["sk"]] if s in keys and s not in unlisted],
                         "own": [(keys[s][1], bool(deleted.get(s))) for s in dict.fromkeys(own) if s in keys and keys[s][0] == 2 and s != r["sk"]]}
     return out
+
+
+def _probed(sets: dict[str, Any]) -> bool:
+    """Whether a wide node's undecided children can be found by index (``kgl.browse_undecided_probe_sql``): no class is unvouched and every class of the connector was read."""
+    return not sets["unvouched"] and sets["known"] is None
 
 
 def _first_window(limit: int) -> int:

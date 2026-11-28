@@ -365,15 +365,15 @@ async def test_a_root_too_wide_to_hold_lists_what_one_held_whole_lists(pg_provid
     held = {u: await pages(u) for u in VIEWERS}
     assert any(len(rows) > 1 for rows, *_ in held["u1"])
     monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 2)
-    once: list[int] = []
-    real = kgl.browse_once_sql
+    probed: list[int] = []
+    real = kgl.browse_undecided_probe_sql
 
     def spy(*a, **k) -> str:
-        once.append(1)
+        probed.append(1)
         return real(*a, **k)
-    monkeypatch.setattr(kgl, "browse_once_sql", spy)
+    monkeypatch.setattr(kgl, "browse_undecided_probe_sql", spy)
     assert {u: await pages(u) for u in VIEWERS} == held
-    assert once                                                                   # the wide root read its children once
+    assert probed                                                                 # the wide root found its undecided children by index, not by reading every child
 
 
 @pytest.mark.pg_table_lock           # clears kg's statistics, which every other test's plans read: runs alone
