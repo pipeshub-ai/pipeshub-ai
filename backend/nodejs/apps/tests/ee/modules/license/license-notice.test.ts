@@ -32,6 +32,11 @@ import {
   type LicensePayload,
   type SignedLicense,
 } from '../../../../src/ee/modules/license/license.types';
+import { setIdentityPort } from '../../../../src/libs/repositories/identity';
+import {
+  setUserRepository,
+  type UserRepository,
+} from '../../../../src/libs/repositories/user';
 import * as userAdminService from '../../../../src/modules/user_management/services/user-admin.service';
 import { operatorKeyGuardMiddleware } from '../../../../src/libs/middlewares/operator-key-guard.middleware';
 import { xssSanitizationMiddleware } from '../../../../src/libs/middlewares/xss-sanitization.middleware';
@@ -381,6 +386,59 @@ describe('license notice: what every signed-in user may read', () => {
       await serve(async (url) => {
         const body = await (await fetch(`${url}/notice`)).json();
         expect(body.connectors.items[0].name).to.equal('Drive a');
+      });
+    });
+
+    describe('the seat limit, for the admins\' banner', () => {
+      let people: number | Error;
+      beforeEach(() => {
+        people = 12;
+        install({ seats: 10 });
+        setIdentityPort({ oldestOrgId: async () => 'org' } as never);
+        setUserRepository({
+          countLive: async () => {
+            if (people instanceof Error) throw people;
+            return people;
+          },
+        } as unknown as UserRepository);
+      });
+      afterEach(() => {
+        setIdentityPort();
+        setUserRepository();
+      });
+
+      it('an admin gets the seats, the count and when new users start being refused', async () => {
+        caller = { userId: 'admin', orgId: 'org' };
+        await serve(async (url) => {
+          const body = await (await fetch(`${url}/notice`)).json();
+          expect(body.seatLimit).to.deep.include({
+            seats: 10,
+            used: 12,
+            over: 2,
+            refusing: false,
+          });
+          expect(body.seatLimit.refuseFrom).to.be.a('string');
+        });
+      });
+
+      it('a member never gets it', async () => {
+        caller = { userId: 'member', orgId: 'org' };
+        await serve(async (url) => {
+          const body = await (await fetch(`${url}/notice`)).json();
+          expect(body.seatLimit).to.equal(null);
+        });
+      });
+
+      it('a count that fails leaves it null and the other notices standing', async () => {
+        people = new Error('count failed');
+        caller = { userId: 'admin', orgId: 'org' };
+        await serve(async (url) => {
+          const response = await fetch(`${url}/notice`);
+          expect(response.status).to.equal(200);
+          const body = await response.json();
+          expect(body.seatLimit).to.equal(null);
+          expect(body.connectors.items[0].name).to.equal('Drive a');
+        });
       });
     });
   });

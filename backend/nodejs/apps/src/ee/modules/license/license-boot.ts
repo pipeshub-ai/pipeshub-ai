@@ -158,6 +158,20 @@ const withSeats = async (
   seatLimit: await installSeats(licenseStore),
 });
 
+/** The seat state for the admins' banner; null when it cannot be worked out, so the other notices still show. */
+async function noticeSeats(
+  licenseStore: LicenseStore,
+): Promise<SeatLimit | null> {
+  try {
+    return await installSeats(licenseStore);
+  } catch (error) {
+    logger.warn('Could not work out the seat state for the licence notices', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
 /** Only an admin reads or installs the license; an OAuth app the admin authorised for something else is refused. */
 export function createLicenseRouter(
   container: Container,
@@ -219,13 +233,12 @@ export function createLicenseRouter(
         if (userId === '' || orgId === '') {
           throw new NotFoundError('Account not found');
         }
-        res.json(
-          await licenseNotice(licenseStore, {
-            userId,
-            orgId,
-            isAdmin: await isUserOrgAdmin(userId, orgId),
-          }),
-        );
+        const isAdmin = await isUserOrgAdmin(userId, orgId);
+        res.json({
+          ...(await licenseNotice(licenseStore, { userId, orgId, isAdmin })),
+          // Admins only: the seat banner. A member never gets the count.
+          seatLimit: isAdmin ? await noticeSeats(licenseStore) : null,
+        });
       } catch (error) {
         next(error);
       }

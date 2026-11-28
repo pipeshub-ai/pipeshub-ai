@@ -42009,8 +42009,14 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [upgradeGrace, permissionSync, notForProduction, connectors]
+                required: [upgradeGrace, permissionSync, notForProduction, connectors, seatLimit]
                 properties:
+                  seatLimit:
+                    description: |
+                      Admins only, for the seat banner: the same seat state as `GET /license` returns. Null for a member,
+                      when nothing limits seats, or when it could not be worked out (the other notices still answer).
+                    allOf:
+                      - $ref: '#/components/schemas/LicenseStatus/properties/seatLimit'
                   upgradeGrace:
                     type: object
                     nullable: true

@@ -10001,6 +10001,8 @@
     },
     "graceKeyStartsLater": "Your license key starts on {{start}}. The upgrade grace keeps company-wide connectors copying access from their sources until {{date}}. If the grace ends first, only the people who created them can see their content until the key starts.",
     "graceKeyEnded": "Your license key ended on {{ended}}. The upgrade grace keeps company-wide connectors copying access from their sources until {{date}}. After that, without a new key, they'll be limited to the people who created them. Nothing is deleted.",
-    "openLicensePage": "Open license settings"
+    "openLicensePage": "Open license settings",
+    "seatsOver": "Your install has {{used}} active users; your license covers {{seats}}. New users can be added until {{date}}.",
+    "seatsRefusing": "Your install is over its licensed users. New users can't be added until you remove users or install a key with more users."
   }
 }

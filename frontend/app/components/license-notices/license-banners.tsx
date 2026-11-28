@@ -62,7 +62,7 @@ function syncWord(t: (key: string) => string, status: string | null): string {
 
 /**
  * The license notices above every page, each only when it applies: a development key (everyone),
- * the upgrade grace countdown and limited connectors (admins), and restoring access (admins, and
+ * the upgrade grace countdown, limited connectors and users over the seats (admins), and restoring access (admins, and
  * members whose results are short of a connector someone else created).
  */
 export function LicenseBanners() {
@@ -126,6 +126,19 @@ export function LicenseBanners() {
         <Text size="2">
           {t('licenseNotices.limited', { count: limited })}{' '}
           <LicensePageLink>{t('licenseNotices.installKey')}</LicensePageLink>
+        </Text>
+      </Banner>,
+    );
+  }
+  const seats = notice.seatLimit;
+  if (isAdmin && seats && seats.over > 0) {
+    banners.push(
+      <Banner key="seats" color={seats.refusing ? 'red' : 'amber'} icon="group">
+        <Text size="2">
+          {seats.refusing
+            ? t('licenseNotices.seatsRefusing')
+            : t('licenseNotices.seatsOver', { used: seats.used, seats: seats.seats, date: day(seats.refuseFrom ?? '') })}{' '}
+          <LicensePageLink>{t('licenseNotices.openLicensePage')}</LicensePageLink>
         </Text>
       </Banner>,
     );

@@ -41,6 +41,7 @@ const notice = (over: Partial<LicenseNotice> = {}): LicenseNotice => ({
   permissionSync: true,
   notForProduction: false,
   connectors: { limited: 0, restoring: 0, items: [] },
+  seatLimit: null,
   ...over,
 });
 
@@ -184,6 +185,51 @@ describe('LicenseBanners', () => {
       expect(screen.getByText(/It is not for production use/)).toBeTruthy();
       cleanup();
     }
+  });
+
+  describe('users over the seats', () => {
+    const seats = (refusing: boolean, refuseFrom: string | null = inDays(refusing ? -1 : 9)) => ({
+      seats: 10,
+      used: 12,
+      over: 2,
+      refuseFrom,
+      refusing,
+    });
+
+    it('during the warning: an admin gets the count, the seats and the last day new users can be added', () => {
+      as('admin');
+      const until = inDays(9);
+      served.notice = notice({ seatLimit: seats(false, until) });
+      const { container } = show(<LicenseBanners />);
+      expect(container.textContent).toContain(
+        `Your install has 12 active users; your license covers 10. New users can be added until ${shortDate(until)}.`,
+      );
+      expect(screen.getByText('Open license settings').closest('a')?.getAttribute('href')).toBe('/workspace/license/');
+    });
+
+    it('once refused: an admin is told new users cannot be added', () => {
+      as('admin');
+      served.notice = notice({ seatLimit: seats(true) });
+      const { container } = show(<LicenseBanners />);
+      expect(container.textContent).toContain(
+        "Your install is over its licensed users. New users can't be added until you remove users or install a key with more users.",
+      );
+      expect(container.textContent).not.toContain('active users');
+    });
+
+    it('a member sees nothing, even if the answer carried the seats', () => {
+      as('member');
+      served.notice = notice({ seatLimit: seats(true) });
+      const { container } = show(<LicenseBanners />);
+      expect(container.textContent).toBe('');
+    });
+
+    it('within the seats: nothing', () => {
+      as('admin');
+      served.notice = notice({ seatLimit: { seats: 10, used: 10, over: 0, refuseFrom: null, refusing: false } });
+      const { container } = show(<LicenseBanners />);
+      expect(container.textContent).toBe('');
+    });
   });
 });
 

@@ -10377,6 +10377,8 @@
     },
     "graceKeyStartsLater": "Váš licenční klíč začíná platit {{start}}. Ochranná lhůta po upgradu nechává celofiremní konektory přebírat přístupová práva ze zdrojů do {{date}}. Pokud lhůta skončí dřív, uvidí jejich obsah až do začátku platnosti klíče jen osoby, které je vytvořily.",
     "graceKeyEnded": "Platnost vašeho licenčního klíče skončila {{ended}}. Ochranná lhůta po upgradu nechává celofiremní konektory přebírat přístupová práva ze zdrojů do {{date}}. Potom budou bez nového klíče omezené na osoby, které je vytvořily. Nic se nesmaže.",
-    "openLicensePage": "Otevřít nastavení licence"
+    "openLicensePage": "Otevřít nastavení licence",
+    "seatsOver": "Počet aktivních uživatelů ve vaší instalaci: {{used}}. Vaše licence jich pokrývá {{seats}}. Nové uživatele lze přidávat do {{date}}.",
+    "seatsRefusing": "Vaše instalace má více uživatelů, než pokrývá licence. Nové uživatele nelze přidat, dokud některé uživatele neodeberete nebo nenainstalujete klíč pro více uživatelů."
   }
 }
