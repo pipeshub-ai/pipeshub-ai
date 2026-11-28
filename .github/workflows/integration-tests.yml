@@ -173,12 +173,17 @@ jobs:
     name: Pick the setup to test
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      # A re-run of all jobs reads this run's first day (Pick the setup).
+      actions: read
     outputs:
       message_broker: ${{ steps.pick.outputs.message_broker }}
       label: ${{ steps.pick.outputs.label }}
       is_default: ${{ steps.pick.outputs.is_default }}
-      # The slice of the rotating simulator suites this run keeps, fixed per run so a re-run of failed jobs tests
-      # the same cases (scripts/nightly_setup.py sim_slot, integration-tests/sim_tiers.json).
+      # The slice of the rotating simulator suites this run keeps, fixed per run: a re-run of failed jobs keeps these
+      # outputs, and a re-run of all jobs takes the first attempt's day (Pick the setup), so both test the same
+      # cases (scripts/nightly_setup.py sim_slot, integration-tests/sim_tiers.json).
       sim_slot: ${{ steps.pick.outputs.sim_slot }}
     steps:
       - name: Checkout the picker
@@ -191,7 +196,23 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           REQUESTED_BROKER: ${{ github.event.inputs.message_broker }}
-        run: python3 scripts/nightly_setup.py --event "$EVENT_NAME" --message-broker "$REQUESTED_BROKER"
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A re-run of all jobs runs this job again. It takes the first attempt's day, so it tests the setup and the
+          # simulator cases of the run it repeats, not today's.
+          day=""
+          if [ "$RUN_ATTEMPT" != "1" ]; then
+            day=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq '.created_at[:10]') || day=""
+            if [ -z "$day" ]; then
+              echo "::warning::Could not read this run's first day, so this attempt tests today's setup and simulator cases."
+            fi
+          fi
+          if [ -n "$day" ]; then
+            python3 scripts/nightly_setup.py --event "$EVENT_NAME" --message-broker "$REQUESTED_BROKER" --date "$day"
+          else
+            python3 scripts/nightly_setup.py --event "$EVENT_NAME" --message-broker "$REQUESTED_BROKER"
+          fi
 
   integration-tests:
     name: Integration Tests (${{ matrix.graph_db }} · ${{ matrix.shard }}${{ needs.setup.outputs.is_default == 'false' && format(' · {0}', needs.setup.outputs.message_broker) || '' }})

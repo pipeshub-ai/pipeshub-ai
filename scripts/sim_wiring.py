@@ -13,7 +13,9 @@ and that no other guard sees (shard_balance.py checks the shard lists and core's
   file loaded into GITHUB_ENV can override them;
 - every docker compose line that adds a simulator's compose file also adds the fake model's;
 - each leg checks, after its own tests and on its own stack, that the fake model is still running, healthy and
-  never restarted, and that its log holds no failed call.
+  never restarted, and that its log holds no failed call;
+- the ``setup`` job exports ``sim_slot`` and may read its own run (``actions: read``), so a re-run of all jobs
+  takes the first attempt's day.
 
 A rule whose line it cannot find is a problem too, so a renamed or reshaped step fails the check instead of
 passing it.
@@ -164,9 +166,12 @@ def problems(text: str, tiers: dict) -> list[str]:
         if "env.SIM_JOB == '1'" not in str(step.get("if", "")):
             found.append(f"'{step.get('name')}' does not run on simulator jobs (`env.SIM_JOB == '1'`).")
 
-    setup_outputs = ((yaml.safe_load(text)["jobs"].get("setup") or {}).get("outputs") or {})
-    if "sim_slot" not in setup_outputs:
+    setup_job = yaml.safe_load(text)["jobs"].get("setup") or {}
+    if "sim_slot" not in (setup_job.get("outputs") or {}):
         found.append("the setup job has no sim_slot output.")
+    if (setup_job.get("permissions") or {}).get("actions") != "read":
+        found.append("the setup job cannot read its run's first day (`permissions: actions: read`), so a re-run of all "
+                     "jobs takes another day's simulator cases.")
 
     for number, line in enumerate(text.splitlines(), start=1):
         if "docker compose" in line and "_SIM_COMPOSE" in line and "$FAKE_MODEL_COMPOSE" not in line:

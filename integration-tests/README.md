@@ -352,8 +352,8 @@ Each listed suite also says which of its cases run when
 - `"nightly": "all"` runs the whole suite every night. `"nightly": "rotate"` runs
   the core every night and one seventh of the other cases: those whose id hashes
   to the run's slot. The `setup` job picks the slot once per run
-  (`sim_slot` in `scripts/nightly_setup.py`), so re-running a failed job tests
-  the same cases. Every case runs once in each Monday-to-Sunday week on each
+  (`sim_slot` in `scripts/nightly_setup.py`), so re-running failed jobs, or all
+  of them, tests the same cases. Every case runs once in each Monday-to-Sunday week on each
   graph database (never both the same night: ArangoDB takes the slot three
   ahead of Neo4j's), and on a different
   weekday each week, so over seven weeks it meets each weekday's setup, the

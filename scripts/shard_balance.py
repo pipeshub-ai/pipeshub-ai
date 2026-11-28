@@ -210,7 +210,8 @@ def matrix_solo_shards(workflow_text: str) -> set[str]:
 
 
 _IT_ALL_LIST = re.compile(r"'it-all'\)\s*&&\s*'(\[[^']*\])'")
-_CASE_SHARD_LINE = re.compile(r'^\s*(connectors-\d+)\)\s+MARKERS="\$CONN_SHARD_(\d+)"', re.MULTILINE)
+# Through `;;`, as for the solo shards: `MARKERS="$CONN_SHARD_6"extra` is the marker "...extra" to the shell.
+_CASE_SHARD_LINE = re.compile(r'^[ \t]*(connectors-\d+)\)[ \t]+MARKERS="\$CONN_SHARD_(\d+)"[ \t]*;;', re.MULTILINE)
 _SHARD_VARIABLE = re.compile(r"\$CONN_SHARD_(\d+)")
 
 

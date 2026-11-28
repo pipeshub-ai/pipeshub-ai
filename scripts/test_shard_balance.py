@@ -322,6 +322,18 @@ class TestThisRepo(unittest.TestCase):
         )
         self.assertTrue(any("Test step 2 has no `connectors-6)" in p for p in problems), problems)
 
+    def test_a_shard_line_with_text_after_its_quote_is_caught(self) -> None:
+        """`MARKERS="$CONN_SHARD_6"extra` gives the shell the marker `zammad_simextra`, so that job selects nothing."""
+        text = balance.WORKFLOW.read_text(encoding="utf-8")
+        line = '            connectors-6) MARKERS="$CONN_SHARD_6" ;;\n'
+        last = text.rindex(line)
+        mutated = text[:last] + line.replace('" ;;', '"extra ;;') + text[last + len(line):]
+        measured = json.loads(balance.DURATIONS.read_text(encoding="utf-8"))
+        problems, _ = balance.check(
+            mutated, balance.PYTEST_INI.read_text(encoding="utf-8"), measured["minutes"], None, balance.sim_shards(),
+        )
+        self.assertTrue(any("Test step 2 has no `connectors-6)" in p for p in problems), problems)
+
     def test_the_shard_holding_nextcloud_starts_its_containers(self) -> None:
         """nextcloud and bookstack need the selfhosted-sources compose profile."""
         workflow = balance.WORKFLOW.read_text(encoding="utf-8")

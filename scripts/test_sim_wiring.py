@@ -177,5 +177,10 @@ class SimWiring(unittest.TestCase):
         self.assertCaught(mutate(old, "grep -c '^fake-model OK'", last=True), "does not fail on the fake model's failed calls")
 
 
+    def test_the_setup_job_without_read_access_to_its_run(self) -> None:
+        old = "      # A re-run of all jobs reads this run's first day (Pick the setup).\n      actions: read\n"
+        self.assertCaught(mutate(old, ""), "cannot read its run's first day")
+
+
 if __name__ == "__main__":
     unittest.main()
