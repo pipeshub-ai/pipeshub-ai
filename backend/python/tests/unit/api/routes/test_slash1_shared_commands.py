@@ -270,7 +270,7 @@ class TestAuthorLeaves:
         before = (dict(graph._col("agentSkills")), dict(graph._col("agentSkillVersions")))
         read = graph.get_nodes_by_filters
 
-        async def failing(col, filters, *args, raise_on_error=False, **kwargs):  # noqa: ANN001, ANN202
+        async def failing(col, filters, *args, raise_on_error=False, **kwargs) -> list[dict]:
             if col == collection:
                 if raise_on_error:
                     raise RuntimeError("store unavailable")
