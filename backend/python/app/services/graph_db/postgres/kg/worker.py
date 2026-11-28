@@ -179,13 +179,19 @@ class KgWorker:
         while not self._stop.is_set():
             made = 0
             try:
-                for org in await self._orgs():
-                    if self._stop.is_set():
-                        break
-                    made += await bootstrap.bring_to_enforce(self._db, org, self._due, self._stop, self._turns)
+                orgs = await self._orgs()
             except Exception:
                 LOOP_FAILED.inc("bootstrap")
                 logger.exception("kg bootstrap iteration failed; continuing")
+                orgs = []
+            for org in orgs:
+                if self._stop.is_set():
+                    break
+                try:                                       # as in run_once: one org's failure holds up no other org
+                    made += await bootstrap.bring_to_enforce(self._db, org, self._due, self._stop, self._turns)
+                except Exception:
+                    LOOP_FAILED.inc("bootstrap")
+                    logger.exception("kg bootstrap failed for an org; retrying")
             if not made:
                 await self._pause(self._poll)
 

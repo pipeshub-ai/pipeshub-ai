@@ -16,7 +16,7 @@ import random
 import time
 from typing import TYPE_CHECKING
 
-from app.core.org_context import bind
+from app.core.org_context import bind, spawn_detached
 from app.services.graph_db.postgres.kg import backfill as bf
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH
 from app.telemetry.backend import METRICS_BACKEND
@@ -117,16 +117,16 @@ def _reap(org: str, turns: dict[tuple[str, str], asyncio.Task]) -> int:
 
 async def _turns_apart(db: KernelDB, org: str, apps: list[str], due: dict[tuple[str, str], float], stop: asyncio.Event | None,
                        turns: dict[tuple[str, str], asyncio.Task]) -> int:
-    """Up to CONNECTORS_AT_ONCE turns of the org in flight, each a task that may outlast this call. A free slot goes to a connector whose turn is not running and whose time has
+    """Up to CONNECTORS_AT_ONCE turns in flight in the worker, each a task that may outlast this call. A free slot goes to a connector whose turn is not running and whose time has
     come (``due``, ``_HELD``), the one whose turn started longest ago first: a connector that is copied over many turns does not keep its slot while the others wait. Returns the
     progress of the turns that ended, plus 1 while one is still running (the caller looks again at once instead of sleeping its poll)."""
     made = _reap(org, turns)
     now = time.monotonic()
-    free = CONNECTORS_AT_ONCE - sum(1 for k in turns if k[0] == org)
+    free = CONNECTORS_AT_ONCE - sum(1 for t in turns.values() if not t.done())       # ``turns`` is the worker's: the cap is the process's, not each org's
     ready = sorted((a for a in apps if (org, a) not in turns and _may_turn(org, a, due, now)), key=lambda a: _STARTED.get((org, a), 0.0))
     for app in ready[:max(free, 0)]:
         _STARTED[(org, app)] = now
-        turns[(org, app)] = asyncio.create_task(_turn(db, org, app, due, stop), name=f"kg-turn-{app}")
+        turns[(org, app)] = spawn_detached(_turn(db, org, app, due, stop), name=f"kg-turn-{app}")       # it outlives the call: no caller's context (the turn binds its org)
     running = [t for k, t in turns.items() if k[0] == org]
     if running:
         await asyncio.wait(running, timeout=TURN_WAIT_S, return_when=asyncio.FIRST_COMPLETED)
