@@ -33,7 +33,9 @@ from app.connectors.core.base.data_processor.record_organizations import (
     link_record_organization,
 )
 from app.connectors.core.base.data_processor.record_people import link_record_people
+from app.connectors.core.base.data_processor.permission_sync_gate import AccessLimitOwed
 from app.connectors.core.base.data_processor.permission_sync_gate import gated as _gated
+from app.connectors.core.base.data_processor.permission_sync_gate import note_limited
 from app.connectors.core.base.data_processor.permission_sync_gate import permission_sync_licensed
 from app.connectors.core.base.data_processor.pr_links import Linked, write_modifies
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
@@ -46,6 +48,7 @@ from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.base.data_store.graph_data_store import (
     ends_explicit_transaction,
     ensure_written,
+    in_store_transaction,
     is_transient_conflict,
     is_write_conflict,
     retry_on_deadlock,
@@ -1793,12 +1796,19 @@ class DataSourceEntitiesProcessor:
         """Limit an unlicensed connector (its app document ``app``) to its creator, or keep the limit it has. Once
         ``accessLimit`` and ``permissionModel: APP_LEVEL`` are both stored, the generation bump committed with them,
         so only the refreshes after the write run again: a crash may have left those undone, and writing again would
-        bump the generation, and re-stamp the whole connector, on every call. Raises like ``set_access_limit``."""
-        limit = app.get("accessLimit")
-        if limit and app.get("permissionModel") == PermissionModel.APP_LEVEL.value:
-            async with self._access_limit_refreshed(connector_id):
-                return
-        await self.set_access_limit(connector_id, AccessLimit(limit) if limit else AccessLimit.CREATOR)
+        bump the generation, and re-stamp the whole connector, on every call. Raises like ``set_access_limit``.
+
+        The licence watcher is told every time, once the write has returned or raised: one that raised may still
+        have committed, and told before the commit it could read the connector as not limited and settle. Telling it
+        about a connector that is not limited only makes it look again."""
+        try:
+            limit = app.get("accessLimit")
+            if limit and app.get("permissionModel") == PermissionModel.APP_LEVEL.value:
+                async with self._access_limit_refreshed(connector_id):
+                    return
+            await self.set_access_limit(connector_id, AccessLimit(limit) if limit else AccessLimit.CREATOR)
+        finally:
+            note_limited(connector_id)
 
     # ==================== The licence gate (permission_sync_gate) ====================
 
@@ -1814,6 +1824,8 @@ class DataSourceEntitiesProcessor:
         written, so the sync does not start. A processor not yet initialized has no licence to read and changes
         nothing, as in ``_unlicensed``."""
         self.__dict__.setdefault("_permissions_skipped", set()).discard(connector_id)
+        known_limited = self.__dict__.setdefault("_known_limited", set())
+        known_limited.discard(connector_id)
         if not self.__dict__.get("_reads_licence"):
             return False
         graph = self.data_store_provider.graph_provider
@@ -1823,9 +1835,11 @@ class DataSourceEntitiesProcessor:
         limit = app.get("accessLimit")
         if not await permission_sync_licensed(self.config_service):
             await self.limit_unlicensed(connector_id, app)
+            known_limited.add(connector_id)
             return False
         if limit is None:
             return False
+        known_limited.add(connector_id)
         if not full_sync:
             ensure_written(
                 await graph.update_node(
@@ -1844,13 +1858,14 @@ class DataSourceEntitiesProcessor:
         if not await permission_sync_licensed(self.config_service):
             return False
         await self.clear_access_limit(connector_id, permission_model)
+        self.__dict__.setdefault("_known_limited", set()).discard(connector_id)
         return True
 
-    async def _unlicensed(self, connector_id: str | None) -> bool:
+    async def _unlicensed(self, connector_id: str | None, read: dict[str, Any] | None = None) -> bool:
         """True when this connector may not copy access from its source: the install has no licence for it, the
         connector is company-wide, and it is not a storage or database connector (``permission_sync_gate``). A failed
         read of the licence or the app raises. A processor not yet initialized has no licence to read and changes
-        nothing."""
+        nothing. The app document, when read here, is put in ``read["app"]``."""
         if not connector_id or not self.__dict__.get("_reads_licence"):
             return False
         if await permission_sync_licensed(self.config_service):
@@ -1858,9 +1873,12 @@ class DataSourceEntitiesProcessor:
         apps = self.__dict__.setdefault("_gated_apps", {})
         if connector_id not in apps:
             # Scope and type never change, so one read per connector.
-            apps[connector_id] = _gated(await self.data_store_provider.graph_provider.get_document(
+            app = await self.data_store_provider.graph_provider.get_document(
                 connector_id, CollectionNames.APPS.value, raise_on_error=True,
-            ))
+            )
+            if read is not None:
+                read["app"] = app
+            apps[connector_id] = _gated(app)
         return apps[connector_id]
 
     async def skips_permission_writes(self, connector_id: str | None) -> bool:
@@ -1868,11 +1886,58 @@ class DataSourceEntitiesProcessor:
         grant, source group and role, membership, user-app link, and withdrawal of one, leaves what is stored as it
         is. That is "not read this time", not "the source has none". Content still syncs, and the limit set at sync
         start (``apply_licence_gate``) decides who reads it. A skip is noted for the sync in progress, which then
-        does not lift the limit and keeps the groups and roles it did not write (``keep_skipped_groups``)."""
-        if not await self._unlicensed(connector_id):
+        does not lift the limit and keeps the groups and roles it did not write (``keep_skipped_groups``).
+
+        A connector not limited yet (the licence lapsed after its run began licensed) is limited here, at the first
+        skip, before it returns: a crash or a kill after it still leaves the connector limited, and only a licensed
+        full sync lifts it. The skip is noted first, so a limit that cannot be set is still owed and the end of the
+        run sets it (``limit_after_skipped_writes``); the failure raises, so the write and the run fail rather than go
+        on writing content under access that is no longer kept up to date. Inside a store transaction the limit is
+        not written (that would hold a second connection): ``AccessLimitOwed`` is raised instead, and the writers
+        that open one call ``limit_if_licence_lapsed`` before it."""
+        read: dict[str, Any] = {}
+        if not await self._unlicensed(connector_id, read):
             return False
         self.__dict__.setdefault("_permissions_skipped", set()).add(connector_id)
+        known_limited = self.__dict__.setdefault("_known_limited", set())
+        if connector_id not in known_limited:
+            if in_store_transaction():
+                raise AccessLimitOwed(f"connector {connector_id} must be limited before this transaction")
+            app = read.get("app") or await self.data_store_provider.graph_provider.get_document(
+                connector_id, CollectionNames.APPS.value, raise_on_error=True,
+            )
+            if app.get("accessLimit") is None:
+                await self.limit_unlicensed(connector_id, app)
+            known_limited.add(connector_id)
         return True
+
+    async def limit_if_licence_lapsed(self, connector_ids: Iterable[str | None]) -> None:
+        """Before a store transaction whose writes may be skipped: limit, in a transaction of its own and committed
+        first, each of these connectors whose licence lapsed during its run (``skips_permission_writes``). A kill
+        after it leaves the connector limited, and no transaction waits on a second connection for the limit."""
+        for connector_id in {c for c in connector_ids if c}:
+            await self.skips_permission_writes(connector_id)
+
+    async def limit_after_skipped_writes(self, connector_id: str) -> None:
+        """At the end of a run that skipped a permission write of this connector while it was not limited: the
+        licence lapsed after the run began licensed, so ``apply_licence_gate`` did not limit it, and whatever the
+        source took away from then on was not written. The limit is set now, as at the next start, so no one keeps
+        reading what the source no longer lets them read. Raises like ``set_access_limit``.
+
+        The backstop for the limit set at the first skip (``skips_permission_writes``): it acts only when that one
+        failed, and a connector known to be limited is not read again."""
+        if connector_id not in self.__dict__.get("_permissions_skipped", ()) \
+                or connector_id in self.__dict__.get("_known_limited", ()):
+            return
+        app = await self.data_store_provider.graph_provider.get_document(
+            connector_id, CollectionNames.APPS.value, raise_on_error=True,
+        )
+        if _gated(app) and app.get("accessLimit") is None:
+            await self.limit_unlicensed(connector_id, app)
+        elif _gated(app):
+            # The first skip's write may have committed and then raised: the watcher has to learn of it anyway.
+            note_limited(connector_id)
+        self.__dict__.setdefault("_known_limited", set()).add(connector_id)
 
     async def keep_skipped_groups(self, connector_id: str) -> None:
         """Before the unlink after a full sync that skipped permission writes: every stored user group and role of the
@@ -3817,6 +3882,7 @@ class DataSourceEntitiesProcessor:
         moved_virtual_record_ids: list[tuple[str, str | None]] = []
         title_changes: dict[str, Record] = {}
         pending_moves: list[PendingMove] = []
+        await self.limit_if_licence_lapsed(record.connector_id for record, _ in batch_slice)
         async with self._drop_access_after(narrowed_connectors), self._sync_transaction(explicit=True) as store:
             tx_store = _BatchLookups(store)
             # Per slice, not for the whole batch: the slices before this one
@@ -3926,6 +3992,7 @@ class DataSourceEntitiesProcessor:
         # record flagged ``rewrite_permissions`` would otherwise be rewritten
         # with nothing and lose all access. Only an explicit list (even []) replaces.
         replace = permissions is not None and bool(record.rewrite_permissions)
+        await self.limit_if_licence_lapsed([record.connector_id])
         async with self._drop_access_after(narrowed_connectors), self._sync_transaction() as tx_store:
             processed_record, pending_moves = await self._process_record(
                 record,
@@ -3985,6 +4052,7 @@ class DataSourceEntitiesProcessor:
         moved_virtual_record_ids: list[tuple[str, str | None]] = []
         narrowed_connectors: set[str] = set()
         title_changes: dict[str, Record] = {}
+        await self.limit_if_licence_lapsed([record.connector_id])
         async with self._drop_access_after(narrowed_connectors), self._sync_transaction(explicit=True) as tx_store:
             if getattr(tx_store, "explicit", False) is not True:
                 # Without one transaction the claim commits alone, and two creates of a key can both win it.
@@ -4126,6 +4194,7 @@ class DataSourceEntitiesProcessor:
         narrowed_connectors: set[str] = set()
         pending_moves: list[PendingMove] = []
         title_changes: dict[str, Record] = {}
+        await self.limit_if_licence_lapsed([record.connector_id])
         async with self._drop_access_after(narrowed_connectors), self._sync_transaction() as tx_store:
             existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
@@ -4194,6 +4263,7 @@ class DataSourceEntitiesProcessor:
             )
 
         try:
+            await self.limit_if_licence_lapsed(record.connector_id for _, record, _ in moves)
             async with self._drop_access_after(narrowed_connectors), self._sync_transaction() as tx_store:
                 # Snapshot old paths BEFORE any mutations in the loop.
                 # Sequential: an ArangoDB stream transaction does not support
@@ -7802,6 +7872,7 @@ class DataSourceEntitiesProcessor:
     async def add_permission_to_record(self, record: Record, permissions: list[Permission]) -> None:
         """Add permissions to a record."""
 
+        await self.limit_if_licence_lapsed([record.connector_id])
         async with self.data_store_provider.transaction() as tx_store:
             await self._handle_record_permissions(record, permissions, tx_store)
 
@@ -7893,6 +7964,7 @@ class DataSourceEntitiesProcessor:
         given -- before the delete, and loudly: once the edge is gone a retry
         finds nothing to delete and could never drop the search cache."""
 
+        await self.limit_if_licence_lapsed([connector_id])
         async with self.data_store_provider.transaction() as tx_store:
             # A user who could not be read is not a user who is not there: returning
             # here on a failed read would leave the permission in place unreported.

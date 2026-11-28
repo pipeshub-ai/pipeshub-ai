@@ -32,10 +32,37 @@ OPEN_CONNECTOR_TYPES = frozenset(c.value for c in (
 ))
 
 
+# Connectors this process limited since the licence watcher last looked (``note_limited``, ``take_limited``).
+# shortcut: in memory, per process; every connectors process runs its own watcher, so the process that limited queues.
+# A process that dies before its next check leaves it to the first check after a restart, which scans in full.
+_limited_since_last_check: set[str] = set()
+
+
+def note_limited(connector_id: str) -> None:
+    """A connector was limited: the watcher (``licence_lift.watch_licence``) looks again even while the install stays
+    licensed, and gives it its queued full syncs back. Without it, a connector limited by a run that ended after a
+    licensed one took over was never queued for the full sync that lifts it."""
+    _limited_since_last_check.add(connector_id)
+
+
+def take_limited() -> set[str]:
+    """The connectors limited since the last call, and forget them."""
+    taken = set(_limited_since_last_check)
+    _limited_since_last_check.difference_update(taken)
+    return taken
+
+
+class AccessLimitOwed(RuntimeError):
+    """A permission write was skipped inside a store transaction on a connector whose limit is not set yet (its licence
+    lapsed during the run). The limit is not written there, which would hold a second connection; the write fails, and
+    the limit is set before the next transaction or at the end of the run."""
+
+
 async def permission_sync_licensed(config_service: ConfigurationService) -> bool:
     """Whether the install is licensed, read at most once per ``LICENCE_MAX_AGE_SECONDS`` (a missing key included).
-    A failed read raises and is not remembered: answered as "no key", it would count as licensed and copy source
-    access again."""
+    Licensed means no key at all, or ``{"allowed": true}``; any other stored value (not a dict, or ``allowed`` not
+    exactly ``true``) is not licensed. A failed read raises and is not remembered: answered as "no key", it would
+    count as licensed and copy source access again."""
     now = time.monotonic()
     answer = _licence_answers.get(config_service)
     if answer is not None and now - answer[0] <= LICENCE_MAX_AGE_SECONDS:
@@ -43,9 +70,9 @@ async def permission_sync_licensed(config_service: ConfigurationService) -> bool
     value = await config_service.get_config(
         PERMISSION_SYNC_LICENCE_KEY, use_cache=True, raise_on_error=True, max_age_seconds=LICENCE_MAX_AGE_SECONDS
     )
-    # shortcut: no key means licensed, so nothing changes before licence keys exist; the major release
-    # that turns the check on makes a missing key mean "not licensed".
-    licensed = not isinstance(value, dict) or value.get("allowed") is True
+    # shortcut: only a missing key means licensed, so nothing changes before licence keys exist; the major release
+    # that turns the check on makes a missing key mean "not licensed". A value that is there but malformed is not.
+    licensed = value is None or (isinstance(value, dict) and value.get("allowed") is True)
     _licence_answers[config_service] = (now, licensed)
     return licensed
 

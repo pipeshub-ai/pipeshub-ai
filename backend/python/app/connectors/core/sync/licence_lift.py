@@ -18,6 +18,7 @@ from app.connectors.core.base.data_processor.permission_sync_gate import (
     LICENCE_MAX_AGE_SECONDS,
     gated,
     permission_sync_licensed,
+    take_limited,
 )
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.sync.sync_runner import drain_queued_syncs
@@ -121,10 +122,17 @@ async def watch_licence(
     when the install has become licensed: on the first check after a start, which covers a key entered while this
     process was down, and on every change from unlicensed to licensed. Checks go on while a limited connector is
     still running or queued, or a pass or the licence read failed, so one whose full sync ends with the limit still set
-    is queued again."""
+    is queued again. A connector this process limited since the last check (``permission_sync_gate.note_limited``)
+    starts the checks again with its tries back: limited while the install stayed licensed (a run that ended after a
+    licensed one took over), it is queued too."""
     done = False
     tries: dict[str, int] = {}
     while True:
+        limited = take_limited()
+        if limited:
+            done = False
+            for connector_id in limited:
+                tries.pop(connector_id, None)
         try:
             if not await permission_sync_licensed(config_service):
                 done = False
