@@ -7,6 +7,7 @@ const removeAllListenersMock = vi.fn();
 let lastSocket: {
   connected: boolean;
   auth: { token: string };
+  on: ReturnType<typeof vi.fn>;
   disconnect: ReturnType<typeof vi.fn>;
   removeAllListeners: ReturnType<typeof vi.fn>;
 } | null = null;
@@ -18,6 +19,7 @@ vi.mock('socket.io-client', () => ({
     lastSocket = {
       connected: false,
       auth: options.auth ?? { token: '' },
+      on: vi.fn(),
       disconnect: disconnectMock,
       removeAllListeners: removeAllListenersMock,
     };

@@ -8,6 +8,8 @@ name: pg-runtime
 # suites skip only when a service is missing, which in CI means the workflow is broken.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    # Heavy: on a pull request its jobs run only with the ci:full or ci:db label (CONTRIBUTING.md).
     branches:
       - 'main'
     paths:
@@ -88,16 +90,23 @@ on:
       - 'backend/python/app/connectors/core/base/data_processor/data_source_entities_processor.py'
       - '.github/workflows/pg-runtime.yml'
   workflow_dispatch:
+  schedule:
+    - cron: '10 11 * * *'
 
 permissions:
   contents: read
 
 concurrency:
-  group: pg-runtime-${{ github.ref }}
+  group: pg-runtime-${{ github.event_name == 'pull_request' && format('pr-{0}-{1}', github.event.pull_request.number, (contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))) && 'heavy' || format('other-{0}', github.run_id)) || format('{0}-{1}-{2}', github.event_name, github.ref, github.run_id) }}
   cancel-in-progress: true
 
 jobs:
   python:
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))
     runs-on: ubuntu-latest
     # shard 1 is one test case of ~22-26 min serial (the not-current adversarial worlds), which no split can shorten
     timeout-minutes: ${{ matrix.shard == 1 && 60 || 45 }}
@@ -323,6 +332,11 @@ jobs:
   # throwaway cluster, so it runs in a job of its own. The `chaos` cases of tests/integration/pg_runtime (a consumer killed
   # mid-message, a LISTEN connection gone silent or terminated) run here too.
   faults:
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -388,6 +402,11 @@ jobs:
             --collected "$RUNNER_TEMP/py-fault.collected" --collected "$RUNNER_TEMP/py-chaos.collected"
 
   node:
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:

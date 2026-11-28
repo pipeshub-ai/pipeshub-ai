@@ -9949,7 +9949,11 @@ class TestFailedPageDoesNotAdvanceCheckpoint:
         }
         ds = MagicMock()
         ds.conversations_replies = _pages(
-            _slack_ok([{"ts": "5.2", "user": "U1", "text": "second reply"}], next_cursor="r2"),
+            # Over 5 minutes apart: two bursts, and the last, perhaps cut short, is held back.
+            _slack_ok([
+                {"ts": "5.2", "user": "U1", "text": "second reply"},
+                {"ts": "905.0", "user": "U1", "text": "later reply"},
+            ], next_cursor="r2"),
             _slack_failure("internal_error"),
         )
 
@@ -9957,8 +9961,11 @@ class TestFailedPageDoesNotAdvanceCheckpoint:
             await c._handle_new_thread(md, "C1", "5.0")
 
         assert ds.conversations_replies.await_count == 2
-        # The reply that did arrive is still published.
+        # The replies that did arrive are still published, but for the last burst, which
+        # waits for a complete read so it cannot replace a longer stored copy of itself.
         c.data_entities_processor.on_new_records.assert_awaited()
+        published = [r.external_record_id for r, _ in c.data_entities_processor.on_new_records.await_args.args[0]]
+        assert published == ["thread_burst_C1_5.0_5.2"]
         c.audit_log_sync_point.update_sync_point.assert_not_awaited()
         assert any(
             "replies were only partly fetched" in str(call.args[0])

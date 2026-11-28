@@ -15,6 +15,8 @@ on:
   push:
     branches: [ "main" ]
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    # Heavy: on a pull request its jobs run only with the ci:full or ci:security label (CONTRIBUTING.md).
     branches: [ "main" ]
   schedule:
     # Every 6 hours. These runs (and workflow_dispatch) save the overlay-base database that pull
@@ -26,12 +28,21 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: codeql-${{ github.event_name == 'pull_request' && format('pr-{0}-{1}', github.event.pull_request.number, (contains(fromJSON('["ci:full","ci:security"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:security')))) && 'heavy' || format('other-{0}', github.run_id)) || format('{0}-{1}-{2}', github.event_name, github.ref, github.run_id) }}
+  cancel-in-progress: true
+
 jobs:
   # Which of the jobs below this pull request's changes can affect
   # (scripts/pr_changes.py). A pull request analyses only the languages it
   # changed; a push to main, the schedule and workflow_dispatch analyse every
   # language.
   changes:
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:security"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:security')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:security"]'), github.event.label.name)))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -52,7 +63,12 @@ jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
     needs: changes
-    if: needs.changes.outputs.codeql_languages != '[]'
+    if: >-
+      (github.event_name != 'pull_request' ||
+       (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:security"]'), github.event.label.name)) ||
+       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:security')) &&
+        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:security"]'), github.event.label.name)))) &&
+      needs.changes.outputs.codeql_languages != '[]'
     # Runner size impacts CodeQL analysis time. To learn more, please see:
     #   - https://gh.io/recommended-hardware-resources-for-running-codeql
     #   - https://gh.io/supported-runners-and-hardware-resources

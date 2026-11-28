@@ -9,12 +9,20 @@ export interface NavItem {
   customIcon?: ReactNode;
   /** Only rendered when the named feature flag is enabled. */
   requiresFlag?: FeatureFlagGate;
+  /** Yours rather than the workspace's: an admin finds it in Personal settings only. */
+  personal?: boolean;
   /** Renders a Beta badge as the item's rightSlot. */
   beta?: boolean;
 }
 
-/** The workspace sidebar's lists an edition can add entries to. */
-export type WorkspaceNavSection = 'overview' | 'security' | 'workspace' | 'developerSettings' | 'personal';
+/** The admin-only lists of Workspace settings, in the order they are shown. */
+export type WorkspaceAdminSection = 'ai' | 'integrations' | 'security' | 'system';
+
+/**
+ * The workspace sidebar's lists an edition can add entries to. `workspace` means any
+ * admin list: the entry joins the one that holds its `after` route, or System.
+ */
+export type WorkspaceNavSection = 'overview' | WorkspaceAdminSection | 'workspace' | 'developerSettings' | 'personal';
 
 /**
  * One entry an edition adds to the workspace sidebar, through `workspaceNavExtras`
@@ -49,4 +57,29 @@ export function mergeWorkspaceNav(
     merged.splice(anchor === -1 ? merged.length : anchor + 1, 0, item);
   }
   return merged;
+}
+
+/**
+ * The extras with each `workspace` one given the admin list it belongs in: the list
+ * holding its route (so it still replaces that entry) or its `after` route, else System.
+ * The route can be a built-in entry's or an earlier extra's.
+ */
+export function placeWorkspaceExtras(
+  adminItems: Readonly<Record<WorkspaceAdminSection, readonly NavItem[]>>,
+  extras: readonly WorkspaceNavExtra[],
+): WorkspaceNavExtra[] {
+  const adminSections = Object.keys(adminItems) as WorkspaceAdminSection[];
+  const sectionByRoute = new Map<string, WorkspaceAdminSection>();
+  for (const key of adminSections) {
+    for (const item of adminItems[key]) sectionByRoute.set(item.route, key);
+  }
+  const sectionOf = (route: string | undefined) => (route === undefined ? undefined : sectionByRoute.get(route));
+  return extras.map((extra) => {
+    const section =
+      extra.section === 'workspace' ? sectionOf(extra.route) ?? sectionOf(extra.after) ?? 'system' : extra.section;
+    if ((adminSections as string[]).includes(section) && !sectionByRoute.has(extra.route)) {
+      sectionByRoute.set(extra.route, section as WorkspaceAdminSection);
+    }
+    return section === extra.section ? extra : { ...extra, section };
+  });
 }

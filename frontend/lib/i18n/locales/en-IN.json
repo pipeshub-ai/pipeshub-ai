@@ -1878,6 +1878,7 @@
   "workspaceMenu": {
     "appearance": "Appearance",
     "language": "Language",
+    "personalSettings": "Personal settings",
     "workspaceSettings": "Workspace settings",
     "logOut": "Log out",
     "system": "System",
@@ -2830,6 +2831,9 @@
       "sections": {
         "overview": "Overview",
         "workspace": "Workspace",
+        "ai": "AI",
+        "integrations": "Integrations",
+        "system": "System",
         "usageAndCredits": "Usage & billing",
         "security": "Security",
         "personal": "Personal",
@@ -3487,7 +3491,14 @@
         "createError": "Failed to create connector",
         "createSuccess": "Connector instance '{{name}}' created successfully",
         "authSaveError": "Failed to save auth configuration",
-        "configSaveError": "Failed to save configuration"
+        "configSaveError": "Failed to save configuration",
+        "syncTurningOn": "Turning on sync for {{name}}",
+        "syncTurningOnDescription": "Checking the connection to {{source}}. This can take a few seconds.",
+        "syncTurningOff": "Turning off sync for {{name}}",
+        "syncTurnedOn": "Sync is on for {{name}}",
+        "syncTurnedOff": "Sync is off for {{name}}",
+        "syncToggleFailed": "Couldn't change sync for {{name}}",
+        "syncToggleFailedDescription": "Try again. If it keeps failing, check the connector's settings."
       },
       "tabs": {
         "authenticate": "Authenticate",
@@ -3787,7 +3798,9 @@
         "removing": "This connector is being removed.",
         "configureFirst": "Finish configuration before you can enable sync.",
         "authenticateFirst": "Authenticate this connector before you can enable sync.",
-        "selected": "{{field}} selected"
+        "selected": "{{field}} selected",
+        "turningOn": "Turning on…",
+        "turningOff": "Turning off…"
       },
       "instanceStatus": {
         "setup": {
@@ -5578,6 +5591,7 @@
         "deleteTitle": "Delete \"{{name}}\"?",
         "deleteBody": "Are you sure you want to delete this skill? This action cannot be undone.",
         "cannotDeleteTitle": "Cannot delete this skill",
+        "notVisibleCount": "{{count}} you can't see",
         "requiredBy": "This skill is required by other skill(s): {{names}}. Deprecate it instead so dependents still resolve.",
         "usedByAgents": "This skill is assigned to: {{names}}. Deleting will unassign it from them."
       },
@@ -7290,6 +7304,9 @@
     "appLimited_other": "{{appName}} can see only {{count}} items its creator picked, and only the ones you can see."
   },
   "errorToast": {
+    "reconnecting": "Reconnecting…",
+    "reconnectingDescription": "We can’t check your session right now. You stay signed in. We’ll retry for a few minutes, then again when you come back or reconnect.",
+    "sessionUnavailable": "We can’t check your session right now. Reconnecting…",
     "accessDenied": "Access denied",
     "invalidRequest": "Invalid request",
     "notFound": "Not found",

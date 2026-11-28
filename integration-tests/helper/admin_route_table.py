@@ -303,6 +303,8 @@ PYTHON_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
         "connectors/api/user_access_router.py::list_connected_users", refusal_status=404, refusal_words="not found"),
     _py("DELETE", "/api/v1/connectors/:connectorId/user-access/users/:userId",
         "connectors/api/user_access_router.py::remove_connected_user", refusal_status=404, refusal_words="not found"),
+    # Lists every skill of the org (metadata only); an admin's request only reads.
+    _py("GET", "/api/v1/skills/admin/skills", "api/routes/skills.py::list_org_skills"),
 )
 
 # The admin body for rows marked ``admin="admin_body"``: past the admin check,
@@ -398,7 +400,6 @@ PYTHON_CONDITIONAL_ADMIN = {
     "api/routes/skills.py::approve_candidate": "the learner or an admin decides",
     "api/routes/skills.py::reject_candidate": "the learner or an admin decides",
     "api/routes/skills.py::get_pending_candidates": "an admin sees every proposal",
-    "api/routes/skills.py::finalize_import": "never asks; matched by name only",
     # Only instances that use the shared admin credential need an admin.
     "api/routes/mcp_servers.py::authenticate_instance": "shared admin credential needs admin",
     "api/routes/mcp_servers.py::update_credentials": "shared admin credential needs admin",

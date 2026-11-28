@@ -16,6 +16,7 @@ import { findSessionRefusal } from '../utils/user-session.utils';
 import { TokenScopes } from '../enums/token-scopes.enum';
 import { OAuthTokenService } from '../../modules/oauth_provider/services/oauth_token.service';
 import { parseScopeString } from '../../modules/oauth_provider/services/scope.validator.service';
+import { withoutRetiredScopes } from '../../modules/oauth_provider/config/scopes.config';
 import { getOrgRepository } from '../repositories/org';
 import {
   getOAuthAppRepository,
@@ -386,7 +387,8 @@ export class AuthMiddleware {
       oauthClientId: payload.client_id,
       // A client_credentials token acts as an identity its application names, not for a person who granted it.
       ...(isClientCredentials ? { isClientCredentials: true } : {}),
-      oauthScopes: tokenScopes,
+      // A token issued before config:write was retired keeps it in its claim; it no longer counts.
+      oauthScopes: withoutRetiredScopes(tokenScopes),
       oauthAudience: payload.aud,
       // The Python services take a personal access token's limit from here,
       // via /api/v1/users/me/role, because its owner can change it after the
@@ -463,17 +465,12 @@ export class AuthMiddleware {
           (scope === TokenScopes.PASSWORD_RESET ||
             scope === TokenScopes.VALIDATE_EMAIL)
         ) {
-          let userActivity: Pick<ActivityDto, 'createdAt'> | null = null;
-          try {
-            userActivity = await this.asVerified(
-              orgId,
-              userId,
-              'scoped_jwt',
-              () => getActivityRepository().latestPasswordChange(userId, orgId),
+          // A failed lookup propagates to next(error): treating it as no password
+          // change would let a used reset link through.
+          const userActivity: Pick<ActivityDto, 'createdAt'> | null =
+            await this.asVerified(orgId, userId, 'scoped_jwt', () =>
+              getActivityRepository().latestPasswordChange(userId, orgId),
             );
-          } catch (activityError) {
-            this.logger.error('Failed to fetch user activity', activityError);
-          }
 
           if (userActivity) {
             const tokenIssuedAt = decoded.iat ? decoded.iat * 1000 : 0;

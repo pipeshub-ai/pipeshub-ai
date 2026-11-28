@@ -5,16 +5,18 @@ A connector created on a PostgreSQL graph has nothing to copy: its app node is p
 (``backfill.backfill``, which promotes in the unit of its verify); nothing here writes a mode. A connector whose verify finds a difference stays on the walk (``backfill`` demotes it), is logged and counted,
 and is copied again from the first node and verified again after ``DIFFERS_RETRY_S``, doubling each time it differs again up to ``DIFFERS_RETRY_MAX_S``. A connector that cannot be verified
 only because changes were still arriving (a sync running), or because its copy was cleared meanwhile, is tried again after ``RETRY_S``. A copy larger than ``BATCHES`` batches goes on at the next
-pass, from its cursor.
+pass, from its cursor. A turn that raised is tried again after ``RETRY_S``, doubling (with jitter) each time it raises again up to ``ERROR_RETRY_MAX_S``. In the worker, a connector's turn
+that outlasts ``TURN_WAIT_S`` (a long verify) goes on beside the next passes, so the other connectors' copies do not wait for it.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 from typing import TYPE_CHECKING
 
-from app.core.org_context import bind
+from app.core.org_context import bind, spawn_detached
 from app.services.graph_db.postgres.kg import backfill as bf
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH
 from app.telemetry.backend import METRICS_BACKEND
@@ -42,10 +44,14 @@ CANDIDATES = """/* pipeshub:kg.bootstrap_candidates */ SELECT a.id FROM graph.no
 
 DIFFERS_RETRY_S = 300.0      # a connector whose verify found a difference is copied again after this long, twice as long after each further difference
 DIFFERS_RETRY_MAX_S = 6 * 3600.0
+ERROR_RETRY_MAX_S = 1800.0   # a turn that keeps raising (a statement that outlasts its budget, say) is tried again at most this far apart
+TURN_WAIT_S = 30.0           # how long a worker's pass waits for the turns in flight before it goes on; one still running carries over to the next pass
 
 _NEVER = float("inf")
 _DIFFERED: dict[tuple[str, str], int] = {}                # connectors whose verify found a difference, and how many times in a row
 _RECOPY: set[tuple[str, str]] = set()                      # of those, the ones whose next turn starts with a fresh copy
+_FAILED: dict[tuple[str, str], int] = {}                  # connectors whose turn raised, and how many times in a row
+_STARTED: dict[tuple[str, str], float] = {}               # when each connector's turn last started in a worker (in this process): the longest waiting is offered a slot first
 _HELD: dict[tuple[str, str], float] = {}                  # connectors the net took back to the walk: not tried again before this time
 _STAMP_AFTER: dict[tuple[str, str], str | None] = {}      # where a connector's unfinished stamping goes on (in this process; a restart stamps again from the start)
 _FILL_AFTER: dict[tuple[str, str], str] = {}              # where a connector's unfinished trash fill goes on (in this process; a restart fills again from the start)
@@ -67,16 +73,23 @@ async def candidates(db: KernelDB, org: str) -> list[str]:
         return await db.run(go)
 
 
-async def bring_to_enforce(db: KernelDB, org: str, due: dict[tuple[str, str], float], stop: asyncio.Event | None = None) -> int:
+async def bring_to_enforce(db: KernelDB, org: str, due: dict[tuple[str, str], float], stop: asyncio.Event | None = None,
+                           turns: dict[tuple[str, str], asyncio.Task] | None = None) -> int:
     """Backfill, verify and promote every connector of ``org`` that is not enforced and whose turn (``due``: when it may be tried again) has come. Returns the connectors it made progress
     on (promoted, or copied a further batch of), so a caller that loops on work looks again at once. A copy is bounded to ``BATCHES`` batches per call and ends at ``stop``: it keeps its cursor
     and the next call goes on. Up to ``CONNECTORS_AT_ONCE`` connectors take their turn at the same time (the locks are the ones two worker processes already share, ``locks``), so
-    the stamping of a connector whose copy is done does not wait for the copies of the others. Never raises for one connector: it is logged and left on the walk."""
+    the stamping of a connector whose copy is done does not wait for the copies of the others. Never raises for one connector: it is logged and left on the walk.
+    ``turns`` (the worker's, kept between its passes): the turns run as tasks of their own, and the call waits for them at most ``TURN_WAIT_S``. A turn still running then carries
+    over, and the next call starts the other connectors' turns beside it, so one long or failing verify does not stall their copies. Without it, the call waits for every turn."""
     apps = await candidates(db, org)
     if apps and not await bf.principals_copied(db, org):      # the org's principals are shared by its connectors: copied once per pass here, not once per connector
         await bf.backfill_scope(db, org, None, page=PAGE, max_batches=BATCHES, stop=stop)
         if not await bf.principals_copied(db, org):
             return 1                                               # unfinished: the next pass goes on, and the other orgs get their turn
+    if turns is not None:
+        # No drain here: a drain waits for the lock of a connector whose verify is in flight, and the other connectors' turns would wait with it. Each turn drains
+        # before its own stamping and verify, in its own task (a copy does not drain).
+        return await _turns_apart(db, org, apps, due, stop, turns)
     # The log is the org's: drained here once, as one turn would, so that the turns' own drains do not find a page another turn has in flight and wait out RETRY_S for it.
     # A failure here holds up no turn: each turn drains again and backs off on its own failure, as it did before this drain.
     try:
@@ -93,11 +106,45 @@ async def bring_to_enforce(db: KernelDB, org: str, due: dict[tuple[str, str], fl
     return sum(await asyncio.gather(*(one(a) for a in apps)))
 
 
+def _reap(org: str, turns: dict[tuple[str, str], asyncio.Task]) -> int:
+    """Take the org's finished turns out of ``turns``: the progress they made."""
+    made = 0
+    for k in [k for k, t in turns.items() if k[0] == org and t.done()]:
+        t = turns.pop(k)
+        made += 0 if t.cancelled() else t.result()      # _turn logs and keeps its own failures
+    return made
+
+
+async def _turns_apart(db: KernelDB, org: str, apps: list[str], due: dict[tuple[str, str], float], stop: asyncio.Event | None,
+                       turns: dict[tuple[str, str], asyncio.Task]) -> int:
+    """Up to CONNECTORS_AT_ONCE turns in flight in the worker, each a task that may outlast this call. A free slot goes to a connector whose turn is not running and whose time has
+    come (``due``, ``_HELD``), the one whose turn started longest ago first: a connector that is copied over many turns does not keep its slot while the others wait. Returns the
+    progress of the turns that ended, plus 1 while one is still running (the caller looks again at once instead of sleeping its poll)."""
+    made = _reap(org, turns)
+    now = time.monotonic()
+    free = CONNECTORS_AT_ONCE - sum(1 for t in turns.values() if not t.done())       # ``turns`` is the worker's: the cap is the process's, not each org's
+    ready = sorted((a for a in apps if (org, a) not in turns and _may_turn(org, a, due, now)), key=lambda a: _STARTED.get((org, a), 0.0))
+    for app in ready[:max(free, 0)]:
+        _STARTED[(org, app)] = now
+        turns[(org, app)] = spawn_detached(_turn(db, org, app, due, stop), name=f"kg-turn-{app}")       # it outlives the call: no caller's context (the turn binds its org)
+    running = [t for k, t in turns.items() if k[0] == org]
+    if running:
+        await asyncio.wait(running, timeout=TURN_WAIT_S, return_when=asyncio.FIRST_COMPLETED)
+    made += _reap(org, turns)
+    return made + (1 if any(k[0] == org for k in turns) else 0)
+
+
+def _may_turn(org: str, app: str, due: dict[tuple[str, str], float], now: float) -> bool:
+    """The connector's turn has come: not waiting on a retry (``due``) nor held back by the net (``_HELD``)."""
+    return due.get((org, app), 0.0) <= now and _HELD.get((org, app), 0.0) <= now
+
+
 async def _turn(db: KernelDB, org: str, app: str, due: dict[tuple[str, str], float], stop: asyncio.Event | None) -> int:
     """One connector's turn of :func:`bring_to_enforce`: 1 when it made progress."""
-    if (stop is not None and stop.is_set()) or due.get((org, app), 0.0) > time.monotonic() or _HELD.get((org, app), 0.0) > time.monotonic():
+    if (stop is not None and stop.is_set()) or not _may_turn(org, app, due, time.monotonic()):
         return 0
     due[(org, app)] = _NEVER                                  # until the outcome says otherwise
+    failed = False
     try:
         if (org, app) in _RECOPY:
             # the copy that differed is not trusted: a fresh one from the first node (its rows that no node explains go too)
@@ -148,7 +195,19 @@ async def _turn(db: KernelDB, org: str, app: str, due: dict[tuple[str, str], flo
         _DIFFERED.pop((org, app), None)
         return 1
     except Exception:
-        due[(org, app)] = time.monotonic() + RETRY_S
+        failed = True
+        n = _FAILED[(org, app)] = _FAILED.get((org, app), 0) + 1
+        wait = error_retry_s(n)
+        due[(org, app)] = time.monotonic() + wait
         PROMOTED.inc("error")
-        logger.exception("kg: connector %s could not be taken to enforce; it stays on the walk", app)
+        logger.exception("kg: connector %s could not be taken to enforce (%d time(s) in a row); it stays on the walk and is tried again in %.0f s", app, n, wait)
+    finally:
+        if not failed:
+            _FAILED.pop((org, app), None)
     return 0
+
+
+def error_retry_s(n: int) -> float:
+    """How long a connector whose turn raised ``n`` times in a row waits: RETRY_S doubling per failure up to ERROR_RETRY_MAX_S, times a jitter in [0.5, 1] so that the
+    connectors (and the replicas) that failed together do not all come back at once."""
+    return min(RETRY_S * 2 ** min(n - 1, 16), ERROR_RETRY_MAX_S) * random.uniform(0.5, 1.0)

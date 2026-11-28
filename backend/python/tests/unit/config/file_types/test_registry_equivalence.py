@@ -43,7 +43,7 @@ _TEMPLATE_MIMES = _NEW_MIMES[-2:]
 _TEXT_MIMES = ("text/x-log", "text/x-cfg")
 # The macro-enabled deck, read as the pptx it is; its mime keeps main's ppt hint.
 _PPTM_MIME = "application/vnd.ms-powerpoint.presentation.macroEnabled.12"
-# What each list gains: the new types, the code grammars, the xlsm hint.
+# What each list gains: the new types, the code grammars, the xlsm hint, the reconciled spreadsheets.
 _ADDED: dict[str, object] = {
     "gate_mimes": (*_NEW_MIMES, *_TEXT_MIMES, _PPTM_MIME),
     "gate_extensions": (*_NEW, *_GRAMMARS),
@@ -62,6 +62,12 @@ _ADDED: dict[str, object] = {
         _TEMPLATE_MIMES[0]: "dotx", _TEMPLATE_MIMES[1]: "potx", "text/x-log": "log", "text/x-cfg": "cfg",
     },
     "libreoffice_probe_inputs": ("odt", "rtf"),
+    # Spreadsheets are reconciled block by block (delta reason sheets-reconciled).
+    "RECONCILIATION_ENABLED_EXTENSIONS": ("csv", "tsv", "xls", "xlsx"),
+    "RECONCILIATION_ENABLED_MIME_TYPES": (
+        "text/csv", "text/tab-separated-values", "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ),
 }
 _REMOVED: dict[str, tuple[str, ...]] = {"EXCLUDABLE_FILE_EXTENSIONS": ("log",)}
 

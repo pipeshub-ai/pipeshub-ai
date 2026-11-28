@@ -9,6 +9,8 @@ name: Published Hub first-run
 #   ArangoDB, the graph database customers can pick instead of Neo4j.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    # Heavy: on a pull request its jobs run only with the ci:full or ci:e2e label (CONTRIBUTING.md).
     branches:
       - main
     paths:
@@ -40,13 +42,17 @@ permissions:
   contents: read
 
 concurrency:
-  group: published-hub-smoke-${{ github.event.pull_request.number || github.run_id }}
+  group: published-hub-smoke-${{ github.event_name == 'pull_request' && format('pr-{0}-{1}', github.event.pull_request.number, (contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')))) && 'heavy' || format('other-{0}', github.run_id)) || format('{0}-{1}-{2}', github.event_name, github.ref, github.run_id) }}
   cancel-in-progress: true
 
 jobs:
   slim:
     name: slim (Hub slim)
     if: >-
+      (github.event_name != 'pull_request' ||
+       (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)) ||
+       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')) &&
+        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)))) &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
       && (github.event_name != 'workflow_dispatch' || contains(fromJSON('["all","slim"]'), github.event.inputs.profiles))
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
@@ -77,6 +83,10 @@ jobs:
   full:
     name: full (Hub latest)
     if: >-
+      (github.event_name != 'pull_request' ||
+       (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)) ||
+       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')) &&
+        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)))) &&
       github.event_name != 'pull_request'
       && (github.event_name != 'workflow_dispatch' || contains(fromJSON('["all","full"]'), github.event.inputs.profiles))
     # 4 CPU is the installer floor. Full adds Kafka + Zookeeper on the same
@@ -109,6 +119,10 @@ jobs:
   eval:
     name: eval (Hub slim)
     if: >-
+      (github.event_name != 'pull_request' ||
+       (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)) ||
+       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')) &&
+        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)))) &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
       && (github.event_name != 'workflow_dispatch' || contains(fromJSON('["all","eval"]'), github.event.inputs.profiles))
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
@@ -141,6 +155,10 @@ jobs:
   arango:
     name: slim on ArangoDB (Hub slim)
     if: >-
+      (github.event_name != 'pull_request' ||
+       (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)) ||
+       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')) &&
+        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)))) &&
       github.event_name != 'pull_request'
       && (github.event_name != 'workflow_dispatch' || contains(fromJSON('["all","arango"]'), github.event.inputs.profiles))
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb

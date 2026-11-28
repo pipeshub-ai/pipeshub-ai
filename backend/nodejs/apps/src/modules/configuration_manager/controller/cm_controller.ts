@@ -155,6 +155,7 @@ import {
 } from '../utils/maskConfigSecrets';
 import {
   canRevealSecrets,
+  isDelegatedClient,
   isSecretRevealAvailable,
 } from '../utils/secretReveal';
 import { isUserOrgAdmin } from '../../user_management/services/user-admin.service';
@@ -1400,8 +1401,14 @@ export const getMicrosoftAuthConfig =
         await readMicrosoftAuthConfig(keyValueStoreService);
 
       if (authConfig) {
-        const hideSecrets = applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
-        res.status(200).json(hideSecrets ? maskMicrosoftAuthConfig(authConfig) : authConfig).end();
+        const hideSecrets =
+          applyMasking &&
+          (shouldHideSecrets() || isDelegatedClient(req)) &&
+          !canRevealSecrets(req);
+        res
+          .status(200)
+          .json(hideSecrets ? maskMicrosoftAuthConfig(authConfig) : authConfig)
+          .end();
       } else {
         res.status(200).json({}).end();
       }
@@ -1470,8 +1477,14 @@ export const getGoogleAuthConfig =
             configManagerConfig.secretKey,
           ).decrypt(encryptedAuthConfig),
         );
-        const hideSecrets = applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
-        res.status(200).json(hideSecrets ? maskGoogleAuthConfig(authConfig) : authConfig).end();
+        const hideSecrets =
+          applyMasking &&
+          (shouldHideSecrets() || isDelegatedClient(req)) &&
+          !canRevealSecrets(req);
+        res
+          .status(200)
+          .json(hideSecrets ? maskGoogleAuthConfig(authConfig) : authConfig)
+          .end();
       } else {
         res.status(200).json({}).end();
       }

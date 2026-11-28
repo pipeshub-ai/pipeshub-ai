@@ -51,6 +51,19 @@ describe('userExists Middleware', () => {
     expect(req.user).to.deep.equal(mockUser);
   });
 
+  it('keeps the actor\'s token flag on the target, so a handler still knows the call came from a token', async () => {
+    req.user = { orgId: '507f1f77bcf86cd799439012', userId: 'actor-1', isOAuth: true };
+    sinon.stub(Org, 'findOne').resolves({ _id: '507f1f77bcf86cd799439012', isDeleted: false } as any);
+    sinon.stub(Users, 'findOne').returns({
+      lean: () => ({ exec: sinon.stub().resolves({ _id: '507f1f77bcf86cd799439011', orgId: '507f1f77bcf86cd799439012', role: 'admin' }) }),
+    } as any);
+
+    await userExists(req, res, next);
+
+    expect(next.firstCall.args).to.have.lengthOf(0);
+    expect(req.user).to.include({ _id: '507f1f77bcf86cd799439011', userId: 'actor-1', isOAuth: true });
+  });
+
   it('should call next with NotFoundError when org does not exist', async () => {
     sinon.stub(Org, 'findOne').resolves(null);
 

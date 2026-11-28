@@ -102,6 +102,9 @@ class ResiliencePolicy:
         # missed pause.
         self._resume_at: float = 0.0
         self.shared: "AccountBudget | None" = None
+        # Called when a throttle outlasted the retries and the request failed on it, so a connector can tell a
+        # rate limit, which nobody has to fix, from a failure it reports to its owner.
+        self.on_throttle_outlasted: Callable[[], None] | None = None
 
     @classmethod
     def from_config(

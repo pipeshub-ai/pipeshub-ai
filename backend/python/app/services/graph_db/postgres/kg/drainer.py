@@ -142,37 +142,53 @@ async def is_current(tx: Tx, org: str, app_id: str) -> bool:
     connector is logged under both, so neither is current. A connector hidden whole by a restamp job (kind ``app``) is not current until the job is done. A ``rows`` job does not
     take the connector off: it marks every row whose stamp the change outdated, and every reader takes a marked row to the walk (``fence_job``, restamp.HIDDEN), so the rest of
     the connector is answered from stamps that are up to date."""
-    st = await tx.fetchrow("""/* pipeshub:kg.current_mode */ SELECT s.mode, s.cross_app FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
-        WHERE s.org_id = $1 AND k.coll = 1 AND k.id = $2""", org, app_id)
-    if st is None or st["mode"] not in ("shadow", "enforce"):
-        return False
-    if "app" in await fenced(tx, org, app_id):
-        return False                                  # the connector's stamps are hidden whole
+    return app_id in await current_apps(tx, org, [app_id])
+
+
+async def current_apps(tx: Tx, org: str, app_ids: list[str]) -> set[str]:
+    """Of ``app_ids``, the connectors :func:`is_current` holds current, read once for all of them (the org-wide parts of the question are the same for each)."""
+    states = {r["id"]: r["cross_app"] for r in await tx.fetch("""/* pipeshub:kg.current_mode */ SELECT k.id, s.mode, s.cross_app FROM kg.projection_state s
+        JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk WHERE s.org_id = $1 AND k.coll = 1 AND k.id = ANY($2::text[])""", org, sorted(set(app_ids)))
+        if r["mode"] in ("shadow", "enforce")}
+    if not states:
+        return set()
+    hidden = {r["id"] for r in await tx.fetch("""/* pipeshub:kg.apps_fenced */ SELECT DISTINCT k.id FROM kg.restamp_queue q JOIN kg.node_keys k ON k.org_id = q.org_id AND k.sk = q.app_sk
+        WHERE q.org_id = $1 AND k.coll = 1 AND k.id = ANY($2::text[]) AND q.kind = 'app' AND q.fenced""", org, sorted(states))}
+    states = {a: x for a, x in states.items() if a not in hidden}       # the connector's stamps are hidden whole
+    if not states:
+        return set()
     if await tx.fetchval(r"/* pipeshub:kg.poison_any */ SELECT EXISTS (SELECT 1 FROM kg.graph_changes WHERE org_id = $1 AND EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258))", org):
-        return False                                  # a row that cannot be read may name anything
+        return set()                                  # a row that cannot be read may name anything
     pending = [r["app_id"] for r in await tx.fetch("/* pipeshub:kg.pending_apps */ SELECT DISTINCT app_id FROM kg.graph_changes WHERE org_id = $1", org)]
-    if any(a in (app_id, "") for a in pending):
-        return False
-    if not pending:
-        return True
-    if st["cross_app"]:
-        return False
+    if "" in pending:
+        return set()
+    states = {a: x for a, x in states.items() if a not in pending}
+    if not pending or not states:
+        return set(states)
     linked = {r["id"] for r in await tx.fetch("""/* pipeshub:kg.cross_apps */ SELECT k.id FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
         WHERE s.org_id = $1 AND k.coll = 1 AND s.cross_app AND k.id = ANY($2::text[])""", org, pending)}
     known = {r["id"] for r in await tx.fetch("""/* pipeshub:kg.known_apps */ SELECT k.id FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
         WHERE s.org_id = $1 AND k.coll = 1 AND k.id = ANY($2::text[])""", org, pending)}
-    return not linked and known >= set(pending)
+    if linked or not known >= set(pending):
+        return set()
+    return {a for a, cross in states.items() if not cross}
 
 
 async def serves(tx: Tx, org: str, app_id: str) -> bool:
     """May a reader answer from kg for this connector? The stricter question, for the readers: :func:`is_current`, and the connector is in ``enforce`` (``shadow`` only compares), it was
     verified by this code (``code_epoch`` is the code's, ``verified_at`` is set), and the org's principals are copied (their pseudo-connector, ``app_sk`` 0, has finished its copy:
     the closure of every user is part of every answer). Anything else is the walk."""
-    if not await is_current(tx, org, app_id):
-        return False
-    row = await tx.fetchrow("""/* pipeshub:kg.serves */ SELECT s.mode, s.code_epoch, s.verified_at, (SELECT p.backfill_cursor FROM kg.projection_state p WHERE p.org_id = s.org_id AND p.app_sk = 0) AS principals
-        FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk WHERE s.org_id = $1 AND k.coll = 1 AND k.id = $2""", org, app_id)
-    return bool(row and row["mode"] == "enforce" and row["code_epoch"] == CODE_EPOCH and row["verified_at"] is not None and row["principals"] == "done")
+    return app_id in await serving_apps(tx, org, [app_id])
+
+
+async def serving_apps(tx: Tx, org: str, app_ids: list[str]) -> set[str]:
+    """Of ``app_ids``, the connectors :func:`serves` holds, read once for all of them (:func:`current_apps`, then their states in one statement)."""
+    current = await current_apps(tx, org, app_ids)
+    if not current:
+        return set()
+    rows = await tx.fetch("""/* pipeshub:kg.serves */ SELECT k.id, s.mode, s.code_epoch, s.verified_at, (SELECT p.backfill_cursor FROM kg.projection_state p WHERE p.org_id = s.org_id AND p.app_sk = 0) AS principals
+        FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk WHERE s.org_id = $1 AND k.coll = 1 AND k.id = ANY($2::text[])""", org, sorted(current))
+    return {r["id"] for r in rows if r["mode"] == "enforce" and r["code_epoch"] == CODE_EPOCH and r["verified_at"] is not None and r["principals"] == "done"}
 
 
 async def drain_or_retry(db: KernelDB, org: str, *, page: int = PAGE, stop: asyncio.Event | None = None) -> int:

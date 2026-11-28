@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { logoutAndRedirect } from '@/config';
 import { renderHook } from '@testing-library/react';
 import { useNotificationSocket } from '../websocket-manager';
 
@@ -13,7 +14,7 @@ vi.mock('@/config', () => ({
   logoutAndRedirect: vi.fn(),
 }));
 
-const connectMock = vi.fn(() => ({
+const connectMock = vi.fn((_token?: string) => ({
   connected: false,
   on: vi.fn(),
   off: vi.fn(),
@@ -106,5 +107,40 @@ describe('useNotificationSocket', () => {
 
     expect(connectMock).toHaveBeenCalledWith('jwt-rotated');
     expect(disconnectMock).toHaveBeenCalled();
+  });
+
+  describe('the server ends the session', () => {
+    it('signs out and stops the socket on force_logout session_ended', () => {
+      renderHook(() => {
+        useNotificationSocket();
+      });
+      const sock = connectMock.mock.results[0].value as { on: ReturnType<typeof vi.fn> };
+      const onForceLogout = sock.on.mock.calls.find(([event]) => event === 'force_logout')?.[1] as (p: unknown) => void;
+
+      disconnectMock.mockClear();
+      onForceLogout({ reason: 'session_ended' });
+
+      expect(logoutAndRedirect).toHaveBeenCalledTimes(1);
+      expect(disconnectMock).toHaveBeenCalled();
+    });
+  });
+
+  describe('listeners', () => {
+    it('removes exactly what it added on unmount and on a token change', () => {
+      const { rerender, unmount } = renderHook(() => {
+        useNotificationSocket();
+      });
+      const first = connectMock.mock.results[0].value as { on: ReturnType<typeof vi.fn>; off: ReturnType<typeof vi.fn> };
+      const added = first.on.mock.calls.map(([event, handler]) => [event, handler]);
+      expect(added.length).toBeGreaterThan(0);
+
+      authState.accessToken = 'jwt-rotated';
+      rerender();
+      expect(first.off.mock.calls.map(([event, handler]) => [event, handler])).toEqual(added);
+
+      const second = connectMock.mock.results[1].value as { on: ReturnType<typeof vi.fn>; off: ReturnType<typeof vi.fn> };
+      unmount();
+      expect(second.off.mock.calls.length).toBe(second.on.mock.calls.length);
+    });
   });
 });

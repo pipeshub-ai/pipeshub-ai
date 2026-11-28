@@ -343,7 +343,9 @@ export function ConnectorDetailsLayout({
         >
           {instances.map((instance) => (
             <InstanceCard
-              key={`${instance._key}-${instance.isAuthenticated ? '1' : '0'}`}
+              // Keyed by id alone: turning sync on also authenticates the instance, and a
+              // rebuilt card drops the keyboard focus its switch had.
+              key={instance._key}
               instance={instance}
               config={instance._key ? instanceConfigs?.[instance._key] : undefined}
               onManage={onManageInstance}
