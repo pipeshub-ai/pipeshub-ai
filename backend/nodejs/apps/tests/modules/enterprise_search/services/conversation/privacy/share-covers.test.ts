@@ -256,6 +256,49 @@ describe('whom a share covers', () => {
       const after = await historyOf(PRIYA, w, [carols, danas])
       expect([...after.values()]).to.deep.equal(['', ''])
     })
+
+    describe('the mark on what the sender reads only through a share, which an outbound send is refused on', () => {
+      const rowsTo = async (who: string, w: ReturnType<typeof world>, rows: Row[]): Promise<Map<string, Row>> => {
+        const sent = await includableRows({ userId: who, orgId: ORG, member: true, identity: 'a request' }, room, rows, { deps: w.deps, member: true })
+        return new Map(sent.map((r) => [String((r as Row)._id), r as Row]))
+      }
+
+      it('is on an answer shared with a person who cannot read it whole, sealed as given', async () => {
+        // Dana's answer used R2, which only she opens.
+        const a = share(answer('Dana: the floor price.', DANA, { direct: { records: [R2] } }))
+        const w = world([a])
+        const bobs = (await rowsTo(BOB, w, [a])).get(String(a._id))
+        expect(bobs).to.include({ content: 'Dana: the floor price.', _ref: String(a._id), _ver: a.labelVer, _pub: false, _viaShare: true })
+        expect((await rowsTo(DANA, w, [a])).get(String(a._id))).to.not.have.property('_viaShare')
+      })
+
+      it('is not on an answer the person reads whole as well', async () => {
+        // Carol opens R, so the share gives her nothing she couldn't read herself.
+        const a = share(answer('Dana: R says so.', DANA, { direct: { records: [R] } }))
+        const w = world([a])
+        const carols = (await rowsTo(CAROL, w, [a])).get(String(a._id))
+        expect(carols).to.include({ content: 'Dana: R says so.', _ref: String(a._id) })
+        expect(carols).to.not.have.property('_viaShare')
+        expect((await rowsTo(BOB, w, [a])).get(String(a._id))).to.have.property('_viaShare', true)
+      })
+
+      it('is on a copy someone else put in the chat, and not on the sharer\'s own', async () => {
+        const original = answer('Dana: the floor price.', DANA, { direct: { records: [R2] }, sessionId: THREAD })
+        const copy = copyOf(original)
+        const w = world([original, copy])
+        expect((await rowsTo(BOB, w, [copy])).get(String(copy._id))).to.include({ content: 'Dana: the floor price.', _viaShare: true })
+        expect((await rowsTo(DANA, w, [copy])).get(String(copy._id))).to.not.have.property('_viaShare')
+      })
+
+      it('is on nothing the model is given nothing of', async () => {
+        const a = share(answer('Dana: the floor price.', DANA, { direct: { records: [R2] } }), { agents: ['X'] })
+        const w = world([a], { agents: { X: [DANA] } })
+        const bobs = (await rowsTo(BOB, w, [a])).get(String(a._id))
+        expect(bobs?.content).to.equal('')
+        expect(bobs).to.not.have.property('_viaShare')
+        expect(bobs).to.not.have.property('_ref')
+      })
+    })
   })
 
   describe('shareCovers: one share, one person', () => {

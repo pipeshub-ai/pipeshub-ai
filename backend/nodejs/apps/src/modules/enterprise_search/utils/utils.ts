@@ -29,6 +29,7 @@ import {
   isWithheld,
   readerView,
   visibleRows,
+  VIA_SHARE,
   WITHHELD,
   rememberAnswerClosures,
   type ReaderSession,
@@ -1875,20 +1876,28 @@ const ANSWER_ROLES: ReadonlySet<string> = new Set([
 
 /**
  * A history row's `_ref` (its id), `_ver` (the version of its text; `'legacy'` for a row written before versions) and
- * `_pub` (that version restricts nobody). A row a check withheld goes with its mark and no seal, and an answer the
+ * `_pub` (that version restricts nobody), with the reader check's `VIA_SHARE` mark when it set one. A row a check
+ * withheld goes with its mark and no seal, and an answer the
  * model is given nothing of (no text, tool data or references) goes with no seal: the seal names what the new answer
  * was given, and an id and version rebuilt for such a row would make the answer inherit a row it never saw.
  */
 const sealOf = (
   msg: IMessage,
   givesData: boolean,
-): { _ref?: string; _ver?: string; _pub?: boolean; [WITHHELD]?: true } => {
+): {
+  _ref?: string;
+  _ver?: string;
+  _pub?: boolean;
+  [VIA_SHARE]?: true;
+  [WITHHELD]?: true;
+} => {
   if (isWithheld(msg)) return { [WITHHELD]: true };
   const row = msg as IMessage & {
     _id?: unknown;
     _ref?: unknown;
     _ver?: unknown;
     _pub?: unknown;
+    [VIA_SHARE]?: unknown;
   };
   if (
     ANSWER_ROLES.has(msg.messageType) &&
@@ -1906,7 +1915,12 @@ const sealOf = (
         ? msg.labelVer
         : 'legacy';
   // Only the reader check says a version restricts nobody; a row it did not mark does.
-  return { _ref: ref, _ver: ver, _pub: row._pub === true };
+  return {
+    _ref: ref,
+    _ver: ver,
+    _pub: row._pub === true,
+    ...(row[VIA_SHARE] === true && { [VIA_SHARE]: true as const }),
+  };
 };
 
 /**

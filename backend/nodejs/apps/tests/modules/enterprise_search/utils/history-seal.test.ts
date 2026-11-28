@@ -103,5 +103,15 @@ describe('the seal on the history sent to the AI backend', () => {
 
       expect(sent).to.include({ _ref: DANA_ANSWER, _ver: 'legacy' })
     })
+
+    it("keeps the reader check's mark of an answer the sender reads only through a share, and adds none itself", () => {
+      const [shared, own] = formatPreviousConversations([
+        { _id: BOB_ANSWER, messageType: 'bot_response', content: 'Bob: R2 says so.', _ref: BOB_ANSWER, _ver: 'v-bob', _pub: false, _viaShare: true },
+        { _id: DANA_ANSWER, labelVer: 'v-dana', messageType: 'bot_response', content: 'R says revenue grew.', _viaShare: 'yes' },
+      ] as never)
+
+      expect(shared).to.include({ _ref: BOB_ANSWER, _ver: 'v-bob', _pub: false, _viaShare: true })
+      expect(own).to.not.have.property('_viaShare')
+    })
   })
 })

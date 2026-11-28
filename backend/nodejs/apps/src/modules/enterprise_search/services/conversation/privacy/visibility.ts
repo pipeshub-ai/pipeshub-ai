@@ -6118,6 +6118,21 @@ export const repliedRowOf = (question: object): string | undefined => {
 export const WITHHELD = '_withheld';
 
 /**
+ * The mark on a sealed history row the sender reads only through someone else's share: an answer shared with them that
+ * they could not read whole, or a copy someone else put in the chat. What a run is given of it was never the sender's
+ * to send on, so an outbound send's check refuses it whatever the sender agrees to.
+ */
+export const VIA_SHARE = '_viaShare';
+
+/** `row`, once sealed, marked as read only through someone else's share (`VIA_SHARE`). */
+const viaShare = <R extends object>(row: R): R => {
+  const r = row as Plain;
+  if (typeof r._ref !== 'string') return row;
+  const marked: Plain = { ...r, [VIA_SHARE]: true };
+  return marked as R;
+};
+
+/**
  * Whether a check withheld `row` from the sender's model: the reader check (`blank`), or the history filter, which
  * empties an answer that used a record the sender can no longer open and leaves its `answerHidden` marker on it.
  */
@@ -6131,7 +6146,7 @@ export const isWithheld = (row: object): boolean => {
 
 /** What the model is given in place of a row it may not have: nothing, so no text, length or source of it reaches it. */
 const blank = <R extends object>(row: R): R => {
-  const r = row as Plain;
+  const { [VIA_SHARE]: _viaShare, ...r } = row as Plain;
   const out: Plain = { ...r, content: '' };
   for (const field of [
     'parts',
@@ -6166,7 +6181,8 @@ export const sealedRef = <R extends object>(row: R, pub = false): R => {
 
 /**
  * The rows the sender's model may be given, each marked with its row and version
- * (`_ref`, `_ver`) and whether that version restricts nobody (`_pub`, which an outbound send's check reads).
+ * (`_ref`, `_ver`) and whether that version restricts nobody (`_pub`, which an outbound send's check reads), and one
+ * they read only through someone else's share with `VIA_SHARE`, which that check reads too.
  * Questions and notes go as they are, another person's without a quoted excerpt. The sender's
  * own answers go while they can still see them, whether or not they reply to them. Where others read the chat, an
  * answer from before the rules, whoever asked it, goes as text, and only while every member could read it then or the
@@ -6258,9 +6274,11 @@ export async function includableRows<R extends object>(
     }
     if (type === 'system' || type === 'feedback') return m;
     if (type === SHARED_ANSWER) {
-      return verdict?.verdict === 'consented' || verdict?.verdict === 'visible'
-        ? sealed(copyInWords(m))
-        : blank(m);
+      if (verdict?.verdict !== 'consented' && verdict?.verdict !== 'visible')
+        return blank(m);
+      // A copy is its sharer's message: anyone else reads it because the sharer put it here.
+      const copy = sealed(copyInWords(m));
+      return own ? copy : viaShare(copy);
     }
     if (type === 'tool_call') {
       if (!own || verdict?.verdict !== 'visible') return blank(m);
@@ -6303,11 +6321,12 @@ export async function includableRows<R extends object>(
           },
           deps.now(),
         );
-      return stored && !waits
-        ? sealed(
-            sharedTextOf({ ...m, labelVer: stored.labelVer }, deps, stored),
-          )
-        : blank(m);
+      if (!stored || waits) return blank(m);
+      const text = sealed(
+        sharedTextOf({ ...m, labelVer: stored.labelVer }, deps, stored),
+      );
+      // Read whole by its own check, it is the sender's to send as much as the share is.
+      return verdict.verdict === 'consented' ? viaShare(text) : text;
     }
     const replied = id !== undefined && id === opts.replyTargetId;
     // One they could read before the rules started: its text. Where others read the chat, as one's own: only while
