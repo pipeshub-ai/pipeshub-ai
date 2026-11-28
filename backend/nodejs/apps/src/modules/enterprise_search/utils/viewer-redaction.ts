@@ -611,6 +611,36 @@ export const startsTurn = (m: ViewerMessage): boolean => {
   );
 };
 
+/** `value` without `keys`, when it is a plain object; anything else as it is. */
+const withoutKeys = (value: unknown, keys: readonly string[]): unknown => {
+  if (value === null || typeof value !== 'object' || Array.isArray(value))
+    return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).filter(
+      ([key]) => !keys.includes(key),
+    ),
+  );
+};
+
+/**
+ * Another person's row with none of their run ids, since a reader follows no run of the asker's: the row's own
+ * `runId`, the one each rating names, and those a kept part names (a job card's `runId` and `parentRunId`, an engine
+ * task's `taskId`). Applied after the cut (`withoutOthersSteps`), which tells a job card by its run ids, and to a
+ * question as well, which the cut leaves whole.
+ */
+const withoutRunIds = (
+  view: Record<string, unknown>,
+): Record<string, unknown> => {
+  delete view.runId;
+  if (Array.isArray(view.feedback))
+    view.feedback = view.feedback.map((entry) => withoutKeys(entry, ['runId']));
+  if (Array.isArray(view.parts))
+    view.parts = view.parts.map((part) =>
+      withoutKeys(part, ['runId', 'parentRunId', 'taskId']),
+    );
+  return view;
+};
+
 /** What the hidden answer keeps: who, when and which message, never what was said. */
 const hiddenAnswer = (
   m: object,
@@ -847,13 +877,16 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
     turnVerdict.set(0, ANSWER_UNCONFIRMED);
   if (opts.trailUnknown === true && !turnVerdict.has(turn))
     turnVerdict.set(turn, ANSWER_UNCONFIRMED);
+  // Another person's row, hidden or shown, names none of their runs.
+  const hiddenFor = (m: M, v: HiddenMarker): M =>
+    (isOthers(m) ? withoutRunIds(hiddenAnswer(m, v)) : hiddenAnswer(m, v)) as M;
   return messages.map((m, i) => {
     if (isAnswer(m)) {
       const v = answerVerdict[i] ?? null;
-      if (v !== null) return hiddenAnswer(m, v) as M;
+      if (v !== null) return hiddenFor(m, v);
     } else if (m.messageType === 'tool_call') {
       const v = turnVerdict.get(turnOf[i] ?? 0);
-      if (v !== undefined) return hiddenAnswer(m, v) as M;
+      if (v !== undefined) return hiddenFor(m, v);
     }
     if (!isOthers(m)) return m;
     const view: Record<string, unknown> = { ...(m as object) };
@@ -889,7 +922,9 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
       withoutOthersSteps(view, m.messageType, m),
       m,
     );
-    return withoutOthersSteps({ ...viewed }, m.messageType, m) as M;
+    return withoutRunIds(
+      withoutOthersSteps({ ...viewed }, m.messageType, m),
+    ) as M;
   });
 };
 

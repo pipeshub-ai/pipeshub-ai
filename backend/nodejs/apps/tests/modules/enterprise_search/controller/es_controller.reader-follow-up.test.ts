@@ -298,7 +298,40 @@ describe("another person's answer a reader may see, in a build whose answers car
     expect(shown).to.not.have.property('unavailableTools')
     const wire = JSON.stringify(shown)
     for (const leaked of ['TOOL-OUTPUT', 'thinking prose', 'inst-1', 'Tracker']) expect(wire).to.not.contain(leaked)
-    expect(JSON.stringify(shown.parts)).to.not.contain(RUN)
+    expect(wire, 'no run of the asker, on the row or in a part').to.not.contain(RUN)
+  })
+
+  it("names none of the asker's runs anywhere in the read: rows, ratings, job cards, questions and tool rows", async () => {
+    const CHILD = 'owner-child-run-0002'
+    const TASK = 'owner-engine-task-0003'
+    stubAccess()
+    const rows = chat(
+      {
+        ...plainAnswer(),
+        runId: RUN,
+        feedback: [{ isHelpful: true, runId: RUN }],
+        parts: [
+          { type: 'sub_agent', runId: CHILD, parentRunId: RUN, roleName: 'researcher', parts: [{ type: 'text', content: 'child notes', runId: CHILD }] },
+          { type: 'engine_task', taskId: TASK, runId: RUN },
+          { type: 'text', content: 'Launches go out on Tuesdays.', isFinal: true, runId: RUN },
+        ],
+      },
+      // An answer the reader may not see: it cites a record only the owner opens.
+      { ...answer('Hidden [1].', [citation(REC_SECOND, 'Hidden')]), runId: RUN, feedback: [{ isHelpful: false, runId: RUN }] },
+    )
+    // The question a run is still answering names it, and so does a tool row of that run.
+    rows[0] = { ...rows[0], runId: RUN }
+    rows.push({ _id: nextId(), sessionId: SESSION, orgId: ORG, seq: rows.length + 1, createdAt: new Date(Date.UTC(2026, 10, 27, 12)), messageType: 'tool_call', content: '', requestedBy: OWNER, runId: RUN, tools: [] })
+    stubChat(rows)
+
+    const messages = await readAs(READER_B)
+    const [shown, hidden] = answersOf(messages)
+    expect(shown.parts.filter((p: { type: string }) => p.type === 'sub_agent')).to.deep.equal([{ type: 'sub_agent', roleName: 'researcher', parts: [] }])
+    expect(hidden.answerHidden).to.not.equal(undefined)
+    const wire = JSON.stringify(messages)
+    for (const run of [RUN, CHILD, TASK]) expect(wire, run).to.not.contain(run)
+    // Their asker still follows their own runs.
+    expect(JSON.stringify(await readAs(OWNER))).to.contain(RUN).and.to.contain(CHILD)
   })
 
   it('its asker gets it as stored', async () => {
