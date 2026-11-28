@@ -14,6 +14,7 @@
 
 import { useAuthStore, logoutAndRedirect } from '@/config';
 import { onSessionEnd, captureSession } from '@/lib/api/session-cache';
+import { reconnectLater, stopReconnecting } from '@/lib/api/session-reconnect';
 import {
   REFRESH_TOKEN_ENDPOINT,
   requestAccessToken,
@@ -130,6 +131,7 @@ export async function refreshAccessToken(): Promise<RefreshAnswer> {
 // The next person must not wait on, or be answered by, the last person's refresh.
 onSessionEnd(() => {
   refreshPromise = null;
+  stopReconnecting();
 });
 
 export type RefreshOutcome = 'refreshed' | 'unreachable' | 'signed-out' | 'session-ended';
@@ -141,15 +143,23 @@ export const sessionOver = (outcome: RefreshOutcome): boolean =>
 /**
  * Refreshes the access token. On a refusal it signs out, unless the session that
  * asked has already ended: then signing out again would sign out the next person.
- * With no answer (`'unreachable'`) it keeps the session and leaves the retry to the caller.
+ * With no answer (`'unreachable'`) it keeps the session, shows the reconnecting notice and tries
+ * again later with backoff (`session-reconnect.ts`); the caller fails only what needed the token.
  */
 export async function refreshOrSignOut(): Promise<RefreshOutcome> {
   const current = captureSession();
   const answer = await refreshAccessToken();
-  if (answer === 'refreshed') return 'refreshed';
+  if (answer === 'refreshed') {
+    stopReconnecting();
+    return 'refreshed';
+  }
   if (!current()) return 'session-ended';
-  // No answer is no verdict: the session may still be good, so it is kept and the caller retries later.
-  if (answer === 'unreachable') return 'unreachable';
+  // No answer is no verdict: the session may still be good, so it is kept and tried again later.
+  if (answer === 'unreachable') {
+    reconnectLater(() => void refreshOrSignOut());
+    return 'unreachable';
+  }
+  stopReconnecting();
   logoutAndRedirect();
   return 'signed-out';
 }

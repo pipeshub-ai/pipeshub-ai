@@ -31,6 +31,8 @@ const { refreshAccessToken, refreshOrSignOut, isTokenExpired, decodeJwtPayload, 
 );
 const scheduler = await import('../token-refresh-scheduler');
 const { useToastStore } = await import('@/lib/store/toast-store');
+const { stopReconnecting } = await import('../session-reconnect');
+await import('@/lib/i18n');
 
 interface FakeReply {
   status: number;
@@ -121,6 +123,7 @@ beforeEach(() => {
 
 afterEach(() => {
   scheduler.cancel();
+  stopReconnecting();
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -497,6 +500,37 @@ describe('a 401 from the server', () => {
   });
 });
 
+describe('a refresh that hands over another account', () => {
+  it('does not send a request made as one account with the token of another', async () => {
+    useAuthStore.setState({ accessToken: tokenFor('u1', 20) });
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { accessToken: tokenFor('u2') }));
+    const sent = fakeServer({ status: 200 });
+    await expect(apiClient.get('/api/v1/users')).rejects.toMatchObject({ type: ErrorType.REQUEST_CANCELLED });
+    expect(sent).toHaveLength(0);
+    expect(errorToasts()).toHaveLength(0);
+    expect(logoutAndRedirect).not.toHaveBeenCalled();
+  });
+
+  it('does not replay a 401 as another account', async () => {
+    useAuthStore.setState({ accessToken: tokenFor('u1') });
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { accessToken: tokenFor('u2') }));
+    const sent = fakeServer({ status: 401 }, { status: 200 });
+    await expect(apiClient.get('/api/v1/users')).rejects.toMatchObject({ type: ErrorType.REQUEST_CANCELLED });
+    expect(sent).toHaveLength(1);
+    expect(errorToasts()).toHaveLength(0);
+  });
+
+  it('still sends and replays for the same account', async () => {
+    useAuthStore.setState({ accessToken: tokenFor('u1') });
+    const fresh = tokenFor('u1', 7200);
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { accessToken: fresh }));
+    const sent = fakeServer({ status: 401 }, { status: 200 });
+    await expect(apiClient.get('/api/v1/users')).resolves.toMatchObject({ status: 200 });
+    expect(sent).toHaveLength(2);
+    expect(bearer(sent[1])).toBe(`Bearer ${fresh}`);
+  });
+});
+
 describe('error toasts', () => {
   it("shows the server's own words with the reference an admin can look up", async () => {
     fakeServer({ status: 500, data: { error: { message: 'The export could not be created. Try again in a minute.', requestId: 'req-42' } } });
@@ -583,14 +617,76 @@ describe('the proactive refresh timer', () => {
     expect(logoutAndRedirect).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps the session when that refresh gets no answer, and does not retry in a loop', async () => {
+  it('keeps the session when that refresh gets no answer, and tries again with growing waits, not in a loop', async () => {
     vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(1);
     fetchMock.mockResolvedValue(jsonResponse(503, {}));
     scheduler.scheduleFromToken(jwtExpiringIn(30));
     await vi.advanceTimersByTimeAsync(0);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(600_000);
+    await vi.advanceTimersByTimeAsync(1_999);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    // Then 8, 16 and 32 s, and every 60 s after that: 12 more in the next 600 s.
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(fetchMock).toHaveBeenCalledTimes(15);
+    expect(logoutAndRedirect).not.toHaveBeenCalled();
+  });
+
+  it('shows one reconnecting notice while it gets no answer, and removes it once a try succeeds', async () => {
+    vi.useFakeTimers();
+    const fresh = jwtExpiringIn(3600);
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(503, {}))
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce(jsonResponse(200, { accessToken: fresh }));
+    scheduler.scheduleFromToken(jwtExpiringIn(30));
+    await vi.advanceTimersByTimeAsync(0);
+    const notices = () => useToastStore.getState().toasts.filter((t) => t.variant === 'loading' && !t.isExiting);
+    expect(notices()).toHaveLength(1);
+    expect(notices()[0].title).toBe('Reconnecting…');
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(notices()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(useAuthStore.getState().accessToken).toBe(fresh);
+    expect(notices()).toHaveLength(0);
+    expect(errorToasts()).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('signs out when a later try is refused, and the notice goes', async () => {
+    vi.useFakeTimers();
+    fetchMock.mockResolvedValueOnce(jsonResponse(503, {})).mockResolvedValueOnce(jsonResponse(401, {}));
+    scheduler.scheduleFromToken(jwtExpiringIn(30));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(logoutAndRedirect).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(logoutAndRedirect).toHaveBeenCalledTimes(1);
+    expect(useToastStore.getState().toasts.filter((t) => t.variant === 'loading' && !t.isExiting)).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('tries at once when the tab comes back while it waits to try again', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(1);
+    fetchMock.mockResolvedValueOnce(jsonResponse(503, {})).mockResolvedValueOnce(jsonResponse(503, {}));
+    // A 401 got no answer from its refresh; the token in the store is not due, so only the retry would refresh.
+    const sent = fakeServer({ status: 401 });
+    await expect(apiClient.get('/api/v1/users')).rejects.toMatchObject({ statusCode: 503 });
+    expect(sent).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    scheduler.initTokenRefreshScheduler();
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(logoutAndRedirect).not.toHaveBeenCalled();
   });
 

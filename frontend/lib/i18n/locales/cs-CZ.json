@@ -7223,6 +7223,8 @@
     }
   },
   "errorToast": {
+    "reconnecting": "Znovu se připojuje…",
+    "reconnectingDescription": "Právě nemůžeme zkontrolovat vaše přihlášení. Zůstáváte přihlášeni, budeme to zkoušet dál.",
     "accessDenied": "Přístup odepřen",
     "invalidRequest": "Neplatný požadavek",
     "notFound": "Nenalezeno",

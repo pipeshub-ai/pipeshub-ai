@@ -10,6 +10,7 @@ import {
   REFRESH_TOKEN_ENDPOINT,
 } from './token-refresh';
 import { captureSession } from './session-cache';
+import { accountOfToken } from '@/lib/auth/session-credential';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { applyElectronOverrides } from '@/lib/electron';
 import { generateRequestId } from '@/lib/utils/request-id';
@@ -48,6 +49,22 @@ const sessionServiceBusy = (error: AxiosError): ProcessedError => ({
   message: busyMessage(),
   originalError: error,
 });
+
+/**
+ * True when a refresh handed over a token for another account than the one a request was made
+ * with (someone else signed in meanwhile). Unknown on either side is not a change.
+ */
+const accountChanged = (sentWith: string | null | undefined, now: string | null): boolean => {
+  const before = accountOfToken(sentWith);
+  const after = accountOfToken(now);
+  return before !== null && after !== null && before !== after;
+};
+
+/** What a request made as one account gets instead of being sent as another: a quiet cancel (no toast). */
+const cancelledForAccount = (): Promise<never> => {
+  const cancelled: ProcessedError = { type: ErrorType.REQUEST_CANCELLED, message: 'Request was cancelled.' };
+  return Promise.reject(cancelled);
+};
 
 /** Safe methods (RFC 9110 9.2.1): sending one again cannot repeat a change. */
 const REPLAYABLE_METHODS = new Set(['get', 'head', 'options']);
@@ -137,7 +154,11 @@ apiClient.interceptors.request.use(
       const outcome = await refreshOrSignOut();
       if (sessionOver(outcome)) return dropped();
       // No answer: send with the token we have and let the server decide.
-      if (outcome === 'refreshed') accessToken = useAuthStore.getState().accessToken;
+      if (outcome === 'refreshed') {
+        const refreshed = useAuthStore.getState().accessToken;
+        if (accountChanged(accessToken, refreshed)) return cancelledForAccount();
+        accessToken = refreshed;
+      }
     }
 
     if (accessToken) {
@@ -197,6 +218,9 @@ apiClient.interceptors.response.use(
       const outcome = await refreshOrSignOut();
       if (outcome === 'unreachable') return rejectShown(sessionServiceBusy(error), originalRequest);
       if (outcome !== 'refreshed') return dropped();
+      const sentAuth = originalRequest.headers?.Authorization;
+      const sentWith = typeof sentAuth === 'string' && sentAuth.startsWith('Bearer ') ? sentAuth.substring(7) : null;
+      if (accountChanged(sentWith, useAuthStore.getState().accessToken)) return cancelledForAccount();
       // A write is never sent twice: the server may have acted on it before it answered 401.
       if (!REPLAYABLE_METHODS.has(originalRequest.method ?? 'get')) {
         return rejectShown(refusedWithSession(error), originalRequest);

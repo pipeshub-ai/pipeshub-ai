@@ -17,7 +17,8 @@
  *    in while this one was signed out (this one restores from the session).
  * 3. `visibilitychange` — when the tab returns to foreground (e.g. after
  *    laptop sleep, where setTimeout firing is unreliable) the scheduler
- *    re-checks expiry and refreshes immediately if needed.
+ *    re-checks expiry and refreshes immediately if needed, or at once while
+ *    a refresh that got no answer is waiting to be tried again.
  */
 
 import { restoreSession } from '@/lib/store/auth-store';
@@ -29,6 +30,7 @@ import {
   getTokenExpirySeconds,
   DEFAULT_EXPIRY_BUFFER_SECONDS,
 } from './token-refresh';
+import { isReconnecting } from './session-reconnect';
 /**
  * `setTimeout` accepts a 32-bit signed delay; values larger than this wrap
  * to a near-zero delay and would fire immediately. We clamp and chain.
@@ -145,7 +147,8 @@ function handleVisibilityChange(): void {
   }
   const token = useAuthStore.getState().accessToken;
   if (!token) return;
-  if (isTokenExpired(token)) {
+  // Back in front while a refresh got no answer: try now rather than wait out the backoff.
+  if (isTokenExpired(token) || isReconnecting()) {
     void refreshNow();
   } else {
     // Re-arm in case the timer was throttled or never fired during sleep.
