@@ -906,6 +906,37 @@ class TestListAgents:
 
 
 class TestUsageLookups:
+    """The pre-delete lookups list every agent in the org, private ones included, so only admins may call them."""
+
+    @pytest.fixture(autouse=True)
+    def _admin(self, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        asked: list[str] = []
+
+        async def is_admin(user_id, org_id, request, config_service) -> bool:
+            asked.append(user_id)
+            return self.caller_is_admin
+
+        self.caller_is_admin = True
+        monkeypatch.setattr("app.edition_config.check_user_is_admin", is_admin)
+        return asked
+
+    @pytest.mark.parametrize("path", ["/api/v1/agent/model-usage/m1", "/api/v1/agent/web-search-usage/serper"])
+    def test_a_member_cannot_list_the_orgs_agents(self, graph, path) -> None:
+        graph.nodes[AGENTS]["private"]["models"] = ["m1"]
+        graph.nodes[AGENTS]["private"]["webSearch"] = "serper"
+        self.caller_is_admin = False
+        c, _ = make_client(graph)
+        response = c.get(path, headers=as_user("bob"))
+        assert response.status_code == 403
+        assert "private" not in response.text and "alice" not in response.text
+        assert not graph.calls_to("get_agents_by_model_key")
+        assert not graph.calls_to("get_agents_by_web_search_provider")
+
+    def test_the_role_is_checked_for_the_caller_not_an_id_in_the_request(self, graph, _admin) -> None:
+        c, _ = make_client(graph)
+        c.get("/api/v1/agent/model-usage/m1?userId=u-mallory", headers=as_user("alice"))
+        assert _admin == ["u-alice"]
+
     def test_model_usage_is_scoped_to_the_callers_org(self, graph) -> None:
         graph.nodes[AGENTS]["private"]["models"] = ["m1"]
         graph.add_agent("theirs", "mallory", models=["m1"])
