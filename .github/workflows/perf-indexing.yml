@@ -35,7 +35,7 @@ env:
 jobs:
   indexing-benchmark:
     name: Indexing benchmark (neo4j)
-    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/family=m7i+m8i+m6i+m6a+m7a/volume=100gb/ssh=true
     timeout-minutes: 150
 
     # Same environments, and so the same approval gate and secrets, as the

@@ -49,7 +49,7 @@ jobs:
     if: >-
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
       && (github.event_name != 'workflow_dispatch' || contains(fromJSON('["all","slim"]'), github.event.inputs.profiles))
-    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/family=m7i+m8i+m6i+m6a+m7a/volume=100gb
     timeout-minutes: 40
     env:
       PIPESHUB_DEPLOY_TYPE: slim
@@ -81,7 +81,7 @@ jobs:
       && (github.event_name != 'workflow_dispatch' || contains(fromJSON('["all","full"]'), github.event.inputs.profiles))
     # 4 CPU is the installer floor. Full adds Kafka + Zookeeper on the same
     # size; if this job flakes on RAM, raise the runner before the timeout.
-    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/family=m7i+m8i+m6i+m6a+m7a/volume=100gb
     timeout-minutes: 50
     env:
       PIPESHUB_DEPLOY_TYPE: full
@@ -111,7 +111,7 @@ jobs:
     if: >-
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
       && (github.event_name != 'workflow_dispatch' || contains(fromJSON('["all","eval"]'), github.event.inputs.profiles))
-    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/family=m7i+m8i+m6i+m6a+m7a/volume=100gb
     timeout-minutes: 40
     env:
       PIPESHUB_DEPLOY_TYPE: eval
@@ -143,7 +143,7 @@ jobs:
     if: >-
       github.event_name != 'pull_request'
       && (github.event_name != 'workflow_dispatch' || contains(fromJSON('["all","arango"]'), github.event.inputs.profiles))
-    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/family=m7i+m8i+m6i+m6a+m7a/volume=100gb
     timeout-minutes: 40
     env:
       PIPESHUB_DEPLOY_TYPE: slim

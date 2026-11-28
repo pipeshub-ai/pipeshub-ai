@@ -54,7 +54,7 @@ jobs:
     if: >-
       needs.changes.outputs.e2e_smoke == 'true' &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/family=m7i+m8i+m6i+m6a+m7a/volume=100gb
     timeout-minutes: 60
 
     steps:

@@ -116,7 +116,7 @@ jobs:
   build:
     name: Build ${{ matrix.variant }}
     needs: resolve
-    runs-on: runs-on=${{ github.run_id }}/runner=8cpu-linux-x64/volume=200gb
+    runs-on: runs-on=${{ github.run_id }}/runner=8cpu-linux-x64/family=m7i+m8i+m6i+m6a+m7a/volume=200gb
     strategy:
       fail-fast: false
       matrix:
@@ -196,7 +196,7 @@ jobs:
   build-sandbox:
     name: Build sandbox
     needs: resolve
-    runs-on: runs-on=${{ github.run_id }}/runner=8cpu-linux-x64/volume=200gb
+    runs-on: runs-on=${{ github.run_id }}/runner=8cpu-linux-x64/family=m7i+m8i+m6i+m6a+m7a/volume=200gb
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -244,11 +244,11 @@ jobs:
           - deploy: slim
             suffix: '-slim'
             arch: amd64
-            runner: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+            runner: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/family=m7i+m8i+m6i+m6a+m7a/volume=100gb
           - deploy: full
             suffix: ''
             arch: amd64
-            runner: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+            runner: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/family=m7i+m8i+m6i+m6a+m7a/volume=100gb
           - deploy: slim
             suffix: '-slim'
             arch: arm64
@@ -264,7 +264,7 @@ jobs:
             suffix: '-slim'
             arch: amd64
             graph: arango
-            runner: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+            runner: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/family=m7i+m8i+m6i+m6a+m7a/volume=100gb
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -48,7 +48,7 @@ jobs:
     name: SDK tests (TypeScript, Python, Go)
     # A fork's pull request gets no secrets; the nightly run covers what forks merge.
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/family=m7i+m8i+m6i+m6a+m7a/volume=100gb
     timeout-minutes: 120
     permissions:
       contents: read
