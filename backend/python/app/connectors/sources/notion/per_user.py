@@ -2,8 +2,9 @@
 
 Notion's API has no page permission list, so in per-user mode each user connects their own
 Notion account, and a page reaches a user only when their own credential lists it. This module
-holds the pieces that do not need the connector: which token a call runs with, the grant a pass
-writes, and who a token belongs to.
+holds the pieces that do not need the connector: which token a call runs with and who a token
+belongs to. The grant a pass writes is read from Notion, so it is in
+``app.ee.permission_sync.notion_per_user``.
 """
 from __future__ import annotations
 
@@ -25,8 +26,7 @@ from app.connectors.core.base.user_access import (
     get_connection,
     save_connection,
 )
-from app.models.entities import Record, RecordType
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.entities import RecordType
 from app.sources.client.notion.notion import NotionClient, NotionRESTClientViaToken
 from app.sources.external.notion.notion import NotionDataSource
 from app.utils.oauth_config import get_oauth_config
@@ -65,26 +65,6 @@ def acting_as(connection: UserConnection) -> Iterator[None]:
         yield
     finally:
         _ACTIVE.reset(token)
-
-
-def user_grant(connection: UserConnection) -> Permission:
-    return Permission(email=connection.email, type=PermissionType.READ, entity_type=EntityType.USER)
-
-
-def with_user_grant(
-    record: Record, permissions: list[Permission], connection: UserConnection
-) -> tuple[Record, list[Permission]]:
-    """A page or data source a user's own listing returned: their grant, and no inheritance.
-
-    Notion lets a sub-page be narrower than its parent, so a page that inherited would reach
-    everyone who can open the parent. A placeholder is never visible and is left as it is.
-    """
-    if record.record_type in GRANTED_TYPES and not record.is_placeholder:
-        record.inherit_permissions = False
-        # Other users' grants come from their own passes; the grants a user lost are dropped by their pass.
-        record.adds_permissions = True
-        return record, [user_grant(connection)]
-    return record, permissions
 
 
 class NotionAccessError(ValueError):
