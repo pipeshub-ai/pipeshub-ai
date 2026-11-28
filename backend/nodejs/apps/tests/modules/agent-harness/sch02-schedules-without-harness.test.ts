@@ -416,6 +416,12 @@ describe('ADR-SCH-02 schedules without the harness', () => {
         reason: 'stream_error',
       });
       expect(await r.status(ORG, 'stopped', 2_000)).to.deep.equal({ status: 'cancelled' });
+      // Stopped before its deadline but read after it: a person stopped it, whenever the watch looked.
+      c.set('stoppedEarly', { status: 'stopped', updatedAt: 400 });
+      expect(await r.status(ORG, 'stoppedEarly', 500)).to.deep.equal({ status: 'cancelled' });
+      // Stopped at its deadline: the deadline stopped it.
+      c.set('stoppedAtDeadline', { status: 'stopped', updatedAt: 500 });
+      expect(await r.status(ORG, 'stoppedAtDeadline', 500)).to.deep.equal({ status: 'failed', reason: DEADLINE_PASSED });
       expect(await r.status(ORG, 'deleted', 2_000)).to.deep.equal({ status: 'cancelled' });
       expect(await r.status('another-org', 'done', 2_000)).to.equal(null);
     });
@@ -426,6 +432,8 @@ describe('ADR-SCH-02 schedules without the harness', () => {
           status: 'complete',
           answer: {
             parts: [
+              // The answer's own words: a digest that copied them would carry this marker.
+              { type: 'text', text: 'DIGEST-MUST-NOT-CARRY-7f3a the answer itself' } as never,
               { type: 'tool_call', toolName: 'search', displayName: 'Searched', status: 'completed' },
               { type: 'tool_call', toolName: 'search', status: 'failed' },
               {
@@ -456,7 +464,7 @@ describe('ADR-SCH-02 schedules without the harness', () => {
       expect(digest.records.read).to.equal(2);
       expect(digest.cost).to.equal(null);
       expect(digest.durationMs).to.equal(3_000);
-      expect(JSON.stringify(digest)).not.to.contain('Summarise');
+      expect(JSON.stringify(digest)).not.to.contain('DIGEST-MUST-NOT-CARRY-7f3a');
     });
 
     it('the chat request keeps the schedule model and a mode the classic route takes', () => {
@@ -477,6 +485,17 @@ describe('ADR-SCH-02 schedules without the harness', () => {
       expect(classicTurnBody({ ...input, model: { chatMode: 'web_search' } }, undefined))
         .to.include({ chatMode: 'web_search' });
       expect(classicTurnBody(input, 'support-agent')).to.include({ chatMode: 'auto' });
+    });
+
+    it('a connector firing hands its turn the record that fired it, only when the firing named it (TR-03)', () => {
+      const input = aSchedule().input!;
+      const event = { connectorId: 'c1', eventType: 'newRecord' as const, at: '2026-11-28T10:00:00.000Z' };
+      const trigger = { kind: 'connector' as const, scheduleId: 's', firingId: 'f', slotAt: '2026-11-28T10:00:00.000Z' };
+      const readable = { ...input, trigger: { ...trigger, event: { ...event, recordId: 'rec-7' } } };
+      expect(classicTurnBody(readable, undefined).recordIds).to.deep.equal(['rec-7']);
+      // Not readable by its owner: the firing left it out, so the turn never learns it exists.
+      const withheld = { ...input, trigger: { ...trigger, event } };
+      expect(classicTurnBody(withheld, undefined).recordIds).to.deep.equal([]);
     });
   });
 
@@ -576,6 +595,50 @@ describe('ADR-SCH-02 schedules without the harness', () => {
       firing = await onlyFiring(w, schedule);
       expect(firing).to.include({ status: 'admitted', runRef: scheduledConversationId(ORG, firing.id) });
       expect(w.turns.requests).to.have.length(1);
+      expect(w.conversations.states.size).to.equal(1);
+    });
+
+    it('a firing retaken after the org changed path starts on the runner it started on, never a second run', async () => {
+      const w = world();
+      const schedule = await due(w);
+      w.store.settle = async () => {
+        throw new Error('process died');
+      };
+      w.store.release = async () => {
+        throw new Error('process died');
+      };
+      await w.firer.fireDue();
+      expect(w.turns.requests).to.have.length(1);
+      // The org turns the harness on before the retake: the firing keeps its classic start.
+      w.harnessOn = true;
+      const restarted = new InMemoryScheduleStore(w.clock);
+      Object.assign(w.store, { settle: restarted.settle.bind(w.store), release: restarted.release.bind(w.store) });
+      w.clock.value += FIRING_LEASE_MS + 1_000;
+      expect(await w.firer.retryStale()).to.equal(1);
+      expect(await onlyFiring(w, schedule)).to.include({ runner: 'classic' });
+      expect(w.admission.requests).to.have.length(0);
+      expect(w.turns.requests).to.have.length(1);
+    });
+
+    it('a harness admission that refused hands the firing to classic: a retake never admits it on the harness', async () => {
+      const w = world();
+      w.harnessOn = true;
+      w.admission.refusals.push('rollout_legacy');
+      const schedule = await due(w);
+      w.store.settle = async () => {
+        throw new Error('process died');
+      };
+      w.store.release = async () => {
+        throw new Error('process died');
+      };
+      await w.firer.fireDue();
+      const restarted = new InMemoryScheduleStore(w.clock);
+      Object.assign(w.store, { settle: restarted.settle.bind(w.store), release: restarted.release.bind(w.store) });
+      w.clock.value += FIRING_LEASE_MS + 1_000;
+      // The harness would admit it now; the firing is classic's, and its conversation is reused.
+      expect(await w.firer.retryStale()).to.equal(1);
+      expect(await onlyFiring(w, schedule)).to.include({ runner: 'classic' });
+      expect(w.admission.requests).to.have.length(1);
       expect(w.conversations.states.size).to.equal(1);
     });
 

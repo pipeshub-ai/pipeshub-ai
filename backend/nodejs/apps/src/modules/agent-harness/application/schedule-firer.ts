@@ -34,6 +34,7 @@ import {
   parseScheduleIdempotencyKey,
   type RunTriggerContext,
   SCHEDULE_TICK_MS,
+  scheduleRevision,
   SKIPPED_BY_OWNER,
   type ScheduleFiring,
   scheduleIdempotencyKey,
@@ -302,11 +303,14 @@ export class ScheduleFirer {
       missed: decision.missed,
       skipped: decision.kind === 'skip' ? skipReason : null,
     });
+    // Checked against the revision read: a person's edit, skip or pause since makes it miss, and the next read
+    // decides on the schedule as it is now (a one-off made a cron, a skip set or cleared).
     const claimed = await this.store.claimCronSlot(
       firing,
       schedule.nextFireAt,
       decision.nextFireAt,
       once ? RAN_ONCE : undefined,
+      scheduleRevision(schedule),
     );
     if (claimed === null) return false;
     if (decision.kind === 'skip') {
@@ -373,6 +377,7 @@ export class ScheduleFirer {
         schedule.nextFireAt,
         null,
         RAN_ONCE,
+        scheduleRevision(schedule),
       );
     } else if (schedule.status === 'paused') {
       // Paused, it has no cursor to move: its slot key is what keeps it to one firing, and it is disabled after.
@@ -929,7 +934,7 @@ export class ScheduleFirer {
       const waiting = await this.overlap(schedule, firing);
       if (waiting !== null) return waiting;
     }
-    const runner = await this.runnerFor(schedule.orgId);
+    const runner = await this.fixedRunner(schedule.orgId, firing);
     if (runner === null) return 'runner_unavailable';
     // A classic turn presents the credential for as long as the firing may take; a durable run only at admission.
     const actor = await this.actors.authorize(
@@ -1075,6 +1080,23 @@ export class ScheduleFirer {
    * The runner a firing starts on (ADR-SCH-02 D2): the durable harness where the org's harness is on now, the classic
    * chat turn where it is off. Null when this deployment has neither for it.
    */
+  /**
+   * The runner this firing starts on: the org's path at its first attempt, fixed on the firing before it starts, so
+   * a retake after a crash starts on the same one even if the org's path changed since (one firing, one run).
+   */
+  private async fixedRunner(
+    orgId: string,
+    firing: ScheduleFiring,
+  ): Promise<ScheduleRunner | null> {
+    const chosen =
+      firing.runner !== undefined
+        ? (this.runners[firing.runner] ?? null)
+        : await this.runnerFor(orgId);
+    if (chosen === null) return null;
+    const fixed = await this.store.fixRunner(orgId, firing.id, chosen.kind);
+    return fixed === null ? chosen : (this.runners[fixed] ?? null);
+  }
+
   private async runnerFor(orgId: string): Promise<ScheduleRunner | null> {
     let durable = true;
     if (this.harnessOn !== undefined) {
@@ -1104,6 +1126,14 @@ export class ScheduleFirer {
       started.reason === 'rollout_legacy' &&
       classic !== undefined
     ) {
+      // The harness admitted nothing, so the firing is handed to classic before it starts there: a retake then
+      // starts on classic too, never a second run on the harness.
+      await this.store.fixRunner(
+        request.orgId,
+        request.firingId,
+        'classic',
+        'harness',
+      );
       // The harness's credential was minted for admission only; a classic turn presents its own for as long as
       // the firing may take, so the person is authorized again for that.
       const actor = await this.actors.authorize(

@@ -1280,11 +1280,18 @@ export const streamChat =
         scheduledTurnDetachMs(req) ?? DETACHED_RUN_MAX_MS,
         { detached: scheduledTurnDetachMs(req) !== null },
       );
-      const stream = await run.open(() =>
-        startAIStream(aiCommandOptions, 'Chat Stream', upstreamAbort.signal),
-      );
+      // Opening failed: no stream will ever close the detached cap, so it is ended here (a scheduled turn's).
+      const stream = await run
+        .open(() =>
+          startAIStream(aiCommandOptions, 'Chat Stream', upstreamAbort.signal),
+        )
+        .catch((error: unknown) => {
+          upstreamAbort.dispose();
+          throw error;
+        });
 
       if (!stream) {
+        upstreamAbort.dispose();
         if (upstreamAbort.isAborted()) return;
         throw new Error('Failed to get stream from AI service');
       }
@@ -6946,15 +6953,22 @@ export const streamAgentConversation =
         scheduledTurnDetachMs(req) ?? DETACHED_RUN_MAX_MS,
         { detached: scheduledTurnDetachMs(req) !== null },
       );
-      const stream = await run.open(() =>
-        startAIStream(
-          aiCommandOptions,
-          'Agent Chat Stream',
-          upstreamAbort.signal,
-        ),
-      );
+      // Opening failed: no stream will ever close the detached cap, so it is ended here (a scheduled turn's).
+      const stream = await run
+        .open(() =>
+          startAIStream(
+            aiCommandOptions,
+            'Agent Chat Stream',
+            upstreamAbort.signal,
+          ),
+        )
+        .catch((error: unknown) => {
+          upstreamAbort.dispose();
+          throw error;
+        });
 
       if (!stream) {
+        upstreamAbort.dispose();
         if (upstreamAbort.isAborted()) return;
         throw new Error('Failed to get stream from AI service');
       }

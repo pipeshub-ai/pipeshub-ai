@@ -125,6 +125,37 @@ export function describeScheduleStoreContract(
       expect((await f.store.get(ORG, schedule.id))?.nextFireAt).to.equal(slot + week);
     });
 
+    it('SCH-02: a firing\'s runner is fixed by its first start; only a harness that refused hands it to classic', async () => {
+      const schedule = await f.store.create(aSchedule(), LIMITS);
+      const { firing } = await f.store.claimSlot(aFiring(schedule, { slotKey: 'm:runner' }));
+      expect(await f.store.fixRunner(ORG, firing.id, 'classic')).to.equal('classic');
+      expect(await f.store.fixRunner(ORG, firing.id, 'harness')).to.equal('classic');
+      const { firing: other } = await f.store.claimSlot(aFiring(schedule, { slotKey: 'm:runner-2' }));
+      expect(await f.store.fixRunner(ORG, other.id, 'harness')).to.equal('harness');
+      expect(await f.store.fixRunner(ORG, other.id, 'classic', 'harness')).to.equal('classic');
+      expect(await f.store.fixRunner(ORG, other.id, 'harness', 'classic')).to.equal('harness');
+      expect(await f.store.fixRunner(OTHER_ORG, other.id, 'harness')).to.equal(null);
+    });
+
+    it('SCH-03: a claim checks the revision the firer read: a person\'s change since makes it miss', async () => {
+      // A one-off made a cron after the firer read it: its claim would have disabled it as ran_once.
+      const at = T0 + 30 * 60_000;
+      const once = await f.store.create(
+        aSchedule({ trigger: { kind: 'once', at: new Date(at).toISOString(), timeZone: 'UTC' }, nextFireAt: at }),
+        LIMITS,
+      );
+      const read = once.revision ?? 0;
+      const cron = { kind: 'cron' as const, cron: '0 9 * * 1', timeZone: 'UTC', catchUp: 'skip' as const };
+      expect(await f.store.update(ORG, once.id, read, { trigger: cron, nextFireAt: at }, T0 + 1)).to.not.be.oneOf(['changed', null]);
+      const stale = aFiring(once, { kind: 'once', slotKey: `o:${new Date(at).toISOString()}`, slotAt: at });
+      expect(await f.store.claimCronSlot(stale, at, null, 'ran_once', read)).to.equal(null);
+      expect(await f.store.get(ORG, once.id)).to.deep.include({ status: 'active', nextFireAt: at, trigger: cron });
+      expect(await f.store.firings(ORG, once.id, 10)).to.deep.equal([]);
+      // Read again, at the revision it is now, the claim goes through.
+      const fresh = aFiring(once, { kind: 'cron', slotKey: 'c:fresh', slotAt: at });
+      expect(await f.store.claimCronSlot(fresh, at, at + 7 * 86_400_000, undefined, read + 1)).to.deep.equal(fresh);
+    });
+
     it('SCH-03: a skip of a slot the cursor has left is changed, and marks nothing', async () => {
       const schedule = await f.store.create(aSchedule(), LIMITS);
       const slot = schedule.nextFireAt as number;
@@ -406,6 +437,9 @@ export function describeScheduleStoreContract(
         } else {
           // The edit won: the delete approved on the old revision removed nothing.
           expect(after).to.deep.include({ name: 'Edited', revision: 1 });
+          // And the edit says so: a null here reads as not found to the person whose change took effect.
+          expect(edited.status).to.equal('fulfilled');
+          expect((edited as PromiseFulfilledResult<unknown>).value).to.deep.include({ id: schedule.id, name: 'Edited', revision: 1 });
           expect(deleted.status).to.equal('rejected');
           expect(((deleted as PromiseRejectedResult).reason as HarnessScheduleRefusedError).code).to.equal('SCHEDULE_CHANGED');
         }
@@ -495,8 +529,10 @@ export function describeScheduleStoreContract(
 
       expect(await f.store.pauseUser(ORG, ALICE, 'actor_disabled')).to.equal(2);
       for (const id of [cron.id, hook.id]) {
-        expect(await f.store.get(ORG, id)).to.deep.include({ status: 'paused', statusReason: 'actor_disabled', nextFireAt: null });
+        expect(await f.store.get(ORG, id)).to.deep.include({ status: 'paused', statusReason: 'actor_disabled', nextFireAt: null, revision: 1 });
       }
+      // An edit read before the pause is refused: it is not written over what the system changed.
+      expect(await f.store.update(ORG, cron.id, 0, { name: 'Late edit' }, T0 + 1)).to.equal('changed');
       // The trigger keeps its secret: pausing is not erasing, and its owner may resume it.
       expect((await f.store.get(ORG, hook.id))?.webhookTokenHash).to.equal('ef'.repeat(32));
       expect(await f.store.get(ORG, paused.id)).to.deep.equal(pausedBefore);
@@ -518,7 +554,11 @@ export function describeScheduleStoreContract(
         input: null,
         nextFireAt: null,
         webhookTokenHash: null,
+        revision: 1,
       });
+      // An edit read before the erasure cannot write the erased ask back.
+      expect(await f.store.update(ORG, its.id, 0, { input: aSchedule().input! }, T0 + 1)).to.equal('changed');
+      expect((await f.store.get(ORG, its.id))?.input).to.equal(null);
       for (const kept of [other, plain]) expect(await f.store.get(ORG, kept.id)).to.deep.equal(kept);
       expect(await f.store.get(OTHER_ORG, elsewhere.id)).to.deep.equal(elsewhere);
     });

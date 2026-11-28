@@ -515,3 +515,23 @@ def test_sch03_a_delegated_child_never_holds_the_schedule_tools() -> None:
         grant=lambda names: [*names, "schedule_update"],
     )("researcher")
     assert granted.tool_names == ["jira_search"]
+
+
+@pytest.mark.parametrize("value", ["0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00"])
+def test_sch03_an_instant_its_offset_moves_off_the_calendar_is_no_instant(value: str) -> None:
+    assert shared.parse_instant(value) is None
+    assert shared.parse_instant("2026-12-01T09:00:00+01:00") == datetime(2026, 12, 1, 8, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("cron", ["² 0 * * *", "0 ٣ * * *", "*/² * * * *", "0 9 * * 1#²"])
+def test_sch03_a_cron_with_digits_int_cannot_read_is_a_problem_not_an_error(cron: str) -> None:
+    problem = shared.update_problem({"id": "sch-1", "revision": 3, "when": {"kind": "cron", "cron": cron, "timeZone": "UTC"}})
+    assert problem is not None and "`when.cron`" in problem
+
+
+@pytest.mark.parametrize("field", ["name", "ask", "when", "action", "notify"])
+def test_sch03_an_explicit_null_for_any_optional_argument_is_refused(field: str) -> None:
+    problem = shared.update_problem({"id": "sch-1", "revision": 3, field: None})
+    assert problem is not None and f"`{field}`" in problem and "never null" in problem
+    # Left out, the same field is fine where the call still changes something.
+    assert shared.update_problem({"id": "sch-1", "revision": 3, "name": "Standup"}) is None

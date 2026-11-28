@@ -55,6 +55,11 @@ export interface UpstreamAbortHandle {
   /** Bind the `Readable` returned by `executeStream()` so the detached-run cap
    * can destroy it and stops counting once the stream ends. */
   bindStream(stream: Readable): void;
+  /**
+   * Ends the watch when the handler finishes without a stream to bind (opening it failed): the detached cap is
+   * cancelled, so it never later saves the run as stopped over the failure the handler recorded.
+   */
+  dispose(): void;
 }
 
 /**
@@ -92,8 +97,9 @@ export function attachUpstreamAbort(
     }
   };
 
+  let disposed = false;
   const onClose = (): void => {
-    if (clientDisconnected) return;
+    if (clientDisconnected || disposed) return;
     if (res.writableEnded || res.writableFinished) return;
     clientDisconnected = true;
     // DEBUG: the run's end line reports the client leaving.
@@ -127,6 +133,10 @@ export function attachUpstreamAbort(
     signal: controller.signal,
     isClientDisconnected: () => clientDisconnected,
     isAborted: () => controller.signal.aborted,
+    dispose() {
+      disposed = true;
+      clearAbandonTimer();
+    },
     bindStream(stream: Readable) {
       boundStream = stream;
       stream.once('close', () => {

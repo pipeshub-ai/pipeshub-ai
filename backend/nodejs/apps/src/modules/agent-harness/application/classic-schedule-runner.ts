@@ -125,10 +125,12 @@ export function classicTurnBody(
       ? 'agent'
       : 'auto';
   const model = input.model;
+  // The record a connector event announced, named in the input only when its owner may read it (TR-03).
+  const recordId = input.trigger?.event?.recordId;
   return {
     query: input.query,
     chatMode,
-    recordIds: [],
+    recordIds: recordId !== undefined ? [recordId] : [],
     filters: {},
     ...(model.modelKey !== undefined ? { modelKey: model.modelKey } : {}),
     ...(model.modelName !== undefined ? { modelName: model.modelName } : {}),
@@ -339,8 +341,11 @@ export class ClassicScheduleRunner implements ScheduleRunner {
       case 'deleted':
         return { status: 'cancelled' };
       case 'stopped':
-        // Past its deadline the turn was stopped there (`scheduledTurnDetach`), not by a person.
-        return late
+        // Stopped at or after its deadline: by the deadline (`scheduledTurnDetachMs`). Stopped before it: by a
+        // person, whenever the watch happens to read it. The stop time is when the conversation was last saved.
+        return deadlineAt !== null &&
+          state.updatedAt !== null &&
+          state.updatedAt >= deadlineAt
           ? { status: 'failed', reason: DEADLINE_PASSED }
           : { status: 'cancelled' };
       case 'failed':

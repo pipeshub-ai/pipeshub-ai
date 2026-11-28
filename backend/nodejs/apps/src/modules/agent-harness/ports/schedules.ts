@@ -110,6 +110,11 @@ export interface ScheduleStore {
     expectedNextFireAt: number,
     nextFireAt: number | null,
     disable?: string,
+    /**
+     * The revision the firer read: a person's change since (an edit, a skip, a pause) makes the claim miss, and the
+     * next read decides on the schedule as it is now. Absent: no revision check.
+     */
+    expectedRevision?: number,
   ): Promise<ScheduleFiring | null>;
   /** Claims a manual or event slot: the slot's existing firing when it was claimed before. */
   claimSlot(
@@ -200,6 +205,17 @@ export interface ScheduleStore {
     firingId: string,
     context: RunTriggerContext,
   ): Promise<RunTriggerContext>;
+  /**
+   * Fixes which runner a firing starts on, before its first start, and answers the one fixed: a retake after a crash
+   * uses it even if the org's path changed, so one firing never starts on both. `from` allows the one move there is:
+   * a harness admission that refused (it started nothing) handing the firing to classic. Null: no such firing.
+   */
+  fixRunner(
+    orgId: string,
+    firingId: string,
+    runner: ScheduleRunnerKind,
+    from?: ScheduleRunnerKind,
+  ): Promise<ScheduleRunnerKind | null>;
   /**
    * Counts one authenticated webhook delivery in the schedule's window
    * starting `windowStart` and answers the window's count, across replicas

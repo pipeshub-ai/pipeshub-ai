@@ -1,9 +1,9 @@
 {
  "generatedBy": "scripts/harness_test_inventory.py",
  "componentMap": "docs/test-plan/data/components.json",
- "harnessTestFiles": 2053,
+ "harnessTestFiles": 2054,
  "claimedTestFiles": 4018,
- "claimedTests": 43231,
+ "claimedTests": 43248,
  "claimedFilesByLevel": {
   "cohesion": 64,
   "component": 37,
@@ -1520,7 +1520,7 @@
    "name": "Audit chain and config audit",
    "status": "built (journal audit chain; config.changed by CPD-1, proven per admin route on Mongo by QA-4)",
    "files": 28,
-   "tests": 167,
+   "tests": 168,
    "filesByLevel": {
     "cohesion": 1,
     "contract": 5,
@@ -1533,7 +1533,7 @@
     "contract": 33,
     "gate-slow": 1,
     "integration": 28,
-    "unit": 103
+    "unit": 104
    },
    "markers": {
     "docker": 1,
@@ -1678,7 +1678,7 @@
      "path": "backend/nodejs/apps/tests/modules/control-plane/config-writes-audited.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 4
+     "tests": 5
     },
     {
      "path": "backend/nodejs/apps/tests/modules/control-plane/support/config-audit-contract.ts",
@@ -2076,7 +2076,7 @@
    "name": "Chat routes and routing",
    "status": "built (one-request routing is LAT1/CPD-10, in flight)",
    "files": 59,
-   "tests": 842,
+   "tests": 843,
    "filesByLevel": {
     "component": 11,
     "contract": 4,
@@ -2093,7 +2093,7 @@
     "fault": 2,
     "integration": 23,
     "perf": 1,
-    "unit": 685
+    "unit": 686
    },
    "markers": {
     "integration": 1
@@ -2424,7 +2424,7 @@
      "path": "backend/nodejs/apps/tests/modules/enterprise_search/utils/stream-lifecycle.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 22
+     "tests": 23
     },
     {
      "path": "backend/nodejs/apps/tests/modules/enterprise_search/utils/utils.regeneration.test.ts",
@@ -15994,7 +15994,7 @@
    "name": "Scheduler",
    "status": "built, Labs off by default",
    "files": 48,
-   "tests": 445,
+   "tests": 457,
    "filesByLevel": {
     "component": 2,
     "contract": 1,
@@ -16005,11 +16005,11 @@
    },
    "testsByLevel": {
     "component": 11,
-    "contract": 40,
+    "contract": 42,
     "e2e-browser": 1,
     "integration": 16,
     "integration-docker": 1,
-    "unit": 376
+    "unit": 386
    },
    "markers": {
     "docker": 1
@@ -16047,7 +16047,7 @@
      "path": "backend/nodejs/apps/tests/modules/agent-harness/sch02-schedules-without-harness.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 24
+     "tests": 27
     },
     {
      "path": "backend/nodejs/apps/tests/modules/agent-harness/sch03-internal-route-limits.test.ts",
@@ -16059,7 +16059,7 @@
      "path": "backend/nodejs/apps/tests/modules/agent-harness/sch03-managing-schedules.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 26
+     "tests": 31
     },
     {
      "path": "backend/nodejs/apps/tests/modules/agent-harness/schedule-approvals.test.ts",
@@ -16155,7 +16155,7 @@
      "path": "backend/nodejs/apps/tests/modules/agent-harness/support/schedule-store-contract.ts",
      "level": "contract",
      "markers": [],
-     "tests": 40
+     "tests": 42
     },
     {
      "path": "backend/nodejs/apps/tests/modules/agent-harness/trigger-settings.test.ts",
@@ -16209,7 +16209,7 @@
      "path": "backend/nodejs/apps/tests/modules/enterprise_search/scheduled-classic-turn.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 9
+     "tests": 11
     },
     {
      "path": "backend/python/tests/unit/harness/engines/test_scheduled_durable.py",
@@ -17305,7 +17305,7 @@
    "name": "Legacy query path (today's loop)",
    "status": "built (reference and kill-switch target)",
    "files": 799,
-   "tests": 17886,
+   "tests": 17889,
    "filesByLevel": {
     "contract": 6,
     "integration": 3,
@@ -17320,7 +17320,7 @@
     "integration-docker": 19,
     "live": 39,
     "replay": 7,
-    "unit": 17716
+    "unit": 17719
    },
    "markers": {
     "ai_agents": 6,
@@ -20620,7 +20620,7 @@
      "path": "backend/python/tests/unit/agents/agent_loop/test_sch03_managing_schedules.py",
      "level": "unit",
      "markers": [],
-     "tests": 25
+     "tests": 28
     },
     {
      "path": "backend/python/tests/unit/agents/agent_loop/test_sch03_schedules_on_demand.py",
@@ -29646,6 +29646,7 @@
   "backend/nodejs/apps/tests/cohesion/c35-one-digest-scheme.test.ts",
   "backend/nodejs/apps/tests/contracts/ma1-child-spawned.test.ts",
   "backend/nodejs/apps/tests/contracts/uxrb1-planned-run.test.ts",
+  "backend/nodejs/apps/tests/modules/agent-harness/sch02-classic-conversations.test.ts",
   "backend/python/tests/cohesion/test_c24_selection_parity.py",
   "backend/python/tests/cohesion/test_c35_one_digest_scheme.py",
   "backend/python/tests/cohesion/test_c36_flags_and_dimensions.py",

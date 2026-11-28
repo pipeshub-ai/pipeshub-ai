@@ -20,7 +20,7 @@ import { AIServiceCommand } from '../../../src/libs/commands/ai_service/ai.servi
 import { HttpMethod } from '../../../src/libs/enums/http-methods.enum'
 import { FakeAIBackend, InMemoryChatStore, settle } from './controller/chat-test-harness'
 import { AGENT_KEY, ORG, OWNER, RUN, appConfig, finalAnswer } from './controller/streaming-flows'
-import { markScheduledTurn, scheduledTurnDetachMs } from '../../../src/modules/agent-harness/transport/scheduled-turn-mark'
+import { markScheduledTurn, scheduledConversationOrigin, scheduledTurnDetachMs } from '../../../src/modules/agent-harness/transport/scheduled-turn-mark'
 
 const MINTED = 'Bearer minted-for-alice'
 // An hour on: the turn's stream is stopped at its deadline, so a deadline already past would stop it at once.
@@ -68,10 +68,11 @@ describe('ADR-SCH-02 D3: a scheduled classic turn', () => {
 
   it('a turn still going at its deadline is stopped there and its conversation saved, so the firing sees it end', async () => {
     let ended = 0
+    const deadlineAt = Date.now() + 80
     const started = await turns.start({
       authorization: MINTED,
       body: { query: 'Tell me a joke', chatMode: 'agent', recordIds: [], filters: {} },
-      mark: { ...mark, deadlineAt: Date.now() + 80 },
+      mark: { ...mark, deadlineAt },
       ended: () => {
         ended += 1
       },
@@ -86,7 +87,7 @@ describe('ADR-SCH-02 D3: a scheduled classic turn', () => {
     // Saved as stopped with what it wrote; the firing reads it as ended at its deadline, not cancelled by a person.
     expect((await conversations.read(String(ORG), id))?.status).to.equal('stopped')
     const runner = new ClassicScheduleRunner(turns, conversations, () => Date.now())
-    expect(await runner.status(String(ORG), id, Date.now() - 1)).to.deep.equal({ status: 'failed', reason: 'deadline_passed' })
+    expect(await runner.status(String(ORG), id, deadlineAt)).to.deep.equal({ status: 'failed', reason: 'deadline_passed' })
     expect(ended).to.equal(0)
   })
 
@@ -236,5 +237,18 @@ describe('ADR-SCH-02: a scheduled turn is stopped at its firing\'s deadline', ()
     expect(scheduledTurnDetachMs(req, 4_000)).to.equal(6_000)
     // Already past it: stopped at once, never left running without a cap.
     expect(scheduledTurnDetachMs(req, 20_000)).to.equal(1)
+  })
+})
+
+describe('ADR-SCH-02: a conversation\'s schedule origin, as either document store keeps its metadata', () => {
+  const origin = { kind: 'schedule', scheduleId: 'sch-1', firingId: 'fir-1', scheduleName: 'Morning joke' }
+  it('reads it from a Mongo Map and a PostgreSQL object alike', () => {
+    expect(scheduledConversationOrigin(new Map([['origin', origin]]))).to.deep.equal(origin)
+    expect(scheduledConversationOrigin({ origin })).to.deep.equal(origin)
+    expect(scheduledConversationOrigin({ origin: { ...origin, scheduleName: 3 } })).to.deep.equal({ ...origin, scheduleName: '' })
+  })
+  it('is none for any other metadata: no origin, another kind, or ids that are not text', () => {
+    for (const metadata of [undefined, {}, { origin: null }, { origin: 'schedule' }, { origin: { ...origin, kind: 'chat' } }, { origin: { ...origin, firingId: 7 } }])
+      expect(scheduledConversationOrigin(metadata as never)).to.equal(null)
   })
 })

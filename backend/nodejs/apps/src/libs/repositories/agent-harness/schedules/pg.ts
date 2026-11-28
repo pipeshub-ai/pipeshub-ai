@@ -13,6 +13,7 @@ import {
   settledRun,
   type ScheduleChangedFrom,
   scheduleChanged,
+  type ScheduleRunnerKind,
 } from '../../../../modules/agent-harness/domain/schedules';
 import type {
   ScheduleEraser,
@@ -368,6 +369,7 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
     expectedNextFireAt: number,
     nextFireAt: number | null,
     disable?: string,
+    expectedRevision?: number,
   ): Promise<ScheduleFiring | null> {
     try {
       return await this.org(firing.orgId, true, async (k) => {
@@ -378,7 +380,8 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
               || CASE WHEN $6::boolean THEN jsonb_build_object('revision', COALESCE((doc->>'revision')::bigint, 0) + 1)
                  ELSE '{}'::jsonb END
             WHERE org_id = $1 AND id = $2 AND status = 'active' AND next_fire_at = $3
-              AND ($5::bigint IS NULL OR (doc->>'skipNextAt') IS NULL OR (doc->>'skipNextAt')::bigint <> $5::bigint)`,
+              AND ($5::bigint IS NULL OR (doc->>'skipNextAt') IS NULL OR (doc->>'skipNextAt')::bigint <> $5::bigint)
+              AND ($7::bigint IS NULL OR COALESCE((doc->>'revision')::bigint, 0) = $7::bigint)`,
           [
             firing.orgId,
             firing.scheduleId,
@@ -392,6 +395,7 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
             }),
             firing.status === 'pending' ? firing.slotAt : null,
             disable !== undefined,
+            expectedRevision ?? null,
           ],
         );
         if (rowCount !== 1) return null;
@@ -691,6 +695,29 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
     });
   }
 
+  fixRunner(
+    orgId: string,
+    firingId: string,
+    runner: ScheduleRunnerKind,
+    from?: ScheduleRunnerKind,
+  ): Promise<ScheduleRunnerKind | null> {
+    return this.org(orgId, true, async (k) => {
+      // The first start's runner wins; only `from` (a harness that refused) may hand it on, under the row lock.
+      await k.query(
+        `/* pipeshub:harness.schedule_firings_fix_runner */ UPDATE harness.schedule_firings SET doc = doc || $3::jsonb
+          WHERE org_id = $1 AND id = $2 AND (NOT doc ? 'runner' OR doc->>'runner' = $4::text)`,
+        [orgId, firingId, docParam({ runner }), from ?? null],
+      );
+      const found = await this.firingDocs(
+        k,
+        `/* pipeshub:harness.schedule_firings_get */ SELECT doc FROM harness.schedule_firings
+          WHERE org_id = $1 AND id = $2`,
+        [orgId, firingId],
+      );
+      return found[0] === undefined ? null : (found[0].runner ?? null);
+    });
+  }
+
   countDelivery(
     orgId: string,
     scheduleId: string,
@@ -785,7 +812,9 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
     return this.org(orgId, true, async (k) => {
       const now = await this.time.now(k);
       const { rowCount } = await k.query(
+        // Bumps the revision: an edit read before the erasure cannot write the content back.
         `/* pipeshub:harness.schedules_disable_agent */ UPDATE harness.schedules SET doc = doc || $3::jsonb
+              || jsonb_build_object('revision', COALESCE((doc->>'revision')::bigint, 0) + 1)
           WHERE org_id = $1 AND agent_key = $2`,
         [
           orgId,
@@ -809,7 +838,9 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
     return this.org(orgId, true, async (k) => {
       const now = await this.time.now(k);
       const { rowCount } = await k.query(
+        // Bumps the revision: an edit read before the pause is refused SCHEDULE_CHANGED.
         `/* pipeshub:harness.schedules_pause_user */ UPDATE harness.schedules SET doc = doc || $3::jsonb
+              || jsonb_build_object('revision', COALESCE((doc->>'revision')::bigint, 0) + 1)
           WHERE org_id = $1 AND actor_id = $2 AND status = 'active'`,
         [
           orgId,

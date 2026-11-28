@@ -600,11 +600,13 @@ describe('ADR-SCH-01 D3: a schedule made on the person’s approval in chat', ()
     const w = world();
     const create = (codingEngine: string) =>
       w.schedules.create(alice, { name: 'n', input: { query: 'q' }, trigger: { kind: 'cron', cron: '0 9 * * 1', timeZone: 'Europe/Berlin' }, codingEngine });
-    for (const bad of ['', 'Codex', '../x', 'x'.repeat(65)]) {
+    for (const bad of ['', 'Codex', '../x', 'x'.repeat(65), 'a b']) {
       const refused = await create(bad).then(() => null, (error: unknown) => error as { code?: string });
       expect(refused?.code, bad).to.equal('SCHEDULE_INVALID');
     }
     expect((await create('claude-code')).schedule.id).to.be.a('string');
+    // A chat's choice may name a dotted kind; a schedule takes the same names.
+    expect((await create('acp.qwen')).schedule.id).to.be.a('string');
   });
 
   it('a repeat of the same decision: 200, the same schedule, nothing new', async () => {

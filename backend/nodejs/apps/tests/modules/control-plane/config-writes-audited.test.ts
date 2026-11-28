@@ -125,10 +125,10 @@ describe('CPD-1 schedules (CW-7, CW-11)', () => {
     await service.delete(alice, schedule.id);
     const written = audit.configEntries(SCHEDULE_ORG);
     expect(written.map((entry) => [entry.fields['objectType'], entry.fields['objectId'], entry.fields['changed']])).to.deep.equal([
-      ['schedule', schedule.id, 'agentKey,agentVersion,deadlineS,maxCostUsd,name,notify,overlap,status,trigger'],
+      ['schedule', schedule.id, 'agentKey,agentVersion,askDigest,codingEngine,deadlineS,maxCostUsd,name,notify,overlap,skipNextAt,status,trigger'],
       ['schedule', schedule.id, 'status'],
       ['schedule', schedule.id, 'status'],
-      ['schedule', schedule.id, 'agentKey,agentVersion,deadlineS,maxCostUsd,name,notify,overlap,status,trigger'],
+      ['schedule', schedule.id, 'agentKey,agentVersion,askDigest,codingEngine,deadlineS,maxCostUsd,name,notify,overlap,skipNextAt,status,trigger'],
     ]);
     expect(written.every((entry) => entry.fields['scope'] === `user:${ALICE}`)).to.equal(true);
     const text = JSON.stringify(written);
@@ -136,6 +136,30 @@ describe('CPD-1 schedules (CW-7, CW-11)', () => {
     expect(text).to.not.include('pxt_secret_hook');
     // TR-04: a signed webhook's key stays out as its token does.
     expect(text).to.not.include('pxs_secret_hook');
+  });
+
+  it('CW-7 (ADR-SCH-03): an edit of only the ask and a skip are entries that name what changed and the revisions, never the ask', async () => {
+    const audit = auditedControlPlane();
+    const clock = new TestClock(Date.parse('2026-07-01T00:00:00.000Z'));
+    const store = new InMemoryScheduleStore(clock);
+    const actors = new FakeActors();
+    const setting = new FakeSetting();
+    const firer = new ScheduleFirer({ store, admission: new FakeAdmission(), actors, setting });
+    const service = new ScheduleService({ transaction: audit.transaction, store, firer, actors, setting });
+    const alice = { orgId: SCHEDULE_ORG, userId: ALICE, via: 'session' as const };
+    const { schedule } = await service.create(alice, {
+      name: 'Standup',
+      input: { query: 'SENTINEL-before' },
+      trigger: { kind: 'cron', cron: '0 9 * * 1-5', timeZone: 'UTC' },
+    });
+    await service.update(alice, schedule.id, { revision: 0, query: 'SENTINEL-after' });
+    await service.skipNext(alice, schedule.id, 1);
+    const [, edited, skipped] = audit.configEntries(SCHEDULE_ORG);
+    expect([edited!.fields['changed'], edited!.fields['revisionFrom'], edited!.fields['revisionTo']]).to.deep.equal(['askDigest', 0, 1]);
+    expect([skipped!.fields['changed'], skipped!.fields['revisionFrom'], skipped!.fields['revisionTo']]).to.deep.equal(['skipNextAt', 1, 2]);
+    const text = JSON.stringify(audit.configEntries(SCHEDULE_ORG));
+    expect(text).to.not.include('SENTINEL-before');
+    expect(text).to.not.include('SENTINEL-after');
   });
 
   it('CW-10: a schedule pause that loses its race records nothing', async () => {

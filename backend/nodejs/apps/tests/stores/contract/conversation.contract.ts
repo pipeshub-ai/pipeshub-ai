@@ -90,6 +90,19 @@ export function describeConversationContract(fx: ConversationFixture): void {
       expect((await repo.findById(id))?.title).to.equal('chat');
     });
 
+    it('two first opens racing under one unused id: exactly one session, with only the winner\'s first message', async () => {
+      // What a firing retried at once relies on: the store decides, never a read before the insert.
+      const org = fx.newId(), user = fx.newId(), id = fx.newId();
+      const outcomes = await Promise.allSettled([open(org, user, { id }, userMsg('one')), open(org, user, { id }, userMsg('two'))]);
+      const won = outcomes.filter((o) => o.status === 'fulfilled');
+      const lost = outcomes.filter((o) => o.status === 'rejected');
+      expect([won.length, lost.length]).to.deep.equal([1, 1]);
+      expect((lost[0] as PromiseRejectedResult).reason).to.be.instanceOf(SessionExistsError);
+      const winner = outcomes[0]!.status === 'fulfilled' ? 'one' : 'two';
+      const rows = await repo.listMessages(id, { orgId: org });
+      expect(rows.map((r) => r.dto.content)).to.deep.equal([winner]);
+    });
+
     it('rolls the session back with its first message on a replica set, and not on a standalone server', async () => {
       const org = fx.newId(), user = fx.newId();
       let sessionId = '';

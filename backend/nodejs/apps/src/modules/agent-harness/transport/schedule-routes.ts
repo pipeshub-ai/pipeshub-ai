@@ -235,11 +235,12 @@ export const updateScheduleSchema = scheduleParamsSchemaOf({
 export const deleteScheduleSchema = scheduleParamsSchemaOf({
   query: z
     .object({
-      revision: z.coerce
-        .number()
-        .int()
-        .min(0)
-        .max(Number.MAX_SAFE_INTEGER)
+      // A decimal integer as written: `Number('')` is 0, so a blank `?revision=` would otherwise check against 0.
+      revision: z
+        .string()
+        .regex(/^\d{1,16}$/)
+        .transform(Number)
+        .pipe(z.number().int().min(0).max(Number.MAX_SAFE_INTEGER))
         .optional(),
     })
     .strict(),

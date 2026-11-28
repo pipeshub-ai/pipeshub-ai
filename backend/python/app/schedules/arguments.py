@@ -166,7 +166,11 @@ def parse_instant(value: object) -> datetime | None:
     except ValueError:
         return None
     offset = timedelta(hours=offset_hours, minutes=offset_minutes)
-    return local - offset if sign == "+" else local + offset
+    try:
+        return local - offset if sign == "+" else local + offset
+    except OverflowError:
+        # Its offset moves it past year 1 or 9999: no instant Python (or Node's window) can hold.
+        return None
 
 
 _MONTHS: Final = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
@@ -189,6 +193,11 @@ class _CronInvalid(ValueError):
     pass
 
 
+def _decimal(text: str) -> bool:
+    """ASCII digits only: ``str.isdigit`` also takes ``²`` and other digits ``int`` cannot read."""
+    return text.isascii() and text.isdigit()
+
+
 @dataclass(frozen=True)
 class _DaySpec:
     """What a day-of-month or day-of-week field matches: plain values, and the ``L``/``nL``/``n#k`` forms."""
@@ -201,7 +210,7 @@ class _DaySpec:
 
 
 def _value(text: str, low: int, high: int, names: Mapping[str, int], field: str) -> int:
-    if text.isdigit():
+    if _decimal(text):
         value = int(text)
     elif text.upper() in names:
         value = names[text.upper()]
@@ -215,7 +224,7 @@ def _value(text: str, low: int, high: int, names: Mapping[str, int], field: str)
 def _item(item: str, low: int, high: int, names: Mapping[str, int], field: str, *, days: bool) -> tuple[set[int], bool]:
     """One comma item's values, and whether it is a wildcard (``*``, or ``?`` in a day field)."""
     body, slash, step_text = item.partition("/")
-    if slash and not step_text.isdigit():
+    if slash and not _decimal(step_text):
         raise _CronInvalid(f"`when.cron` has an unreadable step in {field}: {item!r}.")
     step = int(step_text) if slash else 1
     if step == 0:
@@ -253,7 +262,7 @@ def _field(text: str, index: int) -> tuple[set[int], _DaySpec | None]:
             if len(items) > 1:
                 raise _CronInvalid("`when.cron` cannot combine `#` with a list in the day of week.")
             day, _, occurrence = item.partition("#")
-            if not occurrence.isdigit() or not 1 <= int(occurrence) <= 5:
+            if not _decimal(occurrence) or not 1 <= int(occurrence) <= 5:
                 raise _CronInvalid("`when.cron` day-of-week `#` takes an occurrence from 1 to 5.")
             nth = (_value(day, low, high, names, field) % 7, int(occurrence))
             continue
@@ -335,10 +344,12 @@ def _shape_problem(arguments: Mapping[str, Any], tool: Tool = "create") -> str |
         error = (relevant or errors)[0]
         where = ".".join(str(part) for part in error["loc"] if not str(part).startswith("When"))
         return f"`{where or 'arguments'}`: {error['msg']}."
+    # The generated model reads an absent optional as None and has no uniqueItems; the schema says neither, so an
+    # explicit null (`name: null`, `action: null`) is refused as the model-facing schema refuses it.
+    nulled = sorted(key for key, value in arguments.items() if value is None)
+    if nulled:
+        return f"`{nulled[0]}`: leave it out instead; it is never null."
     notify = arguments.get("notify", ())
-    # The generated model reads an absent optional as None and has no uniqueItems; the schema says neither.
-    if notify is None:
-        return "`notify`: leave it out for the default; it is never null."
     if len(set(notify)) != len(notify):
         return "`notify`: name each channel once."
     return None

@@ -1,3 +1,4 @@
+import { ENGINE_KIND_PATTERN } from '../domain/coding-engines';
 import { orgSchedulesOn } from '../config';
 import {
   createHash,
@@ -250,6 +251,10 @@ type ScheduleSettings = Pick<
   maxCostUsd: number | null;
   overlap: OverlapPolicy;
   notify: NotifyChannel[];
+  /** What each run is asked, as a digest: an audit entry carries no run content, but must show the ask changed. */
+  askDigest: string | null;
+  skipNextAt: number | null;
+  codingEngine: string | null;
 };
 
 const scheduleSettings = (
@@ -267,6 +272,12 @@ const scheduleSettings = (
         status: schedule.status,
         overlap: scheduleOverlap(schedule),
         notify: scheduleNotify(schedule),
+        askDigest:
+          schedule.input === null
+            ? null
+            : canonicalDigest(schedule.input.query),
+        skipNextAt: schedule.skipNextAt ?? null,
+        codingEngine: schedule.codingEngine ?? null,
       };
 
 function scheduleChange(
@@ -278,8 +289,14 @@ function scheduleChange(
   return {
     scope: userScope(schedule.actorId),
     object: { type: 'schedule', id: schedule.id },
-    revisionFrom: null,
-    revisionTo: null,
+    // Every person's change bumps the revision once (ADR-SCH-03 D5): made at 0, gone after the last.
+    revisionFrom: before === null ? null : scheduleRevision(before),
+    revisionTo:
+      after === null
+        ? null
+        : before === null
+          ? scheduleRevision(after)
+          : scheduleRevision(before) + 1,
     changeDigest: canonicalDigest(settings),
     changed: changedPaths(scheduleSettings(before), settings),
   };
@@ -431,11 +448,9 @@ export const firingView = (firing: ScheduleFiring): FiringView => ({
   settledAt: iso(firing.settledAt),
 });
 
-/** An engine kind or `none`, as a chat's choice is named; whether it may run is admission's check at each firing. */
-const ENGINE_CHOICE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-
+/** An engine kind or `none`, named as a chat's choice is; whether it may run is admission's check at each firing. */
 function codingEngineChoice(choice: string): string {
-  if (!ENGINE_CHOICE.test(choice)) {
+  if (!ENGINE_KIND_PATTERN.test(choice)) {
     throw new HarnessScheduleRefusedError(
       'SCHEDULE_INVALID',
       'codingEngine must be an engine kind or none',
@@ -443,6 +458,19 @@ function codingEngineChoice(choice: string): string {
     );
   }
   return choice;
+}
+
+/** Two triggers that fire at the same slots: the same cron expression in the same zone. */
+function sameTimetable(
+  before: ScheduleTrigger,
+  after: ScheduleTrigger,
+): boolean {
+  return (
+    before.kind === 'cron' &&
+    after.kind === 'cron' &&
+    before.cron.trim() === after.cron.trim() &&
+    before.timeZone === after.timeZone
+  );
 }
 
 const bounded = (
@@ -653,10 +681,14 @@ export class ScheduleService {
           : request.trigger;
       const trigger = this.trigger(asked, now, false);
       change.trigger = trigger;
-      // Paused, it has no cursor: resume works out the next slot.
-      change.nextFireAt =
-        schedule.status === 'paused' ? null : firstSlot(trigger, now);
-      change.skipNextAt = null;
+      // The same timetable (only how missed runs catch up changed) keeps its next slot and a skip its owner set
+      // there; a new time or zone works the cursor out again, and the old skip no longer names a slot of it.
+      if (!sameTimetable(schedule.trigger, trigger)) {
+        // Paused, it has no cursor: resume works out the next slot.
+        change.nextFireAt =
+          schedule.status === 'paused' ? null : firstSlot(trigger, now);
+        change.skipNextAt = null;
+      }
     }
     if (request.notify !== undefined) {
       change.notify = await this.notifyChannels(caller.orgId, request.notify);

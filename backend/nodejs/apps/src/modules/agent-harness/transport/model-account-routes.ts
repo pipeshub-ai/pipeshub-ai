@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/unbound-method -- AuthMiddleware handlers follow the repository's Express middleware contract and are registered by reference. */
+import { ENGINE_KIND_PATTERN } from '../domain/coding-engines';
 import { NextFunction, Response, Router } from 'express';
 import { Container } from 'inversify';
 import { z } from 'zod';
@@ -29,7 +30,7 @@ import { currentOrgContext } from '../../../libs/context/orgContext';
 export const MODEL_ACCOUNTS_PREFIX = '/api/v1/agent-harness/model-accounts';
 
 /** An engine kind as the release names it (`engine-profile-narrowing.schema.json`'s kind, without a version). */
-export const ENGINE_KIND = z.string().regex(/^[a-z0-9][a-z0-9_.-]{0,63}$/);
+export const ENGINE_KIND = z.string().regex(ENGINE_KIND_PATTERN);
 
 export const putCodingEngineSchema = z.object({
   body: z.object({ choice: ENGINE_KIND }).strict(),

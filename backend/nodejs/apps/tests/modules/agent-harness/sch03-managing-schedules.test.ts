@@ -29,6 +29,7 @@ import {
   SKIPPED_BY_OWNER,
 } from '../../../src/modules/agent-harness/domain/schedules';
 import { AgentHarnessChatScheduleController } from '../../../src/modules/agent-harness/transport/chat-schedule-controller';
+import { deleteScheduleSchema } from '../../../src/modules/agent-harness/transport/schedule-routes';
 import { testControlPlane } from '../control-plane/support/in-memory';
 import {
   ADMIN_USER,
@@ -131,6 +132,24 @@ describe('ADR-SCH-03 managing schedules from chat', () => {
       const once = (await w.service.create(alice, { ...CRON, trigger: { kind: 'once', at: new Date(w.clock.now() + 60 * MIN).toISOString(), timeZone: 'Europe/Berlin' } })).schedule;
       const toCron = await w.service.update(alice, once.id, { revision: 0, trigger: { kind: 'cron', cron: '0 9 * * 1', timeZone: 'Europe/Berlin' } });
       expect(toCron.trigger).to.deep.include({ catchUp: 'skip' });
+    });
+
+    it('changing only how missed runs catch up keeps the next run and the skip its owner set', async () => {
+      const w = world();
+      const made = (await w.service.create(alice, CRON)).schedule;
+      const skipped = await w.service.skipNext(alice, made.id, 0);
+      const kept = await w.service.update(alice, made.id, {
+        revision: skipped.revision,
+        trigger: { ...CRON.trigger, catchUp: 'run_all' },
+      });
+      expect(kept.trigger).to.deep.include({ catchUp: 'run_all' });
+      expect([kept.nextFireAt, kept.skipNextAt]).to.deep.equal([made.nextFireAt, made.nextFireAt]);
+      // A new time works the cursor out again; the old skip names no slot of it.
+      const moved = await w.service.update(alice, made.id, {
+        revision: kept.revision,
+        trigger: { ...CRON.trigger, cron: '30 8 * * 1-5' },
+      });
+      expect(moved.skipNextAt).to.equal(null);
     });
 
     it('a stale revision is refused SCHEDULE_CHANGED and nothing changes', async () => {
@@ -557,6 +576,95 @@ describe('ADR-SCH-03 managing schedules from chat', () => {
       expect(await code(w.chat.read(ORG, RUN, bobs.id))).to.equal('SCHEDULE_NOT_FOUND');
     });
 
+    it('the controller finds, reads, and applies an approved update and delete as the run\'s person (200), else refuses', async () => {
+      const w = chatWorld();
+      const made = (await w.service.create(alice, CRON)).schedule;
+      const controller = new AgentHarnessChatScheduleController(w.chat, { authorizeAttempt: sinon.stub().resolves() } as never);
+      const attempt = { orgId: ORG, runId: RUN, attemptId: 'a', fence: 1 };
+      const answer = async (handler: (req: never, res: never, next: never) => Promise<void>, req: Record<string, unknown>) => {
+        const res = { statusCode: 0, body: undefined as unknown, status: sinon.stub(), json: sinon.stub() };
+        res.status.callsFake((code: number) => ((res.statusCode = code), res));
+        res.json.callsFake((body: unknown) => ((res.body = body), res));
+        const next = sinon.spy();
+        await handler({ harnessAttempt: attempt, ...req } as never, res as never, next as never);
+        const refused = next.firstCall?.args[0] as { statusCode: number; code?: string } | undefined;
+        return refused !== undefined ? { status: refused.statusCode, code: refused.code } : { status: res.statusCode, body: res.body };
+      };
+      const found = await answer(controller.find, {
+        params: { runId: RUN },
+        query: { attemptId: 'a', fence: '1', query: 'Standup', status: 'active', madeHere: 'false' },
+      });
+      expect(found.status).to.equal(200);
+      expect((found.body as { schedules: Array<{ id: string }> }).schedules.map((x) => x.id)).to.deep.equal([made.id]);
+      const read = await answer(controller.read, { params: { runId: RUN, scheduleId: made.id }, query: { attemptId: 'a', fence: '1' } });
+      expect([read.status, (read.body as { id: string }).id]).to.deep.equal([200, made.id]);
+      const pause = { id: made.id, revision: 0, action: 'pause' as const };
+      const ix = w.approve(SCHEDULE_UPDATE_TOOL_ID, pause);
+      const change = (kind: 'update' | 'delete', args: Record<string, unknown>, interactionId: string, toolId: string) =>
+        answer(kind === 'update' ? controller.update : controller.delete, {
+          params: { runId: RUN, scheduleId: made.id },
+          body: { attemptId: 'a', fence: 1, interactionId, toolId, arguments: args },
+        });
+      const paused = await change('update', pause, ix, SCHEDULE_UPDATE_TOOL_ID);
+      expect(paused.status).to.equal(200);
+      expect((paused.body as { schedule: { status: string } }).schedule.status).to.equal('paused');
+      // Not approved as asked: refused 403 SCHEDULE_NOT_APPROVED, nothing deleted.
+      const unapproved = await change('delete', { id: made.id, revision: 1 }, 'ix.none', SCHEDULE_DELETE_TOOL_ID);
+      expect(unapproved).to.deep.equal({ status: 403, code: 'HTTP_AGENT_HARNESS_SCHEDULE_NOT_APPROVED' });
+      const gone = { id: made.id, revision: 1 };
+      const removed = await change('delete', gone, w.approve(SCHEDULE_DELETE_TOOL_ID, gone), SCHEDULE_DELETE_TOOL_ID);
+      expect(removed.status).to.equal(200);
+      expect(await w.store.get(ORG, made.id)).to.equal(null);
+    });
+
+    it('an approved change edits time and notices, skips the next run; another person\'s or a gone schedule is refused', async () => {
+      const w = chatWorld();
+      const made = (await w.service.create(alice, CRON)).schedule;
+      const edit = {
+        id: made.id, revision: 0, name: 'Morning standup', notify: ['in_app', 'email'] as Array<'in_app' | 'email'>,
+        when: { kind: 'cron' as const, cron: '30 8 * * 1-5', timeZone: 'Europe/Berlin' },
+      };
+      const edited = await w.chat.update(ORG, RUN, made.id, {
+        interactionId: w.approve(SCHEDULE_UPDATE_TOOL_ID, edit), toolId: SCHEDULE_UPDATE_TOOL_ID, arguments: edit,
+      });
+      expect(edited.schedule).to.deep.include({ name: 'Morning standup', notify: ['in_app', 'email'] });
+      expect(edited.schedule?.trigger).to.deep.include({ cron: '30 8 * * 1-5' });
+      const once = { id: made.id, revision: 1, when: { kind: 'once' as const, at: new Date(w.clock.now() + 3_600_000).toISOString(), timeZone: 'UTC' } };
+      const moved = await w.chat.update(ORG, RUN, made.id, {
+        interactionId: w.approve(SCHEDULE_UPDATE_TOOL_ID, once), toolId: SCHEDULE_UPDATE_TOOL_ID, arguments: once,
+      });
+      expect(moved.schedule?.trigger).to.deep.include({ kind: 'once', timeZone: 'UTC' });
+      const cron = (await w.service.create(alice, CRON)).schedule;
+      const skip = { id: cron.id, revision: 0, action: 'skip_next' as const };
+      const skipped = await w.chat.update(ORG, RUN, cron.id, {
+        interactionId: w.approve(SCHEDULE_UPDATE_TOOL_ID, skip), toolId: SCHEDULE_UPDATE_TOOL_ID, arguments: skip,
+      });
+      expect(skipped.schedule?.skipNextAt).to.equal(cron.nextFireAt);
+      // Another person's schedule reads as not found, for a change and for a delete.
+      const bobs = (await w.service.create({ ...alice, userId: BOB }, CRON)).schedule;
+      const theirs = { id: bobs.id, revision: 0, action: 'pause' as const };
+      expect(
+        await code(w.chat.update(ORG, RUN, bobs.id, { interactionId: w.approve(SCHEDULE_UPDATE_TOOL_ID, theirs), toolId: SCHEDULE_UPDATE_TOOL_ID, arguments: theirs })),
+      ).to.equal('SCHEDULE_NOT_FOUND');
+      const drop = { id: bobs.id, revision: 0 };
+      expect(
+        await code(w.chat.delete(ORG, RUN, bobs.id, { interactionId: w.approve(SCHEDULE_DELETE_TOOL_ID, drop), toolId: SCHEDULE_DELETE_TOOL_ID, arguments: drop })),
+      ).to.equal('SCHEDULE_NOT_FOUND');
+      expect(await code(w.chat.read(ORG, RUN, bobs.id))).to.equal('SCHEDULE_NOT_FOUND');
+      // A delete naming another schedule than its path is not the call approved.
+      expect(
+        await code(w.chat.delete(ORG, RUN, cron.id, { interactionId: 'ix.x', toolId: SCHEDULE_DELETE_TOOL_ID, arguments: drop })),
+      ).to.equal('SCHEDULE_NOT_APPROVED');
+      // Already gone: nothing changed, nothing refused.
+      const ghost = { id: 'sch_gone', revision: 0 };
+      expect(
+        await w.chat.delete(ORG, RUN, 'sch_gone', { interactionId: w.approve(SCHEDULE_DELETE_TOOL_ID, ghost), toolId: SCHEDULE_DELETE_TOOL_ID, arguments: ghost }),
+      ).to.deep.equal({ schedule: null, changed: false });
+      // The run's person can no longer manage schedules: refused SCHEDULE_FORBIDDEN.
+      w.actors.refused.set(ALICE, 'actor_disabled');
+      expect(await code(w.chat.read(ORG, RUN, cron.id))).to.equal('SCHEDULE_FORBIDDEN');
+    });
+
     it('the controller parses the contract and answers 400 for a malformed call', async () => {
       const w = chatWorld();
       const controller = new AgentHarnessChatScheduleController(w.chat, { authorizeAttempt: sinon.stub().resolves() } as never);
@@ -572,5 +680,18 @@ describe('ADR-SCH-03 managing schedules from chat', () => {
       );
       expect((next.firstCall.args[0] as { statusCode: number }).statusCode).to.equal(400);
     });
+  });
+});
+
+describe('DELETE /schedules/{id}: the revision is a written integer or absent', () => {
+  const query = (revision?: string) =>
+    deleteScheduleSchema.shape.query.safeParse(revision === undefined ? {} : { revision });
+  it('takes 0 and other integers as written, and no revision at all', () => {
+    expect(query('0')).to.deep.include({ success: true, data: { revision: 0 } });
+    expect(query('12')).to.deep.include({ success: true, data: { revision: 12 } });
+    expect(query()).to.deep.include({ success: true, data: {} });
+  });
+  it('refuses a blank, a sign, a fraction or text, which Number() would have read as a revision', () => {
+    for (const bad of ['', ' ', '-1', '1.5', '1e3', 'abc', '0x10']) expect(query(bad).success, JSON.stringify(bad)).to.equal(false);
   });
 });

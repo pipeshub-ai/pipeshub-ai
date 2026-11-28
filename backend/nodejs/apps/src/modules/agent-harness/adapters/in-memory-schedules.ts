@@ -15,6 +15,7 @@ import {
   type ScheduleChangedFrom,
   scheduleRevision,
   scheduleChanged,
+  type ScheduleRunnerKind,
 } from '../domain/schedules';
 import type {
   ScheduleEraser,
@@ -241,12 +242,15 @@ export class InMemoryScheduleStore implements ScheduleStore, ScheduleEraser {
     expectedNextFireAt: number,
     nextFireAt: number | null,
     disable?: string,
+    expectedRevision?: number,
   ): Promise<ScheduleFiring | null> {
     const schedule = this.schedules.get(firing.scheduleId);
     if (
       schedule?.orgId !== firing.orgId ||
       schedule.status !== 'active' ||
       schedule.nextFireAt !== expectedNextFireAt ||
+      (expectedRevision !== undefined &&
+        scheduleRevision(schedule) !== expectedRevision) ||
       (firing.status === 'pending' && schedule.skipNextAt === firing.slotAt) ||
       this.slots.has(slotOf(firing))
     ) {
@@ -525,6 +529,24 @@ export class InMemoryScheduleStore implements ScheduleStore, ScheduleEraser {
     return copy(context);
   }
 
+  async fixRunner(
+    orgId: string,
+    firingId: string,
+    runner: ScheduleRunnerKind,
+    from?: ScheduleRunnerKind,
+  ): Promise<ScheduleRunnerKind | null> {
+    const firing = this.firingsById.get(firingId);
+    if (firing?.orgId !== orgId) return null;
+    if (
+      firing.runner === undefined ||
+      (from !== undefined && firing.runner === from)
+    ) {
+      this.firingsById.set(firingId, { ...firing, runner });
+      return runner;
+    }
+    return firing.runner;
+  }
+
   async countDelivery(
     orgId: string,
     scheduleId: string,
@@ -596,6 +618,8 @@ export class InMemoryScheduleStore implements ScheduleStore, ScheduleEraser {
         status: 'paused',
         statusReason: reason,
         nextFireAt: null,
+        // A change an edit must see: one read before it is refused SCHEDULE_CHANGED.
+        revision: scheduleRevision(schedule) + 1,
         updatedAt: now,
       });
       count += 1;
@@ -619,6 +643,8 @@ export class InMemoryScheduleStore implements ScheduleStore, ScheduleEraser {
         nextFireAt: null,
         webhookTokenHash: null,
         webhookSigningKey: null,
+        // A change an edit must see: an edit read before it cannot write the erased content back.
+        revision: scheduleRevision(schedule) + 1,
         updatedAt: now,
       });
       count += 1;

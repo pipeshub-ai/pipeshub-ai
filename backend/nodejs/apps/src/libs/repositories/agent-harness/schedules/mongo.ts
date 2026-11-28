@@ -15,6 +15,7 @@ import {
   leavesTombstone,
   scheduleChanged,
   type ScheduleChangedFrom,
+  type ScheduleRunnerKind,
 } from '../../../../modules/agent-harness/domain/schedules';
 import type {
   ScheduleEraser,
@@ -458,6 +459,7 @@ export class MongoScheduleStore implements ScheduleStore, ScheduleEraser {
     expectedNextFireAt: number,
     nextFireAt: number | null,
     disable?: string,
+    expectedRevision?: number,
   ): Promise<ScheduleFiring | null> {
     try {
       return await inMongoTransaction(async (session) => {
@@ -467,6 +469,9 @@ export class MongoScheduleStore implements ScheduleStore, ScheduleEraser {
             orgId: firing.orgId,
             status: 'active',
             nextFireAt: expectedNextFireAt,
+            ...(expectedRevision !== undefined
+              ? atRevision(expectedRevision)
+              : {}),
             // A slot its owner asked to skip after the firer read it is never claimed to run (ADR-SCH-03 D4).
             ...(firing.status === 'pending'
               ? { skipNextAt: { $ne: firing.slotAt } }
@@ -777,6 +782,31 @@ export class MongoScheduleStore implements ScheduleStore, ScheduleEraser {
     return existing.context;
   }
 
+  async fixRunner(
+    orgId: string,
+    firingId: string,
+    runner: ScheduleRunnerKind,
+    from?: ScheduleRunnerKind,
+  ): Promise<ScheduleRunnerKind | null> {
+    const unset = { runner: { $exists: false } };
+    await AgentScheduleFiringModel.updateOne(
+      {
+        _id: firingId,
+        orgId,
+        ...(from !== undefined ? { $or: [unset, { runner: from }] } : unset),
+      },
+      { $set: { runner } },
+      MAJORITY_WRITE,
+    );
+    const found = await AgentScheduleFiringModel.findOne({
+      _id: firingId,
+      orgId,
+    })
+      .read('primary')
+      .lean<ScheduleFiringDocument>();
+    return found === null ? null : (found.runner ?? null);
+  }
+
   async countDelivery(
     orgId: string,
     scheduleId: string,
@@ -873,6 +903,8 @@ export class MongoScheduleStore implements ScheduleStore, ScheduleEraser {
           nextFireAt: null,
           updatedAt: now,
         },
+        // A change an edit must see: one read before it is refused SCHEDULE_CHANGED, never written back over it.
+        $inc: { revision: 1 },
       },
     );
     return result.modifiedCount;
@@ -893,6 +925,8 @@ export class MongoScheduleStore implements ScheduleStore, ScheduleEraser {
         webhookSigningKey: null,
         updatedAt: now,
       },
+      // A change an edit must see: an edit read before it cannot write the erased content back.
+      $inc: { revision: 1 },
     });
     return result.modifiedCount;
   }

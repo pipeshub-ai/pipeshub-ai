@@ -110,6 +110,19 @@ describe('stream-lifecycle', () => {
       expect(onAbandon.calledOnce).to.be.true
     })
 
+    it('a detached run whose stream never opened is never stopped later over its recorded failure', () => {
+      const clock = sinon.useFakeTimers()
+      const res = createMockRes()
+      const onAbandon = sinon.stub()
+      const handle = attachUpstreamAbort(res, onAbandon, CAP_MS, { detached: true })
+      handle.dispose()
+      clock.tick(CAP_MS * 2)
+      res.emit('close')
+      clock.tick(CAP_MS * 2)
+      expect(onAbandon.called).to.be.false
+      expect(handle.isAborted()).to.be.false
+    })
+
     it('a detached run that finishes before its cap is never stopped', () => {
       const clock = sinon.useFakeTimers()
       const res = createMockRes()
