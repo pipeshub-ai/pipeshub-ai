@@ -304,6 +304,11 @@ from app.services.graph_db.interface.graph_db_provider import (
     promoted_duplicate_extraction_status,
     requested_scope_ids,
 )
+from app.services.graph_db.property_projection_queries import (
+    CHANGE_INDEX_FIELDS,
+    build_records_needing_projection_aql,
+    build_records_updated_since_aql,
+)
 from app.services.graph_db.push_claim import (
     KB_DELETING_STATUS,
     PushClaim,
@@ -7389,6 +7394,71 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return await self.update_node_fields_if(
             key, CollectionNames.RECORDS.value, {"recordProps": dict(values), **controls}, conditions,
             transaction, replace_objects=True,
+        )
+
+    async def get_records_updated_since(
+        self,
+        connector_id: str,
+        org_id: str,
+        *,
+        since: int | float,
+        after_id: str,
+        props_hash: str,
+        props_gen: int,
+        limit: int,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """See :meth:`IGraphDBProvider.get_records_updated_since`."""
+        rows = await self.http_client.execute_aql(
+            build_records_updated_since_aql(),
+            bind_vars={
+                "connector_id": connector_id, "org_id": org_id, "since": since, "after_id": after_id,
+                "props_hash": props_hash, "props_gen": props_gen, "limit": max(1, int(limit)),
+            },
+            txn_id=transaction,
+        )
+        return [dict(row) for row in rows or []]
+
+    async def get_records_needing_projection(
+        self,
+        connector_id: str,
+        org_id: str,
+        *,
+        after_key: str | None,
+        props_hash: str,
+        props_gen: int,
+        limit: int,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """See :meth:`IGraphDBProvider.get_records_needing_projection`."""
+        bind_vars: dict[str, Any] = {
+            "connector_id": connector_id, "org_id": org_id, "props_hash": props_hash,
+            "props_gen": props_gen, "limit": max(1, int(limit)),
+        }
+        if after_key:
+            bind_vars["after_key"] = after_key
+        rows = await self.http_client.execute_aql(
+            build_records_needing_projection_aql(has_after_key=bool(after_key)),
+            bind_vars=bind_vars,
+            txn_id=transaction,
+        )
+        return [dict(row) for row in rows or []]
+
+    async def ensure_record_change_index(self) -> None:
+        """See :meth:`IGraphDBProvider.ensure_record_change_index`. Built in the background: a foreground build
+        of an index over every record holds writes to the collection for as long as it takes."""
+        if not await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value, list(CHANGE_INDEX_FIELDS), in_background=True,
+        ):
+            raise RuntimeError("Could not create the record change index")
+
+    async def record_change_index_online(self) -> bool:
+        """See :meth:`IGraphDBProvider.record_change_index_online`."""
+        indexes = await self.http_client.get_indexes(CollectionNames.RECORDS.value)
+        return any(
+            index.get("type") == "persistent" and index.get("fields") == list(CHANGE_INDEX_FIELDS)
+            and not index.get("isBuilding") and not index.get("sparse")
+            for index in indexes
         )
 
     async def create_node_if_absent(

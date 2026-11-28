@@ -243,7 +243,7 @@ CLASSIFICATION: dict[str, str] = {
     "copy_named_entity_mentions": _E, "add_user_to_all_team": _E, "ensure_all_team_with_users": _E,
     "move_taxonomy_edges": _E, "migrate_legacy_relation_edge": _E, "split_link_edges": _E,
     # ---- exempt
-    "execute_query": "passthrough", "ensure_schema": "ddl", "ensure_pipeline_schema": "ddl",
+    "execute_query": "passthrough", "ensure_schema": "ddl", "ensure_pipeline_schema": "ddl", "ensure_record_change_index": "ddl",
     "is_trash_walk_index_ready": "ddl",
 }
 

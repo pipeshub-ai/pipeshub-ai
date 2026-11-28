@@ -207,6 +207,10 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_records_with_refresh_intent": (Rule.LIVE, "the intent sweep's read leaves the trash out; it re-reads each record under its lease"),
     "claim_push_record": (Rule.WRITE, "claims a push of a live record only: a trashed record never matches"),
     "retag_push_record": (Rule.WRITE, "retags a live pushed record only"),
+    "ensure_record_change_index": (Rule.WRITE, "creates an index; reads and writes no record"),
+    "record_change_index_online": (Rule.WRITE, "reads an index state; reads no record"),
+    "get_records_updated_since": (Rule.LIVE, "the projection sweep's change seek: live records of one connector and org"),
+    "get_records_needing_projection": (Rule.LIVE, "the projection sweep's walk: live records of one connector and org"),
     "set_record_properties": (Rule.WRITE, "writes projected values onto a record the caller read live; on a trashed one they are inert"),
     "compare_and_set_record_fields": (Rule.WRITE, "writes only records still on the given contentRev"),
     "stage_states_delete_for_virtual_records": (

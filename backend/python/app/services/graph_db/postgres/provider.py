@@ -34,6 +34,7 @@ from app.services.graph_db.postgres.lookups import LookupsMixin
 from app.services.graph_db.postgres.organizations import OrganizationsMixin
 from app.services.graph_db.postgres.people import PeopleMixin
 from app.services.graph_db.postgres.permissions import PermissionsMixin
+from app.services.graph_db.postgres.property_sweep import PropertySweepMixin
 from app.services.graph_db.postgres.records import RecordsMixin
 from app.services.graph_db.postgres.sync_state import SyncStateMixin
 from app.services.graph_db.postgres.taxonomy import TaxonomyMixin
@@ -44,7 +45,7 @@ if TYPE_CHECKING:
 
 __all__ = ["NotImplementedInPostgres", "PostgresGraphProvider", "unimplemented"]
 
-_MIXINS = (CodeGraphMixin, RecordsMixin, HierarchyMixin, HubMixin, TrashMixin, LookupsMixin, DeleteMixin, PeopleMixin, OrganizationsMixin, IdentityMixin, PermissionsMixin, KbMixin, KbListingsMixin, KhBrowseMixin, KhListingMixin, SyncStateMixin, EntityMixin, EntityReadsMixin, EntityAccessMixin, TaxonomyMixin, LegacyMigrationMixin, CoreMixin)
+_MIXINS = (CodeGraphMixin, RecordsMixin, PropertySweepMixin, HierarchyMixin, HubMixin, TrashMixin, LookupsMixin, DeleteMixin, PeopleMixin, OrganizationsMixin, IdentityMixin, PermissionsMixin, KbMixin, KbListingsMixin, KhBrowseMixin, KhListingMixin, SyncStateMixin, EntityMixin, EntityReadsMixin, EntityAccessMixin, TaxonomyMixin, LegacyMigrationMixin, CoreMixin)
 for _m in _MIXINS:
     instrument_org_methods(_m)  # the interface does it for methods a subclass defines itself, not for inherited ones
     instrument_writers(_m)  # the kg registry's guard names the provider method that writes the graph

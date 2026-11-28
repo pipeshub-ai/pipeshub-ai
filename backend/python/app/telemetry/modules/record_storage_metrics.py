@@ -175,3 +175,31 @@ PROPERTY_VALUES_DROPPED = METRICS_BACKEND.counter(
 
 def record_property_value_dropped() -> None:
     PROPERTY_VALUES_DROPPED.inc()
+
+
+# Records the property sweep looked at, by outcome: the projection's own (written, current, failed,
+# fenced_by_generation, superseded, content_changed, contention, no_stamp), or skipped_busy (a record being
+# indexed is left to that run) and error (an unexpected exception for that record).
+PROPERTY_SWEEP_ROWS = METRICS_BACKEND.counter(
+    "pipeshub_record_property_sweep_rows_total",
+    "Records the property projection sweep processed, by outcome",
+    ["outcome"],
+)
+
+
+def record_property_sweep_row(outcome: str) -> None:
+    PROPERTY_SWEEP_ROWS.inc(outcome)
+
+
+# kind: seek (records written since the watermark), walk (every stale record of a connector),
+# walk_index_unavailable (a walk run because the change index is absent or still building).
+# outcome: done, stopped (lease or epoch lost, or the flag turned off), not_leader, not_due, failed.
+PROPERTY_SWEEP_LAPS = METRICS_BACKEND.counter(
+    "pipeshub_record_property_sweep_laps_total",
+    "Property projection sweep laps over one scope, by kind and outcome",
+    ["kind", "outcome"],
+)
+
+
+def record_property_sweep_lap(kind: str, outcome: str) -> None:
+    PROPERTY_SWEEP_LAPS.inc(kind, outcome)

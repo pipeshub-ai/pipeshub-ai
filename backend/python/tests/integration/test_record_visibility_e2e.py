@@ -510,6 +510,8 @@ EXERCISED_HERE: dict[str, str] = {
     "get_file_record_by_id": "test_point_reads_return_the_trash_with_its_state",
     "filter_nodes_with_permission_role": "test_location_trail_stops_at_a_trashed_folder",
     "get_organization_record_reach": "test_organization_record_reach",
+    "get_records_updated_since": "test_records_selected_for_property_projection",
+    "get_records_needing_projection": "test_records_selected_for_property_projection",
 }
 
 
@@ -921,6 +923,21 @@ async def test_organization_record_reach(world: _World) -> None:
         assert reach[key]["records"] == 1
     finally:
         await world.graph.delete_nodes_and_edges([key], orgs)
+
+
+async def test_records_selected_for_property_projection(world: _World) -> None:
+    g, records = world.graph, CollectionNames.RECORDS.value
+    for name in ("live", "trashed"):
+        await g.update_node(world.ids[name], records, {"updatedAtTimestamp": 5_000, "sourceLastModifiedTimestamp": None})
+    seek = await g.get_records_updated_since(
+        world.connector_id, world.org_id, since=0, after_id="", props_hash="h", props_gen=1, limit=100,
+    )
+    walk = await g.get_records_needing_projection(
+        world.connector_id, world.org_id, after_key=None, props_hash="h", props_gen=1, limit=100,
+    )
+    for got in (seek, walk):
+        keys = {row.get("_key") or row.get("id") for row in got}
+        assert world.ids["live"] in keys and world.ids["trashed"] not in keys
 
 
 async def test_kb_listings(world: _World) -> None:

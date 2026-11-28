@@ -2699,6 +2699,52 @@ class IGraphDBProvider(ABC):
         """
         raise NotImplementedError
 
+    async def get_records_updated_since(
+        self,
+        connector_id: str,
+        org_id: str,
+        *,
+        since: int | float,
+        after_id: str,
+        props_hash: str,
+        props_gen: int,
+        limit: int,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """Live records of the connector whose platform write time is at or after ``since`` and whose
+        projected property values are out of date for ``(props_hash, props_gen)``, as record documents.
+
+        Ordered by ``(updatedAtTimestamp, id)``; a record sorts after the cursor ``(since, after_id)``
+        when its time is later, or equal and its id is greater. Raises when the read fails (an empty
+        list means there is nothing, never that the read failed). Implemented for ArangoDB, Neo4j and PostgreSQL.
+        """
+        raise NotImplementedError
+
+    async def get_records_needing_projection(
+        self,
+        connector_id: str,
+        org_id: str,
+        *,
+        after_key: str | None,
+        props_hash: str,
+        props_gen: int,
+        limit: int,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """Live records of the connector, by id after ``after_key``, whose projected property values are
+        out of date for ``(props_hash, props_gen)``, as record documents. Raises when the read fails."""
+        raise NotImplementedError
+
+    async def ensure_record_change_index(self) -> None:
+        """Create the ``(connectorId, updatedAtTimestamp)`` index on records if no equivalent exists, without
+        blocking writes where the engine can build in the background. An equivalent index under another
+        name is not an error."""
+        raise NotImplementedError
+
+    async def record_change_index_online(self) -> bool:
+        """Whether that index exists and is built. False while it is absent, populating or failed."""
+        raise NotImplementedError
+
     @abstractmethod
     async def create_node_if_absent(
         self,

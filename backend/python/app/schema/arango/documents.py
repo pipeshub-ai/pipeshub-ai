@@ -272,6 +272,8 @@ app_schema = {
             "storedContentHealFailures": {"type": ["integer", "null"]},
             "storedContentHealAttempts": {"type": ["integer", "null"]},
             "storedContentHealExhausted": {"type": ["boolean", "null"]},
+            "propSweepEpoch": {"type": ["integer", "null"]},
+            "propSweep": {"type": ["string", "null"]},
             "rootMembershipRequested": {"type": ["boolean", "null"]},
             "createdBy": {"type": ["string", "null"]},
             "updatedBy": {"type": ["string", "null"]},
@@ -319,7 +321,7 @@ app_schema = {
 
 # Raised by one with every change to ``app_schema``; applied as ``RECORD_SCHEMA_GENERATION`` is (see below).
 # tests/unit/schema/test_record_schema_generation.py pins a hash of the rule to this number.
-APP_SCHEMA_GENERATION = 1
+APP_SCHEMA_GENERATION = 2
 app_schema["rule"]["$comment"] = f"pipeshub-app-schema gen={APP_SCHEMA_GENERATION}"
 
 # Record schema for ArangoDB

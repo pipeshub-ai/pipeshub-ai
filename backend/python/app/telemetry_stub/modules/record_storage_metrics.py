@@ -69,5 +69,19 @@ def record_property_value_dropped() -> None:
     return None
 
 
+PROPERTY_SWEEP_ROWS = NOOP
+
+
+def record_property_sweep_row(outcome: str) -> None:
+    return None
+
+
+PROPERTY_SWEEP_LAPS = NOOP
+
+
+def record_property_sweep_lap(kind: str, outcome: str) -> None:
+    return None
+
+
 def record_recovery_org_pass(job: str, outcome: str, count: int = 1) -> None:
     return None

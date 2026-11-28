@@ -68,6 +68,9 @@ from app.modules.indexing.named_entity_persist_retry import (
     retry_pending_named_entity_persists,
 )
 from app.modules.indexing.named_entity_sweep import run_named_entity_sweep_loop
+from app.modules.indexing.property_projection_sweep import (
+    run_property_projection_sweep_loop,
+)
 from app.modules.indexing.rate_limit_deferral import (
     deferral_due,
     is_deferred_until_later,
@@ -3399,6 +3402,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             run_scope_sweep_loop(app_container, graph_provider, _all_org_ids),
             worker_loop,
         )
+        app.state.property_sweep_future = asyncio.run_coroutine_threadsafe(
+            run_property_projection_sweep_loop(app_container, graph_provider, _all_org_ids),
+            worker_loop,
+        )
     else:
         app.state.recovery_task = spawn_detached(
             run_stale_recovery_loop(app_container, graph_provider)
@@ -3417,6 +3424,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         app.state.scope_sweep_task = spawn_detached(
             run_scope_sweep_loop(app_container, graph_provider, _all_org_ids)
+        )
+        app.state.property_sweep_task = spawn_detached(
+            run_property_projection_sweep_loop(app_container, graph_provider, _all_org_ids)
         )
 
     app.state.pdf_page_limit_audit_task = spawn_detached(run_pdf_page_limit_audit_once(app_container, graph_provider))
@@ -3611,6 +3621,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             pass
         except Exception as e:
             logger.error(f"❌ Error during named entity sweep future shutdown: {str(e)}")
+
+    property_task = getattr(app.state, "property_sweep_task", None)
+    if property_task:
+        if not property_task.done():
+            property_task.cancel()
+        try:
+            await property_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Error during property projection sweep shutdown: {str(e)}")
+
+    property_future = getattr(app.state, "property_sweep_future", None)
+    if property_future:
+        if not property_future.done():
+            property_future.cancel()
+        try:
+            await asyncio.wrap_future(property_future)
+        except (asyncio.CancelledError, RuntimeError):
+            pass
+        except Exception as e:
+            logger.error(f"Error during property projection sweep future shutdown: {str(e)}")
 
     completion_task = getattr(app.state, "named_entity_completion_task", None)
     if completion_task:

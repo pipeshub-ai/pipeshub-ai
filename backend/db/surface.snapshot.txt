@@ -1957,8 +1957,10 @@ func graph.records_by_name(text,text,integer) owner=pipeshub_vetted_graph secdef
 func graph.records_by_revision(text[],text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=fabfcd807dfc2dc04e8e24e2166fe227 ext=-
 func graph.records_by_virtual_id(text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=7b37fec02326bf5e1b55832b1a484cb7 ext=-
 func graph.records_by_weburl(text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=3b5614297fbcd4a23631d756abcadd7b ext=-
+func graph.records_needing_projection(text,text,bigint,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=7a0f21add4638f35128ab59735077dff ext=-
 func graph.records_page_by_connector(text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=c8e66f78a7a13bd1a9d13be306081920 ext=-
 func graph.records_unsupported_page(text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=f68e3b77011ee2fcc824ba844e39a954 ext=-
+func graph.records_updated_since(text,numeric,text,bigint,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=07a195aa756fedd39377c21154596f44 ext=-
 func graph.ref_links(text[],text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=e5367feedf20b20cf09a1f9442128831 ext=-
 func graph.stage_states_by_revision(text,text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=60eaee6b0646cff685230c159b49ebff ext=-
 func graph.stage_states_page(text,text,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=a3208be1a7eb86259c302986beb3a97f ext=-
@@ -2144,10 +2146,14 @@ funcacl graph.records_by_virtual_id(text[]) pipeshub_query EXECUTE
 funcacl graph.records_by_weburl(text[]) pipeshub_connectors EXECUTE
 funcacl graph.records_by_weburl(text[]) pipeshub_indexing EXECUTE
 funcacl graph.records_by_weburl(text[]) pipeshub_query EXECUTE
+funcacl graph.records_needing_projection(text,text,bigint,text,integer) pipeshub_connectors EXECUTE
+funcacl graph.records_needing_projection(text,text,bigint,text,integer) pipeshub_indexing EXECUTE
 funcacl graph.records_page_by_connector(text,text,integer) pipeshub_connectors EXECUTE
 funcacl graph.records_page_by_connector(text,text,integer) pipeshub_indexing EXECUTE
 funcacl graph.records_page_by_connector(text,text,integer) pipeshub_query EXECUTE
 funcacl graph.records_unsupported_page(text,text,integer) pipeshub_connectors EXECUTE
+funcacl graph.records_updated_since(text,numeric,text,bigint,text,integer) pipeshub_connectors EXECUTE
+funcacl graph.records_updated_since(text,numeric,text,bigint,text,integer) pipeshub_indexing EXECUTE
 funcacl graph.ref_links(text[],text,text,integer) pipeshub_connectors EXECUTE
 funcacl graph.ref_links(text[],text,text,integer) pipeshub_indexing EXECUTE
 funcacl graph.ref_links(text[],text,text,integer) pipeshub_query EXECUTE
@@ -2354,6 +2360,7 @@ index graph.nodes_person_name_trgm on graph.nodes unique=false exclusion=false v
 index graph.nodes_person_parts on graph.nodes unique=false exclusion=false valid=true def=3426868b8c8675e27958efabae345f13
 index graph.nodes_person_source_key on graph.nodes unique=false exclusion=false valid=true def=d323e5dcb2e3f071a2800438a9566e43
 index graph.nodes_pkey on graph.nodes unique=true exclusion=false valid=true def=de1eb284c514a58aa3faf661f3ec3508
+index graph.nodes_record_change on graph.nodes unique=false exclusion=false valid=true def=777fb834c8f1b11be623609f14341d37
 index graph.nodes_record_connector_c on graph.nodes unique=false exclusion=false valid=true def=4563f2292eb5e031c329251800726514
 index graph.nodes_record_connector_id on graph.nodes unique=false exclusion=false valid=true def=e9822c643d639761d85db36c3c97c7b7
 index graph.nodes_record_external on graph.nodes unique=false exclusion=false valid=true def=722f3304e57357338b93de57feed4e54

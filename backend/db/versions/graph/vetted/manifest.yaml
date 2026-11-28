@@ -589,6 +589,71 @@ functions:
           AND (p_after = '' OR n.id COLLATE ucs_basic > p_after COLLATE ucs_basic) AND coalesce(n.doc->>'isDeleted', '') <> 'true'
         ORDER BY n.doc->>'connectorId', n.id COLLATE ucs_basic LIMIT p_limit;      -- the connector in the order, as records_page_by_connector: under row-level security the planner would sort the whole connector
 
+# ---- the property projection sweep (graph_0024) -------------------------------------------------------------------------------------------
+# The sweep reads, per connector, the live records whose projected property values are out of date for (set hash, generation): a record with a usable
+# stamp (its source's modified time, else the platform write time; a number above 0) that was projected for another set (propsSet), an older generation
+# (propsGen) or an older stamp (propsSrc); a control that is not a number counts as missing. The test is on jsonb values, with no cast (check 67), and
+# is the reference the sweep tests state (tests/unit/modules/indexing/sweep_world.py: stale).
+
+  # The stale records of a connector whose platform write time (updatedAtTimestamp) is after the cursor (p_since, p_after_id), in (time, id) order, up to p_limit
+  # (index nodes_record_change); the time in the order, so that a page is read from the index past its cursor.
+  - name: graph.records_updated_since
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing]
+    args:
+      - {name: p_connector_id, type: text, length: [1, 200]}
+      - {name: p_since, type: numeric}
+      - {name: p_props_hash, type: text, length: [1, 200]}
+      - {name: p_props_gen, type: bigint, range: [0, 2147483647]}
+      - {name: p_after_id, type: text, default: "''", length: [0, 200]}
+      - {name: p_limit, type: int, default: "500", range: [1, 1000]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
+        CROSS JOIN LATERAL (SELECT CASE WHEN jsonb_typeof(n.doc->'sourceLastModifiedTimestamp') IS NULL OR jsonb_typeof(n.doc->'sourceLastModifiedTimestamp') = 'null'
+            THEN n.doc->'updatedAtTimestamp' ELSE n.doc->'sourceLastModifiedTimestamp' END AS s) st
+        WHERE n.org_id = v_org AND n.coll = 'records' AND n.doc->>'connectorId' = p_connector_id
+          AND jsonb_typeof(n.doc->'updatedAtTimestamp') = 'number'
+          AND (n.doc->'updatedAtTimestamp', n.id COLLATE ucs_basic) > (to_jsonb(p_since), p_after_id COLLATE ucs_basic)
+          AND n.doc->'isDeleted' IS DISTINCT FROM to_jsonb(true)
+          AND jsonb_typeof(st.s) = 'number' AND st.s > to_jsonb(0)
+          AND (n.doc->'propsSet' IS DISTINCT FROM to_jsonb(p_props_hash)
+               OR jsonb_typeof(n.doc->'propsGen') IS DISTINCT FROM 'number' OR n.doc->'propsGen' < to_jsonb(p_props_gen)
+               OR jsonb_typeof(n.doc->'propsSrc') IS DISTINCT FROM 'number' OR n.doc->'propsSrc' < st.s)
+        ORDER BY n.doc->>'connectorId', n.doc->'updatedAtTimestamp', n.id COLLATE ucs_basic LIMIT p_limit;      -- the connector and time in the order: under row-level security the planner would sort the whole connector
+
+  # The stale records of a connector, in byte order of the id after p_after, up to p_limit (index nodes_record_connector_c, as records_page_by_connector).
+  - name: graph.records_needing_projection
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing]
+    args:
+      - {name: p_connector_id, type: text, length: [1, 200]}
+      - {name: p_props_hash, type: text, length: [1, 200]}
+      - {name: p_props_gen, type: bigint, range: [0, 2147483647]}
+      - {name: p_after, type: text, default: "''", length: [0, 200]}
+      - {name: p_limit, type: int, default: "500", range: [1, 1000]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
+        CROSS JOIN LATERAL (SELECT CASE WHEN jsonb_typeof(n.doc->'sourceLastModifiedTimestamp') IS NULL OR jsonb_typeof(n.doc->'sourceLastModifiedTimestamp') = 'null'
+            THEN n.doc->'updatedAtTimestamp' ELSE n.doc->'sourceLastModifiedTimestamp' END AS s) st
+        WHERE n.org_id = v_org AND n.coll = 'records' AND n.doc->>'connectorId' = p_connector_id
+          AND (p_after = '' OR n.id COLLATE ucs_basic > p_after COLLATE ucs_basic)
+          AND n.doc->'isDeleted' IS DISTINCT FROM to_jsonb(true)
+          AND jsonb_typeof(st.s) = 'number' AND st.s > to_jsonb(0)
+          AND (n.doc->'propsSet' IS DISTINCT FROM to_jsonb(p_props_hash)
+               OR jsonb_typeof(n.doc->'propsGen') IS DISTINCT FROM 'number' OR n.doc->'propsGen' < to_jsonb(p_props_gen)
+               OR jsonb_typeof(n.doc->'propsSrc') IS DISTINCT FROM 'number' OR n.doc->'propsSrc' < st.s)
+        ORDER BY n.doc->>'connectorId', n.id COLLATE ucs_basic LIMIT p_limit;      -- the connector in the order, as records_page_by_connector
+
 # ---- the storage documents a knowledge-base push may inline (graph_0013) ------------------------------------------------------------------
 # Same reason as above. A storage document belongs to one org (the storage service reads it by org and id), so the links that matter for it are those of that org.
 
