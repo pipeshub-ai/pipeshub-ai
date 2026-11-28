@@ -4,9 +4,22 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from pathlib import Path
 
+TEST_SECRET_KEY = "78aa78e734a5383b62cd145ce0e7037fa5496d3b899200385dd1cc44b2f70421"
+
+
+def ensure_test_secret_key(env: dict[str, str] | os._Environ[str]) -> None:
+    """The model gateway keys the prompt cache with a key derived from SECRET_KEY; outside pytest no conftest sets it, so
+    the recorder sets the test value tests/conftest.py does when no secret is given: SECRET_KEY unset or empty, and no
+    SECRET_KEY_FILE (a file names the secret, as the key ring reads it)."""
+    if not env.get("SECRET_KEY") and not (env.get("SECRET_KEY_FILE") or "").strip():
+        env["SECRET_KEY"] = TEST_SECRET_KEY
+
+
+ensure_test_secret_key(os.environ)
 _BACKEND_PYTHON = Path(__file__).resolve().parents[3]
 if str(_BACKEND_PYTHON) not in sys.path:
     sys.path.insert(0, str(_BACKEND_PYTHON))

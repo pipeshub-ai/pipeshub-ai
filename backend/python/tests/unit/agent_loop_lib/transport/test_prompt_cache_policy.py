@@ -3,6 +3,7 @@ and where each cache parameter may be sent."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -27,6 +28,13 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 BACKEND = Path(__file__).resolve().parents[4]
+
+
+@pytest.fixture(autouse=True)
+def _secret_by_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ring_secret reads SECRET_KEY_FILE first, so an inherited one would override every SECRET_KEY set here.
+    monkeypatch.delenv("SECRET_KEY_FILE", raising=False)
+    monkeypatch.setenv("SECRET_KEY", "d" * 64)
 
 
 class TestSettings:
@@ -61,7 +69,7 @@ class TestRoutingKey:
         key = routing_key("org-1", "conv-1", 8)
         assert key == routing_key("org-1", "conv-1", 8)
         prefix, org, shard = key.split(":")
-        assert prefix == "pipeshub" and len(org) == 12 and "org-1" not in key and 0 <= int(shard) < 8
+        assert prefix == "pipeshub" and len(org) == 16 and "org-1" not in key and 0 <= int(shard) < 8
 
     def test_a_prompt_family_gets_keys_of_its_own(self) -> None:
         key = routing_key("org-1", "record-1", 8, family="named-entities")
@@ -77,7 +85,33 @@ class TestRoutingKey:
         assert mine != routing_key("org-1", "conv-1", 8), "the org's own route is not a person's"
         assert mine != routing_key("org-2", "conv-1", 8, principal_id="user-1")
         prefix, scope, _shard = mine.split(":")
-        assert prefix == "pipeshub" and len(scope) == 12 and "user-1" not in mine and "org-1" not in mine
+        assert prefix == "pipeshub" and len(scope) == 16 and "user-1" not in mine and "org-1" not in mine
+
+    def test_the_scope_is_keyed_by_the_server_secret(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SECRET_KEY", "a" * 64)
+        scope = routing_key("org-1", "conv-1", 8, principal_id="user-1").split(":")[1]
+        assert scope == routing_key("org-1", "conv-1", 8, principal_id="user-1").split(":")[1]
+        for plain in ("org-1\x00user-1", "org-1"):
+            assert not hashlib.sha256(plain.encode()).hexdigest().startswith(scope[:12]), "computable from the ids"
+        monkeypatch.setenv("SECRET_KEY", "b" * 64)
+        assert scope != routing_key("org-1", "conv-1", 8, principal_id="user-1").split(":")[1]
+
+    def test_a_secret_given_by_file_gives_the_same_key(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setenv("SECRET_KEY", "c" * 64)
+        by_value = routing_key("org-1", "conv-1", 8, principal_id="user-1")
+        secret_file = tmp_path / "secret-key"
+        secret_file.write_text("c" * 64 + "\n", encoding="utf-8")
+        secret_file.chmod(0o400)
+        monkeypatch.setenv("SECRET_KEY", "")
+        monkeypatch.setenv("SECRET_KEY_FILE", str(secret_file))
+        assert routing_key("org-1", "conv-1", 8, principal_id="user-1") == by_value
+        assert routing_key("org-1", "conv-1", 8, principal_id="user-1") == by_value
+
+    def test_no_secret_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SECRET_KEY", raising=False)
+        monkeypatch.delenv("SECRET_KEY_FILE", raising=False)
+        with pytest.raises(ValueError, match="SECRET_KEY"):
+            routing_key("org-1", "conv-1", 8, principal_id="user-1")
 
     def test_conversations_spread_over_the_shards(self) -> None:
         shards = {routing_key("org-1", f"conv-{i}", 8).rsplit(":", 1)[1] for i in range(200)}

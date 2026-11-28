@@ -109,8 +109,12 @@ def test_a_world_readable_file_is_used_with_a_warning_that_shows_no_key(
     path = _key_file(tmp_path, STRONG, "world", mode=0o644)
     with caplog.at_level(logging.WARNING):
         assert secret_key_ring({"SECRET_KEY_FILE": path}).current == STRONG
-    assert any("every account can read" in r.getMessage() and path in r.getMessage() for r in caplog.records)
-    assert all(STRONG not in r.getMessage() for r in caplog.records)
+    warned = [r for r in caplog.records if "every account can read" in r.getMessage()]
+    assert [r.getMessage() for r in warned] == ["SECRET_KEY_FILE names a file every account can read: make it mode 0400"]
+    # neither the key nor where it lives reaches the record, formatted or in its arguments
+    for r in caplog.records:
+        assert STRONG not in r.getMessage() and path not in r.getMessage()
+        assert all(STRONG not in str(a) and path not in str(a) for a in (r.args or ()))
 
 
 def test_the_process_ring_and_its_checks_see_the_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

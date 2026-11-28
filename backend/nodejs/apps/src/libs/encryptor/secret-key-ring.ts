@@ -124,7 +124,7 @@ export function ringSecret(name: string, env: Env = process.env): string {
     // Not refused: Kubernetes and Docker set a secret's mode themselves. Every account on the host can read it.
     warnedPaths.add(path);
     process.emitWarning(
-      `${fileEnv} names ${path}, which every account can read: make it mode 0400`,
+      `${fileEnv} names a file every account can read: make it mode 0400`,
     );
   }
   return secret;

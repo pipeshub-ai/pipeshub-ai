@@ -104,7 +104,7 @@ rotation steps all see the same key.
   and is refused by D4, as it is in the variable.
 - A file that is missing, unreadable or empty stops the start. The message names the variable and the path, never
   the content. An empty file is not read as "unset": a mount that went wrong must not look like a missing key.
-- A file every account can read is used, with one warning naming the path. It is not refused, because Kubernetes
+- A file every account can read is used, with one warning naming the variable (not the path). It is not refused, because Kubernetes
   and Docker set a secret's mode themselves (a pod's `fsGroup` adds group read).
 - D1 and D6 hold the file variables to the same rule as the values. The proxy, the broker and the legacy Docker API
   proxy refuse to start when given any of them. The Compose check refuses a sandbox-plane service that names one
