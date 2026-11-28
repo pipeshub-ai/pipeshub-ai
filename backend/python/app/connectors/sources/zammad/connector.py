@@ -469,6 +469,17 @@ class ZammadConnector(BaseConnector):
         get_client = getattr(self.external_client, "get_client", None)
         return getattr(get_client(), "token", None) if callable(get_client) else None
 
+    def _token_replaced(self, started_with: object, read: str, page: int) -> bool:
+        """Whether the stored token changed since a paged read started: pages read with two tokens are two
+        accounts' views, so the read is unfinished and what it decides stays as stored."""
+        if self._token_in_use() == started_with:
+            return False
+        self.logger.warning(
+            f"The Zammad access token was replaced while the {read} was read (page {page}); group and role "
+            "members and linked accounts stay as stored until the next sync reads them with the new one"
+        )
+        return True
+
     async def _still_holds(self, token: object) -> bool:
         """Whether ``token`` is still the one stored. A token saved while a request was refused only reaches
         the client on the next read of the config, so the client alone cannot tell."""
@@ -839,13 +850,8 @@ class ZammadConnector(BaseConnector):
         while True:
             response = await datasource.list_users(page=page, per_page=per_page)
 
-            if self._token_in_use() != self._users_listed_with:
-                # Pages read with two tokens are two accounts' views, not one complete list.
+            if self._token_replaced(self._users_listed_with, "user list", page):
                 outcome = ReadOutcome.INTERRUPTED
-                self.logger.warning(
-                    f"The Zammad access token was replaced while the user list was read (page {page}); group and "
-                    "role members and linked accounts stay as stored until the next sync reads them with the new one"
-                )
                 break
             if not response.success:
                 outcome = read_failure(response.status_code)
@@ -1047,6 +1053,7 @@ class ZammadConnector(BaseConnector):
         user_groups: List[Tuple[AppUserGroup, List[AppUser]]] = []
 
         datasource = await self._get_fresh_datasource()
+        started_with = self._token_in_use()
         page = 1
         per_page = 100
         self._filter_excluded_group_ids = None
@@ -1060,6 +1067,10 @@ class ZammadConnector(BaseConnector):
         while True:
             response = await datasource.list_groups(page=page, per_page=per_page)
 
+            if self._token_replaced(started_with, "group list", page):
+                listing_complete = False
+                self._incomplete.append(f"the group list ({ReadOutcome.INTERRUPTED.value})")
+                break
             if not response.success:
                 listing_complete = False
                 outcome = read_failure(response.status_code)
@@ -1167,11 +1178,14 @@ class ZammadConnector(BaseConnector):
     async def _fetch_roles(self) -> tuple[list[dict[str, Any]], ReadOutcome]:
         """Every role, with its permission names (``expand``), and how far the read got."""
         datasource = await self._get_fresh_datasource()
+        started_with = self._token_in_use()
         roles: list[dict[str, Any]] = []
         page = 1
         per_page = 100
         while True:
             response = await datasource.list_roles(page=page, per_page=per_page, expand=True)
+            if self._token_replaced(started_with, "role list", page):
+                return roles, ReadOutcome.INTERRUPTED
             if not response.success:
                 outcome = read_failure(response.status_code)
                 hint = ""

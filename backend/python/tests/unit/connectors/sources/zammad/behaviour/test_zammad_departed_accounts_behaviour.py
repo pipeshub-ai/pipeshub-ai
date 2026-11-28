@@ -24,6 +24,7 @@ from zammad_behaviour_fakes import (
     FakeHttpResponse,
     FakeStore,
     FakeZammadPeople,
+    agent_role,
 )
 
 from app.connectors.sources.zammad.connector import (
@@ -266,6 +267,37 @@ async def test_a_token_replaced_between_pages_of_the_user_list_keeps_members_as_
     assert world.linked() == EVERYONE
     assert world.directory.group_members == groups_before
     assert world.directory.role_members == roles_before
+
+
+@pytest.mark.parametrize("listing", ["roles", "groups"])
+async def test_a_token_replaced_between_pages_of_the_role_or_group_list_keeps_members_as_stored(
+    world: World, listing: str,
+) -> None:
+    """Two pages of roles or groups, the second read with another token: the read is unfinished, not complete."""
+    for i in range(100):  # one more page; none of these roles lets anyone read a ticket, none of these groups has users
+        if listing == "roles":
+            world.zammad.roles[1000 + i] = agent_role(1000 + i, name=f"Filler {i}", permissions=())
+        else:
+            world.zammad.groups[1000 + i] = {"id": 1000 + i, "name": f"Filler {i}", "active": True}
+    groups_before = {gid: set(m) for gid, m in world.directory.group_members.items()}
+    roles_before = {rid: set(m) for rid, m in world.directory.role_members.items()}
+    world.zammad.token = "old"
+    real_execute = world.zammad.execute
+
+    async def execute(request: HTTPRequest) -> FakeHttpResponse:
+        response = await real_execute(request)
+        if urlparse(request.url).path == f"/api/v1/{listing}" and int((request.query_params or {}).get("page", 1)) == 1:
+            world.zammad.token = "new"  # saved while page 1 was read
+        return response
+
+    world.zammad.execute = execute
+
+    parts = await world.sync_incomplete()
+
+    assert f"the {listing[:-1]} list (interrupted)" in parts
+    assert world.linked() == EVERYONE
+    assert {gid: world.directory.group_members[gid] for gid in groups_before} == groups_before
+    assert {rid: world.directory.role_members[rid] for rid in roles_before} == roles_before
 
 
 async def test_a_token_whose_own_account_cannot_be_read_withdraws_nobody(world: World) -> None:
