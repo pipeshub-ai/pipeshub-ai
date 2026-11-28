@@ -192,15 +192,22 @@ describe('docstore-migrate carriers without a database (R45-CARRY)', () => {
       calls.length = 0;
       await writeWithDocuments({} as never, 'agentWorkspaceHeads', [{ _id: 'h' }], new Set(), [c]);
       expect(calls).to.deep.equal([]);
-      const mongo = new FakeCarryMongo({ agentWorkspaceHeads: [{ _id: 'h', revision: 1 }], users: [{ _id: new ObjectId(U1), codingEngine: 'x' }] });
+      const mongo = new FakeCarryMongo({ agentWorkspaceHeads: [{ _id: 'h', revision: 1 }], users: [{ _id: new ObjectId(U1), codingEngine: 'x' }, { _id: new ObjectId(U2), codingEngine: 'z' }] });
       await copyCarried(noPg, mongo, [c]);
       expect(calls.map((x) => x.collection), 'the carrier step copies only what is not written with the documents').to.deep.equal(['agentWorkspaceHeads']);
       calls.length = 0;
       await applyCarried(noPg, 'users', [{ _id: new ObjectId(U1), codingEngine: 'y' }], [U2], [c]);
       expect(calls).to.deep.equal([{ op: 'remove', collection: 'users', ids: [U2] }]);
       calls.length = 0;
-      await resyncCarried(noPg, mongo, [c]);
-      expect(calls.map((x) => `${x.op}:${x.collection}`), 'a resync clears the carrier and writes all of it again').to.deep.equal(['clear:', 'write:agentWorkspaceHeads', 'write:users']);
+      // the copy refused U2 whole (and a member of U1, which is not U1): the resync writes U1's fields only
+      const refusedPg: CarryPg = (fn) =>
+        fn({ query: async (sql: string) => ({ rows: sql.includes('carry_refusals') ? [{ s: U2 }, { s: `${U1}.members[0]` }] : [] }) } as never);
+      await resyncCarried(refusedPg, mongo, [c]);
+      expect(calls, 'a resync clears the carrier and writes all of it again, but no refused document').to.deep.equal([
+        { op: 'clear', collection: '', ids: [] },
+        { op: 'write', collection: 'agentWorkspaceHeads', ids: ['h'] },
+        { op: 'write', collection: 'users', ids: [U1] },
+      ]);
     });
 
     it('a withDocument carrier: the fields of a document the importer skips are removed; a skip of part of a document removes nothing', async () => {

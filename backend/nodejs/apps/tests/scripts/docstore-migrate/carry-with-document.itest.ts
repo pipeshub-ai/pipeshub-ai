@@ -4,6 +4,7 @@
  */
 import 'reflect-metadata';
 import { expect } from 'chai';
+import { ObjectId } from 'mongodb';
 import {
   PG_BINS,
   PgStack,
@@ -18,11 +19,20 @@ import { replaceDocs } from '../../../src/scripts/docstore-migrate/apply';
 import { repair } from '../../../src/scripts/docstore-migrate/repair';
 import { MAPPINGS } from '../../../src/scripts/docstore-migrate/mapping';
 import { CARRIERS } from '../../../src/scripts/docstore-migrate/carry';
+import {
+  resyncCarried,
+  verifyCarried,
+} from '../../../src/scripts/docstore-migrate/carry/run';
+import {
+  carryMongo,
+  carryPg,
+} from '../../../src/scripts/docstore-migrate/carry/steps';
 import type { Carrier } from '../../../src/scripts/docstore-migrate/carry/types';
 import { identityDocs } from './fixtures/identity';
 import { TestMongo, haveMongod, startMongo } from './mongo-harness';
 
 const suite = haveStack && haveMongod ? describe : describe.skip;
+const REFUSED_LOGO = new ObjectId();
 const DB = 'es_with_doc';
 const log = (): void => undefined;
 
@@ -94,6 +104,13 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         mongo = await startMongo(process.env.PG_TEST_WORK ?? '/tmp');
         const docs = identityDocs();
         (docs.users![0] as Record<string, unknown>).qaFault = true;
+        // a logo with no org: the importer refuses it whole, so its carried field must never be in PostgreSQL
+        docs['org-logos']!.push({
+          _id: REFUSED_LOGO,
+          logo: null,
+          qaField: 'never',
+          __v: 0,
+        });
         for (const [name, list] of Object.entries(docs))
           if (list.length)
             await mongo.client
@@ -192,7 +209,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         const [logo] = await mongo.client
           .db(DB)
           .collection('org-logos')
-          .find({})
+          .find({ orgId: { $exists: true } })
           .sort({ _id: 1 })
           .limit(1)
           .toArray();
@@ -218,6 +235,34 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           logoFields.has(id),
           'a document a repair removes keeps no carried field',
         ).to.equal(false);
+      });
+
+      it('a document the copy refused has no carried field: not after the copy, nor after a resync, and the verify does not expect one', async () => {
+        const id = REFUSED_LOGO.toHexString();
+        expect(
+          (
+            await stack.admin((c) =>
+              c.query(
+                "SELECT 1 FROM platform.docstore_refused WHERE collection = 'org-logos' AND source_id = $1",
+                [id],
+              ),
+            )
+          ).rows,
+        ).to.have.length(1);
+        expect(logoFields.has(id), 'after the copy').to.equal(false);
+        await resyncCarried(carryPg(rt), carryMongo(rt), [logoCarrier]);
+        expect(logoFields.has(id), 'after a resync').to.equal(false);
+        // the verify expects every logo the copy took, and none it refused (the fake's actual is what it holds)
+        const v = await verifyCarried(carryPg(rt), carryMongo(rt), [
+          {
+            ...logoCarrier,
+            expected: (_c, d) => [[d.id, d.doc.qaField]],
+            actual: async () => new Map(logoFields),
+          },
+        ]);
+        expect(v.map((x) => [x.collection, x.ok, x.missing])).to.deep.equal([
+          ['org-logos', true, []],
+        ]);
       });
     },
   );
