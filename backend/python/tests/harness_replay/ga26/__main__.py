@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from pathlib import Path
 
+# The model gateway keys the prompt cache with a key derived from SECRET_KEY; outside pytest no conftest sets it, so the
+# recorder sets the same test value tests/conftest.py does.
+os.environ.setdefault("SECRET_KEY", "78aa78e734a5383b62cd145ce0e7037fa5496d3b899200385dd1cc44b2f70421")
 _BACKEND_PYTHON = Path(__file__).resolve().parents[3]
 if str(_BACKEND_PYTHON) not in sys.path:
     sys.path.insert(0, str(_BACKEND_PYTHON))
