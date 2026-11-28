@@ -153,6 +153,7 @@ jobs:
 
       - name: Upload JUnit, traces and the stack's logs
         if: always()
+        continue-on-error: true  # diagnostics only: a full artifact store must not fail a run whose tests passed
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: harness-e2e-${{ matrix.lane }}
@@ -270,6 +271,7 @@ jobs:
 
       - name: Upload the row results, JUnit and the stacks' logs
         if: always()
+        continue-on-error: true  # diagnostics only: a full artifact store must not fail a run whose tests passed
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: harness-e2e-matrix
