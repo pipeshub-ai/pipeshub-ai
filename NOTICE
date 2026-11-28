@@ -1,0 +1,12 @@
+PipesHub
+Copyright (c) 2026 PipesHub Inc.
+
+This repository contains code under two licences.
+
+- Files in any folder named "ee" are Enterprise Code under the PipesHub
+  Enterprise License, in the LICENSE file inside each "ee" folder.
+  Development, testing, evaluation and prototypes are free. Production use
+  needs a PipesHub licence key.
+- Everything else is under the Apache License 2.0, in the root LICENSE file.
+
+Third-party components keep the licences their owners chose.

@@ -349,6 +349,10 @@ Contributing with a coding agent (Claude Code, Cursor, Codex, Copilot, Gemini CL
 </tbody>
 </table>
 
+## License
+
+PipesHub is open source under the Apache License 2.0. A few features live in `ee` folders under the PipesHub Enterprise License. Copying permissions from your sources is one of them, so each person sees only what they can see in the source. You can read, run and change that code for free to develop, test, evaluate or build a prototype, for yourself or a client. Running it in production needs a licence key: [get a trial key](https://procurement.pipeshub.com/trial). Without a key, PipesHub applies a safe default: each connector is visible only to the person who set it up. See [NOTICE](NOTICE) for which files are under which licence.
+
 ## FAQ
 
 ### What is PipesHub?
