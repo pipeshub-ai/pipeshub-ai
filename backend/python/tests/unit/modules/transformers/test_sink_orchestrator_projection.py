@@ -183,3 +183,85 @@ async def test_end_to_end_a_ticket_is_projected_by_index_and_a_second_index_writ
         graph.reads.clear()
         await orch.index(ctx())
         assert len(graph.writes) == 1 and graph.write_calls == 1
+
+
+# --- values a push handed to the run (8c) ---------------------------------------------------------------
+
+def _pushed_values() -> Any:  # noqa: ANN401
+    from app.models.record_metadata import (
+        MetadataProvenance,
+        MetadataValue,
+        RecordMetadata,
+    )
+
+    return RecordMetadata(
+        schema_id="s1",
+        values={"status": MetadataValue(value="open", provenance=MetadataProvenance.PROVIDED, source="push")},
+    )
+
+
+async def test_values_of_an_older_revision_are_not_projected_onto_the_newer_record(projected: AsyncMock) -> None:
+    """The run downloaded revision ``OLD`` and the record names ``0123..`` by the time the sink reads it."""
+    values = _pushed_values()
+    older = {projection_module.PROVIDED_PROPERTIES: values, projection_module.DOWNLOADED_REV: "fedcba9876543210"}
+    await _sink().index(TransformContext(record=_record(), settings=older))
+    assert projected.await_args.kwargs["provided"] is projection_module.NOT_PROVIDED
+
+    projected.reset_mock()
+    same = {projection_module.PROVIDED_PROPERTIES: values, projection_module.DOWNLOADED_REV: "0123456789abcdef"}
+    await _sink().index(TransformContext(record=_record(), settings=same))
+    assert projected.await_args.kwargs["provided"] is values
+
+
+async def test_pushed_values_reach_projection_and_none_pushed_is_none(projected: AsyncMock) -> None:
+    from app.models.record_metadata import RecordMetadata
+
+    values = _pushed_values()
+    await _sink().index(TransformContext(record=_record(), settings={projection_module.PROVIDED_PROPERTIES: values}))
+    provided = projected.await_args.kwargs["provided"]
+    assert isinstance(provided, RecordMetadata) and provided is values
+
+    projected.reset_mock()
+    await _sink().index(TransformContext(record=_record(), settings={projection_module.PROVIDED_PROPERTIES: None}))
+    assert projected.await_args.kwargs["provided"] is None
+
+
+async def test_pushed_values_are_what_the_artifact_set_stores(projected: AsyncMock) -> None:
+    values = _pushed_values()
+    orch = _sink()
+    with patch.object(sink_module, "artifact_settings", AsyncMock(return_value=ArtifactSettings(COW, "g"))):
+        await orch._write_artifacts(
+            TransformContext(record=_record(), settings={
+                projection_module.PROVIDED_PROPERTIES: values,
+                sink_module.STORED_WRITE: sink_module.StoredWrite(COW, "g", "g:run-1"),
+            }),
+            {"contentRev": "0123456789abcdef"},
+        )
+
+    assert orch.artifact_writer.write_revision.await_args.kwargs["properties"] is values
+
+
+async def test_an_empty_or_unset_pushed_value_set_stores_no_properties(projected: AsyncMock) -> None:
+    orch = _sink()
+    for settings in ({}, {projection_module.PROVIDED_PROPERTIES: None}):
+        orch.artifact_writer.write_revision.reset_mock()
+        with patch.object(sink_module, "artifact_settings", AsyncMock(return_value=ArtifactSettings(COW, "g"))):
+            await orch._write_artifacts(
+                TransformContext(record=_record(), settings={
+                    **settings, sink_module.STORED_WRITE: sink_module.StoredWrite(COW, "g", "g:run-1"),
+                }),
+                {"contentRev": "0123456789abcdef"},
+            )
+        assert orch.artifact_writer.write_revision.await_args.kwargs["properties"] is None
+
+
+async def test_a_superseded_run_projects_nothing(projected: AsyncMock) -> None:
+    """The stored write lost its compare-and-set: this run is not the newest, whatever values it holds."""
+    with patch.object(sink_module, "record_property_projection") as counted:
+        await _sink().index(TransformContext(
+            record=_record(),
+            settings={projection_module.PROVIDED_PROPERTIES: _pushed_values(), sink_module.RUN_SUPERSEDED: True},
+        ))
+
+    projected.assert_not_awaited()
+    counted.assert_called_once_with("superseded_run")

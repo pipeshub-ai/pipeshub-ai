@@ -161,7 +161,10 @@ from app.services.paid_cache.orphan import (
 from app.services.paid_cache.refresh_handback import RefreshPurgeHeld
 from app.services.paid_cache.repurge import ORG_SCOPE, schedule_next_hop
 from app.services.paid_cache.repurge import schedule_repurge as schedule_paid_repurge
-from app.services.vector_db.membership import mark_scope_stale
+from app.services.vector_db.membership import (
+    EMPTY_CONFIRM_DELAY_SECONDS,
+    mark_scope_stale,
+)
 from app.services.vector_db.rebuild_state import (
     PHASE_FAILED,
     PHASE_READY,
@@ -170,7 +173,10 @@ from app.services.vector_db.rebuild_state import (
 )
 from app.services.vector_db.strategy import DeleteContext, RecordContext
 from app.services.vector_db.strategy_resolver import reset_strategy_cache
-from app.telemetry.modules.record_storage_metrics import record_rejected_too_large
+from app.telemetry.modules.record_storage_metrics import (
+    record_delete_guard,
+    record_rejected_too_large,
+)
 from app.utils.api_call import ResponseTooLargeError, make_api_call
 from app.utils.error_class import log_failure, quotes_content
 from app.utils.indexing_timing import current_timeline, note, stage
@@ -572,6 +578,18 @@ class RecordEventHandler(BaseEventService):
             return
 
         record_id = str(record_id)
+        if message.eventType == EventTypes.DELETE_RECORD.value:
+            # A delete indexes nothing, so it has no indexing status to settle. Its record id may by now name a
+            # live record (purged, then pushed again) that is waiting for its own index event.
+            self.logger.log(
+                logging.DEBUG if quiet else logging.WARNING,
+                "Discarded deleteRecord for record %s after %d attempt(s); record status untouched: %s",
+                record_id,
+                attempts,
+                reason,
+            )
+            return
+
         claim: str | None = None
         try:
             record = await self.event_processor.graph_provider.get_document(
@@ -1449,6 +1467,27 @@ class RecordEventHandler(BaseEventService):
             ) from e
         finally:
             await helper.close()
+
+    async def _superseded_delete(self, record_id: str) -> bool:
+        """Whether this ``deleteRecord`` is for an earlier life of an id that is live again.
+
+        A purged id can be pushed again under the same key, and the purge's event can arrive after that. The
+        record's own lease (every event of one record runs under ``record:<id>``) keeps an index run of the new
+        life from writing between this read and the deletes the answer allows. A row that is gone or in the trash
+        is the ordinary delete. A live row is read twice, ``EMPTY_CONFIRM_DELAY_SECONDS`` apart, because a read
+        that lags the purge shows the deleted row as live. A failed read raises: the event is redelivered, and
+        nothing keyed by the id has been touched.
+        """
+        graph = self.event_processor.graph_provider
+        for attempt in range(2):
+            if attempt:
+                await asyncio.sleep(EMPTY_CONFIRM_DELAY_SECONDS)
+            row = await graph.get_document(record_id, CollectionNames.RECORDS.value, raise_on_error=True)
+            if row is None or not is_live_record(row):
+                return False
+        record_delete_guard("skipped_live")
+        self.logger.info("deleteRecord %s is for an earlier life of a record that is live again; its id-keyed data is kept", record_id)
+        return True
 
     async def _request_code_edge_build_for_deleted(self, payload: dict) -> None:
         """A deleted code file changes the repo's graph too.
@@ -2549,38 +2588,42 @@ class RecordEventHandler(BaseEventService):
                 await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
                     [virtual_record_id], org_id=org_id
                 )
-                entity_store = self._entity_vector_store()
-                if entity_store is not None:
-                    # delete_entity filters on orgId, so an empty one would match no point and strand the entity.
+                # The steps below are keyed by the record id. An id that is live again (purged, then pushed under
+                # the same key) belongs to a new life that this late event must not strip. The embeddings above and
+                # the hand-over below are keyed by the old copy's virtualRecordId, which a re-created id does not reuse.
+                if not await self._superseded_delete(record_id):
+                    entity_store = self._entity_vector_store()
+                    if entity_store is not None:
+                        # delete_entity filters on orgId, so an empty one would match no point and strand the entity.
+                        if org_id:
+                            await entity_store.delete_entity(
+                                org_id, EntityType.RECORD.value, record_id
+                            )
+                            await delete_unreached_taxonomy_points(
+                                entity_store, self.event_processor.graph_provider, org_id, record_id,
+                                payload.get("taxonomyRefs"),
+                            )
+                        else:
+                            self.logger.warning(
+                                "deleteRecord %s carries no orgId and the record is gone; "
+                                "its entity point is left for reconciliation",
+                                record_id,
+                            )
                     if org_id:
-                        await entity_store.delete_entity(
-                            org_id, EntityType.RECORD.value, record_id
-                        )
-                        await delete_unreached_taxonomy_points(
-                            entity_store, self.event_processor.graph_provider, org_id, record_id,
-                            payload.get("taxonomyRefs"),
-                        )
+                        # Erasure: the record's stored model outputs go with it, and a parse still running for it
+                        # (the parsing service outlives the run that sent it) can store nothing more. A storage
+                        # failure raises, so the broker redelivers until it succeeds (none stored is a success).
+                        await paid_cache_access.paid_cache_for(self.config_service, self.logger).delete_record(org_id, record_id)
+                        # Redis can lose the marker while a parse that outlived the record is still running: a
+                        # durable delayed purge removes whatever such a write left. A publish failure raises.
+                        await schedule_paid_repurge(self.producer, org_id, record_id, loop=self._producer_loop)
                     else:
                         self.logger.warning(
                             "deleteRecord %s carries no orgId and the record is gone; "
-                            "its entity point is left for reconciliation",
+                            "its stored model outputs are left for the org purge",
                             record_id,
                         )
-                if org_id:
-                    # Erasure: the record's stored model outputs go with it, and a parse still running for it
-                    # (the parsing service outlives the run that sent it) can store nothing more. A storage
-                    # failure raises, so the broker redelivers until it succeeds (none stored is a success).
-                    await paid_cache_access.paid_cache_for(self.config_service, self.logger).delete_record(org_id, record_id)
-                    # Redis can lose the marker while a parse that outlived the record is still running: a
-                    # durable delayed purge removes whatever such a write left. A publish failure raises.
-                    await schedule_paid_repurge(self.producer, org_id, record_id, loop=self._producer_loop)
-                else:
-                    self.logger.warning(
-                        "deleteRecord %s carries no orgId and the record is gone; "
-                        "its stored model outputs are left for the org purge",
-                        record_id,
-                    )
-                await self._request_code_edge_build_for_deleted(payload)
+                    await self._request_code_edge_build_for_deleted(payload)
                 await self._hand_over_shared_copy(payload, org_id)
                 # Yield both events since delete is complete
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -3323,10 +3366,12 @@ class RecordEventHandler(BaseEventService):
         finally:
             if orphan_guard is not None:
                 orphan_guard.finish()
-            if stage_redrive or held_for_delete or held_for_refresh or skip_pending:
+            if stage_redrive or held_for_delete or held_for_refresh or skip_pending or event_type == EventTypes.DELETE_RECORD.value:
                 # A stage re-run owns none of the record's bookkeeping (statuses, queued
                 # duplicates, index notifications); its stage state records the outcome.
                 # A held event has done nothing yet, and its record is the delete's.
+                # A delete indexes nothing, so it has no status to settle, and a failed one is
+                # redelivered: its id may name a live record by now (purged, then pushed again).
                 pass
             elif error_occurred and record_id:
                 if parse_now and current_run() is None:

@@ -258,3 +258,27 @@ async def test_values_and_stamp_come_from_the_same_version() -> None:
 
     assert result.status == WRITTEN and result.attempts == 2
     assert graph.props(t.id)["status"] == "DONE" and graph.records[t.id]["propsSrc"] == 2_000
+
+
+async def test_pushed_values_of_an_old_revision_lose_when_the_push_commits_after_the_read() -> None:
+    """T44 variant 2. Run 1 read the record at revision 1 and holds its pushed values; the push of revision 2 commits
+    (the row's contentRev moves) after that read and before the write. The write's contentRev condition refuses it:
+    no revision-1 value lands, and the record keeps whatever the newer run projects."""
+    reg, _ = registry()
+    await reg.register("org-1", "kb-1", defs(("team", PropertyType.STRING)))
+    graph = FakeGraph()
+    doc = kb_doc(contentRev="rev-1", externalRevisionId="pb1:" + "a" * 64 + ":" + "1" * 16)
+    graph.records[doc["_key"]] = doc
+
+    async def push_commits(n: int) -> None:
+        graph.records[doc["_key"]]["contentRev"] = "rev-2"
+        graph.records[doc["_key"]]["externalRevisionId"] = "pb1:" + "a" * 64 + ":" + "2" * 16
+
+    graph.before_write = push_commits
+    result = await project(graph, reg, ScopeUnionCache(), doc["_key"], provided=_meta(team="old"))
+
+    assert result.status == CONTENT_CHANGED and graph.writes == [] and graph.props(doc["_key"]) == {}
+
+    graph.before_write = None
+    newer = await project(graph, reg, ScopeUnionCache(), doc["_key"], provided=_meta(team="new"))
+    assert newer.status == WRITTEN and graph.props(doc["_key"]) == {"team": "new"}

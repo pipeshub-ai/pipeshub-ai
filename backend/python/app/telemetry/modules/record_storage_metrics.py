@@ -166,6 +166,32 @@ def record_property_projection(outcome: str) -> None:
     PROPERTY_PROJECTIONS.inc(outcome)
 
 
+# outcome: malformed (a pushed values member that does not convert), superseded (the run's bytes are not the
+# revision the record names now), unbound (the record names no pushed revision to compare with), unbound_input (the
+# run was not handed the downloaded bytes, so there is nothing to hash). Nothing is projected.
+PUSHED_PROPERTIES_REFUSED = METRICS_BACKEND.counter(
+    "pipeshub_pushed_properties_refused_total",
+    "Pushed property values an index run did not take, by reason",
+    ["outcome"],
+)
+
+
+def pushed_properties_refused(outcome: str) -> None:
+    PUSHED_PROPERTIES_REFUSED.inc(outcome)
+
+
+# outcome: skipped_live (the delete is for an earlier life of an id that is live again; its id-keyed steps were left).
+RECORD_DELETE_GUARD = METRICS_BACKEND.counter(
+    "pipeshub_record_delete_guard_total",
+    "deleteRecord events whose id-keyed cleanup was skipped because the record is live again",
+    ["outcome"],
+)
+
+
+def record_delete_guard(outcome: str) -> None:
+    RECORD_DELETE_GUARD.inc(outcome)
+
+
 PROPERTY_VALUES_DROPPED = METRICS_BACKEND.counter(
     "pipeshub_record_property_values_dropped_total",
     "Property values not projected because they do not fit their property's stored form",

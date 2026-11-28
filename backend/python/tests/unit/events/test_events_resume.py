@@ -143,8 +143,11 @@ class TestNoResume:
             ({}, {"force": True}),                                 # a user's reindex
             ({}, {"delivery_id": None}),                           # a consumer that gave no identity
             (dict.fromkeys(EMBED_FIELDS), {}),                 # no marker: a COMPLETED record queued again
+            ({"pushOrigin": True}, {}),                            # pushed values live only in the downloaded bytes
+            ({"externalRevisionId": "pb1:" + "a" * 64 + ":" + "b" * 16}, {}),  # a push before the flag existed
         ],
-        ids=["other-event", "other-rev", "no-digest", "other-vrid", "forced", "no-identity", "no-marker"],
+        ids=["other-event", "other-rev", "no-digest", "other-vrid", "forced", "no-identity", "no-marker",
+             "push-origin", "push-revision"],
     )
     async def test_the_event_is_processed_in_full(self, node: dict[str, Any], kwargs: dict[str, Any]) -> None:
         # Kills: reuse decided from status, from the doc, or ignoring any of the five conditions.

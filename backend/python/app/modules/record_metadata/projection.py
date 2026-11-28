@@ -65,6 +65,10 @@ from app.telemetry.modules.record_storage_metrics import (
 PROJECTION_FLAG: Final = "RECORD_PROPERTY_PROJECTION"
 #: ``ctx.settings`` key: the ``RecordMetadata`` (or None for none) a caller that pushed a record's values hands to indexing.
 PROVIDED_PROPERTIES: Final = "provided_properties"
+#: ``TransformContext.settings`` key: the ``contentRev`` of the bytes the handed values came from. The run's content
+#: and values are of that revision whatever the record names by the time the sink reads it, so the sink stores them
+#: under it and projects the values only while the record still names it.
+DOWNLOADED_REV: Final = "downloaded_rev"
 
 PROPS_SET: Final = "propsSet"
 PROPS_GEN: Final = "propsGen"

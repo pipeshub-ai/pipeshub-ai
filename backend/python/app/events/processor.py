@@ -15,6 +15,7 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.config.constants.service import config_node_constants
+from app.connectors.sources.localKB.push.contract import parse_revision_id
 from app.events.emptied_record import drop_previous_vectors_of_emptied_record
 from app.exceptions.indexing_exceptions import (
     AISettingsUnavailableError,
@@ -83,6 +84,13 @@ from app.modules.parsers.push_origin import (
 )
 from app.modules.parsers.text.plain_text_parser import plain_text_to_blocks
 from app.modules.parsers.text_decoding import decode_text
+from app.modules.pipeline.fingerprint import content_revision
+from app.modules.record_metadata.projection import (
+    DOWNLOADED_REV,
+    NOT_PROVIDED,
+    PROVIDED_PROPERTIES,
+)
+from app.modules.record_metadata.push_properties import push_properties
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
@@ -103,6 +111,7 @@ from app.services.parsing.interface import (
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.structure_generation import leaving_vrid
 from app.services.resource_governor.kinds import ParseKind
+from app.telemetry.modules.record_storage_metrics import pushed_properties_refused
 from app.utils.aimodels import INDEXING_SDK_RETRIES, is_multimodal_llm
 from app.utils.concurrency import MAX_CONCURRENT_PAGE_BUILDS
 from app.utils.cpu_offload import offload_if_large
@@ -125,6 +134,17 @@ if TYPE_CHECKING:
 SCANNED_PDF_NO_OCR_MESSAGE = SCANNED_DOCUMENT_NEEDS_OCR
 # A mail's worker past this is stuck on the file, not slow.
 MSG_PARSE_TIMEOUT_SECONDS = 60
+
+
+def _downloaded_revision(blocks_data: object) -> str | None:
+    """``contentRev`` of the downloaded bytes, as the run computes it; None when the input is not the bytes.
+
+    Only bytes are the downloaded document: the run hashes bytes for ``contentRev`` (a text it was handed is
+    stripped before it gets here), so a hash of anything else would not be comparable. Never raises.
+    """
+    if isinstance(blocks_data, (bytes, bytearray)):
+        return content_revision(bytes(blocks_data))
+    return None
 
 
 class Processor:
@@ -180,10 +200,23 @@ class Processor:
         record,
         event_type: Optional[str] = None,
         prev_virtual_record_id: Optional[str] = None,
+        provided_properties: object = NOT_PROVIDED,
+        downloaded_rev: str | None = None,
     ) -> TransformContext:
-        """Create TransformContext with per-invocation reconciliation context."""
+        """Create TransformContext with per-invocation reconciliation context.
+
+        ``provided_properties`` is what the pushed content said about the record's values
+        (``push_properties``); ``NOT_PROVIDED`` puts nothing in the settings. ``downloaded_rev`` is the
+        ``contentRev`` of the bytes the run parsed: the sink stores the run's content under it, not under
+        whatever revision the record names when the sink reads it.
+        """
         # The parse-now run, if any, rides in the settings (see parse_now_marker).
-        extra = {"settings": settings} if (settings := run_settings()) else {}
+        settings = run_settings()
+        if provided_properties is not NOT_PROVIDED:
+            settings[PROVIDED_PROPERTIES] = provided_properties
+        if downloaded_rev is not None:
+            settings[DOWNLOADED_REV] = downloaded_rev
+        extra = {"settings": settings} if settings else {}
         return TransformContext(
             record=record,
             event_type=event_type,
@@ -847,6 +880,11 @@ class Processor:
             f"Starting Blocks Container processing for record: {recordId}"
         )
 
+        # The revision of the bytes this run downloaded, taken before they are decoded: the pushed values are
+        # accepted only while the record still names this revision (see ``_pushed_properties``).
+        downloaded_rev = _downloaded_revision(blocks_data)
+        downloaded_raw = blocks_data
+
         # Deserialize blocks_data to BlocksContainer
         if isinstance(blocks_data, bytes):
             blocks_data = blocks_data.decode('utf-8')
@@ -886,13 +924,26 @@ class Processor:
         # Enhance TABLE BlockGroups with LLM summaries and row descriptions
         await enhance_tables_with_llm(block_containers, self.config_service, self.logger)
 
+        # Read from the row above, before it becomes a Record: it is the row's revision the bytes are held to.
+        provided_properties = (
+            await self._pushed_properties(blocks_dict, record, downloaded_rev, downloaded_raw)
+            if content_is_push_origin(blocks_dict)
+            else NOT_PROVIDED
+        )
+
         # Convert to Record entity and attach blocks
         record = self._convert_record(record)
         record.block_containers = block_containers
         record.virtual_record_id = virtual_record_id
 
         # Apply indexing pipeline
-        ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
+        ctx = self._create_transform_context(
+            record,
+            event_type,
+            prev_virtual_record_id,
+            provided_properties=provided_properties,
+            downloaded_rev=downloaded_rev if content_is_push_origin(blocks_dict) else None,
+        )
         pipeline = self._pipeline()
         await pipeline.apply(ctx)
 
@@ -900,6 +951,31 @@ class Processor:
         yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
         self.logger.debug("Blocks Container processing completed successfully")
+
+    async def _pushed_properties(
+        self, blocks_dict: Mapping[str, Any], record_doc: Mapping[str, Any], downloaded_rev: str | None, downloaded_raw: object,
+    ) -> object:
+        """The values a push stored with these blocks, if this run may use them.
+
+        They are accepted only when the revision of the bytes this run downloaded is the revision the record
+        names now (``externalRevisionId``). A run that downloaded revision 1 and reads a record already at
+        revision 2 would otherwise stamp revision-1 values as the newest. Anything that cannot be compared
+        gives ``NOT_PROVIDED``: nothing is projected and no ``properties.json`` is written.
+
+        Converting a large member is CPU work on the loop every record of this worker shares, so it runs in a
+        thread above the size of the downloaded document (``offload_if_large``).
+        """
+        if downloaded_rev is None:
+            pushed_properties_refused("unbound_input")
+            return NOT_PROVIDED
+        named = parse_revision_id(record_doc.get("externalRevisionId"))
+        if named is None:
+            pushed_properties_refused("unbound")
+            return NOT_PROVIDED
+        if named[2] != downloaded_rev:
+            pushed_properties_refused("superseded")
+            return NOT_PROVIDED
+        return await offload_if_large(push_properties, blocks_dict, sized_arg=downloaded_raw)
 
     def _separate_block_groups_by_index(
         self, block_groups: List[BlockGroup]

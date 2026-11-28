@@ -31,6 +31,7 @@ from app.modules.indexing.replay_set import note_record_completed
 from app.modules.pipeline import parser_identity
 from app.modules.record_metadata.builtin import ticket_metadata
 from app.modules.record_metadata.projection import (
+    DOWNLOADED_REV,
     NOT_PROVIDED,
     PROJECTION_TIMEOUT_SECONDS,
     PROVIDED_PROPERTIES,
@@ -294,7 +295,7 @@ class SinkOrchestrator(Transformer):
             raise RecordDeletedError(record_id)
 
         if not skip_blob:
-            ctx.settings[STORED_REV] = record_doc.get("contentRev") or None
+            ctx.settings[STORED_REV] = self._content_rev(ctx, record_doc)
             # One read of the settings picks the layout and mints the run; nothing below reads it again.
             ctx.settings[STORED_WRITE] = mint_stored_write(await artifact_settings(self.config_service))
             attempt = current_attempt()
@@ -400,6 +401,24 @@ class SinkOrchestrator(Transformer):
         except Exception as exc:
             self.logger.warning("Entity point of deleted record %s not removed (the sweep removes it): %s", ctx.record.id, type(exc).__name__)
 
+    @staticmethod
+    def _content_rev(ctx: TransformContext, record_doc: dict[str, Any]) -> str | None:
+        """The revision the run's content is of: the one it downloaded when it has one, else what the record names.
+
+        The record can move to a newer revision between the run's download and this read. Labelling the older
+        blocks (or the values that came with them) with the newer revision would pass them off as current, so
+        a run bound to its downloaded revision stores under it.
+        """
+        bound = ctx.settings.get(DOWNLOADED_REV)
+        return bound if isinstance(bound, str) and bound else (record_doc.get("contentRev") or None)
+
+    def _values_for(self, ctx: TransformContext, record_doc: dict[str, Any]) -> object:
+        """The handed values, only while the record still names the revision they came from."""
+        bound = ctx.settings.get(DOWNLOADED_REV)
+        if isinstance(bound, str) and bound and record_doc.get("contentRev") != bound:
+            return NOT_PROVIDED  # projection counts the refusal (``values_unavailable``)
+        return ctx.settings.get(PROVIDED_PROPERTIES, NOT_PROVIDED)
+
     async def _project_properties(self, ctx: TransformContext, record_doc: dict[str, Any]) -> None:
         """Write the record's filterable property values onto the record (``RECORD_PROPERTY_PROJECTION``).
 
@@ -407,6 +426,10 @@ class SinkOrchestrator(Transformer):
         left to the sweep that converges records; the record is searchable either way.
         """
         if not projection_enabled():
+            return
+        if ctx.settings.get(RUN_SUPERSEDED):
+            # This run's stored write lost: the run is not the newest, so it has no values to stamp as such.
+            record_property_projection("superseded_run")
             return
         try:
             async with asyncio.timeout(PROJECTION_TIMEOUT_SECONDS):
@@ -416,7 +439,7 @@ class SinkOrchestrator(Transformer):
                     cache=default_union_cache(),
                     record=ctx.record,
                     record_doc=record_doc,
-                    provided=ctx.settings.get(PROVIDED_PROPERTIES, NOT_PROVIDED),
+                    provided=self._values_for(ctx, record_doc),
                     logger=self.logger,
                 )
         except Exception as exc:
@@ -804,13 +827,13 @@ class SinkOrchestrator(Transformer):
             return None
         if not await is_artifact_write_enabled(self.config_service):
             return None
-        rev = record_doc.get("contentRev")
+        rev = self._content_rev(ctx, record_doc)
         if not rev or not record.virtual_record_id:
             return None
         reconciliation = (
             ctx.reconciliation_context.new_metadata if ctx.reconciliation_context else None
         )
-        properties = await self._provided_properties(record, record_doc)
+        properties = await self._provided_properties(ctx, record, record_doc)
         try:
             written = await self.artifact_writer.write_revision(
                 record,
@@ -843,15 +866,19 @@ class SinkOrchestrator(Transformer):
         return node is not None and node.get("storedRun") == run
 
     async def _provided_properties(
-        self, record: Record, record_doc: dict[str, Any]
+        self, ctx: TransformContext, record: Record, record_doc: dict[str, Any]
     ) -> RecordMetadata | None:
-        """The values a ticket's source provided, for ``properties.json``.
+        """The values the record's source provided, for ``properties.json``.
 
-        Indexing builds a plain ``Record`` from the record document; a ticket's
+        Values the run was handed (a push's, in ``ctx.settings``) win. Otherwise
+        indexing builds a plain ``Record`` from the record document; a ticket's
         fields are in its tickets document, read here only for a record whose
         type is stored there. Never fails the write: without them the set is
         stored without ``properties.json``.
         """
+        handed = ctx.settings.get(PROVIDED_PROPERTIES, NOT_PROVIDED)
+        if isinstance(handed, RecordMetadata):
+            return handed
         if isinstance(record, TicketRecord):
             return ticket_metadata(record)
         tickets = CollectionNames.TICKETS.value

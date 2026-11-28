@@ -26,6 +26,7 @@ from app.modules.artifacts import store as store_module
 from app.modules.artifacts.models import ArtifactRef, Manifest, WrittenRevision
 from app.modules.artifacts.store import NodeArtifactStore
 from app.modules.artifacts.writer import ArtifactWriter
+from app.modules.record_metadata.projection import DOWNLOADED_REV, PROVIDED_PROPERTIES
 from app.modules.transformers import sink_orchestrator as sink_module
 from app.modules.transformers.blob_storage import STORED_RECORD_FIELDS, STORED_REV
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
@@ -318,6 +319,40 @@ class TestWhenItWrites:
         counted.assert_called_once_with("failed")
         assert "not written" in caplog.text and SIGNATURE not in caplog.text
         graph.provider.update_node_fields_if_match.assert_not_awaited()
+
+
+class TestRunBoundToItsDownloadedRevision:
+    """The record can name a newer revision than the bytes a run parsed; the run stores what it has under its own."""
+
+    async def test_content_and_values_are_filed_under_the_downloaded_revision(self) -> None:
+        graph = _graph()  # the record now names REV
+        orch = _orchestrator(graph)
+        seen: list[Any] = []
+        real_apply = orch.blob_storage.apply.side_effect
+
+        async def apply(ctx: TransformContext) -> None:
+            seen.append(dict(ctx.settings))
+            await real_apply(ctx)
+
+        orch.blob_storage.apply = AsyncMock(side_effect=apply)
+        values = object()  # stands in for the pushed RecordMetadata; isinstance falls through to None below
+        orch._provided_properties = AsyncMock(return_value=values)
+
+        await _index(orch, TransformContext(
+            record=_record(), settings={DOWNLOADED_REV: OLD_REV, PROVIDED_PROPERTIES: values},
+        ))
+
+        assert seen[0][STORED_REV] == OLD_REV
+        args = orch.artifact_writer.write_revision.await_args
+        assert args.args[3] == OLD_REV
+        assert args.kwargs["properties"] is values
+
+    async def test_a_run_with_no_downloaded_revision_files_under_the_record_revision(self) -> None:
+        orch = _orchestrator(_graph())
+
+        await _index(orch, TransformContext(record=_record()))
+
+        assert orch.artifact_writer.write_revision.await_args.args[3] == REV
 
 
 def _ticket_graph(ticket_doc: dict[str, Any] | None, **record_doc: Any) -> Graph:  # noqa: ANN401

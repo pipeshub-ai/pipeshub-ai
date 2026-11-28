@@ -1541,7 +1541,7 @@ class TestDeleteRecordEvent:
     async def test_delete_record_success(self):
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
-        gp.get_document = AsyncMock(return_value={"_key": "r1", "virtualRecordId": "vr1"})
+        gp.get_document = AsyncMock(return_value={"_key": "r1", "virtualRecordId": "vr1", "isDeleted": True})
         pipeline = handler.event_processor.processor.indexing_pipeline
         pipeline.bulk_delete_embeddings = AsyncMock(
             return_value={"virtual_record_ids_processed": 1, "success": True}
@@ -1560,7 +1560,7 @@ class TestDeleteRecordEvent:
     async def test_delete_record_no_virtual_record_id(self):
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
-        gp.get_document = AsyncMock(return_value={"_key": "r1"})
+        gp.get_document = AsyncMock(return_value={"_key": "r1", "isDeleted": True})
         pipeline = handler.event_processor.processor.indexing_pipeline
         pipeline.bulk_delete_embeddings = AsyncMock(
             return_value={"virtual_record_ids_processed": 0, "success": True}
@@ -1581,7 +1581,7 @@ class TestDeleteRecordEvent:
 
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
-        gp.get_document = AsyncMock(return_value={"_key": "r1", "virtualRecordId": "vr1"})
+        gp.get_document = AsyncMock(return_value={"_key": "r1", "virtualRecordId": "vr1", "isDeleted": True})
         handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock()
         entity_store = AsyncMock()
         handler.event_processor.sink_orchestrator = MagicMock(entity_vector_store=entity_store)
@@ -1602,7 +1602,7 @@ class TestDeleteRecordEvent:
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
         gp.get_document = AsyncMock(
-            return_value={"_key": "r1", "virtualRecordId": "vr1", "orgId": "org-1"}
+            return_value={"_key": "r1", "virtualRecordId": "vr1", "orgId": "org-1", "isDeleted": True}
         )
         handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock()
         entity_store = AsyncMock()
@@ -1621,7 +1621,7 @@ class TestDeleteRecordEvent:
         closed while the record can still name it."""
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
-        gp.get_document = AsyncMock(return_value={"_key": "r1", "orgId": "org-1"})
+        gp.get_document = AsyncMock(return_value={"_key": "r1", "orgId": "org-1", "isDeleted": True})
         pipeline = handler.event_processor.processor.indexing_pipeline
         pipeline.bulk_delete_embeddings = AsyncMock()
 
@@ -1635,7 +1635,7 @@ class TestDeleteRecordEvent:
         must not break the delete — it is a best-effort cleanup."""
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
-        gp.get_document = AsyncMock(return_value={"_key": "r1", "virtualRecordId": "vr1"})
+        gp.get_document = AsyncMock(return_value={"_key": "r1", "virtualRecordId": "vr1", "isDeleted": True})
         handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock()
 
         payload = {"recordId": "r1", "virtualRecordId": "vr1"}
@@ -1712,6 +1712,8 @@ class TestDeleteRecordTaxonomyCleanup:
         handler = _make_handler()
         handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock()
         handler.event_processor.sink_orchestrator = MagicMock(entity_vector_store=store)
+        # The purge removed the row before the event: nothing live is left under the id.
+        handler.event_processor.graph_provider.get_document = AsyncMock(return_value=None)
         return handler
 
     @staticmethod
@@ -1779,7 +1781,7 @@ class TestDeleteRecordTaxonomyCleanup:
     async def test_the_org_falls_back_to_the_record(self) -> None:
         store = AsyncMock()
         handler = self._handler(store)
-        handler.event_processor.graph_provider.get_document = AsyncMock(return_value={"orgId": "org-1"})
+        handler.event_processor.graph_provider.get_document = AsyncMock(return_value={"orgId": "org-1", "isDeleted": True})
         payload = {"recordId": "r1", "virtualRecordId": "vr1", "taxonomyRefs": self.REFS}
 
         await _collect_events(handler, EventTypes.DELETE_RECORD.value, payload)
