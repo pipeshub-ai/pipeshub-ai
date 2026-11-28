@@ -17,9 +17,10 @@ AI-model health check make, quickly and the same way every time.
   ``DIMENSIONS`` numbers derived from a hash of the text, so equal texts get equal vectors.
 * ``POST /v1/chat/completions``: the same answers in the OpenAI shape; a JSON schema can come in
   ``response_format.json_schema.schema`` or in ``format``.
-* A call it cannot answer (an error in a route, or a request http.server refuses) is answered 500 and logged as
-  one ``fake-model FAILED`` line. The suites cannot see a failed model call, so the workflow fails the leg when
-  the fake's log holds one (``Check the fake model stayed up`` in .github/workflows/integration-tests.yml).
+* A call it cannot answer is logged as one ``fake-model FAILED`` line: an error in a route, answered 500, or a
+  request http.server refuses, which keeps http.server's own status (400, 501, ...). The suites cannot see a
+  failed model call, so the workflow fails the leg when the fake's log holds one (``Check the fake model stayed
+  up`` in .github/workflows/integration-tests.yml).
 
 Each chat, generate and embedding call is logged as one line (method, path, model, which answer or how
 many texts), so a stack's logs show what the model was asked. Run: ``python3 -I server.py [--host 0.0.0.0] [--port 11434]``. Importing this module
