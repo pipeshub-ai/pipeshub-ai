@@ -1224,6 +1224,7 @@ class IGraphDBProvider(ABC):
         *,
         count_created: bool = False,
         lock_grants: Sequence[tuple[str, str, str, str]] = (),
+        lock_held: set[str] | None = None,
     ) -> bool | int:
         """
         Batch create edges/relationships between nodes. With ``count_created`` it returns how many edges the call created
@@ -1231,7 +1232,10 @@ class IGraphDBProvider(ABC):
 
         The statement that writes the edges first holds, until the transaction ends, the app locks of ``lock_grants`` (``common.grant_locks``:
         the apps of their targets, in one order), as :meth:`lock_grant_apps` does: a grant costs no statement of its own (the same in
-        ``create_edges_if_absent``, ``replace_edges_to`` and ``replace_record_permissions``).
+        ``create_edges_if_absent``, ``replace_edges_to`` and ``replace_record_permissions``). ``lock_held``, when given, is the set of the
+        apps (and org) whose lock this transaction already holds: their lock write is skipped, and the ones the statement locks are added to it
+        after it succeeds. It belongs to one transaction (``GraphTransactionStore``); PostgreSQL ignores it (taking a held advisory lock again costs
+        nothing).
 
         Args:
             edges (List[Dict]): List of edges in generic format:
@@ -1259,6 +1263,7 @@ class IGraphDBProvider(ABC):
         *,
         count_created: bool = False,
         lock_grants: Sequence[tuple[str, str, str, str]] = (),
+        lock_held: set[str] | None = None,
     ) -> int | None:
         """Create the edges that are not there and leave the ones that are untouched. With ``count_created`` it returns how many it created.
         ``lock_grants`` as in :meth:`batch_create_edges`.
@@ -1463,6 +1468,7 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         lock_grants: Sequence[tuple[str, str, str, str]] = (),
+        lock_held: set[str] | None = None,
     ) -> None:
         """Delete every *collection* edge into the node, then create *edges* (locking as :meth:`batch_create_edges`).
 
@@ -1472,7 +1478,7 @@ class IGraphDBProvider(ABC):
         """
         await self.delete_edges_to(to_id, to_collection, collection, transaction)
         if edges:
-            await self.batch_create_edges(edges, collection, transaction, lock_grants=lock_grants)
+            await self.batch_create_edges(edges, collection, transaction, lock_grants=lock_grants, lock_held=lock_held)
 
     async def replace_record_permissions(
         self,
@@ -1483,6 +1489,7 @@ class IGraphDBProvider(ABC):
         inherit: bool,
         transaction: str | None = None,
         lock_grants: Sequence[tuple[str, str, str, str]] = (),
+        lock_held: set[str] | None = None,
     ) -> None:
         """Replace the PERMISSION edges into the record and set whether it inherits from its group (locking as :meth:`batch_create_edges`).
 
@@ -1494,7 +1501,8 @@ class IGraphDBProvider(ABC):
         new permissions beside an inherit edge that should have gone.
         """
         await self.replace_edges_to(
-            record_id, CollectionNames.RECORDS.value, edges, CollectionNames.PERMISSION.value, transaction, lock_grants=lock_grants
+            record_id, CollectionNames.RECORDS.value, edges, CollectionNames.PERMISSION.value, transaction, lock_grants=lock_grants,
+            lock_held=lock_held,
         )
         if not inherit:
             await self._stop_inheriting_from_record_groups(record_id, transaction)
@@ -4551,6 +4559,8 @@ class IGraphDBProvider(ABC):
         self,
         targets: Sequence[tuple[str, str]],
         transaction: str | None = None,
+        *,
+        lock_held: set[str] | None = None,
     ) -> None:
         """
         Hold, until the transaction ends, the app locks of the nodes ``targets`` (collection, key) as a write that can make a grant chain count

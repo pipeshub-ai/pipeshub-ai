@@ -135,7 +135,7 @@ class HierarchyMixin(PgBase):
 
     async def create_edges_if_absent(
         self, edges: list[dict], collection: str, transaction: str | None = None, *, count_created: bool = False,
-        lock_grants: Sequence[tuple[str, str, str, str]] = (),
+        lock_grants: Sequence[tuple[str, str, str, str]] = (), lock_held: set[str] | None = None,      # ignored: see the interface
     ) -> None:
         """Create the edges that are not there (both ends must exist); an existing edge keeps its properties."""
         if count_created:  # this store does not report which edges a write created; the store's before/after comparison covers it

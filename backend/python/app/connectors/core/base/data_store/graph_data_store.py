@@ -361,6 +361,9 @@ class GraphTransactionStore(TransactionStore):
         self.explicit = explicit  # the block runs in one real transaction
         # each person this store upserted, by the id it got: without a transaction, what a grant to one the reaper removed is written to again
         self._people_written: dict[str, Person] = {}
+        # The apps (and org) whose grant lock this transaction holds: held to its end, so a later grant statement need not write the lock again.
+        # This store's transaction only: a retry opens a new store, and commit and rollback empty it.
+        self._app_locks: set[str] = set()
         self.logger = graph_provider.logger
         # Lookups whose answer cannot change for the life of the transaction.
         # One batch is 100 records from a single connector, so the record group
@@ -713,7 +716,7 @@ class GraphTransactionStore(TransactionStore):
         if not grants:
             return await write(edges)
         if self.explicit:
-            return await write(edges, lock_grants=grants)
+            return await write(edges, lock_grants=grants, lock_held=self._app_locks)
         held = await self.graph_provider.lock_external_app_memberships(grants, transaction=self.txn)
         return await self._write_grant_alone(edges, grants, held, write)
 
@@ -886,7 +889,8 @@ class GraphTransactionStore(TransactionStore):
         their apps' locks are held first, as a grant writer's are (``_write_grant``)."""
         if self.explicit and restores:
             await self.graph_provider.lock_grant_apps(
-                sorted({(CollectionNames.RECORDS.value, r["id"]) for r in restores if r.get("id")}), transaction=self.txn)
+                sorted({(CollectionNames.RECORDS.value, r["id"]) for r in restores if r.get("id")}), transaction=self.txn,
+                lock_held=self._app_locks)
         return await self.graph_provider.restore_records(
             restores, batch_id, transaction=self.txn,
             connector_id=connector_id, require_live_parent=require_live_parent,
@@ -1310,6 +1314,7 @@ class GraphTransactionStore(TransactionStore):
         With HTTP provider: Makes async HTTP call (PUT /_api/transaction/{txn_id})
         With SDK provider: Wrapped in executor for backward compatibility
         """
+        self._app_locks.clear()
         await self.graph_provider.commit_transaction(self.txn)
 
     async def rollback(self) -> None:
@@ -1319,6 +1324,7 @@ class GraphTransactionStore(TransactionStore):
         With HTTP provider: Makes async HTTP call (DELETE /_api/transaction/{txn_id})
         With SDK provider: Wrapped in executor for backward compatibility
         """
+        self._app_locks.clear()
         await self.graph_provider.rollback_transaction(self.txn)
 
     async def publish_with_commit(

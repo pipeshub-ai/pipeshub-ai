@@ -835,3 +835,60 @@ async def test_writers_of_one_app_take_turns(world: _World) -> None:
         while open_:
             with contextlib.suppress(Exception):
                 await g.rollback_transaction(open_.pop())
+
+
+async def test_within_a_transaction_an_app_s_lock_is_written_once(world: _World) -> None:
+    """Two grant statements on records of the App in one transaction: the first writes the App's lock (its node or document), the second is
+    told the lock is held and writes nothing for it, and the reaper of the App still waits for (or conflicts with) the transaction."""
+    w, g = world, world.graph
+    seen: list[list[str]] = []
+    if hasattr(g, "client"):
+        run = g.client.execute_query
+
+        async def spy(query: str, *a: object, **k: object) -> list:
+            rows = await run(query, *a, **k)
+            if "lock_new" in query:
+                seen.append(rows[0]["lock_new"])
+            return rows
+        g.client.execute_query = spy
+    else:
+        run = g.http_client.execute_aql
+
+        async def spy(query: str, *a: object, **k: object) -> list:
+            rows = await run(query, *a, **k)
+            if "lock_apps" in query:
+                seen.append(rows[0]["locked"])
+            return rows
+        g.http_client.execute_aql = spy
+    tid = await g.begin_transaction(["users", "records", "apps"], ["apps", "organizations", "permission", "userAppRelation"])
+    reaping = None
+    try:
+        store = GraphTransactionStore(g, tid, explicit=True)
+        for user, record in (("ext-direct", "r-src-live"), ("ext-own-live", "r-own-live")):
+            assert await store.batch_create_edges([{"from_id": w.sid(user), "from_collection": "users", "to_id": w.sid(record),
+                                                    "to_collection": "records", "type": "USER", "role": "READER", "createdAtTimestamp": TS}], "permission")
+        assert seen == [[w.sid(APP)], []]
+        assert store._app_locks == {w.sid(APP)}
+        reaping = asyncio.create_task(g.reap_stale_external_app_relations(w.sid(APP)))
+        await _until_it_meets(g, reaping, marker=REAPER_MARK if hasattr(g, "client") else None)
+        if hasattr(g, "client"):
+            assert not reaping.done(), "the reaper decided while the transaction held the App's lock"
+        await g.commit_transaction(tid)
+        tid = None
+        try:
+            await reaping
+        except Exception as e:
+            if not g.is_write_conflict(e):
+                raise
+    finally:
+        if hasattr(g, "client"):
+            g.client.execute_query = run
+        else:
+            g.http_client.execute_aql = run
+        if reaping is not None and not reaping.done():
+            reaping.cancel()
+            with contextlib.suppress(BaseException):
+                await reaping
+        if tid is not None:
+            with contextlib.suppress(Exception):
+                await g.rollback_transaction(tid)

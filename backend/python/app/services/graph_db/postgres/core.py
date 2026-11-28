@@ -398,7 +398,7 @@ class CoreMixin(PgBase):
     # ---- generic edges -----------------------------------------------------------------------------------------
     async def batch_create_edges(
         self, edges: list[dict], collection: str, transaction: str | None = None, *, count_created: bool = False,
-        lock_grants: Sequence[tuple[str, str, str, str]] = (),
+        lock_grants: Sequence[tuple[str, str, str, str]] = (), lock_held: set[str] | None = None,      # ignored: see the interface
     ) -> bool:
         if count_created:  # this store does not report which edges a write created; the store's before/after comparison covers it
             raise NotImplementedError("batch_create_edges(count_created=True) is not supported on the PostgreSQL graph store")
@@ -447,7 +447,8 @@ class CoreMixin(PgBase):
         await self._q(go, transaction, write=True)
         return True
 
-    async def lock_grant_apps(self, targets: Sequence[tuple[str, str]], transaction: str | None = None) -> None:
+    async def lock_grant_apps(self, targets: Sequence[tuple[str, str]], transaction: str | None = None, *,
+                              lock_held: set[str] | None = None) -> None:      # ignored: a held advisory lock costs nothing to take again
         """Holds the app locks of ``targets`` shared until the transaction ends, as batch_create_edges does for its grants (common.grant_locks)."""
         org = current_org_id()      # first: no org bound raises, whatever the targets
         if not targets:

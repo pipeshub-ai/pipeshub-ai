@@ -15,6 +15,9 @@ So the reaper decides once every writer holding the lock has committed (its chai
 waits, its chain then newer than the reaper's decision (the membership is made again by the writer's membership step, as for a reaper that
 decided first). PostgreSQL holds the lock as an advisory lock; Neo4j and ArangoDB, without a shared lock, hold it exclusively on the app's node
 or document, so writers of one app take turns.
+
+A lock is held until the transaction ends, so each transaction's store remembers the ones it took (``lock_held``) and a later grant statement
+of the same app does not write it again; the record belongs to that transaction alone, and a retry starts a new one.
 """
 from __future__ import annotations
 

@@ -2911,7 +2911,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return {labels: _in_lock_order(rows, _by_ends) for labels, rows in grouped.items()}
 
     def _replace_edges_to_cypher(
-        self, to_id: str, to_collection: str, edges: list[dict], collection: str, lock_grants: Sequence[tuple[str, str, str, str]] = ()
+        self, to_id: str, to_collection: str, edges: list[dict], collection: str
     ) -> tuple[str, dict[str, Any]]:
         """The statement of ``replace_edges_to`` up to its RETURN, so a caller can add to the same write.
 
@@ -2979,9 +2979,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }}""")
         parameters["keep"] = keep
         member_union = "\n                UNION".join(member_sources)
-        held, lock_params = self._app_lock_cypher(lock_grants)      # the apps first, before any node or edge of the replace is locked
-        parameters.update(lock_params)
-        return f"""{held}
+        return f"""
             CALL {{{member_union}
             }}
             WITH DISTINCT member WHERE member IS NOT NULL
@@ -3004,6 +3002,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         lock_grants: Sequence[tuple[str, str, str, str]] = (),
+        lock_held: set[str] | None = None,
     ) -> None:
         """Replace the *collection* edges into *to_id*: every old one is gone unless *edges* has it again."""
         if edge_collection_to_relationship(collection) in _KH_TREE_TYPES:
@@ -3014,9 +3013,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # NEO4J_EXPLICIT_TRANSACTIONS is true, but false is a supported mode in
         # which a separate delete would commit before the new edges were written,
         # and a group whose rewrite failed was left with no members.
-        statement, parameters = self._replace_edges_to_cypher(to_id, to_collection, edges, collection, lock_grants)
-        await self.client.execute_query(
-            f"{statement}\n            RETURN count(*) AS done", parameters=parameters, txn_id=transaction,
+        statement, parameters = self._replace_edges_to_cypher(to_id, to_collection, edges, collection)
+        await self._run_under_app_lock(
+            f"{statement}\n            RETURN count(*) AS done", "done", parameters, lock_grants, lock_held, transaction,
             **_bulk_rows("group replace", len(edges)),
         )
 
@@ -3053,12 +3052,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         inherit: bool,
         transaction: str | None = None,
         lock_grants: Sequence[tuple[str, str, str, str]] = (),
+        lock_held: set[str] | None = None,
     ) -> None:
         # One statement: written apart, a failure on the inherit edge left the new
         # permissions beside the old inheritance, so a group that had just lost the
         # record could still read it.
         statement, parameters = self._replace_edges_to_cypher(
-            record_id, CollectionNames.RECORDS.value, edges, CollectionNames.PERMISSION.value, lock_grants
+            record_id, CollectionNames.RECORDS.value, edges, CollectionNames.PERMISSION.value
         )
         if not inherit:
             # Every record group, not only the one passed: the record must not keep
@@ -3086,8 +3086,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WITH count(*) AS _
             MATCH (n:{collection_to_label(CollectionNames.RECORDS.value)} {{id: $record_id}})
             {_cypher_kh_tree_refresh(edge_collection_to_relationship(CollectionNames.INHERIT_PERMISSIONS.value), "n")}"""
-        await self.client.execute_query(
-            f"{statement}\n            RETURN count(*) AS done", parameters=parameters, txn_id=transaction,
+        await self._run_under_app_lock(
+            f"{statement}\n            RETURN count(*) AS done", "done", parameters, lock_grants, lock_held, transaction,
             **_bulk_rows("record permission replace", len(edges)),
         )
 
@@ -3181,6 +3181,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         *,
         count_created: bool = False,
         lock_grants: Sequence[tuple[str, str, str, str]] = (),
+        lock_held: set[str] | None = None,
     ) -> bool | int:
         """
         Batch create edges/relationships.
@@ -3229,8 +3230,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     if is_link else f"MERGE (from)-[r:{relationship_type}]->(to)"
                 )
                 refresh = "" if is_link else _cypher_kh_tree_refresh(relationship_type, "from", "to")
-                held, lock_params = self._app_lock_cypher(lock_grants)
-                query = f"""{held}
+                query = f"""
                 UNWIND $edges AS edge
                 MATCH (from:{from_label} {{id: edge.from_key}})
                 MATCH (to:{to_label} {{id: edge.to_key}})
@@ -3245,10 +3245,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 {"RETURN collect(CASE WHEN isNew THEN [edge.from_key, edge.to_key] END) AS made" if report else "RETURN count(r) AS created"}
                 """
 
-                rows = await self.client.execute_query(
-                    query,
-                    parameters={"edges": group_edges, **lock_params},
-                    txn_id=transaction,
+                rows = await self._run_under_app_lock(
+                    query, "made" if report else "created", {"edges": group_edges}, lock_grants, lock_held, transaction,
                     **_bulk_rows("batch edge create", len(group_edges)),
                 )
                 if report:
@@ -3269,6 +3267,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         *,
         count_created: bool = False,
         lock_grants: Sequence[tuple[str, str, str, str]] = (),
+        lock_held: set[str] | None = None,
     ) -> int | None:
         """Create the edges that are not there; an existing edge keeps its properties.
 
@@ -3287,9 +3286,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # A hierarchy or inherit edge keeps its ends' tree state and its children order stamps, as batch_create_edges does.
             refresh = _cypher_kh_tree_refresh(relationship_type, "from", "to")
 
-            held, lock_params = self._app_lock_cypher(lock_grants)
             for (from_label, to_label), group_edges in self._edges_by_labels(edges).items():
-                query = f"""{held}
+                query = f"""
                 UNWIND $edges AS edge
                 MATCH (from:{from_label} {{id: edge.from_key}})
                 MATCH (to:{to_label} {{id: edge.to_key}})
@@ -3300,10 +3298,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 {f"REMOVE r.{_EDGE_NEW}" if report else ""}
                 {"RETURN collect(CASE WHEN isNew THEN [edge.from_key, edge.to_key] END) AS made" if report else "RETURN count(r) AS matched"}
                 """
-                rows = await self.client.execute_query(
-                    query,
-                    parameters={"edges": group_edges, **lock_params},
-                    txn_id=transaction,
+                rows = await self._run_under_app_lock(
+                    query, "made" if report else "matched", {"edges": group_edges}, lock_grants, lock_held, transaction,
                     **_bulk_rows("edge create if absent", len(group_edges)),
                 )
                 if report:
@@ -19302,9 +19298,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             raise
 
     @staticmethod
-    def _app_lock_cypher(lock_grants: Sequence[tuple[str, str, str, str]]) -> tuple[str, dict[str, Any]]:
+    def _app_lock_cypher(lock_grants: Sequence[tuple[str, str, str, str]], lock_held: set[str] | None = None) -> tuple[str, dict[str, Any]]:
         """The head of a statement that writes ``lock_grants``: a subquery that write-locks, until the transaction ends, the apps of their
-        targets in one order (``common.grant_locks``; Neo4j has no shared lock, so writers of one app take turns); ("", {}) when none."""
+        targets in one order (``common.grant_locks``; Neo4j has no shared lock, so writers of one app take turns), but for those in
+        ``lock_held``, and yields the ones it locked as ``lock_new``; ("", {}) when none."""
         by_label: dict[str, list[str]] = {}
         for collection, key in lock_targets(lock_grants):
             by_label.setdefault(collection_to_label(collection), []).append(key)
@@ -19324,16 +19321,30 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 CALL {{
                     CALL {{{branches}
                     }}
-                    WITH DISTINCT held ORDER BY held:{app_label}, held.id      // the org's first, then the apps', as the reaper takes them
+                    WITH DISTINCT held WHERE NOT held.id IN $lock_held      // a lock this transaction holds is not written again
+                    WITH held ORDER BY held:{app_label}, held.id      // the org's first, then the apps', as the reaper takes them
                     SET held.{_MATCH_LOCK} = true
                     REMOVE held.{_MATCH_LOCK}
-                }}""", {f"lock_apps_{i}": by_label[label] for i, label in enumerate(sorted(by_label))}
+                    RETURN collect(held.id) AS lock_new
+                }}""", {"lock_held": sorted(lock_held or ()), **{f"lock_apps_{i}": by_label[label] for i, label in enumerate(sorted(by_label))}}
 
-    async def lock_grant_apps(self, targets: Sequence[tuple[str, str]], transaction: str | None = None) -> None:
+    async def lock_grant_apps(self, targets: Sequence[tuple[str, str]], transaction: str | None = None, *,
+                              lock_held: set[str] | None = None) -> None:
         """Write-locks the apps of ``targets`` until the transaction ends, as a grant's statement does (``_app_lock_cypher``)."""
-        head, params = self._app_lock_cypher([("", "", c, k) for c, k in targets])
-        if head:
-            await self.client.execute_query(f"{head}\n                RETURN 1 AS locked", parameters=params, txn_id=transaction)
+        await self._run_under_app_lock("", "", {}, [("", "", c, k) for c, k in targets], lock_held, transaction)
+
+    async def _run_under_app_lock(self, query: str, columns: str, parameters: dict[str, Any], lock_grants: Sequence[tuple[str, str, str, str]],
+                                  lock_held: set[str] | None, transaction: str | None, **options: Any) -> list:  # noqa: ANN401
+        """Runs ``query`` (ending in a RETURN of ``columns``) after the app-lock head of ``lock_grants``, in one statement, and adds the apps
+        the head locked to ``lock_held``; just ``query`` when there is nothing to lock."""
+        head, lock_params = self._app_lock_cypher(lock_grants, lock_held)
+        if not head:
+            return await self.client.execute_query(query, parameters=parameters, txn_id=transaction, **options) if query else []
+        statement = f"{head}\n                CALL {{{query}\n                }}\n                RETURN lock_new, {columns}" if query else f"{head}\n                RETURN lock_new"
+        rows = await self.client.execute_query(statement, parameters={**parameters, **lock_params}, txn_id=transaction, **options)
+        if lock_held is not None and rows:
+            lock_held.update(rows[0]["lock_new"])
+        return rows
 
     async def lock_external_app_memberships(
         self,

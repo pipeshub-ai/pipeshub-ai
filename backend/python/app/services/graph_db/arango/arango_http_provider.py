@@ -4549,6 +4549,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         *,
         count_created: bool = False,
         lock_grants: Sequence[tuple[str, str, str, str]] = (),
+        lock_held: set[str] | None = None,
     ) -> bool | int:
         """
         Batch create edges - FULLY ASYNC.
@@ -4576,8 +4577,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             arango_edges = self._translate_edges_to_arango(edges)
 
             if collection != CollectionNames.NODE_RELATIONS.value:
-                held, held_vars = self._app_lock_aql(lock_grants)      # the apps' documents before the edges are written
-                batch_query = f"""{held}
+                batch_query = f"""
                 FOR edge IN @edges
                     UPSERT {{ _from: edge._from, _to: edge._to }}
                     INSERT edge
@@ -4585,9 +4585,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     IN @@collection
                     {"RETURN OLD == null ? [NEW._from, NEW._to] : null" if report else "RETURN NEW"}
                 """
-                results = await self.http_client.execute_aql(
-                    batch_query, {"edges": arango_edges, "@collection": collection, **held_vars}, txn_id=transaction,
-                )
+                results = await self._run_under_app_lock(      # the apps' documents before the edges are written
+                    batch_query, {"edges": arango_edges, "@collection": collection}, lock_grants, lock_held, transaction)
                 made = _created_ends(results, collection) if report else results or []
                 self.logger.debug(f"✅ Successfully created {len(made)} edges in collection '{collection}'.")
                 return len(made) if count_created else True
@@ -4642,6 +4641,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         *,
         count_created: bool = False,
         lock_grants: Sequence[tuple[str, str, str, str]] = (),
+        lock_held: set[str] | None = None,
     ) -> int | None:
         """Create the edges that are not there; an existing edge keeps its document.
 
@@ -4655,9 +4655,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return 0 if count_created else None
 
             arango_edges = self._translate_edges_to_arango(edges)
-            held, held_vars = self._app_lock_aql(lock_grants)
-
-            query = f"""{held}
+            query = f"""
             FOR edge IN @edges
                 UPSERT {{ _from: edge._from, _to: edge._to }}
                 INSERT edge
@@ -4665,11 +4663,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 IN @@collection
                 {"RETURN OLD == null ? [NEW._from, NEW._to] : null" if report else ""}
             """
-            done = await self.http_client.execute_aql(
-                query,
-                {"edges": arango_edges, "@collection": collection, **held_vars},
-                txn_id=transaction
-            )
+            done = await self._run_under_app_lock(query, {"edges": arango_edges, "@collection": collection}, lock_grants, lock_held, transaction)
             made = _created_ends(done, collection) if report else []
             return len(made) if count_created else None
 
@@ -9621,10 +9615,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             raise
 
     @staticmethod
-    def _app_lock_aql(lock_grants: Sequence[tuple[str, str, str, str]]) -> tuple[str, dict]:
+    def _app_lock_aql(lock_grants: Sequence[tuple[str, str, str, str]], lock_held: set[str] | None = None) -> tuple[str, dict]:
         """The head of a query that writes ``lock_grants``: an empty update of the documents of their targets' apps (``common.grant_locks``),
         which the app's reaper writes too, so that one of two such transactions conflicts (ArangoDB has no shared lock: writers of one app
-        conflict too, and their caller runs them again). ("", {}) when there is none."""
+        conflict too, and their caller runs them again). A document in ``lock_held`` (this transaction wrote it) is not written again; the
+        keys written are ``lock_orgs`` and ``lock_apps``. ("", {}) when there is none."""
         targets = lock_targets(lock_grants)
         if not targets:
             return "", {}
@@ -9632,17 +9627,30 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return f"""
             LET lock_nodes = (FOR g IN @lock_targets LET t = DOCUMENT(CONCAT(g.c, "/", g.k)) FILTER t != null RETURN t)
             // a node without a connector (a team) keeps memberships of every app of its org: its org's document is written, as every reaper does
-            LET lock_orgs = (FOR o IN UNIQUE(FOR t IN lock_nodes FILTER t.connectorId == null RETURN t.orgId) SORT o
-                             FOR d IN {CollectionNames.ORGS.value} FILTER d._key == o UPDATE d WITH {{}} IN {CollectionNames.ORGS.value})
-            LET lock_apps = (FOR k IN UNIQUE(FOR t IN lock_nodes FILTER t.connectorId != null RETURN t.connectorId) SORT k
-                             FOR a IN {apps} FILTER a._key == k UPDATE a WITH {{}} IN {apps})""", {
-            "lock_targets": [{"c": c, "k": k} for c, k in targets]}
+            LET lock_orgs = (FOR o IN UNIQUE(FOR t IN lock_nodes FILTER t.connectorId == null RETURN t.orgId) FILTER o NOT IN @lock_held SORT o
+                             FOR d IN {CollectionNames.ORGS.value} FILTER d._key == o UPDATE d WITH {{}} IN {CollectionNames.ORGS.value} RETURN NEW._key)
+            LET lock_apps = (FOR k IN UNIQUE(FOR t IN lock_nodes FILTER t.connectorId != null RETURN t.connectorId) FILTER k NOT IN @lock_held SORT k
+                             FOR a IN {apps} FILTER a._key == k UPDATE a WITH {{}} IN {apps} RETURN NEW._key)""", {
+            "lock_targets": [{"c": c, "k": k} for c, k in targets], "lock_held": sorted(lock_held or ())}
 
-    async def lock_grant_apps(self, targets: Sequence[tuple[str, str]], transaction: str | None = None) -> None:
+    async def lock_grant_apps(self, targets: Sequence[tuple[str, str]], transaction: str | None = None, *,
+                              lock_held: set[str] | None = None) -> None:
         """Writes the documents of the apps of ``targets`` (an empty update), as a grant's query does (``_app_lock_aql``)."""
-        head, bind_vars = self._app_lock_aql([("", "", c, k) for c, k in targets])
-        if head:
-            await self.http_client.execute_aql(f"{head}\n            RETURN 1", bind_vars=bind_vars, txn_id=transaction)
+        await self._run_under_app_lock("", {}, [("", "", c, k) for c, k in targets], lock_held, transaction)
+
+    async def _run_under_app_lock(self, query: str, bind_vars: dict, lock_grants: Sequence[tuple[str, str, str, str]], lock_held: set[str] | None,
+                                  transaction: str | None) -> list:
+        """Runs ``query`` after the app-lock head of ``lock_grants`` in one query and returns its rows, adding the documents the head wrote to
+        ``lock_held``; just ``query`` when there is nothing to lock."""
+        head, lock_vars = self._app_lock_aql(lock_grants, lock_held)
+        if not head:
+            return await self.http_client.execute_aql(query, bind_vars, txn_id=transaction) if query else []
+        rows = f"LET rows = ({query})" if query else "LET rows = []"
+        out = await self.http_client.execute_aql(f"{head}\n            {rows}\n            RETURN {{rows, locked: APPEND(lock_orgs, lock_apps)}}",
+                                                 {**bind_vars, **lock_vars}, txn_id=transaction)
+        if lock_held is not None:
+            lock_held.update(out[0]["locked"])
+        return out[0]["rows"]
 
     async def lock_external_app_memberships(
         self,

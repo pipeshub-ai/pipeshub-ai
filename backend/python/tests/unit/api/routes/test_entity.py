@@ -29,8 +29,12 @@ from app.api.routes.entity import (
 from app.core.db.errors import SerializationConflict
 from app.core.org_context import OrgContext, bind
 from app.services.graph_db.postgres.base import PgBase
-from app.utils.user_messages import DATABASE_UNREACHABLE, PEOPLE_GONE, action_failed, not_found
-
+from app.utils.user_messages import (
+    DATABASE_UNREACHABLE,
+    PEOPLE_GONE,
+    action_failed,
+    not_found,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -741,7 +745,7 @@ class _TeamGraph:
             self.teams.setdefault(node["_key"], {}).update(node)
         return True
 
-    async def batch_create_edges(self, edges: list[dict], collection: str, transaction: str | None = None, *, lock_grants: list = ()) -> bool:
+    async def batch_create_edges(self, edges: list[dict], collection: str, transaction: str | None = None, *, lock_grants: list = (), lock_held: set | None = None) -> bool:
         self._statement()
         self.edges.update((collection, e["from_id"], e["to_id"]) for e in edges)
         return True
@@ -2166,7 +2170,9 @@ class TestUpdateUserEmail:
 
     def test_409_when_email_belongs_to_another_login(self):
         async def _run() -> None:
-            from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
+            from app.services.graph_db.user_email_identity import (
+                GraphUserEmailConflictError,
+            )
 
             req = _make_request()
             gp = _graph_provider(req)
@@ -2220,7 +2226,9 @@ class TestUpdateUserEmail:
 
     def test_409_does_not_leak_the_other_users_id(self):
         async def _run() -> None:
-            from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
+            from app.services.graph_db.user_email_identity import (
+                GraphUserEmailConflictError,
+            )
 
             req = _make_request()
             gp = _graph_provider(req)

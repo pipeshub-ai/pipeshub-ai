@@ -264,3 +264,79 @@ async def test_without_a_transaction_a_failed_read_after_the_grant_makes_every_h
         await store.batch_create_edges([_grant("users", "u1")], "permission")
     assert store.ensure_app_membership.await_args_list == [
         call("u1", "users", "app1", is_external=True), call("u1", "users", "app2", is_external=True)]
+
+
+def _locking_provider(fail_first: bool = False) -> tuple[MagicMock, list[set[str]]]:
+    """A provider whose grant write records the held locks it was given (a copy) and then locks app1, as a store's head does once it succeeds;
+    the first write raises a conflict with ``fail_first``."""
+    import logging
+    seen: list[set[str]] = []
+
+    class Conflict(Exception):
+        code = 1200
+
+    async def write(*_a: object, lock_held: set[str], **_k: object) -> bool:
+        seen.append(set(lock_held))
+        if fail_first and len(seen) == 1:
+            raise Conflict("write-write conflict")
+        lock_held.add("app1")
+        return True
+    provider = MagicMock(begin_transaction=AsyncMock(side_effect=lambda **_: f"t{len(seen)}"), rollback_transaction=AsyncMock(),
+                         commit_transaction=AsyncMock(), batch_create_edges=AsyncMock(side_effect=write),
+                         is_write_conflict=MagicMock(return_value=True), is_transient_error=MagicMock(return_value=True),
+                         opens_explicit_transaction=MagicMock(return_value=True))
+    provider.logger = logging.getLogger("app-lock-held-test")
+    return provider, seen
+
+
+@pytest.mark.asyncio
+async def test_a_transaction_hands_the_locks_it_holds_to_each_grant_statement_and_drops_them_when_it_ends() -> None:
+    """Within one transaction the second grant statement is told app1's lock is held (its lock write is skipped); a second transaction starts
+    with none, and none is left in a store after its commit."""
+    from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+    provider, seen = _locking_provider()
+    store = GraphDataStore(provider.logger, provider)
+    async with store.transaction() as tx:
+        await tx.batch_create_edges([_grant("users", "u1")], "permission")
+        await tx.batch_create_edges([_grant("users", "u2")], "permission")
+        assert tx._app_locks == {"app1"}
+    assert tx._app_locks == set()
+    async with store.transaction() as other:
+        await other.batch_create_edges([_grant("users", "u1")], "permission")
+    assert other is not tx and other._app_locks is not tx._app_locks
+    assert seen == [set(), {"app1"}, set()]      # once per app in a transaction; the next transaction takes it again
+
+
+@pytest.mark.asyncio
+async def test_after_a_rollback_and_retry_the_lock_is_taken_again(monkeypatch) -> None:
+    """A conflict rolls the transaction back: the retry's transaction holds no lock of the first one, so its grant statement writes the lock."""
+    from app.connectors.core.base.data_store import graph_data_store
+    from app.connectors.core.base.data_store.graph_data_store import (
+        GraphDataStore,
+        retry_on_deadlock,
+    )
+    monkeypatch.setattr(graph_data_store, "_retry_delay", lambda _attempt: 0)
+    provider, seen = _locking_provider(fail_first=True)
+    store = GraphDataStore(provider.logger, provider)
+
+    class Writer:
+        data_store_provider = store
+
+        @retry_on_deadlock()
+        async def run(self) -> None:
+            async with store.transaction() as tx:
+                await tx.batch_create_edges([_grant("users", "u1")], "permission")
+                await tx.batch_create_edges([_grant("users", "u2")], "permission")
+
+    await Writer().run()
+    assert seen == [set(), set(), {"app1"}]      # the failed attempt, then the retry: locked again, then held
+    assert provider.rollback_transaction.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_rolled_back_store_holds_no_lock() -> None:
+    store, provider, _ = _store()
+    store._app_locks.add("app1")
+    provider.rollback_transaction = AsyncMock()
+    await store.rollback()
+    assert store._app_locks == set()
