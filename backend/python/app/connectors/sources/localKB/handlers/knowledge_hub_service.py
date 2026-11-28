@@ -721,14 +721,6 @@ class KnowledgeHubService:
         # A lookup that failed is not a missing user: the error reaches get_nodes, which answers busy or failed.
         return await get_caller_user(self.graph_provider, user_id, raise_on_error=True)
 
-    async def _get_user_app_ids(
-        self, user_key: str, org_id: str
-    ) -> list[str]:
-        """Return app IDs accessible to this user. EE overrides for org-scoped lookup."""
-        owned_app_ids = await self.graph_provider.get_user_app_ids(user_key)
-        shared_app_ids = await self.graph_provider.get_user_permission_app_ids(user_key, org_id)
-        return list(dict.fromkeys([*owned_app_ids, *shared_app_ids]))
-
     def _has_flattening_filters(self, q: str | None, node_types: list[str] | None,
                                  record_types: list[str] | None, origins: list[str] | None,
                                  connector_ids: list[str] | None,

@@ -333,7 +333,6 @@ async def test_what_identity_writes_feeds_the_access_check(w: World) -> None:
     await w.member("me", g.id)
     await w.edge("permission", ("groups", g.id), ("records", "viaGroup"), type="GROUP", role="READER")
     assert await w.allowed("me", "viaGroup") == {"viaGroup"}
-    assert await w.p.get_user_app_ids("me") == [APP]
     assert [a["_key"] for a in await w.p.get_user_apps("me")] == [APP]
 
 
@@ -345,7 +344,7 @@ CALLS = [
     ("batch_upsert_user_groups", ([AppUserGroup(app_name=Connectors.JIRA, connector_id="c", source_user_group_id="e", name="G")],)),
     ("delete_edges_to_groups", ("u", "users", "permission")), ("ensure_app_membership", ("u", "users", "c")),
     ("ensure_team_app_edge", ("c", "o")), ("upsert_authenticated_as", ("a", "b", "c", "o")), ("remove_authenticated_as", ("c",)),
-    ("get_user_apps", ("u",)), ("get_user_app_ids", ("u",)),
+    ("get_user_apps", ("u",)),
     ("add_user_to_all_team", ("o", "u")), ("ensure_all_team_with_users", ("o",)), ("check_api_toolset_in_use", ("i",)), ("check_mcp_instance_in_use", ("i",)),
     ("check_toolset_instance_in_use", ("i",)), ("check_connector_name_uniqueness", ("n", "team", "o", "u", "apps")),
     ("count_connector_instances_by_scope", ("apps", "team")),
@@ -370,7 +369,6 @@ async def test_two_connectors_of_one_creator_and_source_account_are_two_links(w:
     await w.p.upsert_authenticated_as("c", "s", APP, w.org)
     await w.p.upsert_authenticated_as("c", "s", "app2", w.org)
     assert sorted(e["connectorId"] for e in await w.p.get_edges_from_node("users/c", "authenticatedAs")) == sorted([APP, "app2"])
-    assert sorted(await w.p.get_user_app_ids("c")) == sorted([APP, "app2"])
     await w.p.upsert_authenticated_as("c", "s", APP, w.org)                                  # touching one leaves the other
     assert len(await w.p.get_edges_from_node("users/c", "authenticatedAs")) == 2
     assert await w.p.remove_authenticated_as(APP) is True

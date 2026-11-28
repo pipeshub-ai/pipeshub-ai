@@ -104,7 +104,6 @@ async def view(w: World, key: str) -> dict[str, Any]:
         "filter_vrids_scoped": set(await p.filter_accessible_virtual_record_ids(list(VRIDS.values()), uid, org, scope_connector_ids=frozenset({PERS}))),
         "gated": PERS in v3["gated_app_ids"],
         "gated_apps": PERS in {a["id"] for a in await p.get_gated_apps(key, org)},
-        "user_apps": PERS in await p.get_user_app_ids(key),
         "connector_types": "SLACK" in await p.get_accessible_connector_types(uid, org),
         "node_access": {n for n in ALL_NODES if await p.get_knowledge_hub_node_access(n, key, org, FOLDER_MIME_TYPES)},
         "control": await p.filter_accessible_record_ids(["o1"], uid, org),     # the other app's org-wide record is everyone's
@@ -112,10 +111,10 @@ async def view(w: World, key: str) -> dict[str, Any]:
 
 
 NOTHING = {"filter_ids": set(), "nodes": set(), "vrids": set(), "vrids_scoped_to_the_app": set(), "vrids_scoped_elsewhere": set(), "filter_vrids": set(),
-           "filter_vrids_scoped": set(), "gated": False, "gated_apps": False, "user_apps": False, "connector_types": False, "node_access": set(), "control": {"o1"}}
+           "filter_vrids_scoped": set(), "gated": False, "gated_apps": False, "connector_types": False, "node_access": set(), "control": {"o1"}}
 EVERYTHING = {"filter_ids": set(MINE), "nodes": {*MINE, "g1", PERS}, "vrids": set(VRIDS.values()), "vrids_scoped_to_the_app": set(VRIDS.values()),
               "vrids_scoped_elsewhere": set(), "filter_vrids": set(VRIDS.values()), "filter_vrids_scoped": set(VRIDS.values()), "gated": True, "gated_apps": True,
-              "user_apps": True, "connector_types": True, "node_access": {*MINE, "g1", PERS}, "control": {"o1"}}
+              "connector_types": True, "node_access": {*MINE, "g1", PERS}, "control": {"o1"}}
 
 
 async def test_only_the_connecting_user_reaches_a_personal_apps_records(w: World) -> None:

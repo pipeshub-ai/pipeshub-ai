@@ -430,20 +430,6 @@ class PermissionsMixin(PgBase):
         role = r["role"]
         return {"access_type": "INDIVIDUAL" if r["t"] == "USER" else "ORG", "user_role": role, **{k: role in v for k, v in _AGENT_CAN.items()}, "can_view": True}
 
-    async def get_user_permission_app_ids(self, user_key: str, org_id: str, transaction: str | None = None) -> list[str]:
-        """Apps of the org the user holds a USER grant on, directly or through a team they are in that holds a TEAM grant on it; hidden ones left out."""
-        if org_id != current_org_id():
-            return []
-        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_user_permission_app_ids */ WITH ids AS (
-              SELECT e.to_id AS app FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_coll = 'users' AND e.from_id = $2
-                AND e.to_coll = 'apps' AND e.doc->>'type' = 'USER'
-              UNION SELECT g.to_id FROM graph.edges m JOIN graph.nodes t ON t.org_id = m.org_id AND t.coll = 'teams' AND t.id = m.to_id
-                JOIN graph.edges g ON g.org_id = m.org_id AND g.coll = 'permission' AND g.from_coll = 'teams' AND g.from_id = t.id AND g.to_coll = 'apps' AND g.doc->>'type' = 'TEAM'
-                WHERE m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = 'users' AND m.from_id = $2 AND m.to_coll = 'teams' AND m.doc->>'type' = 'USER')
-            SELECT DISTINCT a.id FROM ids JOIN graph.nodes a ON a.org_id = $1 AND a.coll = 'apps' AND a.id = ids.app
-            WHERE a.doc->>'orgId' = $1 AND a.doc->>'isHidden' IS DISTINCT FROM 'true'""", org_id, user_key), transaction)
-        return [r["id"] for r in rows]
-
     async def get_hidden_app_ids(self, app_ids: list[str], transaction: str | None = None) -> list[str]:
         """The Apps of this org among ``app_ids`` whose ``isHidden`` is true (a project's own file collection), as Neo4j and ArangoDB answer."""
         if not app_ids:

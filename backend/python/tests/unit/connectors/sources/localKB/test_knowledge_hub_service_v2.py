@@ -265,39 +265,6 @@ async def test_the_user_override_point_still_decides_the_user(
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason="_get_user_app_ids is defined as an override point but has no "
-           "caller in the service package; v2 gates on the access context instead",
-)
-async def test_the_app_gate_override_point_is_still_consulted(
-    logger, provider, config_service
-) -> None:
-    """A subclass overriding only `_get_user_app_ids`
-    should still change which apps the request may reach.
-
-    It does not. The method survives the v2 rewrite, so the override compiles and
-    looks effective, but nothing calls it — the gate comes from
-    `get_knowledge_hub_access_context_v2`. A subclass relying on it would
-    widen or narrow nothing, with no error to notice.
-    """
-    consulted: list[tuple[str, str]] = []
-
-    class _OverridingService(KnowledgeHubService):
-        async def _get_user_app_ids(self, user_key: str, org_id: str) -> list[str]:
-            consulted.append((user_key, org_id))
-            return ["override-app"]
-
-    service = _OverridingService(
-        logger=logger, graph_provider=provider, config_service=config_service
-    )
-    provider.get_knowledge_hub_root_nodes_v2.return_value = envelope([])
-    await service.get_nodes(user_id="u1", org_id="o1")
-
-    assert consulted, "the override point was never consulted"
-
-
-@pytest.mark.asyncio
 async def test_a_global_search_is_partitioned(service, provider) -> None:
     """The one mode that fans out across partitions and merges."""
     page = SearchPage(rows=[row("r1", "Report")], total=1, counts_by_type={"record": 1},

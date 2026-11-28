@@ -567,8 +567,6 @@ class TestAbstractMethodInventory:
         "_get_kb_context_for_record",
         "_fetch_existing_file_names_in_parent",
         "_validate_upload_context",
-        "get_user_app_ids",
-        "get_user_permission_app_ids",
         "_create_reindex_event_payload",
         "delete_inherit_permissions_relation_record_group",
         "get_user_apps",

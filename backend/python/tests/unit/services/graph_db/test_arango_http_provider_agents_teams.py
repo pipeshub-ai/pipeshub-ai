@@ -1072,47 +1072,6 @@ class TestGetRecordParentAdjacency:
 
 
 # ===========================================================================
-# Get User App IDs / Permission App IDs (lines 15204-15270)
-# ===========================================================================
-
-class TestGetUserAppIds:
-    @pytest.mark.asyncio
-    async def test_success(self, connected_provider):
-        """The user-app relation, direct or through a team: an extension hook,
-        not the gate, as on Neo4j."""
-        connected_provider.execute_query = AsyncMock(return_value=["a1", "a2"])
-        result = await connected_provider.get_user_app_ids("u1")
-        assert result == ["a1", "a2"]
-        assert connected_provider.execute_query.await_args.kwargs["bind_vars"] == {"user_from": "users/u1"}
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        with pytest.raises(Exception, match="fail"):
-            await connected_provider.get_user_app_ids("u1")
-
-
-class TestGetUserPermissionAppIds:
-    @pytest.mark.asyncio
-    async def test_success(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(return_value=[["a1", "a2"]])
-        result = await connected_provider.get_user_permission_app_ids("u1", "org1")
-        assert "a1" in result
-
-    @pytest.mark.asyncio
-    async def test_empty(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(return_value=[[]])
-        result = await connected_provider.get_user_permission_app_ids("u1", "org1")
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        with pytest.raises(Exception, match="fail"):
-            await connected_provider.get_user_permission_app_ids("u1", "org1")
-
-
-# ===========================================================================
 # Knowledge Hub Context Permissions (lines 15272-15392)
 # ===========================================================================
 
