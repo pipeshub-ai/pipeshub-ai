@@ -1,3 +1,8 @@
+# Copyright (c) 2026 PipesHub Inc.
+# Licensed under the PipesHub Enterprise License. See the LICENSE file in this
+# ee folder. Free for development, testing and evaluation. Production use needs
+# a PipesHub licence key.
+
 """GitLab: reading who may see what from GitLab.
 
 Project and group members with their access levels (as user grants, or pseudo-groups for members
