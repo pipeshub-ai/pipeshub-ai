@@ -283,7 +283,7 @@ IT_WORKFLOW = ".github/workflows/integration-tests.yml"
 CONNECTOR_SHARDS = {
     "connectors-1": (
         "nextcloud", "bookstack", "bookstack_sim", "mariadb", "minio", "web", "local_fs", "local_fs_sim", "github",
-        "sharepoint",
+        "sharepoint", "linear_sim",
     ),
     "connectors-2": (
         "jira", "azure_files", "smb", "zendesk", "outlook", "gmail_workspace", "gmail_individual", "servicenow",
@@ -381,7 +381,7 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
     "gitlab": ("gitlab",),
     "gitlab_personal": ("gitlab",),
     "google": ("google_drive_workspace", "google_drive_individual", "gmail_workspace", "gmail_individual"),
-    "linear": ("linear",),
+    "linear": ("linear", "linear_sim"),
     "minio": ("minio",),
     "s3": ("s3", "minio"),
     "network_share": ("smb",),
@@ -400,6 +400,7 @@ CONNECTOR_TEST_MARKERS: dict[str, tuple[str, ...]] = {
     "bookstack": ("bookstack", "bookstack_sim"),
     "servicenow": ("servicenow", "servicenow_sim"),
     "zammad": ("zammad", "zammad_sim"),
+    "linear": ("linear", "linear_sim"),
     "github_personal": ("github",),
     "gmail": ("gmail_workspace", "gmail_individual"),
     "local_fs": ("local_fs", "local_fs_sim"),
