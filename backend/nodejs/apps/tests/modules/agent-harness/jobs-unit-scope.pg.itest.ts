@@ -41,7 +41,7 @@ for (const bin of pgBins()) {
     function () {
       this.timeout(120_000);
       let stack: PgStack;
-      const [a, b] = [hexOrg(), hexOrg()].sort();
+      const [a, b] = [hexOrg(), hexOrg()].sort() as [string, string];
       before(async () => {
         stack = await startHarnessPg(bin, 'harness_jobs_scope');
         await resetHarnessPg(stack);
