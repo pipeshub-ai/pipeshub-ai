@@ -3891,18 +3891,15 @@ class TestSyncProjectRolesCoverage:
         }))
         mock_ds.get_project_role = AsyncMock(return_value=_make_mock_response(200, {
             "name": "Devs",
-            "actors": [{
-                "type": "atlassian-group-role-actor",
-                "name": "devs",
-                "groupId": "unknown-gid",
-            }],
+            "actors": [{"type": "atlassian-group-role-actor", "name": "devs"}],  # no id: found by the name the group read saw
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        connector._group_ids_by_name = {"devs": "gid-1"}
 
         user = _make_app_user()
-        groups_map = {"devs": [user]}
-        await connector._sync_project_roles(["PROJ"], [user], groups_map)
-        connector.data_entities_processor.on_new_app_roles.assert_awaited_once()
+        await connector._sync_project_roles(["PROJ"], [user], {"gid-1": [user]})
+        ((role, members),) = connector.data_entities_processor.on_new_app_roles.await_args.args[0]
+        assert role.source_role_id == "PROJ_10001" and members == [user]
 
     @pytest.mark.asyncio
     async def test_user_actor_by_email(self):
