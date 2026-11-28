@@ -68,6 +68,8 @@ export interface Progress {
    * end once they have (the rollback's own job). While either holds, only a rollback run again attaches (see `releaseHeld`).
    */
   release?: { pending: string[]; end: boolean };
+  /** `reset --abandon-release` gave up a held release: when, and the carriers that were still to let go. */
+  releaseAbandoned?: { at: string; pending: string[] };
   [k: string]: unknown;
 }
 

@@ -18,6 +18,7 @@ import { rollbackOnline } from '../../../src/scripts/docstore-migrate/reverse-fo
 import { CARRIERS } from '../../../src/scripts/docstore-migrate/carry';
 import type { Carrier } from '../../../src/scripts/docstore-migrate/carry/types';
 import { haveMongod } from './mongo-harness';
+import { failSaveOnce } from './fail-save';
 import { World, startWorld } from './world';
 
 const suite = haveStack && haveMongod ? describe : describe.skip;
@@ -479,6 +480,61 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       } finally {
         (CARRIERS as Carrier[]).splice(CARRIERS.indexOf(carrier), 1);
       }
+    });
+
+    const holding = (name: string, ok: () => boolean, calls: string[]): Carrier => ({
+      name,
+      reason: 'test: lets go when told to',
+      collections: [],
+      fields: {},
+      tables: ['identity.users'],
+      write: async () => undefined,
+      remove: async () => undefined,
+      expected: () => [],
+      actual: async () => new Map(),
+      restore: async () => ({ written: 0, removed: 0 }),
+      clear: async () => undefined,
+      async released() {
+        calls.push(name);
+        if (!ok()) throw new Error('still holding');
+      },
+    });
+    const withCarriers = async (cs: Carrier[], f: () => Promise<void>): Promise<void> => {
+      (CARRIERS as Carrier[]).push(...cs);
+      try {
+        await f();
+      } finally {
+        for (const c of cs) (CARRIERS as Carrier[]).splice(CARRIERS.indexOf(c), 1);
+      }
+    };
+
+    it('an online rollback whose job ends on a run again ends it as rolled back', async () => {
+      let ok = false;
+      const calls: string[] = [];
+      await withCarriers([holding('qa-phase', () => ok, calls)], async () => {
+        expect((await run(['migrate', '--online'], ONLINE)).code).to.equal(0);
+        expect((await cut()).out.ok).to.equal(true);
+        expect((await run(['rollback', '--online', '--fail-at', 'finalize-checkpoint'], ONLINE)).code).to.equal(0);
+        ok = true;
+        expect((await run(['rollback'])).out).to.include({ ok: true, mode: 'released' });
+        const last = await JobState.latest(w.rt);
+        expect(last?.status).to.equal('done');
+        expect(last?.progress.phase).to.equal('rolled_back');
+      });
+    });
+
+    it('an online rollback names as pending exactly what its job keeps, when the shrunk list cannot be saved', async () => {
+      const calls: string[] = [];
+      await withCarriers([holding('qa-a', () => true, calls), holding('qa-b', () => false, calls)], async () => {
+        expect((await run(['migrate', '--online'], ONLINE)).code).to.equal(0);
+        expect((await cut()).out.ok).to.equal(true);
+        const undo = failSaveOnce((p) => p.release?.pending.length === 1);
+        const r = await run(['rollback', '--online'], ONLINE).finally(undo);
+        expect(r.code, JSON.stringify(r.out)).to.equal(0);
+        const kept = (await JobState.current(w.rt))?.progress.release?.pending;
+        expect(kept).to.deep.equal(['qa-a', 'qa-b']);
+        expect(r.out.message).to.contain(`stays open for ${kept!.join(', ')}`);
+      });
     });
 
     it('a second rollback, with MongoDB already the store, is refused and changes nothing', async () => {

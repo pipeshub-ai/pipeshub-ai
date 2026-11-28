@@ -506,6 +506,7 @@ async function rollbackOnlineLocked(
     const { note: released, open } = await releaseAfterHandOver(rt, {
       js,
       failAt: o.failAt,
+      phase: 'rolled_back',
     });
     // the move is over: end the job (the import login's exemption closes with it) and leave no markers behind
     try {

@@ -134,7 +134,7 @@ export const FLAGS: Record<string, string[]> = {
     'fail-at',
   ],
   unfreeze: [],
-  reset: ['yes', 'force'],
+  reset: ['yes', 'force', 'abandon-release'],
   finalize: ['yes'],
   status: [],
   reverse: ['until-idle'],
@@ -259,6 +259,8 @@ export const HELP = `commands: preflight, schema, bulk, follow, post_load, verif
 --confirm-fence-armed (drain): every application process runs with DOC_STORE_FENCE=on. Without it drain refuses while a connected
   application client does not name its connections pipeshub-fenced, because a process that does not wrap its writes keeps writing
   whatever the fence says.
+--abandon-release (reset): reset although a rollback has not finished letting go of what the move held in PostgreSQL (run rollback
+  again instead). The carriers given up are recorded in the cancelled job.
 --allow-clients (migrate --offline, preflight): go on although an application is still connected to MongoDB. WRITES THAT APPLICATION
   MAKES AFTER THE COPY BEGINS CAN BE LOST (they are fenced off or land after the copy read the data). Stop the application instead.`;
 
@@ -521,7 +523,10 @@ export async function runCli(
         return r.ok ? 0 : 1;
       }
       case 'reset': {
-        const r = await reset(rt, { force: a.flags.has('force') });
+        const r = await reset(rt, {
+          force: a.flags.has('force'),
+          abandonRelease: a.flags.has('abandon-release'),
+        });
         out(r);
         return r.ok ? 0 : 1;
       }

@@ -455,28 +455,28 @@ const named = (xs: Array<{ name: string; why: string }>): string =>
  */
 export async function releaseAfterHandOver(
   rt: MigrationRuntime,
-  o: { js?: JobState; failAt?: string } = {},
+  o: { js?: JobState; failAt?: string; phase?: string } = {},
 ): Promise<{ note: string; open: boolean }> {
   const carriers = carriersFor().filter((c) => c.released !== undefined);
   if (carriers.length === 0) return { note: '', open: false };
   const names = carriers.map((c) => c.name);
-  // the online rollback ends its own job; the offline one ends a job only if it started it here
+  // the online rollback ends its own job (and writes its phase with the record); the offline one ends a job only if it started it here
   let js = o.js;
   let end = Boolean(o.js);
-  let recorded: unknown = null;
   const beforeSave = (): void => {
     if (hookOn(o.failAt, 'release-record'))
       throw new Error('injected: the release could not be recorded');
   };
   try {
     if (js) {
-      const before = js.progress.release;
+      const before = { release: js.progress.release, phase: js.progress.phase };
       js.progress.release = { pending: names, end };
+      if (o.phase) js.progress.phase = o.phase;
       try {
         beforeSave();
         await js.checkpoint();
       } catch (e) {
-        js.progress.release = before;
+        Object.assign(js.progress, before);
         throw e;
       }
     } else {
@@ -500,26 +500,23 @@ export async function releaseAfterHandOver(
       }
     }
   } catch (e) {
-    recorded = e;
+    // no carrier runs without the record: one that failed would have nothing to retry it
+    return {
+      note: ` The carriers' release did not start: it could not be recorded (${errText(e)}), so no carrier let go of what the move held in PostgreSQL (${names.join(', ')}): remove what they hold by hand before a move again.`,
+      open: false,
+    };
   }
   const failed = await releaseCarried(
     carryPg(rt),
     carriers,
-    hookOn(o.failAt, 'released') || hookOn(o.failAt, 'release-record'),
+    hookOn(o.failAt, 'released'),
   );
-  // MongoDB is already the store: whatever happens here, the rollback reports done, and the sentence is what is left to do
-  if (recorded !== null || !js)
-    return {
-      note: failed.length
-        ? ` Some carriers did not let go of what the move held in PostgreSQL (${named(failed)}), and that could not be recorded (${errText(recorded)}): remove what they hold by hand before a move again.`
-        : '',
-      open: false,
-    };
   js.progress.release = { pending: failed.map((f) => f.name), end };
   try {
     await js.checkpoint();
   } catch (e) {
-    // the job still names every carrier: a rollback run again lets go of them again (each release can be run twice)
+    // the job still names every carrier (each release may run twice): in memory too, so that no later save writes a list nobody named
+    js.progress.release = { pending: names, end };
     return {
       note: ` The carriers' release could not be saved (${errText(e)})${failed.length ? `, and some did not let go (${named(failed)})` : ''}: job ${String(js.id)} stays open for ${names.join(', ')}: ${RETRY_RELEASE}.`,
       open: true,
@@ -527,7 +524,7 @@ export async function releaseAfterHandOver(
   }
   if (failed.length > 0)
     return {
-      note: ` Some carriers did not let go of what the move held in PostgreSQL (${named(failed)}); job ${String(js.id)} stays open for them: ${RETRY_RELEASE}.`,
+      note: ` Some carriers did not let go of what the move held in PostgreSQL (${named(failed)}); job ${String(js.id)} stays open for ${failed.map((f) => f.name).join(', ')}: ${RETRY_RELEASE}.`,
       open: true,
     };
   if (!end || o.js) return { note: '', open: false }; // the online rollback ends its job itself
@@ -566,8 +563,11 @@ export async function resumeRelease(
     else run.push(c);
   }
   kept.push(...(await releaseCarried(carryPg(rt), run)));
-  js.progress.release = { pending: kept.map((f) => f.name), end: rel.end };
-  await js.checkpoint();
+  // a retry that only ends the job changes nothing in it: no save stands between it and the end
+  if (rel.pending.length > 0) {
+    js.progress.release = { pending: kept.map((f) => f.name), end: rel.end };
+    await js.checkpoint();
+  }
   if (kept.length > 0)
     return {
       ok: false,

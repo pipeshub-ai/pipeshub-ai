@@ -94,6 +94,8 @@ export interface Carrier {
   /**
    * After a rollback has made MongoDB the store again: lets go of what only the move held in PostgreSQL (a record PostgreSQL's readers
    * would otherwise still act on). Not called while PostgreSQL may still be the store, so the verify of the reverse copy still sees it.
+   * It must succeed when called again after its work has committed: a rollback run again calls it once more whenever the job could not
+   * save that it let go (its work commits before that save).
    */
   released?(k: KernelTx): Promise<void>;
 }

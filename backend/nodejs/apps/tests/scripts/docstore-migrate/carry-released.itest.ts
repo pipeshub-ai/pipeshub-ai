@@ -14,6 +14,10 @@ import type { Carrier } from '../../../src/scripts/docstore-migrate/carry/types'
 import { identityDocs } from './fixtures/identity';
 import { haveMongod } from './mongo-harness';
 import { World, startWorld } from './world';
+import { failSaveOnce } from './fail-save';
+import { reset } from '../../../src/scripts/docstore-migrate/reset';
+import { releaseCarried } from '../../../src/scripts/docstore-migrate/carry/run';
+import { carryPg } from '../../../src/scripts/docstore-migrate/carry/steps';
 
 const suite = haveStack && haveMongod ? describe : describe.skip;
 const DB = 'es_released';
@@ -262,6 +266,68 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           cur === null || (cur.progress.release?.pending ?? []).length > 0,
           'no running job has lost the list',
         ).to.equal(true);
+      });
+
+      it('reset refuses while a release holds the job and names it; --abandon-release records what was given up', async () => {
+        await offlineMoved();
+        failNext = true;
+        await back();
+        const refused = await reset(w.rt, { force: false });
+        expect(refused, refused.message).to.include({ ok: false });
+        expect(refused.message)
+          .to.contain('qa-released')
+          .and.contain('--abandon-release');
+        expect(await pending(), 'the release is still held').to.deep.equal([
+          'qa-released',
+        ]);
+        const given = await reset(w.rt, {
+          force: false,
+          abandonRelease: true,
+        } as never);
+        expect(given, given.message).to.include({ ok: true });
+        expect(given.message).to.contain('qa-released');
+        const last = await JobState.latest(w.rt);
+        expect(last?.status).to.equal('cancelled');
+        expect(
+          (last?.progress as Record<string, any>).releaseAbandoned?.pending,
+        ).to.deep.equal(['qa-released']);
+      });
+
+      it('no carrier lets go when the release cannot be recorded first', async () => {
+        await offlineMoved();
+        const undo = failSaveOnce((p) => p.release !== undefined);
+        const r = await back().finally(undo);
+        expect(r, r.message).to.include({ ok: true, mode: 'no_pg_writes' });
+        expect(released, 'no carrier ran').to.deep.equal([]);
+        expect(other, 'no carrier ran').to.deep.equal([]);
+        expect(r.message)
+          .to.contain('did not start')
+          .and.contain('qa-released');
+        expect(
+          await JobState.current(w.rt),
+          'no running job without its list',
+        ).to.equal(null);
+      });
+
+      it('a retry that only ends the job does not save the progress first', async () => {
+        await offlineMoved();
+        failNext = true;
+        await back();
+        await back('release-finish');
+        expect(await pending()).to.deep.equal([]);
+        const undo = failSaveOnce((p) => p.release?.pending.length === 0);
+        const r = await back().finally(undo);
+        expect(r, r.message).to.include({ ok: true, mode: 'released' });
+        expect(await JobState.current(w.rt), 'the job ended').to.equal(null);
+      });
+
+      it('every carrier with the step lets go again after it already has (a retry may call it twice)', async () => {
+        await offlineMoved();
+        expect((await back()).ok).to.equal(true);
+        const withStep = CARRIERS.filter((c) => c.released !== undefined);
+        expect(withStep.length).to.be.greaterThan(0);
+        expect(await releaseCarried(carryPg(w.rt), withStep)).to.deep.equal([]);
+        expect(await releaseCarried(carryPg(w.rt), withStep)).to.deep.equal([]);
       });
 
       it('a refused rollback releases nothing', async () => {
