@@ -940,9 +940,10 @@ class ZammadConnector(BaseConnector):
             )
             return False
         if self._listed_user_ids <= {str(me.data["id"])}:
-            self.logger.warning(
-                "The Zammad user list holds only the token's own account, so group and role members and linked "
-                "accounts stay as stored this sync. Give the connector's token the ticket.agent or admin.user permission."
+            self.logger.warning("The Zammad user list holds only the token's own account")
+            self.run_state.note(
+                "Zammad lists only the token's own user, so who belongs to which group and role is not up to date. "
+                "Give the connector's token the ticket.agent or admin.user permission."
             )
             return False
         return True

@@ -11,6 +11,7 @@ The connector's run_sync and the real ``ZammadDataSource`` run over an in-memory
 Zammad answering HTTP requests; the store keeps links the way the processor does.
 """
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -192,6 +193,30 @@ async def test_a_token_shown_only_its_own_record_withdraws_nobody(world: World, 
     assert world.directory.withdrawals == []
     assert world.directory.group_members == groups_before
     assert world.directory.role_members == roles_before
+
+
+class RecordingNotifications:
+    def __init__(self) -> None:
+        self.sent: list[dict[str, object]] = []
+
+    async def publish_notification(self, **kwargs: object) -> bool:
+        self.sent.append(kwargs)
+        return True
+
+
+async def test_a_token_shown_only_its_own_record_tells_the_owner_once_which_permission_is_missing(
+    world: World,
+) -> None:
+    notices = RecordingNotifications()
+    world.connector._notification_service = notices
+    world.zammad.lists_everyone = False
+
+    for _ in range(2):
+        await world.sync_incomplete()
+        await asyncio.gather(*world.connector._background_tasks)
+
+    assert len(notices.sent) == 1
+    assert "ticket.agent or admin.user" in str(notices.sent[0]["message"])
 
 
 async def test_a_token_whose_own_account_cannot_be_read_withdraws_nobody(world: World) -> None:
