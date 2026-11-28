@@ -1878,6 +1878,7 @@
   "workspaceMenu": {
     "appearance": "Darstellung",
     "language": "Sprache",
+    "personalSettings": "Persönliche Einstellungen",
     "workspaceSettings": "Arbeitsbereich-Einstellungen",
     "logOut": "Abmelden",
     "system": "System",
@@ -2835,6 +2836,9 @@
       "sections": {
         "overview": "Übersicht",
         "workspace": "Arbeitsbereich",
+        "ai": "KI",
+        "integrations": "Integrationen",
+        "system": "System",
         "usageAndCredits": "Nutzung & Abrechnung",
         "security": "Sicherheit",
         "personal": "Persönlich",

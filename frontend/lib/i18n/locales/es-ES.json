@@ -1912,6 +1912,7 @@
   "workspaceMenu": {
     "appearance": "Apariencia",
     "language": "Idioma",
+    "personalSettings": "Configuración personal",
     "workspaceSettings": "Configuración del espacio de trabajo",
     "logOut": "Cerrar sesión",
     "system": "Sistema",
@@ -2878,6 +2879,9 @@
       "sections": {
         "overview": "Resumen",
         "workspace": "Espacio de trabajo",
+        "ai": "IA",
+        "integrations": "Integraciones",
+        "system": "Sistema",
         "usageAndCredits": "Uso y facturación",
         "security": "Seguridad",
         "personal": "Personal",

@@ -2058,6 +2058,7 @@
   "workspaceMenu": {
     "appearance": "Vzhled",
     "language": "Jazyk",
+    "personalSettings": "Osobní nastavení",
     "workspaceSettings": "Nastavení pracovního prostoru",
     "logOut": "Odhlásit se",
     "system": "Systém",
@@ -3139,6 +3140,9 @@
       "sections": {
         "overview": "Přehled",
         "workspace": "Pracovní prostor",
+        "ai": "AI",
+        "integrations": "Integrace",
+        "system": "Systém",
         "usageAndCredits": "Využití a fakturace",
         "security": "Zabezpečení",
         "personal": "Osobní",

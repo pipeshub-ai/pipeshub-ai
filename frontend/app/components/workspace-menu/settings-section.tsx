@@ -7,6 +7,7 @@ import { useThemeAppearance, type ThemePreference } from '@/app/components/theme
 import { useTranslation } from 'react-i18next';
 import { useLanguageStore } from '@/lib/store/language-store';
 import { SUPPORTED_LANGUAGES } from '@/lib/i18n/supported-languages';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { MenuItem } from './menu-item';
 
 interface SettingsSectionProps {
@@ -38,7 +39,7 @@ function AppearanceIcon({ color }: { color: string }) {
 
 /**
  * Top section of the workspace menu:
- *   Appearance, Workspace Settings, Language, Log Out
+ *   Appearance, Language, Personal settings, Workspace settings (admins), Log Out
  */
 export function SettingsSection({
   onWorkspaceSettings,
@@ -51,6 +52,7 @@ export function SettingsSection({
   const { t } = useTranslation();
   const { preference } = useThemeAppearance();
   const { language } = useLanguageStore();
+  const isAdmin = useUserStore(selectIsAdmin);
 
   // Match the option checked in the Appearance panel ("System" stays "System").
   const appearanceLabel = t(APPEARANCE_LABEL_KEYS[preference]);
@@ -111,15 +113,30 @@ export function SettingsSection({
       <MenuItem
         icon={
           <MaterialIcon
-            name="settings"
+            name="person"
             size={ICON_SIZE_DEFAULT}
             color="var(--slate-11)"
           />
         }
-        label={t('workspaceMenu.workspaceSettings')}
-        href="/workspace/"
+        label={t('workspaceMenu.personalSettings')}
+        href="/workspace/profile/"
         onClick={onWorkspaceSettings}
       />
+
+      {isAdmin && (
+        <MenuItem
+          icon={
+            <MaterialIcon
+              name="settings"
+              size={ICON_SIZE_DEFAULT}
+              color="var(--slate-11)"
+            />
+          }
+          label={t('workspaceMenu.workspaceSettings')}
+          href="/workspace/"
+          onClick={onWorkspaceSettings}
+        />
+      )}
 
       <MenuItem
         icon={

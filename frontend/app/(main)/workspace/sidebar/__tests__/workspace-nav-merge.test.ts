@@ -3,7 +3,7 @@
  * `workspaceNavExtras` in config.ts, merged into the built-in sections.
  */
 import { describe, expect, it } from 'vitest';
-import { mergeWorkspaceNav, type NavItem, type WorkspaceNavExtra } from '../workspace-nav';
+import { mergeWorkspaceNav, placeWorkspaceExtras, type NavItem, type WorkspaceNavExtra } from '../workspace-nav';
 import { workspaceNavExtras } from '../workspace-nav-extras';
 
 const item = (route: string, labelKey = `label.${route}`): NavItem => ({ icon: 'circle', labelKey, route });
@@ -13,7 +13,7 @@ const routes = (items: NavItem[]) => items.map((entry) => entry.route);
 describe('mergeWorkspaceNav', () => {
   it('the default adds no entry: every section is its built-in list', () => {
     expect(workspaceNavExtras).toEqual([]);
-    for (const section of ['overview', 'security', 'workspace', 'developerSettings', 'personal'] as const) {
+    for (const section of ['overview', 'ai', 'integrations', 'security', 'system', 'workspace', 'developerSettings', 'personal'] as const) {
       expect(mergeWorkspaceNav(section, BUILT_IN, workspaceNavExtras)).toEqual(BUILT_IN);
     }
   });
@@ -48,5 +48,49 @@ describe('mergeWorkspaceNav', () => {
     const before = [...BUILT_IN];
     mergeWorkspaceNav('workspace', BUILT_IN, [{ ...item('/workspace/x'), section: 'workspace' }]);
     expect(BUILT_IN).toEqual(before);
+  });
+});
+
+describe('placeWorkspaceExtras', () => {
+  const ADMIN = {
+    ai: [item('/workspace/ai-models')],
+    integrations: [item('/workspace/connectors/team')],
+    security: [item('/workspace/authentication')],
+    system: [item('/workspace/mail')],
+  };
+  const extra = (route: string, section: WorkspaceNavExtra['section'], after?: string): WorkspaceNavExtra => ({
+    ...item(route),
+    section,
+    ...(after !== undefined && { after }),
+  });
+  const placed = (extras: WorkspaceNavExtra[]) => placeWorkspaceExtras(ADMIN, extras).map((entry) => entry.section);
+
+  it('puts a "workspace" entry in the admin list that holds its anchor', () => {
+    expect(placed([extra('/workspace/x', 'workspace', '/workspace/connectors/team')])).toEqual(['integrations']);
+    expect(placed([extra('/workspace/x', 'workspace', '/workspace/authentication')])).toEqual(['security']);
+  });
+
+  it('puts a "workspace" entry that replaces a built-in one where that entry is', () => {
+    expect(placed([extra('/workspace/ai-models', 'workspace')])).toEqual(['ai']);
+  });
+
+  it('puts a "workspace" entry with no anchor, or an unknown one, in System', () => {
+    expect(placed([extra('/workspace/x', 'workspace'), extra('/workspace/y', 'workspace', '/workspace/nope')])).toEqual(['system', 'system']);
+  });
+
+  it('follows an anchor that is an earlier extra, placed or named', () => {
+    expect(
+      placed([
+        extra('/workspace/a', 'workspace', '/workspace/ai-models'),
+        extra('/workspace/b', 'workspace', '/workspace/a'),
+        extra('/workspace/c', 'security'),
+        extra('/workspace/d', 'workspace', '/workspace/c'),
+      ]),
+    ).toEqual(['ai', 'ai', 'security', 'security']);
+  });
+
+  it('leaves an entry for a named list where it is', () => {
+    const named = [extra('/workspace/x', 'personal'), extra('/workspace/y', 'ai', '/workspace/mail')];
+    expect(placeWorkspaceExtras(ADMIN, named)).toEqual(named);
   });
 });
