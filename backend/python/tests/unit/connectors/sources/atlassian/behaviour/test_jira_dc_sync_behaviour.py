@@ -68,8 +68,14 @@ class JiraRecordsDb(FakeRecordsDb):
         self.cached_app_users: list[AppUser] = []
         self.app_roles: dict[str, list[Any]] = {}
         self.groups_saved: dict[str, list[Any]] = {}
+        self.fail_active_users = False
 
-    async def get_all_active_users(self) -> list[Any]:
+    async def get_all_active_users(self, *, raise_on_error: bool = False) -> list[Any]:
+        """As the stores answer: a failed read raises with ``raise_on_error``, else reads as no users."""
+        if self.fail_active_users:
+            if raise_on_error:
+                raise RuntimeError("database unavailable")
+            return []
         return self.platform_users
 
     async def get_all_app_users(self, connector_id: str, *, raise_on_error: bool = False) -> list[AppUser]:
@@ -3486,6 +3492,40 @@ class TestBrowseHolders:
         project_searches = [jql for jql in search.jql[searched:] if 'project = "ENG"' in jql]
         assert project_searches and all("updated >=" in jql for jql in project_searches), (
             "the incremental pass alone (its date predicate), no project re-read")
+
+
+class TestFailedUserRead:
+    """A failed read of PipesHub's users is not "no users": the step fails, and nothing is linked or written."""
+
+    async def test_a_failed_read_fails_the_sync_instead_of_ending_it_as_if_there_were_no_users(
+        self, jira, db, store, search,
+    ) -> None:
+        stub_site(jira, search)
+        first_page_eng(search)
+        connector, notes = await make_connector(db, store)
+        db.fail_active_users = True
+
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            await connector.run_sync()
+
+        assert db.app_users == [] and db.records == {} and store.sync_points == {}
+        assert notes.titles(), "the failed sync is reported"
+
+    async def test_a_failed_read_links_no_one_rather_than_leave_hidden_email_accounts_unlinked(
+        self, jira, db, store, search,
+    ) -> None:
+        """dave's Jira email is hidden: he is linked by looking up PipesHub's emails, which a failed read must not empty."""
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        db.fail_active_users = True
+
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            await connector._link_users_and_groups()
+
+        assert db.app_users == []
+        db.fail_active_users = False
+        await connector._link_users_and_groups()
+        assert "dave@example.com" in {u.email for u in db.app_users}
 
 
 async def make_personal_connector(db: JiraRecordsDb, store: FakeCheckpointStore) -> JiraDataCenterPersonalConnector:

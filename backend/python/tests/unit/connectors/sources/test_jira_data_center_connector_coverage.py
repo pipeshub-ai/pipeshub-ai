@@ -58,6 +58,7 @@ def _make_connector() -> JiraDataCenterConnector:
     dep.reindex_existing_records = AsyncMock()
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.get_all_app_users = AsyncMock(return_value=[])
+    dep.get_records_by_parent = AsyncMock(return_value=[])  # no comment records stored
 
     dsp = MagicMock()
     cs = MagicMock()
