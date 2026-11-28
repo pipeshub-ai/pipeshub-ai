@@ -69,6 +69,8 @@ export interface LicenseView {
   /** What the license turns on; a license without the field shows LEGACY_FEATURES. */
   features: string[];
   url: string | null;
+  /** A development license: every page says the install is not for production use. */
+  notForProduction: boolean;
   startDate: string;
   endDate: string;
   graceEndsAt: string;
@@ -180,6 +182,7 @@ const viewOf = (license: VerifiedLicense | null): LicenseView | null =>
     seats: license.payload.seats,
     features: [...(license.payload.features ?? LEGACY_FEATURES)],
     url: license.payload.url ?? null,
+    notForProduction: license.payload.type === 'development',
     startDate: license.startDate.toISOString(),
     endDate: license.endDate.toISOString(),
     graceEndsAt: license.graceEndsAt.toISOString(),

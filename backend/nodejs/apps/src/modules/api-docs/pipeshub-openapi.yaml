@@ -954,11 +954,11 @@ components:
     LicenseView:
       type: object
       additionalProperties: false
-      required: [licenseId, licensee, type, seats, features, url, startDate, endDate, graceEndsAt]
+      required: [licenseId, licensee, type, seats, features, url, notForProduction, startDate, endDate, graceEndsAt]
       properties:
         licenseId: { type: string }
         licensee: { type: string }
-        type: { type: string, enum: [trial, pro] }
+        type: { type: string, enum: [trial, pro, development] }
         seats:
           oneOf:
             - type: integer
@@ -969,6 +969,9 @@ components:
           items: { type: string }
           description: What the licence turns on; a licence issued without the field shows `permissionSync`.
         url: { type: string, nullable: true }
+        notForProduction:
+          type: boolean
+          description: A development licence; every page says the installation is not for production use.
         startDate: { type: string, format: date-time }
         endDate: { type: string, format: date-time }
         graceEndsAt: { type: string, format: date-time }
