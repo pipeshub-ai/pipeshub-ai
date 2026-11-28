@@ -2883,7 +2883,8 @@
         "aiAccounts": "AI 账户",
         "schedules": "计划任务",
         "memories": "记忆",
-        "aiSettings": "AI 设置"
+        "aiSettings": "AI 设置",
+        "license": "许可证"
       }
     },
     "actions": {
@@ -5867,6 +5868,62 @@
         "write": "先询问用户",
         "destructive": "除非智能体的操作规则允许，否则会被阻止"
       }
+    },
+    "license": {
+      "title": "许可证",
+      "subtitle": "为此安装实例安装许可证密钥，并查看其涵盖的内容。",
+      "loadFailed": "无法加载许可证状态。请刷新页面重试。",
+      "upgradeGrace": "此安装实例会从数据源复制访问权限，这需要许可证密钥。权限同步将保持开启至 {{date}}。请在此之前安装密钥以保持开启。",
+      "permissionSyncOff": "权限同步已关闭。从数据源复制访问权限的全公司连接器现在仅限其创建者使用。没有删除任何内容：安装密钥后，每个连接器的下一次完整同步完成时，其访问权限就会恢复。",
+      "statusTitle": "状态",
+      "status": {
+        "active": "有效",
+        "expiring": "即将到期",
+        "grace": "宽限期内",
+        "expired": "已过期",
+        "pending": "稍后生效",
+        "none": "无许可证密钥"
+      },
+      "type": {
+        "trial": "试用",
+        "pro": "Pro",
+        "development": "开发"
+      },
+      "notForProduction": "不可用于生产环境",
+      "unlimitedSeats": "不限",
+      "fields": {
+        "type": "类型",
+        "licensee": "授权给",
+        "seats": "用户数",
+        "endDate": "结束日期",
+        "graceEndsAt": "宽限期结束",
+        "upcoming": "下一个密钥生效",
+        "permissionSync": "权限同步"
+      },
+      "on": "开启",
+      "off": "关闭",
+      "notEnforced": "此版本暂不要求许可证密钥，因此所有功能保持开启。",
+      "installTitle": "安装许可证密钥",
+      "installDescription": "粘贴许可证密钥文件的内容，或上传该文件。较新的密钥会替换正在使用的密钥。",
+      "keyLabel": "许可证密钥",
+      "keyPlaceholder": "在此粘贴许可证密钥文件",
+      "upload": "上传文件",
+      "install": "安装密钥",
+      "getTrial": "获取试用密钥",
+      "requestExtension": "申请延长 14 天",
+      "toasts": {
+        "installed": "许可证密钥已安装",
+        "alreadyInstalled": "此许可证密钥已安装"
+      },
+      "errors": {
+        "badSignature": "此密钥的签名不匹配。文件可能在签发后被修改，或并非由 PipesHub 签发。请按收到时的原样粘贴文件。",
+        "wrongAddress": "此密钥适用于其他网址。密钥只能在用户访问的地址（即 FRONTEND_PUBLIC_URL）上使用。请申请为此安装实例地址签发的密钥。",
+        "expired": "此密钥已到期。请获取新密钥并安装。",
+        "malformed": "这不是许可证密钥文件。请粘贴完整文件，包括开头和结尾的大括号。",
+        "generic": "无法安装许可证密钥。请重试。"
+      },
+      "startsOn": "此密钥将于 {{date}} 生效。",
+      "keyLacksPermissionSync": "此密钥不包含权限同步。从数据源复制访问权限的全公司连接器仅限其创建者使用。没有删除任何内容：安装包含权限同步的密钥后，每个连接器的下一次完整同步完成时，其访问权限就会恢复。"
     }
   },
   "filePreview": {

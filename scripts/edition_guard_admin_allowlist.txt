@@ -60,6 +60,9 @@ page approvals -- a page slot that renders not found here (config-pages.ts); no 
 page memories -- a person's own memories, with their own switch to turn memory off
 page schedules -- a person's own schedules
 
+# Pages the licence check adds
+page license -- setup, not a control: where an admin enters the licence key that turns on the paid features, and sees when it ends
+
 # Sections of the run policy layer: the shared contract every pin folds; here the release and the deployment set them
 section access -- who may use the harness, engines and models; unset here, so every member may
 section approvals -- per-call approval rules; the deployment's rules and the built-in defaults set them here

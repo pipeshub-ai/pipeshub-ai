@@ -70,6 +70,7 @@ const BUILT_IN_SECURITY_ITEMS: NavItem[] = [
 ];
 
 const BUILT_IN_WORKSPACE_ITEMS: NavItem[] = [
+  { icon: 'key', labelKey: 'workspace.sidebar.nav.license', route: '/workspace/license', adminOnly: true },
   { icon: 'hub', labelKey: 'workspace.sidebar.nav.connectors', route: '/workspace/connectors/team', adminOnly: true },
   { icon: 'device_hub', labelKey: 'workspace.sidebar.nav.mcpServers', route: '/workspace/mcp-servers/team', adminOnly: true, requiresFlag: 'mcp' },
   { icon: 'admin_panel_settings', labelKey: 'workspace.sidebar.nav.mcpAccess', route: '/workspace/mcp-access', adminOnly: true },

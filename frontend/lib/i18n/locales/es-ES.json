@@ -2770,7 +2770,8 @@
         "aiAccounts": "Cuentas de IA",
         "schedules": "Programaciones",
         "memories": "Recuerdos",
-        "aiSettings": "Ajustes de IA"
+        "aiSettings": "Ajustes de IA",
+        "license": "Licencia"
       }
     },
     "actions": {
@@ -5892,6 +5893,62 @@
         "write": "pide confirmación al usuario primero",
         "destructive": "bloqueada salvo que las reglas de acción del agente lo permitan"
       }
+    },
+    "license": {
+      "title": "Licencia",
+      "subtitle": "Instala la clave de licencia de esta instalación y consulta lo que cubre.",
+      "loadFailed": "No se pudo cargar el estado de la licencia. Actualiza la página para volver a intentarlo.",
+      "upgradeGrace": "Esta instalación copia los accesos de sus orígenes, lo que requiere una clave de licencia. La sincronización de permisos seguirá activa hasta el {{date}}. Instala una clave antes de esa fecha para mantenerla.",
+      "permissionSyncOff": "La sincronización de permisos está desactivada. Los conectores de toda la empresa que copian los accesos de su origen quedan limitados a la persona que los creó. No se ha eliminado nada: instala una clave y el acceso de cada conector volverá cuando termine su próxima sincronización completa.",
+      "statusTitle": "Estado",
+      "status": {
+        "active": "Activa",
+        "expiring": "Termina pronto",
+        "grace": "En periodo de gracia",
+        "expired": "Caducada",
+        "pending": "Empieza más adelante",
+        "none": "Sin clave de licencia"
+      },
+      "type": {
+        "trial": "Prueba",
+        "pro": "Pro",
+        "development": "Desarrollo"
+      },
+      "notForProduction": "No apta para producción",
+      "unlimitedSeats": "Ilimitados",
+      "fields": {
+        "type": "Tipo",
+        "licensee": "Con licencia para",
+        "seats": "Usuarios",
+        "endDate": "Termina el",
+        "graceEndsAt": "Fin del periodo de gracia",
+        "upcoming": "La siguiente clave empieza",
+        "permissionSync": "Sincronización de permisos"
+      },
+      "on": "Activada",
+      "off": "Desactivada",
+      "notEnforced": "Esta versión todavía no exige una clave de licencia, así que todas las funciones siguen activas.",
+      "installTitle": "Instalar una clave de licencia",
+      "installDescription": "Pega el contenido del archivo de tu clave de licencia o sube el archivo. Una clave más reciente sustituye a la que está en uso.",
+      "keyLabel": "Clave de licencia",
+      "keyPlaceholder": "Pega aquí el archivo de la clave de licencia",
+      "upload": "Subir archivo",
+      "install": "Instalar clave",
+      "getTrial": "Obtener una clave de prueba",
+      "requestExtension": "Solicitar una prórroga de 14 días",
+      "toasts": {
+        "installed": "Clave de licencia instalada",
+        "alreadyInstalled": "Esta clave de licencia ya está instalada"
+      },
+      "errors": {
+        "badSignature": "La firma de esta clave no coincide. Es posible que el archivo se modificara después de emitirse o que no lo emitiera PipesHub. Pega el archivo exactamente como lo recibiste.",
+        "wrongAddress": "Esta clave es para otra dirección web. Una clave solo funciona en la dirección que abren tus usuarios, definida como FRONTEND_PUBLIC_URL. Solicita una clave emitida para la dirección de esta instalación.",
+        "expired": "Esta clave ya ha terminado. Consigue una clave nueva e instálala.",
+        "malformed": "Esto no es un archivo de clave de licencia. Pega el archivo completo, incluidas las llaves de apertura y cierre.",
+        "generic": "No se pudo instalar la clave de licencia. Inténtalo de nuevo."
+      },
+      "startsOn": "Esta clave empieza el {{date}}.",
+      "keyLacksPermissionSync": "Esta clave no incluye la sincronización de permisos. Los conectores de toda la empresa que copian los accesos de su origen quedan limitados a la persona que los creó. No se ha eliminado nada: instala una clave que incluya la sincronización de permisos y el acceso de cada conector volverá cuando termine su próxima sincronización completa."
     }
   },
   "filePreview": {

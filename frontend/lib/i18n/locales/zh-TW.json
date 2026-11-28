@@ -2883,7 +2883,8 @@
         "aiAccounts": "AI 帳戶",
         "schedules": "排程",
         "memories": "記憶",
-        "aiSettings": "AI 設定"
+        "aiSettings": "AI 設定",
+        "license": "授權"
       }
     },
     "actions": {
@@ -5867,6 +5868,62 @@
         "write": "先詢問使用者",
         "destructive": "除非代理程式的動作規則允許，否則會被封鎖"
       }
+    },
+    "license": {
+      "title": "授權",
+      "subtitle": "為此安裝執行個體安裝授權金鑰，並查看其涵蓋的內容。",
+      "loadFailed": "無法載入授權狀態。請重新整理頁面再試一次。",
+      "upgradeGrace": "此安裝執行個體會從資料來源複製存取權限，這需要授權金鑰。權限同步將維持開啟至 {{date}}。請在此之前安裝金鑰以維持開啟。",
+      "permissionSyncOff": "權限同步已關閉。從資料來源複製存取權限的全公司連接器現在僅限其建立者使用。沒有刪除任何內容：安裝金鑰後，每個連接器的下一次完整同步完成時，其存取權限就會恢復。",
+      "statusTitle": "狀態",
+      "status": {
+        "active": "有效",
+        "expiring": "即將到期",
+        "grace": "寬限期內",
+        "expired": "已過期",
+        "pending": "稍後生效",
+        "none": "無授權金鑰"
+      },
+      "type": {
+        "trial": "試用",
+        "pro": "Pro",
+        "development": "開發"
+      },
+      "notForProduction": "不可用於正式環境",
+      "unlimitedSeats": "不限",
+      "fields": {
+        "type": "類型",
+        "licensee": "授權對象",
+        "seats": "使用者數",
+        "endDate": "結束日期",
+        "graceEndsAt": "寬限期結束",
+        "upcoming": "下一個金鑰生效",
+        "permissionSync": "權限同步"
+      },
+      "on": "開啟",
+      "off": "關閉",
+      "notEnforced": "此版本暫不要求授權金鑰，因此所有功能維持開啟。",
+      "installTitle": "安裝授權金鑰",
+      "installDescription": "貼上授權金鑰檔案的內容，或上傳該檔案。較新的金鑰會取代正在使用的金鑰。",
+      "keyLabel": "授權金鑰",
+      "keyPlaceholder": "在此貼上授權金鑰檔案",
+      "upload": "上傳檔案",
+      "install": "安裝金鑰",
+      "getTrial": "取得試用金鑰",
+      "requestExtension": "申請延長 14 天",
+      "toasts": {
+        "installed": "授權金鑰已安裝",
+        "alreadyInstalled": "此授權金鑰已安裝"
+      },
+      "errors": {
+        "badSignature": "此金鑰的簽章不相符。檔案可能在簽發後遭到修改，或並非由 PipesHub 簽發。請按收到時的原樣貼上檔案。",
+        "wrongAddress": "此金鑰適用於其他網址。金鑰只能在使用者開啟的位址（即 FRONTEND_PUBLIC_URL）上使用。請申請為此安裝執行個體位址簽發的金鑰。",
+        "expired": "此金鑰已到期。請取得新金鑰並安裝。",
+        "malformed": "這不是授權金鑰檔案。請貼上完整檔案，包括開頭和結尾的大括號。",
+        "generic": "無法安裝授權金鑰。請再試一次。"
+      },
+      "startsOn": "此金鑰將於 {{date}} 生效。",
+      "keyLacksPermissionSync": "此金鑰不包含權限同步。從資料來源複製存取權限的全公司連接器僅限其建立者使用。沒有刪除任何內容：安裝包含權限同步的金鑰後，每個連接器的下一次完整同步完成時，其存取權限就會恢復。"
     }
   },
   "filePreview": {
