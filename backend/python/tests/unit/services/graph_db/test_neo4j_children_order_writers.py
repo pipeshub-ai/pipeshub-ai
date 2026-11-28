@@ -61,6 +61,7 @@ UNTOUCHED = {
     "lock_external_app_memberships": "the lock flag of user-app edges, set and removed; never a browse's child",
     "_held_cypher": "the same lock, at the head of the statement that writes the grants; never a browse's child",
     "_replace_held_cypher": "the lock flags of user-app edges and of a group node, set and removed; never a browse's child",
+    "_replace_head_cypher": "the lock flags of a replace's node and of the memberships its grants keep, set and removed; never a browse's child",
     "heal_taxonomy_alias_nodes": "taxonomy nodes",
     "migrate_legacy_kb_to_app": "turns a group into an App, which is never a browse's child, and moves records' connector",
     "migrate_person_to_user": "permission, app and entity edges of a person",

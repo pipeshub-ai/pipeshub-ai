@@ -555,8 +555,8 @@ async def test_a_resync_that_keeps_the_grants_locks_nothing(world: _World) -> No
 
 async def test_a_new_group_grant_reads_its_members_on_each_record_of_a_transaction(world: _World) -> None:
     """own-live's new grants on r-src-live and r-own-gone, both of the App, in one transaction: the grant is not committed yet, so the store
-    records no (own-live, App) pair and the second record locks own-live's members again (a member may join between them); a kept grant's
-    pair is recorded (ArangoDB; Neo4j records none)."""
+    records no (own-live, App) pair and the second record locks own-live's members again (a member may join between them); src-live's kept
+    grant is no lock either, so it records none."""
     w, g = world, world.graph
     coll = NODE_TARGETS[w.kind]
 
@@ -567,8 +567,7 @@ async def test_a_new_group_grant_reads_its_members_on_each_record_of_a_transacti
     try:
         store = GraphTransactionStore(g, tid, explicit=True)
         await store.replace_record_permissions(w.sid("r-src-live"), [grant("src-live", "r-src-live"), grant("own-live", "r-src-live")], None, inherit=False)
-        assert (coll, w.sid("own-live"), w.sid(APP)) not in store._lock_done
-        assert ((coll, w.sid("src-live"), w.sid(APP)) in store._lock_done) is not hasattr(g, "client")      # kept: committed
+        assert store._lock_done == set()      # a group's pair is never recorded, the kept one's neither
         locked = []
         create = g.batch_create_edges
 
