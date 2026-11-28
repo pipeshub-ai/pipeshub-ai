@@ -459,7 +459,7 @@ class PermissionsMixin(PgBase):
         return [r["id"] for r in rows]
 
     async def get_gated_apps(self, user_key: str, org_id: str, transaction: str | None = None) -> list[dict]:
-        return await self.get_user_apps(user_key, transaction) if org_id == current_org_id() else []
+        return await self.get_user_apps(user_key, transaction=transaction) if org_id == current_org_id() else []
 
     async def get_knowledge_hub_access_context_v2(self, user_key: str, org_id: str, *, transaction: str | None = None) -> dict[str, list[str]]:
         """Who the user is and the apps they pass the gate for: the gate part of ``get_knowledge_hub_access_v3``, without reading the grants."""
