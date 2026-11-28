@@ -28,7 +28,18 @@ function Chip({ icon, label, describedBy, onClick }: { icon: string; label: stri
       onClick={onClick}
       aria-describedby={describedBy}
       data-testid="followup-chip"
-      style={{ height: 'auto', minHeight: 32, padding: 'var(--space-1) var(--space-3)', whiteSpace: 'normal', textAlign: 'left', cursor: 'pointer' }}
+      // Never wider than its row (a phone's included): a long suggestion wraps, breaking a word too long for a line.
+      style={{
+        height: 'auto',
+        minHeight: 32,
+        maxWidth: '100%',
+        minWidth: 0,
+        padding: 'var(--space-1) var(--space-3)',
+        whiteSpace: 'normal',
+        overflowWrap: 'anywhere',
+        textAlign: 'left',
+        cursor: 'pointer',
+      }}
     >
       <span aria-hidden="true" style={{ display: 'inline-flex' }}>
         <MaterialIcon name={icon} size={16} color="var(--gray-11)" />
