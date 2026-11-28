@@ -638,7 +638,8 @@ const hiddenAnswer = (
  * Hides, for `viewer`, every answer that used a record they cannot read, and
  * redacts what they cannot read in the messages of conversations they do not
  * own. `ownerOf` gives a message's conversation owner. One batched access check
- * covers the whole list: ceil(records / 500) calls to the query service.
+ * covers the whole list: a call to the query service per ACCESS_CHECK_BATCH record ids, or per
+ * ACCESS_CHECK_URL_BATCH addresses.
  */
 export const redactMessagesFor = async <M extends ViewerMessage>(
   appConfig: AppConfig,
