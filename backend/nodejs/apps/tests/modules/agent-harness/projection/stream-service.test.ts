@@ -20,7 +20,6 @@ import {
   project,
   readJournal,
   rechunked,
-  snapshotsAsTheLegacyRelaySendsThem,
 } from '../../../contracts/support/durable';
 import { testCipher } from '../support/data-protection';
 import { InMemoryRecordReadAccess } from '../../../../src/modules/agent-harness/adapters/in-memory-record-access';
@@ -220,7 +219,7 @@ describe('agent-harness projection: RunStreamService', () => {
     await world.runWorker();
     await handle.done;
     expect(sink.ended).to.equal(true);
-    expect(normalizeFrames(snapshotsAsTheLegacyRelaySendsThem(sink.frames()))).to.deep.equal(normalizeFrames(legacyFrames('agent_quick_tool_call')));
+    expect(normalizeFrames(sink.frames())).to.deep.equal(normalizeFrames(legacyFrames('agent_quick_tool_call')));
     expect(parseSse(sink.body).filter((f) => f.id?.startsWith('d:')).length, 'tokens streamed live').to.be.greaterThan(1);
     expect(world.logged('projection.subscribe')[0]?.[2]).to.include({ runId: world.run.runId, resume: 'fresh', livebus: 'redis' });
     expect(world.logged('projection.unsubscribe')[0]?.[2]).to.include({ reason: 'terminal' });
@@ -281,7 +280,7 @@ describe('agent-harness projection: RunStreamService', () => {
     await resumed.done;
     const all = [...received.map((f) => f.frame), ...second.frames()];
     expect(text(all)).to.equal('You get 25 days of paid leave a year.');
-    expect(normalizeFrames(snapshotsAsTheLegacyRelaySendsThem(all))).to.deep.equal(normalizeFrames(legacyFrames('agent_quick_tool_call')));
+    expect(normalizeFrames(all)).to.deep.equal(normalizeFrames(legacyFrames('agent_quick_tool_call')));
     expect(world.logged('projection.subscribe')[1]?.[2]).to.include({ resume: 'delta' });
   });
 
@@ -332,7 +331,7 @@ describe('agent-harness projection: RunStreamService', () => {
       expect(world.eventsRead, 'every event read once').to.equal(runEvents - readBefore);
       expect(world.eventsReread, 'and the last one held again, a read').to.be.at.most(world.storeReads);
       const all = [...received.map((f) => f.frame), ...second.frames()];
-      expect(normalizeFrames(snapshotsAsTheLegacyRelaySendsThem(all))).to.deep.equal(normalizeFrames(legacyFrames('agent_quick_tool_call')));
+      expect(normalizeFrames(all)).to.deep.equal(normalizeFrames(legacyFrames('agent_quick_tool_call')));
 
       world.eventsRead = 0;
       const again = new Sink();
@@ -392,7 +391,7 @@ describe('agent-harness projection: RunStreamService', () => {
 
       expect(world.eventsRead).to.equal(world.journal.events.filter((e) => e.runId === world.run.runId).length);
       for (const sink of sinks) {
-        expect(normalizeFrames(snapshotsAsTheLegacyRelaySendsThem(sink.frames()))).to.deep.equal(normalizeFrames(legacyFrames('agent_quick_tool_call')));
+        expect(normalizeFrames(sink.frames())).to.deep.equal(normalizeFrames(legacyFrames('agent_quick_tool_call')));
       }
     });
   });
@@ -431,7 +430,7 @@ describe('agent-harness projection: RunStreamService', () => {
       const end = world.store(Number.MAX_SAFE_INTEGER);
       await reader.read('org-1', world.run.runId, 0, end);
       await handle.done;
-      expect(normalizeFrames(snapshotsAsTheLegacyRelaySendsThem(sink.frames()))).to.deep.equal(normalizeFrames(legacyFrames('agent_quick_tool_call')));
+      expect(normalizeFrames(sink.frames())).to.deep.equal(normalizeFrames(legacyFrames('agent_quick_tool_call')));
       expect(world.eventsRead, 'each event handed to the Node once').to.equal(
         world.journal.events.filter((e) => e.runId === world.run.runId).length,
       );
@@ -456,7 +455,7 @@ describe('agent-harness projection: RunStreamService', () => {
 
       world.commit(Number.MAX_SAFE_INTEGER);
       await handle.done;
-      expect(normalizeFrames(snapshotsAsTheLegacyRelaySendsThem(sink.frames()))).to.deep.equal(normalizeFrames(legacyFrames('agent_quick_tool_call')));
+      expect(normalizeFrames(sink.frames())).to.deep.equal(normalizeFrames(legacyFrames('agent_quick_tool_call')));
     });
 
     it('PERFD-12: a closed stream is handed nothing more and leaves no follower behind', async () => {
@@ -585,7 +584,7 @@ describe('agent-harness projection: RunStreamService', () => {
     await world.runWorker();
     await handle.done;
     expect(parseSse(sink.body).every((f) => !f.id?.startsWith('d:'))).to.equal(true);
-    expect(normalizeFrames(snapshotsAsTheLegacyRelaySendsThem(sink.frames()))).to.deep.equal(normalizeFrames(legacyFrames('agent_quick_tool_call')));
+    expect(normalizeFrames(sink.frames())).to.deep.equal(normalizeFrames(legacyFrames('agent_quick_tool_call')));
     const [level, , meta] = world.logged('projection.livebus_unavailable')[0]!;
     expect(level).to.equal('warn');
     expect(meta).to.include({ runId: world.run.runId, choice: 'journal_only' });
@@ -614,7 +613,7 @@ describe('agent-harness projection: RunStreamService', () => {
     const sink = new Sink();
     const handle = world.service.open({ run: world.run, audience: 'owner', title: world.journal.query }, sink);
     await handle.done;
-    expect(normalizeFrames(snapshotsAsTheLegacyRelaySendsThem(sink.frames()))).to.deep.equal(normalizeFrames(legacyFrames('agent_cancel_mid_stream')));
+    expect(normalizeFrames(sink.frames())).to.deep.equal(normalizeFrames(legacyFrames('agent_cancel_mid_stream')));
   });
 
   it('SF-7: a surface that disconnects mid-run stops nothing; its reconnect from the last id gets exactly the rest', async () => {

@@ -4,11 +4,9 @@
  * the Node projector, and the normalization D-5 compares frames under.
  */
 import fs from 'fs'
-import { expect } from 'chai'
 import path from 'path'
 import { JournalEvent } from '../../../src/modules/agent-harness/domain/journal'
 import { AguiFrame, LiveDelta, ProjectedFrame, formatSseFrame } from '../../../src/modules/agent-harness/projection/frames'
-import { StreamRelay } from '../../../src/modules/enterprise_search/utils/relay-events'
 import { ProjectorContext, RunProjector } from '../../../src/modules/agent-harness/projection/run-projector'
 import { StreamCursor } from '../../../src/modules/agent-harness/projection/stream-id'
 import { stripModelAuthoredMarkers } from '../../../src/modules/agent-harness/projection/text-filter'
@@ -257,21 +255,6 @@ const isAnswerDelta = (frame: AguiFrame): boolean =>
  * intentional P0.19 change, L-12); Node's conversation payload left to the
  * transcript tests.
  */
-/**
- * The legacy route's relay sends a state snapshot's progress fields only, and the final snapshot without the answer it
- * carried (`StreamRelay`); a durable projection sends the whole snapshot. Durable frames are held to the legacy ones
- * with their snapshots as that relay sends them, and every other frame as it is.
- */
-export function snapshotsAsTheLegacyRelaySendsThem(frames: AguiFrame[]): AguiFrame[] {
-  const relay = new StreamRelay()
-  return frames.map((frame) => {
-    if (frame.type !== 'STATE_SNAPSHOT') return frame
-    const sent = relay.relay('STATE_SNAPSHOT', JSON.stringify(frame))
-    expect(sent, 'the relay sends a state snapshot').to.not.equal('')
-    return JSON.parse(sent.slice(sent.indexOf('data: ') + 'data: '.length)) as AguiFrame
-  })
-}
-
 export function normalizeFrames(frames: AguiFrame[], opts: { goal?: string } = {}): AguiFrame[] {
   const merged: AguiFrame[] = []
   const lastAnswer = frames.map(isAnswerDelta).lastIndexOf(true)

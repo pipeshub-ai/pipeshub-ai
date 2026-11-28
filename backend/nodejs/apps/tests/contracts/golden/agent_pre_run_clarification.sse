@@ -8,7 +8,7 @@ event: STATE_DELTA
 data: {"type":"STATE_DELTA","runId":"uuid-2","delta":[{"op":"replace","path":"/citations","value":[]},{"op":"replace","path":"/normalizedAnswer","value":"Which report do you need?"},{"op":"replace","path":"/rawLength","value":25}]}
 
 event: STATE_SNAPSHOT
-data: {"type":"STATE_SNAPSHOT","runId":"uuid-2","snapshot":{"final":true}}
+data: {"type":"STATE_SNAPSHOT","runId":"uuid-2","snapshot":{"final":true,"answer":"Which report do you need?","citations":[],"confidence":null,"answerMatchType":"Clarification Needed"}}
 
 event: RUN_FINISHED
 data: {"type":"RUN_FINISHED","result":{"conversation":{"userId":"oid-2","orgId":"oid-3","title":"report","initiator":"oid-2","isShared":false,"isDeleted":false,"isArchived":false,"lastActivityAt":"<clock>","status":"Complete","modelInfo":{"chatMode":"react"},"agentKey":"agent-1","conversationSource":"agent_chat","rev":0,"_id":"oid-1","sharedWith":[],"conversationErrors":[],"createdAt":"<timestamp>","updatedAt":"<timestamp>","__v":0,"messages":[{"modelInfo":{"chatMode":"react"},"appliedFilters":{"apps":[],"kb":[],"recordGroups":[],"records":[],"recordsExact":[]},"requestedBy":"oid-2","inReplyTo":"oid-4","messageType":"bot_response","content":"Which report do you need?","contentFormat":"MARKDOWN","citations":[],"confidence":null,"followUpQuestions":[],"parts":[],"labelVer":"oid-5","_id":"oid-6","createdAt":"<timestamp>","updatedAt":"<timestamp>","feedback":[],"attachments":[],"referenceData":[],"tools":[],"reasoning":[]}]},"meta":{"requestId":"req-stream","timestamp":"<timestamp>","duration":"<clock>"}}}

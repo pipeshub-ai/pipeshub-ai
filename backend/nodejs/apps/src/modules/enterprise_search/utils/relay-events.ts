@@ -2,14 +2,16 @@ import { LABEL_ROW_FIELDS } from '../services/conversation/privacy/label.types';
 import {
   flushAnswerDelta,
   sanitizeAnswerDelta,
+  sanitizeAnswerMessage,
   sanitizePartialAnswerMarkdown,
   type AnswerDeltaState,
 } from './answer-sanitizer';
 
 /**
- * What of the AI backend's stream reaches the browser. An event type, a custom event name or a field that is not
- * named here is dropped, so a field or event the AI backend adds later (a run's label among them) stays on the
- * server until it is named.
+ * What of the AI backend's stream reaches the asker's browser. An event type, a custom event name or a field that is
+ * not named here is dropped, so a field or event the AI backend adds later (a run's label among them) stays on the
+ * server until it is named. A state snapshot is the asker's own run's state and goes whole, as the AI backend sent it,
+ * without any label in it; the final one's answer is made safe as a stored answer is.
  */
 
 /** Fields every forwarded event may carry. */
@@ -83,19 +85,6 @@ export const RELAYED_CUSTOM_EVENTS: ReadonlySet<string> = new Set([
   'run_usage',
 ]);
 
-/** The progress the client shows of a running tool; the final snapshot sends none of the answer data it carries. */
-const PROGRESS_FIELDS: ReadonlySet<string> = new Set([
-  'status',
-  'current_tool',
-  'progress',
-  'total',
-  'progress_message',
-  'run_id',
-  'parent_run_id',
-  'role_name',
-  'current_turn',
-]);
-
 /** The answer-state paths the client reads: the numbered copy of the answer, its citations, and artifacts. */
 const STATE_PATHS: ReadonlySet<string> = new Set([
   '/normalizedAnswer',
@@ -143,12 +132,21 @@ function withoutNestedLabels(value: unknown, depth: number): unknown {
 function snapshotFrame(frame: Frame): Frame {
   const { snapshot, ...rest } = frame;
   if (!isPlain(snapshot)) return rest;
-  if (snapshot.final === true) return { ...rest, snapshot: { final: true } };
+  const whole = withoutNestedLabels(snapshot, 0) as Frame;
+  if (whole.final !== true) return { ...rest, snapshot: whole };
+  // The answer and its text parts as the saved answer has them.
+  const safe = sanitizeAnswerMessage({
+    messageType: 'bot_response',
+    content: whole.answer,
+    parts: whole.parts,
+  });
   return {
     ...rest,
-    snapshot: Object.fromEntries(
-      Object.entries(snapshot).filter(([key]) => PROGRESS_FIELDS.has(key)),
-    ),
+    snapshot: {
+      ...whole,
+      ...(typeof whole.answer === 'string' && { answer: safe.content }),
+      ...(Array.isArray(whole.parts) && { parts: safe.parts }),
+    },
   };
 }
 

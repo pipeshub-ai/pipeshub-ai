@@ -100,19 +100,32 @@ describe('stream relay: what reaches the browser', () => {
     })
   })
 
-  it('sends the final snapshot as a bare "the answer is settled", never the answer data it carried', () => {
+  it("sends the asker the final snapshot whole, as main did, with its answer data and without the run's label", () => {
     const relay = new StreamRelay()
     const snapshot = { final: true, answer: 'Revenue grew.', citations: [], provenance: LABEL, modelRouting: { escalated: false } }
     expect(relayed(relay, 'STATE_SNAPSHOT', { type: 'STATE_SNAPSHOT', runId: RUN, snapshot })).to.deep.equal({
-      type: 'STATE_SNAPSHOT', runId: RUN, snapshot: { final: true },
+      type: 'STATE_SNAPSHOT', runId: RUN, snapshot: { final: true, answer: 'Revenue grew.', citations: [], modelRouting: { escalated: false } },
     })
   })
 
-  it('keeps a progress snapshot to the fields the client shows', () => {
+  it("makes the final snapshot's answer and text parts safe, as a stored answer is", () => {
     const relay = new StreamRelay()
-    const snapshot = { status: 'running_tool', current_tool: 'search', progress: 2, total: 5, progress_message: 'Reading', run_id: RUN, provenance: LABEL }
+    const image = '![chart](https://evil.test/p.png)'
+    const snapshot = { final: true, answer: image, parts: [{ type: 'text', content: image, isFinal: true }] }
+    const sent = relayed(relay, 'STATE_SNAPSHOT', { type: 'STATE_SNAPSHOT', runId: RUN, snapshot })?.snapshot as Row
+    expect(sent.answer).to.equal(sanitizer.sanitizeAnswerMarkdown(image)).and.to.not.include('https://evil.test/p.png)')
+    expect((sent.parts as Row[])[0]).to.deep.equal({ type: 'text', content: sanitizer.sanitizeAnswerMarkdown(image), isFinal: true })
+  })
+
+  it('sends a progress snapshot whole, as main did, without the run\'s label', () => {
+    const relay = new StreamRelay()
+    const snapshot = {
+      status: 'running_tool', current_tool: 'search', progress: 2, total: 5, progress_message: 'Reading', run_id: RUN,
+      agent_id: 'agent-1', goal_description: 'Find the revenue', provenance: LABEL,
+    }
     expect(relayed(relay, 'STATE_SNAPSHOT', { type: 'STATE_SNAPSHOT', runId: RUN, snapshot })?.snapshot).to.deep.equal({
       status: 'running_tool', current_tool: 'search', progress: 2, total: 5, progress_message: 'Reading', run_id: RUN,
+      agent_id: 'agent-1', goal_description: 'Find the revenue',
     })
   })
 
@@ -219,7 +232,7 @@ describe('stream relay: every stream the browser reads', () => {
       const text = run.res.eventsOf('TEXT_MESSAGE_CONTENT')
       expect(text.map((e) => e.data.delta)).to.deep.equal(['Revenue grew.'])
       const snapshots = run.res.eventsOf('STATE_SNAPSHOT')
-      expect(snapshots.map((e) => e.data.snapshot)).to.deep.equal([{ final: true }])
+      expect(snapshots.map((e) => e.data.snapshot)).to.deep.equal([{ final: true, answer: 'Revenue grew.' }])
       expect(run.res.eventsOf('RUN_FINISHED')).to.have.length(1)
     })
   }

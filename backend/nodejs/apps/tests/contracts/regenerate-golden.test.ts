@@ -14,7 +14,6 @@ import {
   parseSse,
   project,
   readJournal,
-  snapshotsAsTheLegacyRelaySendsThem,
 } from './support/durable'
 import { registerUpstreams } from '../../src/libs/http/upstream-call'
 import { registerAppUpstreams } from '../../src/modules/tokens_manager/config/config'
@@ -84,7 +83,7 @@ describe('contract: the legacy regenerate routes’ frames, and the durable rege
       const legacy = parseSse(fs.readFileSync(path.join(GOLDEN_DIR, 'regenerate', `${scenario.name}.sse`), 'utf8')).map((f) => f.frame)
       const journal = readJournal(scenario.name)
       const [durableFirst, ...durable] = normalizeFrames(
-        snapshotsAsTheLegacyRelaySendsThem(project(journal, liveSteps(journal)).map((f) => f.frame)),
+        project(journal, liveSteps(journal)).map((f) => f.frame),
       )
       const [legacyFirst, ...rest] = normalizeFrames(legacy)
       // The one intended difference: legacy regenerate opens with a bare greeting; a durable turn's first

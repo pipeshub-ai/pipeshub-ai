@@ -5,10 +5,10 @@ event: RUN_STARTED
 data: {"type":"RUN_STARTED","threadId":"conv-golden","runId":"uuid-1"}
 
 event: STATE_SNAPSHOT
-data: {"type":"STATE_SNAPSHOT","runId":"uuid-1","snapshot":{"run_id":"uuid-1","parent_run_id":null,"role_name":"pipeshub-agent","status":"starting","current_turn":0,"current_tool":null}}
+data: {"type":"STATE_SNAPSHOT","runId":"uuid-1","snapshot":{"run_id":"uuid-1","agent_id":"uuid-2","trace_id":"uuid-3","parent_run_id":null,"role_name":"pipeshub-agent","status":"starting","current_turn":0,"current_tool":null,"current_child_run_id":null,"hil_request_id":null,"goal_description":"What is the refund policy?","started_at":"<timestamp>","updated_at":"<timestamp>"}}
 
 event: STATE_SNAPSHOT
-data: {"type":"STATE_SNAPSHOT","runId":"uuid-1","snapshot":{"run_id":"uuid-1","parent_run_id":null,"role_name":"pipeshub-agent","status":"calling_llm","current_turn":0,"current_tool":null}}
+data: {"type":"STATE_SNAPSHOT","runId":"uuid-1","snapshot":{"run_id":"uuid-1","agent_id":"uuid-2","trace_id":"uuid-3","parent_run_id":null,"role_name":"pipeshub-agent","status":"calling_llm","current_turn":0,"current_tool":null,"current_child_run_id":null,"hil_request_id":null,"goal_description":"What is the refund policy?","started_at":"<timestamp>","updated_at":"<timestamp>"}}
 
 event: TEXT_MESSAGE_START
 data: {"type":"TEXT_MESSAGE_START","messageId":"msg-4","role":"assistant","runId":"uuid-1"}
@@ -23,10 +23,10 @@ event: STATE_DELTA
 data: {"type":"STATE_DELTA","runId":"uuid-1","delta":[{"op":"replace","path":"/citations","value":[]},{"op":"replace","path":"/normalizedAnswer","value":""},{"op":"replace","path":"/rawLength","value":0},{"op":"replace","path":"/discarded","value":true}]}
 
 event: STATE_SNAPSHOT
-data: {"type":"STATE_SNAPSHOT","runId":"uuid-1","snapshot":{"run_id":"uuid-1","parent_run_id":null,"role_name":"pipeshub-agent","status":"failed","current_turn":0,"current_tool":null}}
+data: {"type":"STATE_SNAPSHOT","runId":"uuid-1","snapshot":{"run_id":"uuid-1","agent_id":"uuid-2","trace_id":"uuid-3","parent_run_id":null,"role_name":"pipeshub-agent","status":"failed","current_turn":0,"current_tool":null,"current_child_run_id":null,"hil_request_id":null,"goal_description":"What is the refund policy?","started_at":"<timestamp>","updated_at":"<timestamp>"}}
 
 event: STATE_SNAPSHOT
-data: {"type":"STATE_SNAPSHOT","runId":"uuid-1","snapshot":{"final":true}}
+data: {"type":"STATE_SNAPSHOT","runId":"uuid-1","snapshot":{"final":true,"answer":"The AI model's provider rejected its API key. Ask a workspace admin to check the key in Workspace → AI Models.","citations":[],"confidence":"Low","answerMatchType":"Error","errorCode":"auth_error","succeeded_tool_names":[],"failed_tool_names":[],"parts":[{"type":"text","content":"The AI model's provider rejected its API key. Ask a workspace admin to check the key in Workspace → AI Models.","runId":"uuid-1","isFinal":true}]}}
 
 event: RUN_FINISHED
 data: {"type":"RUN_FINISHED","result":{"conversation":{"userId":"oid-2","orgId":"oid-3","title":"What is the refund policy?","initiator":"oid-2","isShared":false,"isDeleted":false,"isArchived":false,"lastActivityAt":"<clock>","status":"Failed","modelInfo":{"chatMode":"internal_search"},"rev":0,"_id":"oid-1","sharedWith":[],"conversationErrors":[{"message":"The AI model's provider rejected its API key. Ask a workspace admin to check the key in Workspace → AI Models.","errorType":"auth_error","timestamp":"<timestamp>","metadata":{},"requestedBy":"oid-2","_id":"oid-4"}],"createdAt":"<timestamp>","updatedAt":"<timestamp>","__v":0,"failedRunBy":"oid-2","failReason":"The AI model's provider rejected its API key. Ask a workspace admin to check the key in Workspace → AI Models.","messages":[{"modelInfo":{"chatMode":"internal_search"},"appliedFilters":{"apps":[],"kb":[],"recordGroups":[],"records":[],"recordsExact":[]},"requestedBy":"oid-2","inReplyTo":"oid-5","messageType":"error","content":"The AI model's provider rejected its API key. Ask a workspace admin to check the key in Workspace → AI Models.","contentFormat":"MARKDOWN","errorCode":"auth_error","citations":[],"confidence":"Low","followUpQuestions":[],"parts":[{"type":"text","content":"The AI model's provider rejected its API key. Ask a workspace admin to check the key in Workspace → AI Models.","runId":"uuid-1","isFinal":true}],"labelVer":"oid-6","_id":"oid-7","createdAt":"<timestamp>","updatedAt":"<timestamp>","feedback":[],"attachments":[],"referenceData":[],"tools":[],"reasoning":[]}]},"meta":{"requestId":"req-stream","timestamp":"<timestamp>","duration":"<clock>"}}}

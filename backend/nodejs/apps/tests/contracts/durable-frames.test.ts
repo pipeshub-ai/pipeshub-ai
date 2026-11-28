@@ -14,7 +14,6 @@ import {
   parseSse,
   project,
   readJournal,
-  snapshotsAsTheLegacyRelaySendsThem,
 } from './support/durable'
 
 /**
@@ -41,13 +40,13 @@ describe('contract: durable runs stream the legacy browser frames (D-5)', () => 
     it(`${scenario}: live`, () => {
       const journal = readJournal(scenario)
       const frames = project(journal, liveSteps(journal))
-      expect(normalizeFrames(snapshotsAsTheLegacyRelaySendsThem(frames.map((f) => f.frame)))).to.deep.equal(legacy())
+      expect(normalizeFrames(frames.map((f) => f.frame))).to.deep.equal(legacy())
     })
 
     it(`${scenario}: journal only`, () => {
       const journal = readJournal(scenario)
       const frames = project(journal, journalOnlySteps(journal))
-      expect(normalizeFrames(snapshotsAsTheLegacyRelaySendsThem(frames.map((f) => f.frame)))).to.deep.equal(legacy())
+      expect(normalizeFrames(frames.map((f) => f.frame))).to.deep.equal(legacy())
     })
   }
 })
