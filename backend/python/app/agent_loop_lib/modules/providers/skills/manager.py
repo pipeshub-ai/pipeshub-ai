@@ -12,6 +12,7 @@ from app.agent_loop_lib.modules.providers.skills.base import (
     CandidateEdits,
     Skill,
     SkillCandidate,
+    SkillConflictError,
     SkillFilter,
     SkillInUseError,
     SkillMatch,
@@ -255,22 +256,24 @@ class SkillManager:
         return ok
 
     async def delete(self, name: str, *, detach: bool = False) -> bool:
+        # The first read binds the whole delete to one skill. Usage is read by name, so
+        # it belongs to that skill only while the binding still holds after it: a name
+        # created again in between is a conflict before any usage decides or is returned.
+        binding = await self._store.deletion_binding(name)
         usage = await self._store.get_referential_usage(name)
-        if usage.required_by_skills:
+        if binding is not None and await self._store.deletion_binding(name) != binding:
+            raise SkillConflictError(name, current_updated_at=0)
+        if usage.has_dependent_skills or (usage.has_agents and not detach):
             raise SkillInUseError(
                 name,
                 used_by_agents=list(usage.used_by_agents),
                 required_by_skills=list(usage.required_by_skills),
+                other_agent_count=usage.other_agent_count,
+                other_skill_count=usage.other_skill_count,
             )
-        if usage.used_by_agents and not detach:
-            raise SkillInUseError(
-                name,
-                used_by_agents=list(usage.used_by_agents),
-                required_by_skills=list(usage.required_by_skills),
-            )
-        if usage.used_by_agents and detach:
+        if usage.has_agents and detach:
             await self._store.detach_from_agents(name)
-        ok = await self._store.delete_skill(name)
+        ok = await self._store.delete_skill(name, expected=binding)
         if ok:
             self._catalog.pop(name, None)
             await self._index.remove_entry(name)

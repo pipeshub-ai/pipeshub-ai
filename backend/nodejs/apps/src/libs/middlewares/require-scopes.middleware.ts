@@ -21,12 +21,18 @@ import { markScopeDenied } from './agent-call-recorder';
  *   handler,
  * );
  */
-export function requireScopes(...requiredScopes: OAuthScopeNames[]) {
-  return (
+export function requireScopes(
+  ...requiredScopes: OAuthScopeNames[]
+): ((
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => void) & { requiredScopes: readonly string[] } {
+  const check = (
     req: AuthenticatedUserRequest,
     _res: Response,
     next: NextFunction,
-  ) => {
+  ): void => {
     try {
       const user = req.user;
 
@@ -56,4 +62,8 @@ export function requireScopes(...requiredScopes: OAuthScopeNames[]) {
       next(error);
     }
   };
+  // Read by the route scan, which checks what each route asks of a token.
+  return Object.assign(check, {
+    requiredScopes: [...requiredScopes] as readonly string[],
+  });
 }

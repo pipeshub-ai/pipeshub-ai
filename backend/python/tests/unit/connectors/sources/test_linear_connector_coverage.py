@@ -2033,6 +2033,7 @@ class TestLinearFetchDocumentContent:
     ])
     async def test_failure_is_mapped_for_the_reader(self, response, expected_status, expected_calls) -> None:
         c = _make_connector()
+        c.config_service.get_config = AsyncMock(return_value={"auth": {"authType": "API_TOKEN"}})  # a key is not renewed
         c.data_source = MagicMock()
         mock_ds = MagicMock()
         mock_ds.document = AsyncMock(return_value=response)

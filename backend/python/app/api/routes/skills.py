@@ -13,14 +13,18 @@ own custom skills here, plus org-wide `builtin` ones. Content mutations
 builtin still 403; enable/disable of a builtin is allowed for org admins
 only (`fetch_caller_role`). A non-owner attempt to mutate someone else's
 custom skill is invisible (404) because the store's `SkillVisibility`
-filters on `createdBy`.
+filters on `createdBy`. The exception is an organization admin (live role
+from Node, checked per request) on enable/disable and delete, who may act
+on any skill in the org.
 
 Authorization: `SKILL_READ`/`SKILL_WRITE` OAuth scopes (mirrors every other
 resource in this service — see `AGENT_READ`/`AGENT_WRITE` in `agent.py`).
 Safe-delete additionally checks REFERENTIAL integrity against
 `AGENT_HAS_SKILL` (agents using this skill) and `agentSkillRelation`
 `requires` edges (other skills depending on this one) — see
-`SkillManager.delete` / `collect_referential_usage`.
+`SkillManager.delete` / `GraphSkillStore.get_referential_usage`. Every
+read, usage included, decides visibility as `GET /{name}` does
+(`GraphSkillStore._sees`).
 """
 
 from __future__ import annotations
@@ -28,8 +32,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from enum import Enum
 from logging import Logger
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypeVar
 
 import yaml
 from fastapi import (
@@ -62,6 +67,7 @@ from app.agent_loop_lib.modules.providers.skills.base import (
     SkillFilter,
     SkillInUseError,
     SkillMetadata,
+    SkillPermissionError,
     SkillSource,
     SkillStatus,
 )
@@ -80,8 +86,6 @@ from app.agents.agent_loop.skills.graph_store import (
     SkillScope,
     SkillSharing,
     SkillVisibility,
-    collect_referential_usage,
-    edge_source_key,
 )
 from app.agents.agent_loop.skills.manager_factory import (
     build_management_skill_manager,
@@ -275,6 +279,19 @@ class FinalizeImportRequest(BaseModel):
     )
 
 
+_E = TypeVar("_E", bound=Enum)
+
+
+def _filter_value(enum_cls: type[_E], value: str | None, field: str) -> _E | None:
+    """A list filter's value as its enum; one it does not name is the caller's mistake (400), not a server error."""
+    if not value:
+        return None
+    try:
+        return enum_cls(value)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown {field}: use one of {', '.join(e.value for e in enum_cls)}.") from None
+
+
 def _metadata_to_dict(m: SkillMetadata) -> dict[str, Any]:
     return {
         "name": m.name,
@@ -466,10 +483,9 @@ _NOT_FOUND_DETAILS = (("Version ", "Skill version not found."), ("Resource ", "R
 
 def _handle_registry_error(e: RegistryError) -> HTTPException:
     message = str(e)
-    lowered = message.lower()
-    if "not writable" in lowered:
+    if isinstance(e, SkillPermissionError):
         return HTTPException(status_code=403, detail="You cannot change this skill.")
-    if "not found" not in lowered:
+    if "not found" not in message.lower():
         return HTTPException(status_code=409, detail=message)
     detail = next((d for prefix, d in _NOT_FOUND_DETAILS if message.startswith(prefix)), "Skill not found.")
     return HTTPException(status_code=404, detail=detail)
@@ -493,6 +509,8 @@ def _handle_in_use_error(e: SkillInUseError) -> HTTPException:
             "message": str(e),
             "usedByAgents": e.used_by_agents,
             "requiredBySkills": e.required_by_skills,
+            "otherAgentCount": e.other_agent_count,
+            "otherSkillCount": e.other_skill_count,
         },
     )
 
@@ -611,12 +629,12 @@ def _require_manager_of(ctx: dict[str, Any], sharing: SkillSharing | None) -> No
 
 async def _reject_if_builtin_skill(manager: SkillManager, name: str, ctx: dict[str, Any]) -> SkillMetadata:
     """Blocks a content `SKILL_WRITE` mutation (update/patch/rollback/
-    deprecate/delete, or resource write/delete) against an EXISTING
+    deprecate, or resource write/delete) against an EXISTING
     builtin-sourced skill — the counterpart to `_reject_if_builtin_name`
     above, which only blocks *creating* a new skill under a reserved
-    name. Enable/disable is the exception: those routes call
-    `_require_admin_for_builtin_availability` instead, so an org admin
-    can mute a builtin without being able to edit its SKILL.md.
+    name. Enable/disable is the exception: those routes go through
+    `_moderation_manager`, so an org admin can mute a builtin without
+    being able to edit its SKILL.md.
     Returns the fetched metadata so callers that also need it (e.g.
     `update_skill`, to preserve lifecycle fields — see `_build_content`)
     don't have to load the skill twice. Raises 404/409 (via
@@ -629,20 +647,33 @@ async def _reject_if_builtin_skill(manager: SkillManager, name: str, ctx: dict[s
     return metadata
 
 
-async def _require_admin_for_builtin_availability(request: Request, metadata: SkillMetadata) -> None:
-    """Enable/disable of a custom skill is creator-gated by the store's
-    visibility scope (non-owners never load the doc). Enable/disable of a
-    builtin is org-wide, so it additionally requires a live org-admin
-    role from Node (`fetch_caller_role`) — members get 403. Fail closed
-    if Node cannot answer."""
-    if metadata.source != SkillSource.BUILTIN:
-        return
-    config_service = request.app.container.config_service()
-    if not (await fetch_caller_role(request, config_service)).is_admin:
+async def _moderation_manager(request: Request, name: str) -> tuple[SkillManager, SkillMetadata]:
+    """Manager and metadata for a route that changes a skill's availability or
+    deletes it. Custom skills: the creator, as the creator-scoped store decides, or
+    for a team or org command those who govern it. A builtin, or a skill the caller
+    cannot see: an organization admin, whose role is checked here, never taken from
+    the request. Members get 403 on a builtin and 404 on a co-worker's skill."""
+    manager, ctx = await _build_manager(request, ask_admin=_admin_question(request), manage=name)
+    missing: HTTPException | None = None
+    metadata: SkillMetadata | None = None
+    try:
+        metadata = await _load_skill_metadata(manager, name)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        missing = exc
+    if metadata is not None and metadata.source != SkillSource.BUILTIN:
+        _require_manager_of(ctx, await ctx["store"].sharing(name))
+        return manager, metadata
+    if not await _is_admin(request):
+        if missing is not None:
+            raise missing
         raise HTTPException(
             status_code=403,
-            detail=f"{metadata.name!r} is a built-in skill; only an organization admin can change its availability.",
+            detail=f"{name!r} is a built-in skill; only an organization admin can change its availability.",
         )
+    manager, _ctx = await _build_manager(request, is_admin=True)
+    return manager, await _load_skill_metadata(manager, name)
 
 
 # ============================================================================
@@ -719,11 +750,13 @@ async def _build_manager(
     manage: str | None = None,
     admin: bool = False,
     governs: bool = False,
+    is_admin: bool = False,
 ) -> tuple[SkillManager, dict[str, Any]]:
     """The caller's skills manager. It reads their own skills, the builtins and the team and org commands shared
     with them (SLASH1 S4), and changes the shared commands it governs. ``ask_admin`` is called only when the answer
     matters: the route needs it (``admin``), or the skill it would change (``manage``), or any skill of the org
-    (``governs``, the editor's listing), is shared and not the caller's team's."""
+    (``governs``, the editor's listing), is shared and not the caller's team's. ``is_admin``: the route has checked
+    that the caller is an org admin; the manager then sees every skill of the org, to list or moderate it."""
     if ask_admin is None and (admin or manage is not None or governs):
         raise TypeError("_build_manager needs ask_admin to decide shared-skill rights")
     services = await _get_services(request)
@@ -743,11 +776,14 @@ async def _build_manager(
             (sharing := SkillSharing.of(d)).scope in SkillScope.SHARED and not rights.manages(sharing.scope, sharing.team_id)
             for d in docs if d
         )
-    if admin and ask_admin is not None:
+    if is_admin:
+        rights = replace(rights, org_admin=True)
+    elif admin and ask_admin is not None:
         rights = replace(rights, org_admin=await ask_admin())
     visibility = SkillVisibility.of([user_key], teams=teams)
     manager = await build_management_skill_manager(
         graph, org_id, user_key, services["retrieval_service"], visibility=visibility, rights=rights,
+        is_admin=is_admin,
     )
     store = GraphSkillStore(graph, org_id, user_key, visibility=visibility, rights=rights)
     return manager, {**services, **user_context, "userKey": user_key, "teams": teams, "rights": rights, "store": store}
@@ -780,8 +816,8 @@ async def list_skills(
         category=category,
         subcategory=subcategory,
         tags=[tag] if tag else None,
-        status=SkillStatus(status) if status else None,
-        source=SkillSource(source) if source else None,
+        status=_filter_value(SkillStatus, status, "status"),
+        source=_filter_value(SkillSource, source, "source"),
     )
     metadatas = await manager.list_skills(filt)
     sharings = await ctx["store"].sharings()
@@ -811,6 +847,29 @@ async def list_skills(
         }
         for m in metadatas
     ]})
+
+
+@router.get("/admin/skills", dependencies=[Depends(require_scopes(OAuthScopes.SKILL_READ))])
+async def list_org_skills(
+    request: Request,
+    status: str | None = None,
+    source: str | None = None,
+    q: str | None = None,
+) -> JSONResponse:
+    """Every skill in the organization, for an organization admin to find what they
+    may disable or delete (`POST /{name}/disable`, `DELETE /{name}`). Metadata only:
+    no body and no resources. The role is read live from Node, never from the request;
+    anyone else gets 403."""
+    if not await _is_admin(request):
+        raise HTTPException(status_code=403, detail="Only an organization admin can list every skill.")
+    manager, _ctx = await _build_manager(request, is_admin=True)
+    filt = SkillFilter(
+        query=q,
+        status=_filter_value(SkillStatus, status, "status"),
+        source=_filter_value(SkillSource, source, "source"),
+    )
+    metadatas = await manager.list_skills(filt)
+    return JSONResponse(status_code=200, content={"skills": [_metadata_to_dict(m) for m in metadatas]})
 
 
 async def _review_standings(request: Request, ctx: dict[str, Any], names: list[str]) -> dict[str, Any]:
@@ -968,6 +1027,8 @@ async def publish_command(request: Request, name: str, payload: PublishRequest) 
             raise HTTPException(status_code=404, detail="Team not found.")
     try:
         sharing = await ctx["store"].share(name, payload.scope, team_id)
+    except SkillConflictError as e:
+        raise _handle_conflict_error(e) from e
     except RegistryError as e:
         raise _handle_registry_error(e) from e
     authors, teams = await _sharing_names(ctx["graph_provider"], current_org_id(), [sharing])
@@ -1045,6 +1106,8 @@ async def patch_skill_body(
         )
     except SkillConflictError as e:
         raise _handle_conflict_error(e) from e
+    except RegistryError as e:
+        raise _handle_registry_error(e) from e
     if not ok:
         raise HTTPException(
             status_code=400,
@@ -1079,7 +1142,12 @@ async def rename_skill(
 async def deprecate_skill(request: Request, name: str, payload: DeprecateRequest) -> JSONResponse:
     manager, ctx = await _build_manager(request, ask_admin=_admin_question(request), manage=name)
     await _reject_if_builtin_skill(manager, name, ctx)
-    ok = await manager.deprecate(name, payload.reason, payload.replaced_by)
+    try:
+        ok = await manager.deprecate(name, payload.reason, payload.replaced_by)
+    except SkillConflictError as e:
+        raise _handle_conflict_error(e) from e
+    except RegistryError as e:
+        raise _handle_registry_error(e) from e
     if not ok:
         raise HTTPException(status_code=404, detail="Skill not found.")
     return JSONResponse(status_code=200, content={"status": "success"})
@@ -1088,13 +1156,10 @@ async def deprecate_skill(request: Request, name: str, payload: DeprecateRequest
 @router.post("/{name}/disable", dependencies=[Depends(require_scopes(OAuthScopes.SKILL_WRITE))])
 async def disable_skill(request: Request, name: str) -> JSONResponse:
     """Reversible mute — see `SkillManager.disable`. Custom skills: the
-    creator (store visibility). Builtin skills: org admin only. An
+    creator, or an org admin. Builtin skills: org admin only. An
     illegal transition (already disabled, or deprecated) surfaces as 409
     via `_handle_registry_error`."""
-    manager, ctx = await _build_manager(request, ask_admin=_admin_question(request), manage=name)
-    existing = await _load_skill_metadata(manager, name)
-    await _require_admin_for_builtin_availability(request, existing)
-    _require_manager_of(ctx, await ctx["store"].sharing(name))
+    manager, _metadata = await _moderation_manager(request, name)
     try:
         metadata = await manager.disable(name)
     except RegistryError as e:
@@ -1106,10 +1171,7 @@ async def disable_skill(request: Request, name: str) -> JSONResponse:
 async def enable_skill(request: Request, name: str) -> JSONResponse:
     """Reverses `disable`. Never undeprecates — see `SkillManager.enable`.
     Same authorization as `disable_skill`."""
-    manager, ctx = await _build_manager(request, ask_admin=_admin_question(request), manage=name)
-    existing = await _load_skill_metadata(manager, name)
-    await _require_admin_for_builtin_availability(request, existing)
-    _require_manager_of(ctx, await ctx["store"].sharing(name))
+    manager, _metadata = await _moderation_manager(request, name)
     try:
         metadata = await manager.enable(name)
     except RegistryError as e:
@@ -1121,24 +1183,22 @@ async def enable_skill(request: Request, name: str) -> JSONResponse:
 # Safe delete
 # ============================================================================
 
-def _edge_source_key(edge: dict[str, Any]) -> str:
-    return edge_source_key(edge)
-
-
-async def _check_usage(name: str, org_id: str, graph_provider: IGraphDBProvider) -> dict[str, Any]:
-    """Referential-integrity snapshot for `GET /{name}/usage` and the
-    historical unit tests that call this helper directly. The *delete*
-    guard lives on `SkillManager.delete` so every caller (REST, tools)
-    gets it."""
-    usage = await collect_referential_usage(graph_provider, org_id, name)
-    return {"usedByAgents": usage.used_by_agents, "requiredBySkills": usage.required_by_skills}
-
-
 @router.get("/{name}/usage", dependencies=[Depends(require_scopes(OAuthScopes.SKILL_READ))])
 async def get_skill_usage(request: Request, name: str) -> JSONResponse:
-    _manager, ctx = await _build_manager(request)
-    usage = await _check_usage(name, current_org_id(), ctx["graph_provider"])
-    return JSONResponse(status_code=200, content=usage)
+    """What a safe delete would affect. A skill the caller cannot see is a 404, the same
+    answer and the same one read as `GET /{name}`. Agents the caller has no access to,
+    and skills it cannot see, are counted, never named (see
+    `GraphSkillStore.get_referential_usage`). The delete guard lives on
+    `SkillManager.delete` so every caller (REST, tools) gets it."""
+    manager, _ctx = await _build_manager(request)
+    await _load_skill_metadata(manager, name)
+    usage = await manager.get_referential_usage(name)
+    return JSONResponse(status_code=200, content={
+        "usedByAgents": usage.used_by_agents,
+        "requiredBySkills": usage.required_by_skills,
+        "otherAgentCount": usage.other_agent_count,
+        "otherSkillCount": usage.other_skill_count,
+    })
 
 
 @router.delete("/{name}", dependencies=[Depends(require_scopes(OAuthScopes.SKILL_WRITE))])
@@ -1150,12 +1210,17 @@ async def delete_skill(request: Request, name: str, detach: Annotated[bool, Quer
     would leave the dependent skill's instructions pointing at nothing).
     The guard lives on `SkillManager.delete` so the `skill_manage` tool
     cannot bypass it."""
-    manager, ctx = await _build_manager(request, ask_admin=_admin_question(request), manage=name)
-    await _reject_if_builtin_skill(manager, name, ctx)
+    manager, metadata = await _moderation_manager(request, name)
+    if metadata.source == SkillSource.BUILTIN:
+        raise HTTPException(status_code=403, detail="A built-in skill cannot be deleted.")
     try:
         ok = await manager.delete(name, detach=detach)
     except SkillInUseError as e:
         raise _handle_in_use_error(e) from e
+    except SkillConflictError as e:
+        raise _handle_conflict_error(e) from e
+    except RegistryError as e:
+        raise _handle_registry_error(e) from e
     if not ok:
         raise HTTPException(status_code=404, detail="Skill not found.")
     return JSONResponse(status_code=200, content={"status": "success"})
@@ -1232,6 +1297,8 @@ async def rollback_skill(request: Request, name: str, payload: RollbackRequest) 
     await _reject_if_builtin_skill(manager, name, ctx)
     try:
         metadata = await manager.rollback(name, payload.version)
+    except SkillConflictError as e:
+        raise _handle_conflict_error(e) from e
     except RegistryError as e:
         raise _handle_registry_error(e) from e
     return JSONResponse(status_code=200, content=_metadata_to_dict(metadata))
@@ -1257,6 +1324,10 @@ async def write_resource(request: Request, name: str, payload: ResourceWriteRequ
     await _reject_if_builtin_skill(manager, name, ctx)
     try:
         ok = await manager.write_resource(name, payload.path, payload.content)
+    except SkillConflictError as e:
+        raise _handle_conflict_error(e) from e
+    except RegistryError as e:
+        raise _handle_registry_error(e) from e
     except SkillFormatError as e:
         raise _handle_format_error(e) from e
     if not ok:
@@ -1268,7 +1339,12 @@ async def write_resource(request: Request, name: str, payload: ResourceWriteRequ
 async def remove_resource(request: Request, name: str, path: str = Query(..., min_length=1)) -> JSONResponse:
     manager, ctx = await _build_manager(request, ask_admin=_admin_question(request), manage=name)
     await _reject_if_builtin_skill(manager, name, ctx)
-    ok = await manager.remove_resource(name, path)
+    try:
+        ok = await manager.remove_resource(name, path)
+    except SkillConflictError as e:
+        raise _handle_conflict_error(e) from e
+    except RegistryError as e:
+        raise _handle_registry_error(e) from e
     if not ok:
         raise HTTPException(status_code=404, detail="Resource not found for this skill.")
     return JSONResponse(status_code=200, content={"status": "success"})
@@ -1440,9 +1516,10 @@ async def finalize_import(request: Request, payload: FinalizeImportRequest) -> J
         raise HTTPException(status_code=400, detail=_IMPORT_FRONTMATTER_UNREADABLE) from e
 
     try:
-        metadata = await manager.create(name, content, payload.category, payload.subcategory)
-        for path, resource in payload.resources.items():
-            await manager.write_resource(name, path, resource)
+        # One write: a bundle that cannot be stored whole leaves nothing behind.
+        metadata = await manager.create(name, content, payload.category, payload.subcategory, dict(payload.resources))
+    except SkillConflictError as e:
+        raise _handle_conflict_error(e) from e
     except RegistryError as e:
         raise _handle_registry_error(e) from e
     except SkillFormatError as e:

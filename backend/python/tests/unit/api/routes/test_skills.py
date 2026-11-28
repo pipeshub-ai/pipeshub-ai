@@ -15,6 +15,14 @@ from app.agent_loop_lib.modules.providers.skills.base import (
     SkillStatus,
 )
 from app.agent_loop_lib.modules.providers.skills.validator import SkillFormatError
+from app.agents.agent_loop.skills.graph_store import collect_referential_usage
+from app.agents.agent_loop.skills.graph_store import edge_source_key as _edge_source_key
+
+
+async def _check_usage(name: str, org_id: str, graph_provider) -> dict:
+    """The org-wide collector `GraphSkillStore.get_referential_usage` narrows to its caller."""
+    usage = await collect_referential_usage(graph_provider, org_id, name, skill={})
+    return {"usedByAgents": usage.used_by_agents, "requiredBySkills": usage.required_by_skills}
 
 
 def _caller_ctx(**extra: object) -> dict:
@@ -135,34 +143,25 @@ class TestErrorHandlers:
 class TestEdgeSourceKey:
     """`_edge_source_key` must read both graph-provider edge shapes — Arango's
     full `_from` id and Neo4j's already-bare `from_id` (see
-    `Neo4jProvider.get_edges_to_node`) — so `_check_usage` works unmodified
+    `Neo4jProvider.get_edges_to_node`) — so the usage collector works unmodified
     against either backend."""
 
     def test_reads_arango_from_field(self) -> None:
-        from app.api.routes.skills import _edge_source_key
-
         assert _edge_source_key({"_from": "agentInstances/agent-1"}) == "agent-1"
 
     def test_reads_neo4j_from_id_field(self) -> None:
-        from app.api.routes.skills import _edge_source_key
-
         assert _edge_source_key({"from_id": "agent-1", "from_collection": "agentInstances"}) == "agent-1"
 
     def test_prefers_from_id_when_both_present(self) -> None:
-        from app.api.routes.skills import _edge_source_key
-
         assert _edge_source_key({"from_id": "agent-1", "_from": "agentInstances/agent-2"}) == "agent-1"
 
     def test_missing_both_fields_returns_empty_string(self) -> None:
-        from app.api.routes.skills import _edge_source_key
-
         assert _edge_source_key({}) == ""
 
 
 class TestCheckUsage:
     @pytest.mark.asyncio
     async def test_no_usage_returns_empty_lists(self) -> None:
-        from app.api.routes.skills import _check_usage
 
         gp = AsyncMock()
         gp.get_edges_to_node = AsyncMock(return_value=[])
@@ -171,7 +170,6 @@ class TestCheckUsage:
 
     @pytest.mark.asyncio
     async def test_reports_agents_using_the_skill(self) -> None:
-        from app.api.routes.skills import _check_usage
 
         gp = AsyncMock()
 
@@ -190,7 +188,6 @@ class TestCheckUsage:
     async def test_reports_agents_using_the_skill_on_neo4j_edge_shape(self) -> None:
         """Same as above but with Neo4j's generic `from_id`/`from_collection`
         edge shape instead of Arango's `_from` — see `Neo4jProvider.get_edges_to_node`."""
-        from app.api.routes.skills import _check_usage
 
         gp = AsyncMock()
 
@@ -207,7 +204,6 @@ class TestCheckUsage:
 
     @pytest.mark.asyncio
     async def test_skips_agent_edge_whose_agent_doc_is_gone(self) -> None:
-        from app.api.routes.skills import _check_usage
 
         gp = AsyncMock()
 
@@ -223,7 +219,6 @@ class TestCheckUsage:
 
     @pytest.mark.asyncio
     async def test_reports_skills_that_require_this_one(self) -> None:
-        from app.api.routes.skills import _check_usage
 
         gp = AsyncMock()
 
@@ -241,7 +236,6 @@ class TestCheckUsage:
 
     @pytest.mark.asyncio
     async def test_reports_skills_that_require_this_one_on_neo4j_edge_shape(self) -> None:
-        from app.api.routes.skills import _check_usage
 
         gp = AsyncMock()
 
@@ -393,7 +387,8 @@ class TestFinalizeImportRoute:
         ):
             response = await finalize_import(MagicMock(), payload)
         manager.create.assert_awaited_once()
-        manager.write_resource.assert_awaited_once_with("pdf-extractor", "scripts/run.py", "print(1)")
+        assert manager.create.await_args.args[4] == {"scripts/run.py": "print(1)"}  # stored with SKILL.md, in one write
+        manager.write_resource.assert_not_awaited()
         assert response.status_code == 201
 
 

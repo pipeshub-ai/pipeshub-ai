@@ -84,6 +84,16 @@ PLAIN_LINKING = """/* pipeshub:graph.get_records_linking_to_weburls */ SELECT DI
     ORDER BY h.id LIMIT $6"""
 
 
+# The link holders' statements read each link's edges by a probe of the edges' leaf for that link. Statistics taken while a leaf held almost nothing
+# (a new install's, a test database's leaves; ANALYZE as autovacuum or a maintenance pass runs it) make a scan of the whole leaf look cheaper than a
+# probe of its index, once per link: thousands of scans. Sequential and bitmap scans are off for the statement (as the code graph's hop page is
+# profiled), so only the keyed probes can answer; the settings are local to the transaction and are put back for a caller's transaction once the
+# statement has answered (a failed statement aborts it, which ends them; a statement then would fail too and hide the first error).
+LINKING_PROFILE = """/* pipeshub:graph.linking_profile */ SELECT w.s, w.b, set_config('enable_seqscan', 'off', true), set_config('enable_bitmapscan', 'off', true)
+    FROM (SELECT current_setting('enable_seqscan') AS s, current_setting('enable_bitmapscan') AS b OFFSET 0) w"""
+LINKING_RESTORE = "/* pipeshub:graph.linking_restore */ SELECT set_config('enable_seqscan', $1, true), set_config('enable_bitmapscan', $2, true)"
+
+
 def _typed(rec_raw: Any, typ_raw: Any) -> Record:  # noqa: ANN401
     """The typed record; a record with no type document is the base record (the Neo4j provider would drop the whole listing)."""
     rec = _rec(rec_raw)
@@ -144,13 +154,26 @@ class LookupsMixin(PgBase):
     async def _lrows(self, sql: str, *args: Any, transaction: str | None = None, write: bool = False) -> list:  # noqa: ANN401
         return await self._q(lambda tx: tx.fetch(sql, *args), transaction, write=write)
 
-    async def _at_addresses(self, sql: str, args: tuple, plain: str, plain_args: tuple, transaction: str | None) -> list:
+    async def _at_addresses(self, sql: str, args: tuple, plain: str, plain_args: tuple, transaction: str | None, *, keyed: bool = False) -> list:
         """The rows of ``sql`` (over graph.records_by_weburl; it answers ``capped`` on its first row); when an address filled the function's
-        limit, the rows of the plain statement alone."""
-        rows = await self._lrows(sql, *args, transaction=transaction)
+        limit, the rows of the plain statement alone. ``keyed``: each statement under LINKING_PROFILE."""
+        rows = await self._keyed_rows(sql, args, transaction) if keyed else await self._lrows(sql, *args, transaction=transaction)
         if rows and rows[0].get("capped"):
-            return await self._lrows(plain, *plain_args, transaction=transaction)
+            return await self._keyed_rows(plain, plain_args, transaction) if keyed else await self._lrows(plain, *plain_args, transaction=transaction)
         return rows
+
+    async def _keyed_rows(self, sql: str, args: tuple, transaction: str | None) -> list:
+        async def read(tx: Tx) -> list:
+            was = await tx.fetchrow(LINKING_PROFILE)
+            rows = await tx.fetch(sql, *args)
+            if transaction is not None:      # the caller's transaction goes on with the settings it had
+                await tx.fetchval(LINKING_RESTORE, was["s"], was["b"])
+            return rows
+        if transaction:
+            return await self._txn(transaction).run(read)
+        # a read of its own: idempotent, so a connection lost after the profile's statement is still retried (with that statement done, the unit would
+        # otherwise count as one that did work and give the retry up)
+        return await self._db.run(read, idempotent=True, jobs=current_or_system().kind == "system")
 
     async def get_record_by_weburl(self, weburl: str, org_id: str | None = None, transaction: str | None = None) -> Record | None:
         """By exact web URL; LINK records are skipped."""
@@ -306,7 +329,7 @@ class LookupsMixin(PgBase):
                   AND link.doc->>'recordType' = 'LINK' AND link.doc->>'connectorName' = ANY($4::text[]) AND coalesce((link.doc->>'isDeleted')::boolean, false) = false
                 ORDER BY h.id LIMIT $6)
             SELECT c.capped, q.id FROM (SELECT EXISTS (SELECT 1 FROM f GROUP BY f.doc->>'webUrl' HAVING count(*) >= 10000) AS capped) c LEFT JOIN q ON true
-            ORDER BY q.id""", args, PLAIN_LINKING, args, transaction)
+            ORDER BY q.id""", args, PLAIN_LINKING, args, transaction, keyed=True)
         return [r["id"] for r in rows if r["id"] is not None]
 
     async def get_issue_sites(self, org_id: str, connector_names: list[str], limit: int | None = None, transaction: str | None = None) -> list[str]:
@@ -749,19 +772,25 @@ class LookupsMixin(PgBase):
             raise      # as the Neo4j and Arango providers: the caller must not add edges for people that were not written
 
     async def update_node_if_match(self, key: str, collection: str, node: dict, match_field: str, match_value: Any,  # noqa: ANN401
-                                   transaction: str | None = None) -> bool:
-        """Replace the document (as ``SET n = $node``) only while ``match_field`` still equals ``match_value``: one statement, so no overwrite
-        slips between the check and the write."""
+                                   transaction: str | None = None, *, expected: dict | None = None) -> bool:
+        """Replace the document (as ``SET n = $node``) only while ``match_field`` still equals ``match_value`` and every field of ``expected``
+        holds (``None`` means absent), so no overwrite slips between the check and the write."""
         org = current_org_id()
         if match_value is None:      # a node without the field is not 'null': as Neo4j's ``n[f] = null``, never a match
             return False
         doc = _node(node, collection)
         doc["id"] = key
         _VALIDATOR.validate_node(collection, doc)
-        r = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.update_node_if_match */ WITH u AS (UPDATE graph.nodes n SET doc = jsonb_strip_nulls($5::jsonb)
-            WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3 AND n.doc->$4::text = $6::jsonb RETURNING 1) SELECT count(*) FROM u""",
-                                                 org, collection, key, match_field, _j(doc), _j(match_value)), transaction, write=True)
-        return bool(r)
+
+        async def go(tx: Tx) -> int:
+            # The row lock first, in a statement of its own (as update_node_fields_if_match): the expectation is an anti-join, which a writer that
+            # waited for the lock does not re-check against the row it then updates.
+            await tx.execute("/* pipeshub:graph.lock_node */ SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = $3 FOR UPDATE", org, collection, key)
+            return await tx.fetchval("""/* pipeshub:graph.update_node_if_match */ WITH u AS (UPDATE graph.nodes n SET doc = jsonb_strip_nulls($5::jsonb)
+            WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3 AND n.doc->$4::text = $6::jsonb
+                AND NOT EXISTS (SELECT 1 FROM jsonb_each($7::jsonb) f WHERE n.doc->f.key IS DISTINCT FROM f.value AND NOT (f.value = 'null'::jsonb AND n.doc->f.key IS NULL))
+                RETURNING 1) SELECT count(*) FROM u""", org, collection, key, match_field, _j(doc), _j(match_value), _j(expected or {}))
+        return bool(await self._q(go, transaction, write=True))
 
     async def remove_nodes_by_field(self, collection: str, field_name: str, *, field_value: str | int | bool | None, transaction: str | None = None) -> int:
         org = current_org_id()

@@ -15,6 +15,7 @@ import {
   mcpDiscoveryScopes,
   AdminOnlyScopes,
   getAllowedScopeNamesForRole,
+  RetiredTokenScopes,
 } from '../../../../src/modules/oauth_provider/config/scopes.config'
 import { OAuthScopeNames } from '../../../../src/libs/enums/oauth-scopes.enum'
 
@@ -159,9 +160,17 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
 
   // requireScopes checks OAuthScopeNames, but an OAuth app can only be granted
   // what OAuthScopes lists, so a scope missing here locks every app out of its routes.
+  // A retired scope is left out on purpose: its routes take an interactive session.
   it('every scope a route can require can be granted to an OAuth app', () => {
-    const missing = Object.values(OAuthScopeNames).filter((name) => !(name in OAuthScopes))
+    const missing = Object.values(OAuthScopeNames).filter(
+      (name) => !(name in OAuthScopes) && !RetiredTokenScopes.has(name),
+    )
     expect(missing).to.deep.equal([])
+  })
+
+  it('config:write is retired: not grantable, and no other scope is', () => {
+    expect([...RetiredTokenScopes]).to.deep.equal(['config:write'])
+    expect('config:write' in OAuthScopes).to.equal(false)
   })
 
   // Scopes are grouped by walking ScopeCategories, so one outside it never

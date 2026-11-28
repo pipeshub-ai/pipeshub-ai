@@ -93,15 +93,19 @@ class LinearGateway:
         datasource_provider: Callable[[], Awaitable[LinearDataSource]],
         logger: Logger,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        renew: Callable[[LinearAuthError], Awaitable[None]] | None = None,
     ) -> None:
         self._datasource = datasource_provider
         self._logger = logger
         self._sleep = sleep
+        # Called once per request that Linear refuses as signed out: returns with a new token in place, or raises.
+        self._renew = renew
 
     async def run(self, name: str, invoke: Invoke) -> dict[str, Any]:
         """Run one request and return its ``data``. Raises a ``LinearApiError``."""
         rate_waits = list(RATE_LIMIT_WAITS)
         transient_waits = list(TRANSIENT_WAITS)
+        renewed = self._renew is None
         while True:
             datasource = await self._datasource()
             response = await invoke(datasource)
@@ -109,6 +113,11 @@ class LinearGateway:
             if error is None:
                 data = getattr(response, "data", None)
                 return data if isinstance(data, dict) else {}
+            if isinstance(error, LinearAuthError) and not renewed:
+                renewed = True
+                self._logger.info("Linear refused the token on %s; renewing it and retrying once", name)
+                await self._renew(error)  # type: ignore[misc]
+                continue
             if isinstance(error, LinearRateLimited) and rate_waits:
                 wait = rate_waits.pop(0)
                 self._logger.warning("Linear rate limit on %s; retrying in %ss", name, wait)

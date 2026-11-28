@@ -6,6 +6,7 @@ import yaml
 
 from app.agent_loop_lib.core.exceptions import RegistryError
 from app.agent_loop_lib.modules.providers.skills.base import (
+    SkillConflictError,
     SkillInUseError,
     SkillMetadata,
     SkillSource,
@@ -689,6 +690,8 @@ class SkillManageTool(Tool):
 
             return ToolOutput(success=False, error=f"Unknown action: {action!r}")
         except SkillInUseError as e:
+            return ToolOutput(success=False, error=str(e))
+        except SkillConflictError as e:
             return ToolOutput(success=False, error=str(e))
         except RegistryError as e:
             return ToolOutput(success=False, error=str(e))

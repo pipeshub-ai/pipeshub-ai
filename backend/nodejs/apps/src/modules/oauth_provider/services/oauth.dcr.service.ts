@@ -12,6 +12,9 @@ import {
   AgentMcpScopes,
   McpToolScopes,
   mcpDiscoveryScopes,
+  RETIRED_SCOPE_MESSAGE,
+  RetiredTokenScopes,
+  withoutRetiredScopes,
 } from '../config/scopes.config';
 import { AppConfig } from '../../tokens_manager/config/config'
 import {
@@ -191,8 +194,16 @@ export class OAuthDcrService {
       );
     }
     // A metadata document rarely names a scope, and its client cannot register one, so it gets what the /mcp tools use (with offline_access, for a refresh token).
-    const allowedScopes = doc.scope
-      ? this.resolveScopes(doc.scope)
+    // A published document cannot be corrected by its client on the spot, so a retired scope in it is dropped, not refused.
+    const docScope = doc.scope
+      ? withoutRetiredScopes(doc.scope.split(/\s+/).filter(Boolean)).join(' ')
+      : '';
+    // A document that names only retired scopes asked for nothing it can have; it does not get the default either.
+    if (doc.scope?.trim() && !docScope) {
+      throw new InvalidScopeError(RETIRED_SCOPE_MESSAGE);
+    }
+    const allowedScopes = docScope
+      ? this.resolveScopes(docScope)
       : this.mcpToolScopes();
     const fresh = {
       name: (doc.client_name || new URL(clientId).host).slice(0, 100),
@@ -344,6 +355,9 @@ export class OAuthDcrService {
 
     const granted: string[] = []
     for (const s of requested) {
+      if (RetiredTokenScopes.has(s)) {
+        throw new InvalidScopeError(RETIRED_SCOPE_MESSAGE);
+      }
       if (!memberAllowed.has(s)) {
         throw new InvalidScopeError(`scope is not allowed: ${s}`)
       }

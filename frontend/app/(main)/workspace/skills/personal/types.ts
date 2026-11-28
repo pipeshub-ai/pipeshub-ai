@@ -122,8 +122,11 @@ export interface SkillVersionSummary {
 }
 
 export interface SkillUsage {
+  /** Only the agents and skills the caller may see are named; the others are counted. */
   usedByAgents: { id: string; name: string }[];
   requiredBySkills: string[];
+  otherAgentCount: number;
+  otherSkillCount: number;
 }
 
 export interface SkillSearchMatch {

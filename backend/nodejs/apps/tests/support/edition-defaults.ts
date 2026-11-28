@@ -5,3 +5,6 @@
 
 /** A Slack member without a PipesHub account is served under the scoped token Node mints for them. */
 export const SLACK_CALLER_WITHOUT_ACCOUNT_REFUSED = false;
+
+/** Whether `kvKeyBindsOrg` binds the org for a key under `<org id>/`. This build's keys belong to the whole install. */
+export const KV_ORG_PREFIXED_KEY_BINDS_ORG = false;

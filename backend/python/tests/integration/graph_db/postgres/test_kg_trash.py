@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from app.core.db import uow
 from app.services.graph_db.postgres.kg import hierarchy as kg_hier
 from app.services.graph_db.postgres.kg import trash as kg_trash
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH
@@ -474,13 +475,20 @@ async def test_a_live_records_projection_writes_no_trash_columns(pg_provider, pg
 
 
 async def test_a_slow_trash_read_hands_over_to_the_walk(pg_provider, pg_db, tally, monkeypatch) -> None:
-    """A statement past the read's limit (here a count made slow on purpose under a 1 ms limit) is the walk's read, counted as slow, not an error."""
+    """A statement past the read's limit (here the count, made slow on purpose and given a 1 ms limit of its own) is the walk's read, counted as slow, not an error. The limit is
+    set just before the count, not for the read's whole transaction: the statements before it must not reach it on a busy server, where they are the error path."""
     org = new_org()
     await _tree(pg_provider, pg_db, org)
     await _trash(pg_provider, org, ["e"])
     await flip(pg_db, org)
-    monkeypatch.setattr(kg_trash, "LIMITS", "SELECT set_config('statement_timeout', '1ms', true)")
     monkeypatch.setattr(kg_trash, "COUNT", kg_trash.COUNT.replace("SELECT count(*) FILTER", "SELECT pg_sleep(0.05), count(*) FILTER"))
+    real = uow.Tx.fetchrow
+
+    async def fetchrow(self: Any, sql: str, *args: Any) -> Any:  # noqa: ANN401
+        if "pipeshub:kg.trash_count */" in sql:
+            await self.fetchval("SELECT set_config('statement_timeout', '1ms', true)")
+        return await real(self, sql, *args)
+    monkeypatch.setattr(uow.Tx, "fetchrow", fetchrow)
     tally.c.clear()
     with ctx(org):
         assert [i["record"]["id"] for i in (await pg_provider.list_trashed_records(KB, org))["items"]] == ["e"]

@@ -27,10 +27,11 @@ import { YourConnectorsIcon } from '@/app/components/ui/your-connectors-icon';
 import { BetaBadge } from '@/app/components/ui/beta-badge';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useEnterprisePrompt } from '@/lib/hooks/use-enterprise-prompt';
+import { settingsScopeFor } from './settings-scope';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { workspaceNavExtras } from '@/config';
-import { mergeWorkspaceNav, type NavItem } from './workspace-nav';
+import { mergeWorkspaceNav, placeWorkspaceExtras, type NavItem } from './workspace-nav';
 import { ENTERPRISE_FEATURES, type EnterpriseSection } from '@/app/(main)/workspace/enterprise/enterprise-feature-pages';
 import { ENTERPRISE_OVERVIEW_ROUTE } from '@/lib/constants/enterprise';
 import { EnterpriseSidebarEntry } from './enterprise-sidebar-entry';
@@ -51,6 +52,7 @@ const BUILT_IN_DEVELOPER_SETTINGS_ITEMS: NavItem[] = [
     icon: 'vpn_key',
     labelKey: 'workspace.sidebar.nav.personalAccessTokens',
     route: '/workspace/developer-settings/personal-access-tokens',
+    personal: true,
   },
 ];
 
@@ -59,24 +61,30 @@ const PEOPLE_SUB_ITEMS = [
   { labelKey: 'workspace.sidebar.nav.teams', route: '/workspace/teams' },
 ];
 
-/** "Security": admin screens that decide who may sign in and what may happen to the org's data. */
-const BUILT_IN_SECURITY_ITEMS: NavItem[] = [
-  { icon: 'security', labelKey: 'workspace.sidebar.nav.authentication', route: '/workspace/authentication', adminOnly: true },
-];
-
-const BUILT_IN_WORKSPACE_ITEMS: NavItem[] = [
-  { icon: 'hub', labelKey: 'workspace.sidebar.nav.connectors', route: '/workspace/connectors/team', adminOnly: true },
-  { icon: 'device_hub', labelKey: 'workspace.sidebar.nav.mcpServers', route: '/workspace/mcp-servers/team', adminOnly: true, requiresFlag: 'mcp' },
-  { icon: 'admin_panel_settings', labelKey: 'workspace.sidebar.nav.mcpAccess', route: '/workspace/mcp-access', adminOnly: true },
-  { icon: 'bolt', labelKey: 'workspace.sidebar.nav.actions', route: '/workspace/actions/team', adminOnly: true, requiresFlag: 'actions' },
-  { icon: 'support_agent', labelKey: 'workspace.sidebar.nav.bots', route: '/workspace/bots', adminOnly: true },
-  { icon: 'manage_accounts', labelKey: 'workspace.sidebar.nav.services', route: '/workspace/services', adminOnly: true },
-  { icon: 'precision_manufacturing', labelKey: 'workspace.sidebar.nav.serviceAccounts', route: '/workspace/service-accounts', adminOnly: true },
+const BUILT_IN_AI_ITEMS: NavItem[] = [
   { icon: 'smart_toy', labelKey: 'workspace.sidebar.nav.aiModels', route: '/workspace/ai-models', adminOnly: true },
   { icon: 'admin_panel_settings', labelKey: 'workspace.sidebar.nav.aiSettings', route: '/workspace/ai-access', adminOnly: true, requiresFlag: 'agentHarness', beta: true },
-  { icon: 'mail', labelKey: 'workspace.sidebar.nav.mail', route: '/workspace/mail', adminOnly: true },
   { icon: 'edit_note', labelKey: 'workspace.sidebar.nav.prompts', route: '/workspace/prompts', adminOnly: true },
   { icon: 'travel_explore', labelKey: 'workspace.sidebar.nav.webSearch', route: '/workspace/web-search', adminOnly: true },
+];
+
+const BUILT_IN_INTEGRATION_ITEMS: NavItem[] = [
+  { icon: 'hub', labelKey: 'workspace.sidebar.nav.connectors', route: '/workspace/connectors/team', adminOnly: true },
+  { icon: 'bolt', labelKey: 'workspace.sidebar.nav.actions', route: '/workspace/actions/team', adminOnly: true, requiresFlag: 'actions' },
+  { icon: 'device_hub', labelKey: 'workspace.sidebar.nav.mcpServers', route: '/workspace/mcp-servers/team', adminOnly: true, requiresFlag: 'mcp' },
+  { icon: 'support_agent', labelKey: 'workspace.sidebar.nav.bots', route: '/workspace/bots', adminOnly: true },
+];
+
+/** Who may sign in, and what may reach the org's data. */
+const BUILT_IN_SECURITY_ITEMS: NavItem[] = [
+  { icon: 'security', labelKey: 'workspace.sidebar.nav.authentication', route: '/workspace/authentication', adminOnly: true },
+  { icon: 'precision_manufacturing', labelKey: 'workspace.sidebar.nav.serviceAccounts', route: '/workspace/service-accounts', adminOnly: true },
+  { icon: 'admin_panel_settings', labelKey: 'workspace.sidebar.nav.mcpAccess', route: '/workspace/mcp-access', adminOnly: true },
+];
+
+const BUILT_IN_SYSTEM_ITEMS: NavItem[] = [
+  { icon: 'mail', labelKey: 'workspace.sidebar.nav.mail', route: '/workspace/mail', adminOnly: true },
+  { icon: 'manage_accounts', labelKey: 'workspace.sidebar.nav.services', route: '/workspace/services', adminOnly: true },
 ];
 
 const BUILT_IN_PERSONAL_ITEMS: NavItem[] = [
@@ -92,11 +100,26 @@ const BUILT_IN_PERSONAL_ITEMS: NavItem[] = [
 ];
 
 // The built-in entries with an edition's (workspaceNavExtras in config.ts).
-const OVERVIEW_ITEMS = mergeWorkspaceNav('overview', BUILT_IN_OVERVIEW_ITEMS, workspaceNavExtras);
-const SECURITY_ITEMS = mergeWorkspaceNav('security', BUILT_IN_SECURITY_ITEMS, workspaceNavExtras);
-const WORKSPACE_ITEMS = mergeWorkspaceNav('workspace', BUILT_IN_WORKSPACE_ITEMS, workspaceNavExtras);
-const DEVELOPER_SETTINGS_ITEMS = mergeWorkspaceNav('developerSettings', BUILT_IN_DEVELOPER_SETTINGS_ITEMS, workspaceNavExtras);
-const PERSONAL_ITEMS = mergeWorkspaceNav('personal', BUILT_IN_PERSONAL_ITEMS, workspaceNavExtras);
+const NAV_EXTRAS = placeWorkspaceExtras(
+  { ai: BUILT_IN_AI_ITEMS, integrations: BUILT_IN_INTEGRATION_ITEMS, security: BUILT_IN_SECURITY_ITEMS, system: BUILT_IN_SYSTEM_ITEMS },
+  workspaceNavExtras,
+);
+const OVERVIEW_ITEMS = mergeWorkspaceNav('overview', BUILT_IN_OVERVIEW_ITEMS, NAV_EXTRAS);
+const DEVELOPER_SETTINGS_ITEMS = mergeWorkspaceNav('developerSettings', BUILT_IN_DEVELOPER_SETTINGS_ITEMS, NAV_EXTRAS);
+const PERSONAL_ITEMS = mergeWorkspaceNav('personal', BUILT_IN_PERSONAL_ITEMS, NAV_EXTRAS);
+
+/** The admin sections, in the order they are listed. */
+const ADMIN_SECTIONS = [
+  { key: 'ai', titleKey: 'workspace.sidebar.sections.ai', items: mergeWorkspaceNav('ai', BUILT_IN_AI_ITEMS, NAV_EXTRAS) },
+  { key: 'integrations', titleKey: 'workspace.sidebar.sections.integrations', items: mergeWorkspaceNav('integrations', BUILT_IN_INTEGRATION_ITEMS, NAV_EXTRAS) },
+  { key: 'security', titleKey: 'workspace.sidebar.sections.security', items: mergeWorkspaceNav('security', BUILT_IN_SECURITY_ITEMS, NAV_EXTRAS) },
+  { key: 'system', titleKey: 'workspace.sidebar.sections.system', items: mergeWorkspaceNav('system', BUILT_IN_SYSTEM_ITEMS, NAV_EXTRAS) },
+] as const;
+
+/** Pages of Personal settings beyond the built-in list in settings-scope.ts: an edition's. */
+const EXTRA_PERSONAL_ROUTES = NAV_EXTRAS.filter(
+  (item) => item.section === 'personal' || (item.section === 'developerSettings' && item.personal),
+).map((item) => item.route);
 
 const PEOPLE_ROUTES = PEOPLE_SUB_ITEMS.map((item) => item.route);
 
@@ -118,7 +141,7 @@ function EnterpriseNavTag() {
 // ========================================
 
 /**
- * Workspace sidebar — settings navigation with a collapsible "People" section and a "Security" section.
+ * Workspace sidebar — settings navigation with a collapsible "People" section.
  *
  * Uses `SidebarBase` shell, with the Enterprise Edition entry as its footer for admins; at phone
  * width it is the drawer the app's menu button opens.
@@ -147,10 +170,17 @@ export default function WorkspaceSidebar() {
     ? rawPathname.slice(0, -1)
     : rawPathname;
 
+  const scope = settingsScopeFor(pathname, isAdmin, EXTRA_PERSONAL_ROUTES);
+  const isPersonalScope = scope === 'personal';
+  // Members have no Workspace settings, so what they can open of it is listed with their own.
+  const showOrgItems = !isPersonalScope || isAdmin !== true;
+  const otherScope = isPersonalScope
+    ? { icon: 'settings', labelKey: 'workspaceMenu.workspaceSettings', href: '/workspace/general/' }
+    : { icon: 'person', labelKey: 'workspaceMenu.personalSettings', href: '/workspace/profile/' };
+
   const [isPeopleExpanded, setIsPeopleExpanded] = useState(
     PEOPLE_ROUTES.some((route) => pathname.startsWith(route))
   );
-
 
   const flagEnabled: Record<FeatureFlagGate, boolean> = {
     mcp: mcpEnabled,
@@ -167,8 +197,7 @@ export default function WorkspaceSidebar() {
 
   const allRoutes = [
     ...OVERVIEW_ITEMS.map((item) => item.route),
-    ...(isAdmin ? WORKSPACE_ITEMS.filter(isNavItemVisible).map((item) => item.route) : []),
-    ...(isAdmin ? SECURITY_ITEMS.filter(isNavItemVisible).map((item) => item.route) : []),
+    ...ADMIN_SECTIONS.flatMap((section) => section.items.filter(isNavItemVisible).map((item) => item.route)),
     ...DEVELOPER_SETTINGS_ITEMS.map((item) => item.route),
     ...PERSONAL_ITEMS.filter(isNavItemVisible).map((item) => item.route),
     ...PEOPLE_SUB_ITEMS.map((item) => item.route),
@@ -190,15 +219,15 @@ export default function WorkspaceSidebar() {
   const isPeopleChildActive = PEOPLE_ROUTES.some((route) => pathname.startsWith(route));
 
   const visibleOverviewItems = OVERVIEW_ITEMS.filter(isNavItemVisible);
-  const visibleWorkspaceItems = WORKSPACE_ITEMS.filter(isNavItemVisible);
-  const visibleSecurityItems = SECURITY_ITEMS.filter(isNavItemVisible);
   const visiblePeopleItems = PEOPLE_SUB_ITEMS;
+  const visibleDeveloperSettingsItems = DEVELOPER_SETTINGS_ITEMS.filter(
+    (item) => isNavItemVisible(item) && (item.personal ? isPersonalScope : showOrgItems),
+  );
   const visiblePersonalItems = PERSONAL_ITEMS.filter(isNavItemVisible);
 
   /** The Enterprise Edition pages listed in one part of the sidebar, each tagged. */
   const renderEnterpriseItems = (section: EnterpriseSection) =>
-    showEnterprise &&
-    Object.values(ENTERPRISE_FEATURES)
+    (showEnterprise ? Object.values(ENTERPRISE_FEATURES) : [])
       .filter((item) => item.section === section)
       .map((item) => (
         <WorkspaceSidebarItem
@@ -210,7 +239,6 @@ export default function WorkspaceSidebar() {
           rightSlot={<EnterpriseNavTag />}
         />
       ));
-  const hasEnterpriseSecurityItems = showEnterprise && Object.values(ENTERPRISE_FEATURES).some((item) => item.section === 'security');
 
   // On mobile any link tap closes the drawer, even to the page already shown.
   const closeDrawerOnLinkTap = (e: MouseEvent) => {
@@ -219,9 +247,9 @@ export default function WorkspaceSidebar() {
 
   return (
     <SidebarBase
-      header={isMobile ? <WorkspaceSidebarMobileHeader title={t('workspace.sidebar.sections.workspace')} /> : undefined}
+      header={isMobile ? <WorkspaceSidebarMobileHeader title={t(isPersonalScope ? 'workspaceMenu.personalSettings' : 'workspaceMenu.workspaceSettings')} /> : undefined}
       footer={
-        showEnterprise ? (
+        showEnterprise && !isPersonalScope ? (
           <Box onClick={closeDrawerOnLinkTap}>
             <EnterpriseSidebarEntry isActive={isActive(ENTERPRISE_OVERVIEW_ROUTE)} />
           </Box>
@@ -233,58 +261,30 @@ export default function WorkspaceSidebar() {
       onMobileClose={closeMobileSidebar}
     >
       <Flex direction="column" gap="4" onClick={closeDrawerOnLinkTap}>
-        {/* ── Back to app ── */}
-        <WorkspaceSidebarItem
-          icon={<MaterialIcon name="arrow_back" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
-          label={t('workspace.sidebar.backToApp')}
-          href="/chat/"
-        />
-
-        {/* ── Overview section ── */}
+        {/* ── Back to app, then the other settings ── */}
         <Flex direction="column" gap="1">
-          <SectionHeader title={t('workspace.sidebar.sections.overview')} />
-          {visibleOverviewItems.map((item) => (
+          <WorkspaceSidebarItem
+            icon={<MaterialIcon name="arrow_back" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
+            label={t('workspace.sidebar.backToApp')}
+            href="/chat/"
+          />
+          {isAdmin && (
             <WorkspaceSidebarItem
-              key={item.route}
-              icon={<MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
-              label={t(item.labelKey)}
-              href={`${item.route}/`}
-              isActive={isActive(item.route)}
+              icon={<MaterialIcon name={otherScope.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
+              label={t(otherScope.labelKey)}
+              href={otherScope.href}
             />
-          ))}
-
-          {/* People collapsible — visible to all, sub-items filtered by role */}
-          {visiblePeopleItems.length > 0 && (
-            <CollapsibleSection
-              icon="groups"
-              label={t('workspace.sidebar.sections.people')}
-              isExpanded={isPeopleExpanded}
-              onToggle={() => setIsPeopleExpanded((prev) => !prev)}
-              hasActiveChild={isPeopleChildActive}
-            >
-              {visiblePeopleItems.map((item) => (
-                <WorkspaceSidebarItem
-                  key={item.route}
-                  label={t(item.labelKey)}
-                  href={`${item.route}/`}
-                  isActive={isActive(item.route)}
-                  paddingLeft={36}
-                />
-              ))}
-            </CollapsibleSection>
           )}
-
-          {renderEnterpriseItems('overview')}
         </Flex>
 
-        {/* ── Workspace section ── */}
-        {isAdmin && (
+        {/* ── Personal section ── */}
+        {isPersonalScope && (
           <Flex direction="column" gap="1">
-            <SectionHeader title={t('workspace.sidebar.sections.workspace')} />
-            {visibleWorkspaceItems.map((item) => (
+            <SectionHeader title={t('workspace.sidebar.sections.personal')} />
+            {visiblePersonalItems.map((item) => (
               <WorkspaceSidebarItem
                 key={item.route}
-                icon={<MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
+                icon={item.customIcon ?? <MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
                 label={t(item.labelKey)}
                 href={`${item.route}/`}
                 isActive={isActive(item.route)}
@@ -294,19 +294,11 @@ export default function WorkspaceSidebar() {
           </Flex>
         )}
 
-        {/* ── Usage & credits: Enterprise Edition pages, shown locked ── */}
-        {showEnterprise && (
+        {/* ── Overview section ── */}
+        {showOrgItems && (
           <Flex direction="column" gap="1">
-            <SectionHeader title={t('workspace.sidebar.sections.usageAndCredits')} />
-            {renderEnterpriseItems('usageAndCredits')}
-          </Flex>
-        )}
-
-        {/* ── Security: the built-in screens (and an edition's), then the locked Enterprise Edition ones ── */}
-        {(visibleSecurityItems.length > 0 || hasEnterpriseSecurityItems) && (
-          <Flex direction="column" gap="1">
-            <SectionHeader title={t('workspace.sidebar.sections.security')} />
-            {visibleSecurityItems.map((item) => (
+            <SectionHeader title={t('workspace.sidebar.sections.overview')} />
+            {visibleOverviewItems.map((item) => (
               <WorkspaceSidebarItem
                 key={item.route}
                 icon={<MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
@@ -315,13 +307,66 @@ export default function WorkspaceSidebar() {
                 isActive={isActive(item.route)}
               />
             ))}
-            {renderEnterpriseItems('security')}
+
+            {/* People collapsible — visible to all, sub-items filtered by role */}
+            {visiblePeopleItems.length > 0 && (
+              <CollapsibleSection
+                icon="groups"
+                label={t('workspace.sidebar.sections.people')}
+                isExpanded={isPeopleExpanded}
+                onToggle={() => setIsPeopleExpanded((prev) => !prev)}
+                hasActiveChild={isPeopleChildActive}
+              >
+                {visiblePeopleItems.map((item) => (
+                  <WorkspaceSidebarItem
+                    key={item.route}
+                    label={t(item.labelKey)}
+                    href={`${item.route}/`}
+                    isActive={isActive(item.route)}
+                    paddingLeft={36}
+                  />
+                ))}
+              </CollapsibleSection>
+            )}
+
+            {renderEnterpriseItems('overview')}
+          </Flex>
+        )}
+
+        {!isPersonalScope &&
+          ADMIN_SECTIONS.map((section) => {
+            const items = section.items.filter(isNavItemVisible);
+            const enterpriseItems = section.key === 'security' ? renderEnterpriseItems('security') : [];
+            if (items.length === 0 && enterpriseItems.length === 0) return null;
+            return (
+              <Flex key={section.key} direction="column" gap="1">
+                <SectionHeader title={t(section.titleKey)} />
+                {items.map((item) => (
+                  <WorkspaceSidebarItem
+                    key={item.route}
+                    icon={item.customIcon ?? <MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
+                    label={t(item.labelKey)}
+                    href={`${item.route}/`}
+                    isActive={isActive(item.route)}
+                    rightSlot={item.beta ? <BetaBadge /> : undefined}
+                  />
+                ))}
+                {enterpriseItems}
+              </Flex>
+            );
+          })}
+
+        {/* ── Usage: a page shown with a tag ── */}
+        {!isPersonalScope && showEnterprise && (
+          <Flex direction="column" gap="1">
+            <SectionHeader title={t('workspace.sidebar.sections.usageAndCredits')} />
+            {renderEnterpriseItems('usageAndCredits')}
           </Flex>
         )}
 
         <Flex direction="column" gap="1">
           <SectionHeader title={t('workspace.sidebar.sections.developerSettings')} />
-          {DEVELOPER_SETTINGS_ITEMS.filter(isNavItemVisible).map((item) => (
+          {visibleDeveloperSettingsItems.map((item) => (
             <WorkspaceSidebarItem
               key={item.route}
               icon={<MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
@@ -339,20 +384,6 @@ export default function WorkspaceSidebar() {
           />
         </Flex>
 
-        {/* ── Personal section ── */}
-        <Flex direction="column" gap="1">
-          <SectionHeader title={t('workspace.sidebar.sections.personal')} />
-          {visiblePersonalItems.map((item) => (
-            <WorkspaceSidebarItem
-              key={item.route}
-              icon={item.customIcon ?? <MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
-              label={t(item.labelKey)}
-              href={`${item.route}/`}
-              isActive={isActive(item.route)}
-              rightSlot={item.beta ? <BetaBadge /> : undefined}
-            />
-          ))}
-        </Flex>
 
         {/* The workspace menu, with its help items, is not reachable from this sidebar, so they are listed here. */}
         <Flex direction="column" gap="1">

@@ -1878,6 +1878,7 @@
   "workspaceMenu": {
     "appearance": "Darstellung",
     "language": "Sprache",
+    "personalSettings": "Persönliche Einstellungen",
     "workspaceSettings": "Arbeitsbereich-Einstellungen",
     "logOut": "Abmelden",
     "system": "System",
@@ -2835,6 +2836,9 @@
       "sections": {
         "overview": "Übersicht",
         "workspace": "Arbeitsbereich",
+        "ai": "KI",
+        "integrations": "Integrationen",
+        "system": "System",
         "usageAndCredits": "Nutzung & Abrechnung",
         "security": "Sicherheit",
         "personal": "Persönlich",
@@ -3496,7 +3500,14 @@
         "createError": "Konnektor konnte nicht erstellt werden",
         "createSuccess": "Konnektor-Instanz „{{name}}“ wurde erfolgreich erstellt",
         "authSaveError": "Authentifizierungskonfiguration konnte nicht gespeichert werden",
-        "configSaveError": "Konfiguration konnte nicht gespeichert werden"
+        "configSaveError": "Konfiguration konnte nicht gespeichert werden",
+        "syncTurningOn": "Synchronisierung für {{name}} wird aktiviert",
+        "syncTurningOnDescription": "Die Verbindung zu {{source}} wird geprüft. Das kann einige Sekunden dauern.",
+        "syncTurningOff": "Synchronisierung für {{name}} wird deaktiviert",
+        "syncTurnedOn": "Synchronisierung für {{name}} ist aktiv",
+        "syncTurnedOff": "Synchronisierung für {{name}} ist deaktiviert",
+        "syncToggleFailed": "Synchronisierung für {{name}} konnte nicht geändert werden",
+        "syncToggleFailedDescription": "Versuchen Sie es erneut. Wenn es weiter fehlschlägt, prüfen Sie die Einstellungen des Connectors."
       },
       "tabs": {
         "authenticate": "Instanz authentifizieren",
@@ -3796,7 +3807,9 @@
         "removing": "Dieser Konnektor wird entfernt.",
         "configureFirst": "Schließen Sie die Konfiguration ab, bevor Sie die Synchronisierung aktivieren.",
         "authenticateFirst": "Authentifizieren Sie diesen Konnektor, bevor Sie die Synchronisierung aktivieren.",
-        "selected": "{{field}} ausgewählt"
+        "selected": "{{field}} ausgewählt",
+        "turningOn": "Wird aktiviert…",
+        "turningOff": "Wird deaktiviert…"
       },
       "instanceStatus": {
         "setup": {
@@ -5572,6 +5585,7 @@
         "deleteTitle": "„{{name}}“ löschen?",
         "deleteBody": "Möchten Sie diesen Skill wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden.",
         "cannotDeleteTitle": "Dieser Skill kann nicht gelöscht werden",
+        "notVisibleCount": "{{count}}, die Sie nicht sehen können",
         "requiredBy": "Andere Skills benötigen diesen Skill: {{names}}. Markieren Sie ihn stattdessen als veraltet, damit diese Abhängigkeiten weiterhin aufgelöst werden können.",
         "usedByAgents": "Dieser Skill ist folgenden Agenten zugewiesen: {{names}}. Beim Löschen werden diese Zuweisungen entfernt."
       },
@@ -7201,6 +7215,9 @@
     "withChildren": "Dieses Element und alle untergeordneten Elemente"
   },
   "errorToast": {
+    "reconnecting": "Verbindung wird wiederhergestellt …",
+    "reconnectingDescription": "Wir können Ihre Sitzung gerade nicht prüfen. Sie bleiben angemeldet. Wir versuchen es einige Minuten lang erneut und dann wieder, wenn Sie zurückkehren oder wieder verbunden sind.",
+    "sessionUnavailable": "Wir können Ihre Sitzung gerade nicht prüfen. Verbindung wird wiederhergestellt …",
     "accessDenied": "Zugriff verweigert",
     "invalidRequest": "Ungültige Anfrage",
     "notFound": "Nicht gefunden",

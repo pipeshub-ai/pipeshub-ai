@@ -245,7 +245,7 @@ async def verify_principals(tx: Tx, org: str) -> Result:
             break
         after = rows[-1]["id"]
         focus = {("users", r["id"]) for r in rows}
-        snap = await snapshot(tx, org, focus, alloc)
+        snap = await snapshot(tx, org, focus, alloc, closure_only=True)
         if lacking := sorted(k for k in snap.nodes if k not in snap.sk):
             res.note_all("missing", [f"k|{k[0]}:{k[1]} (no node key)" for k in lacking[:LIMIT]])
         try:

@@ -175,7 +175,8 @@ for (const look of LOOKS) {
       // 03: a rename saved as a draft is not what chats run.
       await rename(page, `${original} v2`);
       await headerButton(page, /Save draft$/).click();
-      await expect(page.getByText('Draft saved. Chats keep running version 1 until you publish.')).toBeVisible();
+      // The toast itself: the screen-reader announcer outside the toast region repeats its words.
+      await expect(page.locator('[data-ph-toast-region]').getByText('Draft saved. Chats keep running version 1 until you publish.')).toBeVisible();
       await expect(status(page)).toContainText('Live: version 1');
       await expect(status(page)).toContainText('Unpublished changes');
       await expect(headerButton(page, /Save draft$/)).toBeDisabled();

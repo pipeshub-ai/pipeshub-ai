@@ -25,6 +25,7 @@ import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import {
   listSkills,
+  listOrgSkills,
   getSkillCategories,
   searchSkills,
   getSkill,
@@ -121,6 +122,12 @@ export function createSkillsRouter(container: Container): Router {
   router.get('/', authMiddleware.authenticate, requireScopes(OAuthScopeNames.SKILL_READ), listSkills(appConfig));
   router.get('/categories', authMiddleware.authenticate, requireScopes(OAuthScopeNames.SKILL_READ), getSkillCategories(appConfig));
   router.get('/search', authMiddleware.authenticate, requireScopes(OAuthScopeNames.SKILL_READ), searchSkills(appConfig));
+  router.get(
+    '/admin/skills',
+    authenticate,
+    requireScopes(OAuthScopeNames.SKILL_READ),
+    listOrgSkills(appConfig),
+  );
 
   // ---- Learning-loop candidate review (before '/:name' so 'candidates' never matches as a skill name) --
 

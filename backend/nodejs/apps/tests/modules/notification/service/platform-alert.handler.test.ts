@@ -4,6 +4,7 @@ import sinon from 'sinon';
 import mongoose from 'mongoose';
 import {
   PlatformAlertHandler,
+  alertMailEventId,
   platformAlertsBlockedByEnvelope,
 } from '../../../../src/modules/notification/service/platform-alert.handler';
 import { NotificationService } from '../../../../src/modules/notification/service/notification.service';
@@ -12,7 +13,17 @@ import { setUserRepository } from '../../../../src/libs/repositories/user';
 import { getCurrentOrgId, runWithOrgContext } from '../../../../src/libs/context/orgContext';
 import { DocStoreReadOnlyError } from '../../../../src/libs/repositories/errors';
 import { getEmailContent } from '../../../../src/modules/mail/utils/email-content';
-import { configureInbox, runWithEnvelope } from '../../../../src/libs/context/envelope';
+import {
+  configureEnvelope,
+  configureInbox,
+  deriveKey,
+  openConfigured,
+  runWithEnvelope,
+  signMessage,
+} from '../../../../src/libs/context/envelope';
+import { MailProducer } from '../../../../src/modules/mail/services/mail.producer';
+import { MailConsumer } from '../../../../src/modules/mail/services/mail.consumer';
+import { BrokerTopic } from '../../../../src/libs/types/messaging.types';
 import { MemInbox } from '../../../helpers/memory-inbox';
 import { NotificationConsumer } from '../../../../src/modules/notification/service/notification.consumer';
 import { isRetryableStoreError } from '../../../../src/libs/repositories/errors';
@@ -301,6 +312,64 @@ describe('notification/service/platform-alert.handler', () => {
       expect(insertOrgs).to.deep.equal([orgB, orgA]);
       expect(insertMany.secondCall.args[0][0].type).to.equal('SANDBOX_CAPACITY_WARNING');
       expect(insertMany.firstCall.args[0][0].type).to.equal('SANDBOX_CAPACITY_RESOLVED');
+    });
+
+    it("queues each admin's email signed under the alert's org, so the enforcing mail consumer sends it once", async () => {
+      const key = deriveKey('platform-alert-mail-test');
+      configureEnvelope(async () => [key], null, key);
+      try {
+        // the broker serialises a published value as Redis Streams does: signed in the publisher's org context
+        const wire: Array<Record<string, unknown>> = [];
+        const boundAtPublish: Array<string | undefined> = [];
+        const broker = {
+          isConnected: () => true,
+          connect: async () => {},
+          publish: async (topic: string, m: { value: Record<string, unknown> }) => {
+            boundAtPublish.push(getCurrentOrgId());
+            wire.push(JSON.parse(JSON.stringify(signMessage(topic, { ...m.value }))));
+          },
+        };
+        const realMail = new MailProducer(broker as never, logger);
+        const h = new PlatformAlertHandler(logger, notificationService as unknown as NotificationService, realMail, resolveRecipients);
+
+        await signedFor(orgA, () => h.handle(event({}, { orgId: orgA })));
+
+        expect(wire).to.have.length(2);
+        expect(boundAtPublish).to.deep.equal([orgA, orgA]);
+        for (const m of wire) expect((m.ctx as { orgId?: string } | undefined)?.orgId, 'mail job signed').to.equal(orgA);
+        // each job keeps its stable event id, so a job published twice is sent once
+        const ids = await Promise.all(wire.map(async (m) => (await openConfigured(BrokerTopic.MAIL_EVENTS, m)).eventId));
+        expect(ids.sort()).to.deep.equal(
+          [alertMailEventId('a1', orgA, `${admin1}@example.com`), alertMailEventId('a1', orgA, `${admin2}@example.com`)].sort(),
+        );
+
+        // the mail consumer, behind the same envelope check the Redis Streams consumer runs, sends each in the alert's org
+        const sent: Array<{ to: string; org?: string }> = [];
+        const sender = {
+          getSmtpConfig: sinon.stub().returns({ host: 'mailpit', port: 1025, fromEmail: 'no-reply@example.com' }),
+          send: sinon.stub().callsFake(async (mail: any) => {
+            sent.push({ to: mail.sendEmailTo[0], org: getCurrentOrgId() });
+            return { status: 'sent' };
+          }),
+        };
+        let cb: ((m: { value: unknown }) => Promise<void>) | undefined;
+        const mailBroker = { isConnected: () => true, consume: async (f: typeof cb) => { cb = f; } };
+        const consumer = new MailConsumer(
+          mailBroker as never,
+          logger,
+          sender as never,
+          { start: sinon.stub().resolves(), publishEvent: sinon.stub().resolves() } as never,
+          () => ({ frontendUrl: 'http://app.test', scopedJwtSecret: 's' }) as never,
+        );
+        await consumer.consume(async () => {});
+        for (const m of wire)
+          await runWithEnvelope(BrokerTopic.MAIL_EVENTS, m, (v) => cb!({ value: v }), 'mail-consumer-group');
+        expect(sent.sort((a, b) => a.to.localeCompare(b.to))).to.deep.equal(
+          [`${admin1}@example.com`, `${admin2}@example.com`].sort().map((to) => ({ to, org: orgA })),
+        );
+      } finally {
+        configureEnvelope(null);
+      }
     });
 
     it('a copy signed for an org that receives no installation alerts is skipped quietly, as an unsigned alert never reaches it', async () => {

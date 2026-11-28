@@ -49,6 +49,7 @@ const READ_ROUTES: Array<[string, string]> = [
   ['get', '/'],
   ['get', '/categories'],
   ['get', '/search'],
+  ['get', '/admin/skills'],
   ['get', '/candidates/pending'],
   ['get', '/:name'],
   ['get', '/:name/export'],

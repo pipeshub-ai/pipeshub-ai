@@ -2821,10 +2821,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         match_field: str,
         match_value: Any,
         transaction: str | None = None,
+        *,
+        expected: dict[str, Any] | None = None,
     ) -> bool:
         """Replace node properties only while `match_field` still equals
-        `match_value`. MATCH + WHERE + SET is one Cypher statement so a
-        concurrent overwrite cannot sneak in between the check and the write."""
+        `match_value` and `expected` holds. One Cypher statement that takes the
+        node's write lock first, so the check reads a write that committed while
+        this waited instead of overwriting it: of N writers holding one token, one wins."""
         try:
             label = collection_to_label(collection)
             # Before conversion, which JSON-serializes nested values the schema
@@ -2833,21 +2836,26 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             neo4j_node = self._arango_to_neo4j_node(node, collection)
             if "id" not in neo4j_node:
                 neo4j_node["id"] = key
+            parameters: dict[str, Any] = {
+                "key": key,
+                "field": match_field,
+                "expected": match_value,
+                "node": neo4j_node,
+            }
+            conditions = ["n[$field] = $expected", *_cypher_expectations(expected or {}, parameters)]
             query = f"""
             MATCH (n:{label} {{id: $key}})
-            WHERE n[$field] = $expected
+            SET n.{_MATCH_LOCK} = true
+            REMOVE n.{_MATCH_LOCK}
+            WITH n
+            WHERE {" AND ".join(conditions)}
             SET n = $node
             {_cypher_kh_node_state("n") if label in _KH_STATE_LABELS else ""}
             RETURN n.id AS id
             """
             results = await self.client.execute_query(
                 query,
-                parameters={
-                    "key": key,
-                    "field": match_field,
-                    "expected": match_value,
-                    "node": neo4j_node,
-                },
+                parameters=parameters,
                 txn_id=transaction,
             )
             return bool(results)

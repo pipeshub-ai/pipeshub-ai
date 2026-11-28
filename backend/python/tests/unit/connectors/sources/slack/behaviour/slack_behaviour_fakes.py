@@ -442,6 +442,11 @@ class FakeSlackStore:
         self.record_batches: list[list[Record]] = []
         self.content_updates: list[Record] = []
         self.reindexed: list[Record] = []
+        # External ids of the records the connector deleted.
+        self.deleted: list[str] = []
+        # Records the processor leaves unwritten (a schema rejection, a record in the trash):
+        # ``on_new_records`` neither stores them nor returns them among the saved ones.
+        self.leaves_unwritten: Callable[[Record], bool] = lambda record: False
         # Whether a full sync of the connector is in progress, as the processor tracks it.
         self.full_sync_in_progress = False
 
@@ -508,13 +513,18 @@ class FakeSlackStore:
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[RecordGroup]:
         return self.record_groups.get(external_id)
 
-    async def on_new_records(self, records_with_permissions: list[tuple[Record, list[Any]]]) -> None:
+    async def on_new_records(self, records_with_permissions: list[tuple[Record, list[Any]]]) -> list[Record]:
         self.record_batches.append([rec for rec, _ in records_with_permissions])
+        saved: list[Record] = []
         for record, _ in records_with_permissions:
+            if self.leaves_unwritten(record):
+                continue
             existing = self.records.get(record.external_record_id)
             if existing:
                 record.id = existing.id
             self.records[record.external_record_id] = record
+            saved.append(record)
+        return saved
 
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
         """A base Record, as both graph stores rebuild it: no subclass fields."""
@@ -567,6 +577,11 @@ class FakeSlackStore:
             key=lambda r: r.id,
         )[offset:]
         return found if limit is None else found[:limit]
+
+    async def on_record_deleted(self, record_id: str) -> bool:
+        self.deleted.extend(k for k, r in self.records.items() if r.id == record_id)
+        self.records = {k: r for k, r in self.records.items() if r.id != record_id}
+        return False
 
     async def on_record_content_update(self, record: Record) -> None:
         self.content_updates.append(record)
