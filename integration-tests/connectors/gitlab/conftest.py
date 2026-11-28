@@ -30,6 +30,12 @@ import pytest
 import pytest_asyncio
 
 from helper.source_credentials import source_unavailable
+from connectors.gitlab.sim_world import (  # noqa: F401 - fixtures of the gitlab_sim suite (GITLAB_SIM_ITS.md)
+    gitlab_sim,
+    gitlab_sim_people,
+    gitlab_synced,
+    gitlab_world,
+)
 
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
 from helper.graph_provider_utils import wait_for_sync_completion  # type: ignore[import-not-found]

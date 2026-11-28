@@ -291,7 +291,7 @@ CONNECTOR_SHARDS = {
     ),
     "connectors-3": ("notion", "confluence", "gcs", "zammad", "sharepoint_sim", "postgres", "salesforce"),
     "connectors-4": ("google_drive_individual", "gitlab", "azure_blob", "rss", "github_teams", "linear", "servicenow_sim"),
-    "connectors-5": ("google_drive_workspace", "s3"),
+    "connectors-5": ("google_drive_workspace", "s3", "gitlab_sim"),
 }
 # The shards a pull request can run, in the workflow's order. Each one waits for
 # an approval and then takes about three hours, so these rules save the most.
@@ -378,8 +378,8 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
     "google_cloud_storage": ("gcs",),
     "github": ("github", "github_teams"),
     "github_teams": ("github", "github_teams"),
-    "gitlab": ("gitlab",),
-    "gitlab_personal": ("gitlab",),
+    "gitlab": ("gitlab", "gitlab_sim"),
+    "gitlab_personal": ("gitlab", "gitlab_sim"),
     "google": ("google_drive_workspace", "google_drive_individual", "gmail_workspace", "gmail_individual"),
     "linear": ("linear",),
     "minio": ("minio",),
@@ -400,6 +400,7 @@ CONNECTOR_TEST_MARKERS: dict[str, tuple[str, ...]] = {
     "bookstack": ("bookstack", "bookstack_sim"),
     "servicenow": ("servicenow", "servicenow_sim"),
     "zammad": ("zammad", "zammad_sim"),
+    "gitlab": ("gitlab", "gitlab_sim"),
     "github_personal": ("github",),
     "gmail": ("gmail_workspace", "gmail_individual"),
     "local_fs": ("local_fs", "local_fs_sim"),
