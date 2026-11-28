@@ -1020,6 +1020,7 @@
         "backend/nodejs/apps/src/modules/agent-harness/ops/rotate-secret-key-cli.ts",
         "backend/nodejs/apps/src/modules/agent-harness/ops/egress-rekey-step.ts",
         "backend/python/app/utils/encryption/secret_key_ring.py",
+        "backend/python/harness_core/security/derived_keys.py",
         "backend/python/app/harness/sandbox/egress_rekey.py",
         "backend/python/harness_core/sandbox/egress/aead_ring.py",
         "docs/agent-harness-v2/adr/ADR-KEY-01-secret-key-rotation.md"
