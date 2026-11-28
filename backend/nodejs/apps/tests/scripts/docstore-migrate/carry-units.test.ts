@@ -221,6 +221,29 @@ describe('docstore-migrate carriers without a database (R45-CARRY)', () => {
       ]);
     });
 
+    it('a withDocument carrier: a document the copy refused whole is left out before its fields are read, by the resync and the verify', async () => {
+      const calls: Call[] = [];
+      const [U1, U2] = ['a'.repeat(24), 'b'.repeat(24)];
+      const c: Carrier = { ...fake(new Map([[U1, { codingEngine: 'x' }]]), calls), collections: [], withDocument: true, reads: { users: { pick: ['codingEngine', 'bad'] } } };
+      // U2 was refused whole by the copy, and its carried fields cannot be read either: writeWithDocuments leaves it out without reading them
+      const mongo = new FakeCarryMongo({ users: [{ _id: new ObjectId(U1), codingEngine: 'x' }, { _id: new ObjectId(U2), bad: { ref: new ObjectId() } }] });
+      const refusedPg: CarryPg = (fn) => fn({ query: async (sql: string) => ({ rows: sql.includes('carry_refusals') ? [{ s: U2 }] : [] }) } as never);
+      await resyncCarried(refusedPg, mongo, [c]);
+      expect(calls).to.deep.equal([
+        { op: 'clear', collection: '', ids: [] },
+        { op: 'write', collection: 'users', ids: [U1] },
+      ]);
+      const [users] = await verifyCarried(refusedPg, mongo, [{ ...c, expected: (_c, d) => [[d.id, { codingEngine: d.doc.codingEngine }]] }]);
+      expect(users).to.deep.include({ collection: 'users', ok: true, refused: [] });
+      // one the copy did not refuse still stops the resync and fails the verify
+      const unread = new FakeCarryMongo({ users: [{ _id: new ObjectId(U1), bad: { ref: new ObjectId() } }] });
+      let err: Error | undefined;
+      await resyncCarried(refusedPg, unread, [c]).catch((e: Error) => (err = e));
+      expect(err?.message).to.contain('nothing more was copied');
+      const [failed] = await verifyCarried(refusedPg, unread, [c]);
+      expect(failed!.ok).to.equal(false);
+    });
+
     it('verify reports missing, extra, differing (by field name only) and duplicate entries, and never a carried value', async () => {
       const mongo = new FakeCarryMongo({
         agentWorkspaceHeads: [

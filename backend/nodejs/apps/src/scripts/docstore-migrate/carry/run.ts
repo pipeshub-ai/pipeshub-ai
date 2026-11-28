@@ -196,11 +196,12 @@ export async function copyCarried(
         if (docs.length) await pg((k) => c.write(k, coll, docs), true);
       };
       for await (const d of mongo.scan(coll, readOf(c, coll))) {
+        // before the read's own refusal: the copy took none of a refused document, so a field it cannot read stops nothing
+        if (refusedWhole([d.id], refusals).size) continue;
         if (d.refused)
           throw new Error(
             `${d.refused}: nothing more was copied; correct the document, then copy again`,
           );
-        if (refusedWhole([d.id], refusals).size) continue;
         batch.push(d);
         n += 1;
         if (batch.length >= BATCH) await flush();
@@ -290,11 +291,11 @@ export async function verifyCarried(
         ? await pg((k) => refusalsOf(k, coll), false)
         : new Set<string>();
       for await (const d of mongo.scan(coll, readOf(c, coll))) {
+        if (refusedWhole([d.id], refusals).size) continue;
         if (d.refused) {
           refused.push(d.refused);
           continue;
         }
-        if (refusedWhole([d.id], refusals).size) continue;
         let entries: Array<[string, unknown]>;
         try {
           entries = c.expected(coll, d, note);
