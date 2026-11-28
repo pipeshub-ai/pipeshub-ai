@@ -14,6 +14,7 @@ import { BUILT_IN_CARRIERS, CARRIERS, EDITION_CARRIERS } from '../../../src/scri
 import { EDITION_DOCSTORE_COVERAGE } from '../../../src/edition';
 import {
   applyCarried,
+  releaseCarried,
   copyCarried,
   restoreCarried,
   verifyCarried,
@@ -169,6 +170,21 @@ describe('docstore-migrate carriers without a database (R45-CARRY)', () => {
       async clear() {
         calls.push({ op: 'clear', collection: '', ids: [] });
       },
+    });
+
+    it('releaseCarried lets every carrier go that can, and says which could not, without stopping at the first', async () => {
+      const calls: string[] = [];
+      const ok: Carrier = { ...fake(new Map()), name: 'ok', released: async () => void calls.push('ok') };
+      const bad: Carrier = { ...fake(new Map()), name: 'bad', released: async () => Promise.reject(new Error('no unlinker')) };
+      const after: Carrier = { ...fake(new Map()), name: 'after', released: async () => void calls.push('after') };
+      const failed = await releaseCarried(noPg, [ok, bad, fake(new Map()), after]);
+      expect(calls).to.deep.equal(['ok', 'after']);
+      expect(failed).to.deep.equal([{ name: 'bad', why: 'no unlinker' }]);
+      expect(await releaseCarried(noPg, [ok])).to.deep.equal([]);
+      // the test hook: every carrier with the step fails before it runs
+      calls.length = 0;
+      expect((await releaseCarried(noPg, [ok, fake(new Map())], true)).map((f) => f.name)).to.deep.equal(['ok']);
+      expect(calls).to.deep.equal([]);
     });
 
     it('verify reports missing, extra, differing (by field name only) and duplicate entries, and never a carried value', async () => {
