@@ -65,6 +65,7 @@ def make_mock_connector() -> MagicMock:
     dep.get_records_in_record_group = AsyncMock(return_value=[])
     dep.get_nodes_by_filters = AsyncMock(return_value=[])
     dep.batch_update_nodes = AsyncMock(return_value=True)
+    dep.skips_permission_writes = AsyncMock(return_value=False)  # licensed
     c.data_entities_processor = dep
 
     runtime = MagicMock()

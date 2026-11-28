@@ -59,6 +59,7 @@ def make_mock_connector() -> MagicMock:
     dep.get_user_by_user_id = AsyncMock(return_value=None)
     dep.reindex_existing_records = AsyncMock()
     dep.has_stored_permissions = AsyncMock(return_value=False)
+    dep.skips_permission_writes = AsyncMock(return_value=False)  # licensed
     dep.note_kept_user_group = AsyncMock()
     c.data_entities_processor = dep
 

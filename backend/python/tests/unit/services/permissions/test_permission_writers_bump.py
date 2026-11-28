@@ -184,8 +184,8 @@ NO_BUMP = {
     "migrations/kb_apps_migration.py::_migrate_org":
         "one-off startup migration of legacy knowledge bases; a scope cached before it expires with its entry TTL",
     "scripts/connector_deletion_integration_test.py::run_deletion_test": "a manual test script, not run by a service",
-    "connectors/sources/bookstack/connector.py::_handle_user_upsert_event": SYNC,
-    "connectors/sources/bookstack/connector.py::_withdraw_user_roles": SYNC,
+    "ee/permission_sync/bookstack.py::_handle_user_upsert_event": SYNC,
+    "ee/permission_sync/bookstack.py::_withdraw_user_roles": SYNC,
     "connectors/sources/notion/connector.py::_remove_departed_workspace_users": SYNC,
     "connectors/sources/notion/connector.py::remove_leavers": SYNC,
     "ee/permission_sync/salesforce.py::write_permissions": "connector writer: the sync bumps for the orgs it narrowed",

@@ -25,6 +25,7 @@ def mock_logger():
 def mock_data_entities_processor():
     proc = MagicMock()
     proc.org_id = "org-bs-1"
+    proc.skips_permission_writes = AsyncMock(return_value=False)  # licensed
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()

@@ -100,6 +100,7 @@ def _make_connector():
     """Build a LinearConnector with all dependencies mocked."""
     logger = logging.getLogger("test.linear.workflow")
     data_entities_processor = MagicMock()
+    data_entities_processor.skips_permission_writes = AsyncMock(return_value=False)  # licensed
     data_entities_processor.org_id = "org-1"
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[
         MagicMock(email="alice@test.com"),

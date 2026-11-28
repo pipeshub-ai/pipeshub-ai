@@ -165,6 +165,9 @@ class StoredNode:
 class FakeStore:
     """What earlier syncs stored, written to as the processor writes, noting what a full sync sees."""
 
+    async def skips_permission_writes(self, connector_id: str | None) -> bool:
+        return False  # licensed: the access reads these tests check run
+
     def __init__(self) -> None:
         self.org_id = "org-1"
         self.nodes: dict[str, StoredNode] = {}  # by external id

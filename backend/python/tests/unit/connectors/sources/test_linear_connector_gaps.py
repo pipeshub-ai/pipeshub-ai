@@ -83,6 +83,7 @@ def _use_memory_state(connector) -> None:
 def _make_connector() -> LinearConnector:
     logger = MagicMock()
     dep = MagicMock()
+    dep.skips_permission_writes = AsyncMock(return_value=False)  # licensed
     dep.org_id = "org-linear-gaps"
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.on_new_app_users = AsyncMock()

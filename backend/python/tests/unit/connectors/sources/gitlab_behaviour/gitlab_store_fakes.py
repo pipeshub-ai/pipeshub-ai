@@ -101,6 +101,9 @@ class FakeRecordsDb:
                     self._saw("groups", permission.external_id)
         return bool(stored)
 
+    async def skips_permission_writes(self, connector_id: str | None) -> bool:
+        return False  # licensed
+
     # ------------------------------------------------------------------ writes
 
     async def on_new_records(self, records_with_permissions: list[tuple[Record, list[Permission]]]) -> None:

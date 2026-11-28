@@ -1,6 +1,6 @@
 import pytest
 
-from app.connectors.sources.linear.team_access import (
+from app.ee.permission_sync.linear_team_access import (
     WORKSPACE_MEMBERS_GROUP_ID,
     boundary_ancestors,
     is_full_member,

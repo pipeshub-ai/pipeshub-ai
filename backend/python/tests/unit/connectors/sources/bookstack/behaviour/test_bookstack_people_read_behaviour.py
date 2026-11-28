@@ -158,6 +158,9 @@ class Directory:
         # Roles kept as they are stored and noted as seen by a full sync in progress.
         self.kept_as_seen: set[str] = set()
 
+    async def skips_permission_writes(self, connector_id: str | None) -> bool:
+        return False  # licensed
+
     async def on_new_app_users(self, users: list[Any]) -> None:
         self.user_rows.update(u.email for u in users)
 

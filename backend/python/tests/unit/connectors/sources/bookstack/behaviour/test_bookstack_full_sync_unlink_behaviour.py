@@ -157,6 +157,9 @@ class FakeBookStack:
 class FakeGraph:
     """The nodes the processor stores for this connector, and what the full sync in progress wrote or kept."""
 
+    async def skips_permission_writes(self, connector_id: str | None) -> bool:
+        return False  # licensed: the access reads these tests check run
+
     def __init__(self) -> None:
         self.org_id = "org-1"
         self.records: dict[str, Record] = {}

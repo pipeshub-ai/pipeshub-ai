@@ -4,7 +4,7 @@
   rule: override
   comment: >
     A public team is granted to the workspace-members group, which holds the active accounts that are not guests
-    (linear/team_access.py:62-70, connector.py:929-941), so Gus, a guest added to Support, sees only Support.
+    (../../ee/permission_sync/linear_team_access.py:62-70, connector.py:929-941), so Gus, a guest added to Support, sees only Support.
   world: golden/linear_teams
   expect:
     verdicts:

@@ -121,6 +121,7 @@ def read_permission(email: str) -> Permission:
 def processor() -> MagicMock:
     proc = MagicMock()
     proc.org_id = "org-1"
+    proc.skips_permission_writes = AsyncMock(return_value=False)  # licensed
     proc.on_new_app_users = AsyncMock()
     proc.on_new_user_groups = AsyncMock()
     proc.on_new_record_groups = AsyncMock()

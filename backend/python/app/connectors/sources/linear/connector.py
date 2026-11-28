@@ -76,6 +76,8 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.linear.api_gateway import (
+    NESTED_PAGE_SIZE,
+    TEAM_PAGE_SIZE,
     Invoke,
     LinearApiError,
     LinearAuthError,
@@ -91,16 +93,10 @@ from app.connectors.sources.linear.listing_checkpoint import (
 )
 from app.connectors.sources.linear.record_removal import RecordRemover
 from app.connectors.sources.linear.source_reconciler import SourceReconciler
-from app.connectors.sources.linear.team_access import (
-    WORKSPACE_MEMBERS_GROUP_ID,
-    WORKSPACE_MEMBERS_GROUP_NAME,
-    boundary_ancestors,
-    is_full_member,
-    team_permissions,
-    visibility,
-)
 from app.connectors.utils.record_ids import new_record_id
 from app.connectors.utils.value_mapper import ValueMapper, map_relationship_type
+from app.ee.permission_sync.linear import LinearPermissionsMixin
+from app.ee.permission_sync.linear_team_access import is_full_member, visibility
 from app.models.blocks import (
     Block,
     BlockComment,
@@ -181,12 +177,10 @@ def _is_transient_linear_failure(response: GraphQLResponse) -> bool:
 
 # Page sizes. Each is chosen so the query stays well under Linear's 10,000 point cap.
 ISSUE_PAGE_SIZE: int = 50
-TEAM_PAGE_SIZE: int = 25
 # Projects carry their teams and issues inline; 25 a page costs about 6,800 of Linear's
 # 10,000 points per query, 50 is refused
 PROJECT_PAGE_SIZE: int = 10
 ACTIVITY_PAGE_SIZE: int = 250
-NESTED_PAGE_SIZE: int = 100
 PROJECT_UPDATE_PAGE_SIZE: int = 50
 ISSUE_REFRESH_BATCH: int = 50
 
@@ -369,7 +363,7 @@ def reads_current_content(record: Record, existing: Record | None) -> bool:
         ))
     )\
     .build_decorator()
-class LinearConnector(BaseConnector):
+class LinearConnector(LinearPermissionsMixin, BaseConnector):
     """
     Linear connector for syncing issues, comments, and users from Linear
     """
@@ -927,22 +921,6 @@ class LinearConnector(BaseConnector):
             )
             return None
 
-    def _workspace_members_group(
-        self, user_email_map: dict[str, AppUser]
-    ) -> tuple[AppUserGroup, list[AppUser]]:
-        """The group public teams are granted to: active accounts that are not guests."""
-        group = AppUserGroup(
-            id=str(uuid4()),
-            org_id=self.data_entities_processor.org_id,
-            source_user_group_id=WORKSPACE_MEMBERS_GROUP_ID,
-            connector_id=self.connector_id,
-            app_name=Connectors.LINEAR,
-            name=WORKSPACE_MEMBERS_GROUP_NAME,
-            description="Everyone in the Linear workspace except guests",
-        )
-        members = [user for email, user in user_email_map.items() if email in self._full_member_emails]
-        return group, members
-
     async def _forget_checkpoints_of_rekeyed_teams(
         self, team_record_groups: list[tuple[RecordGroup, list[Permission]]]
     ) -> None:
@@ -1103,8 +1081,7 @@ class LinearConnector(BaseConnector):
                 for team in teams_list:
                     # A team lists 10 members inline (Linear multiplies nested connection sizes into its
                     # per-query complexity limit); the rest come in further pages.
-                    await self._api.complete(team, "members", "teamMembers", ["team", "members"],
-                                             page_size=NESTED_PAGE_SIZE)
+                    await self._read_team_members(team)
                 all_teams.extend(teams_list)
         except LinearApiError as e:
             if self._stops_the_sync(e):
@@ -1199,7 +1176,7 @@ class LinearConnector(BaseConnector):
             # 3. Permissions: see team_access (team members; workspace members for public
             #    teams; parent team members for restricted teams)
             self._team_visibility[team_id] = visibility(team)
-            self._team_permissions[team_id] = team_permissions(team, teams_by_id)
+            self._team_permissions[team_id] = await self._team_grants(team, teams_by_id)
             record_groups.append((record_group, self._team_permissions[team_id]))
 
         self.logger.info(
@@ -1207,31 +1184,6 @@ class LinearConnector(BaseConnector):
             f"created {len(user_groups)} UserGroups and {len(record_groups)} RecordGroups"
         )
         return user_groups, record_groups
-
-    async def _add_missing_ancestor_teams(self, teams_by_id: dict[str, dict[str, Any]]) -> None:
-        """Fetch the parent teams restricted teams need but the team filter left out."""
-        for _ in range(10):  # parent chains are short; this bounds a malformed one
-            missing = sorted({
-                ancestor
-                for team in list(teams_by_id.values()) if visibility(team) == "restricted"
-                for ancestor in boundary_ancestors(team, teams_by_id)
-                if ancestor not in teams_by_id
-            })
-            if not missing:
-                return
-            found: list[dict[str, Any]] = []
-            async for teams_list, _, _ in self._api.pages(
-                "parent teams", ["teams"], page_size=TEAM_PAGE_SIZE,
-                fetch=lambda ds, first, after, ids=missing: ds.teams(first=first, after=after, filter={"id": {"in": ids}}),
-            ):
-                for team in teams_list:
-                    await self._api.complete(team, "members", "teamMembers", ["team", "members"],
-                                             page_size=NESTED_PAGE_SIZE)
-                found.extend(teams_list)
-            found = [t for t in found if t.get("id") in missing]
-            if not found:
-                return  # gone or invisible to this account: nobody is granted through them
-            teams_by_id.update({t["id"]: t for t in found})
 
     async def _sync_issues_for_teams(
         self,
