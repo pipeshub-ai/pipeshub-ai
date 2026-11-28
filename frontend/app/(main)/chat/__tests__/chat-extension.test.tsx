@@ -117,6 +117,25 @@ describe('default chat slots', () => {
     }
   });
 
+  it('while the harness is paused for the org, someone a durable chat was shared with for editing has no composer', () => {
+    // On for the org, but taking no new turn now (the kill switch, an operator stop): their send would go to today's
+    // loop, which refuses it with 403 COLLABORATOR_TURNS_DISABLED.
+    useFeatureFlagsStore.setState({
+      agentHarness: { useHarness: false, harnessMajor: 2, reason: 'org', resumeInFlightRuns: true, harnessOn: true },
+    } as never);
+    const editing = useChatStore.getState().createSlot('c-edit-paused');
+    useChatStore.getState().updateSlot(editing, { isOwner: false, accessLevel: 'write', durable: true });
+    const owned = useChatStore.getState().createSlot('c-own-paused');
+    useChatStore.getState().updateSlot(owned, { isOwner: true, durable: true });
+    try {
+      expect(renderHook(() => slots.useChatAccess(editing)).result.current.showComposer).toBe(false);
+      // The owner's turn still goes to today's loop, which serves them.
+      expect(renderHook(() => slots.useChatAccess(owned)).result.current.showComposer).toBe(true);
+    } finally {
+      useFeatureFlagsStore.setState({ agentHarness: null } as never);
+    }
+  });
+
   it("an answer in a chat someone else owns is theirs: no 'you stopped', and no offer to connect their tools", () => {
     const shared = useChatStore.getState().createSlot('c-read');
     useChatStore.getState().updateSlot(shared, { isOwner: false });

@@ -13,7 +13,7 @@ import type { ThreadMessageLike } from '@assistant-ui/react';
 import type { ShareAdapter, SharedMember } from '@/app/components/share/types';
 import { StreamError } from '@/lib/api/stream-errors';
 import { useChatStore } from './store';
-import { selectAgentHarnessOn, useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
+import { selectAgentHarnessEnabled, useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { createChatShareAdapter } from './share-adapter';
 import type {
   AppliedFilterNode,
@@ -678,18 +678,19 @@ export interface ChatSlots {
 
 function useOwnerAccess(slotId: string | null): ChatAccess {
   const isOwner = useChatStore((s) => (slotId ? s.slots[slotId]?.isOwner ?? null : null));
-  // Someone a durable chat was shared with for editing sends turns of their own in it while the agent harness is on
-  // for the org (its collaborator turns); in an agent's chat, and anywhere else, a chat shared with you is read-only.
+  // Someone a durable chat was shared with for editing sends turns of their own in it while the agent harness takes
+  // new turns for the org (its collaborator turns); in an agent's chat, and anywhere else, a chat shared with you is
+  // read-only. While the harness is paused their turn would go to today's loop, which serves the owner alone.
   const collaborates = useChatStore((s) => {
     const slot = slotId ? s.slots[slotId] : undefined;
     return slot?.accessLevel === 'write' && slot.durable === true && !slot.threadAgentId;
   });
-  const harnessOn = useFeatureFlagsStore(selectAgentHarnessOn);
+  const harnessTakesTurns = useFeatureFlagsStore(selectAgentHarnessEnabled);
   // `null` means "not yet known" (loading): keep the composer to avoid a flash.
   return {
     isOwner,
     canShare: isOwner === true,
-    showComposer: isOwner !== false || (collaborates && harnessOn),
+    showComposer: isOwner !== false || (collaborates && harnessTakesTurns),
     shareAgentChats: true,
   };
 }
