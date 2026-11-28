@@ -1914,7 +1914,9 @@
     "runError": {
       "stoppedTitle": "आपने यह जवाब रोक दिया",
       "stoppedBody": "जो चरण पूरे हुए, वे ऊपर के क्रम में अब भी हैं।",
-      "stoppedBodyPartial": "रोकने से पहले जो लिखा गया था, वह ऊपर रखा गया है।"
+      "stoppedBodyPartial": "रोकने से पहले जो लिखा गया था, वह ऊपर रखा गया है।",
+      "stoppedByOtherTitle": "प्रश्न पूछने वाले व्यक्ति ने यह जवाब रोक दिया",
+      "stoppedByOtherBodyPartial": "रोकने से पहले जो लिखा गया था, वह ऊपर रखा गया है।"
     },
     "answerPanel": {
       "label": "इस उत्तर के बारे में",

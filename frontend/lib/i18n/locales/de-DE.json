@@ -1914,7 +1914,9 @@
     "runError": {
       "stoppedTitle": "Sie haben diese Antwort gestoppt",
       "stoppedBody": "Die abgeschlossenen Schritte stehen weiterhin im Verlauf oben.",
-      "stoppedBodyPartial": "Was vor dem Stoppen geschrieben wurde, bleibt oben erhalten."
+      "stoppedBodyPartial": "Was vor dem Stoppen geschrieben wurde, bleibt oben erhalten.",
+      "stoppedByOtherTitle": "Die Person, die gefragt hat, hat diese Antwort gestoppt",
+      "stoppedByOtherBodyPartial": "Was vor dem Stoppen geschrieben wurde, bleibt oben erhalten."
     },
     "answerPanel": {
       "label": "Zu dieser Antwort",

@@ -1997,7 +1997,9 @@
     "runError": {
       "stoppedTitle": "你已停止此回覆",
       "stoppedBody": "已完成的步驟仍保留在上方的過程中。",
-      "stoppedBodyPartial": "停止前已寫好的內容保留在上方。"
+      "stoppedBodyPartial": "停止前已寫好的內容保留在上方。",
+      "stoppedByOtherTitle": "提問的人已停止此回覆",
+      "stoppedByOtherBodyPartial": "停止前已寫好的內容保留在上方。"
     },
     "answerPanel": {
       "label": "關於此回答",

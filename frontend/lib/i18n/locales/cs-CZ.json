@@ -2084,7 +2084,9 @@
     "runError": {
       "stoppedTitle": "Tuto odpověď jste zastavili",
       "stoppedBody": "Dokončené kroky zůstávají v průběhu výše.",
-      "stoppedBodyPartial": "Co bylo napsáno před zastavením, zůstává výše."
+      "stoppedBodyPartial": "Co bylo napsáno před zastavením, zůstává výše.",
+      "stoppedByOtherTitle": "Tuto odpověď zastavila osoba, která se ptala",
+      "stoppedByOtherBodyPartial": "Co bylo napsáno před zastavením, zůstává výše."
     },
     "answerPanel": {
       "label": "O této odpovědi",

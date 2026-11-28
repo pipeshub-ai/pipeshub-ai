@@ -2,6 +2,7 @@ import React from 'react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, renderHook, cleanup } from '@testing-library/react';
 import type { ThreadMessageLike } from '@assistant-ui/react';
+import '@/lib/__tests__/test-i18n';
 
 // `../store` pulls in `@/lib/api`, whose auth store reads localStorage at import time; nothing here makes a request.
 vi.mock('@/lib/api', () => ({
@@ -114,6 +115,32 @@ describe('default chat slots', () => {
     } finally {
       useFeatureFlagsStore.setState({ agentHarness: null } as never);
     }
+  });
+
+  it("an answer in a chat someone else owns is theirs: no 'you stopped', and no offer to connect their tools", () => {
+    const shared = useChatStore.getState().createSlot('c-read');
+    useChatStore.getState().updateSlot(shared, { isOwner: false });
+    const owned = useChatStore.getState().createSlot('c-mine');
+    useChatStore.getState().updateSlot(owned, { isOwner: true });
+    const input = { question: 'q', isStreaming: false, isLastMessage: true, unanswered: false }
+
+    useChatStore.setState({ activeSlotId: shared });
+    const read = renderHook(() => slots.useResponseExtension(input)).result.current;
+    expect(read.stoppedByOther).toEqual({
+      title: 'The person who asked stopped this response',
+      partialBody: 'What was written before it stopped is kept above.',
+    });
+    expect(read.toolsConnectReadOnlyFor).toEqual({ agentName: null });
+    // Who answers its approval cards is named only when the shared list says who owns the chat.
+    expect(read.approvalCardReadOnlyFor).toBeUndefined();
+    useChatStore.setState({ sharedConversations: [{ id: 'c-read', sharedBy: { userId: 'o1', name: 'Owner Person' } } as never] });
+    expect(renderHook(() => slots.useResponseExtension(input)).result.current.approvalCardReadOnlyFor).toEqual({ name: 'Owner Person' });
+    useChatStore.setState({ sharedConversations: [] });
+
+    useChatStore.setState({ activeSlotId: owned });
+    const mine = renderHook(() => slots.useResponseExtension(input)).result.current;
+    expect(mine).toEqual({ hideTabs: false, hideConfidence: false, allowRegenerate: true });
+    useChatStore.setState({ activeSlotId: null });
   });
 
   it('adds nothing around the composer, the list or a row', async () => {

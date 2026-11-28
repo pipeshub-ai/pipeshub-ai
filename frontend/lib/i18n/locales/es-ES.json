@@ -1943,7 +1943,9 @@
     "runError": {
       "stoppedTitle": "Has detenido esta respuesta",
       "stoppedBody": "Los pasos que terminaron siguen en el registro de arriba.",
-      "stoppedBodyPartial": "Lo que se escribió antes de detenerlo se conserva arriba."
+      "stoppedBodyPartial": "Lo que se escribió antes de detenerlo se conserva arriba.",
+      "stoppedByOtherTitle": "La persona que preguntó detuvo esta respuesta",
+      "stoppedByOtherBodyPartial": "Lo que se escribió antes de detenerla se conserva arriba."
     },
     "answerPanel": {
       "label": "Sobre esta respuesta",

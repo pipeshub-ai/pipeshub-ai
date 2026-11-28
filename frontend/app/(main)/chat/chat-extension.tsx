@@ -7,6 +7,7 @@
 
 import React, { forwardRef } from 'react';
 import dynamic from 'next/dynamic';
+import { useTranslation } from 'react-i18next';
 import type { ComponentType, ForwardRefExoticComponent, ReactNode, RefAttributes, RefObject } from 'react';
 import type { ThreadMessageLike } from '@assistant-ui/react';
 import type { ShareAdapter, SharedMember } from '@/app/components/share/types';
@@ -37,6 +38,7 @@ import type { MentionNode } from './utils/node-mentions';
 import type { MentionGroupView } from './utils/mention-groups';
 import type { QueuedMessage } from './utils/queued-send';
 import { useQueuedSends } from './hooks/use-send-when-free';
+import { useAnswerSlotId } from './components/message-area/answer-slot-scope';
 
 /** Extra fields stored in a thread row's `metadata.custom`. */
 export type RowCustom = Record<string, unknown>;
@@ -731,6 +733,39 @@ const NO_MENTION_GROUPS: MentionGroupsResult = { groups: [] };
 
 const DEFAULT_RESPONSE: ChatResponseExtension = { hideTabs: false, hideConfidence: false, allowRegenerate: true };
 
+/**
+ * An answer as the default build draws it. Only a chat's owner asks in it, so in a chat someone else owns (shared with
+ * the viewer) every answer is another person's: its stop card does not say the viewer stopped it, the tools its run
+ * could not use are listed without the offer to connect them, which is the asker's, and the line for an approval card
+ * names the owner, who answers it, when the chat's row in the shared lists says who that is.
+ */
+function useDefaultResponseExtension(): ChatResponseExtension {
+  const { t } = useTranslation();
+  const slotId = useAnswerSlotId();
+  const othersChat = useChatStore((s) => (slotId ? s.slots[slotId]?.isOwner === false : false));
+  const ownerName = useChatStore((s) => {
+    const convId = slotId ? s.slots[slotId]?.convId : null;
+    if (!othersChat || !convId) return null;
+    const row = [...s.sharedConversations, ...s.agentSharedConversations].find((c) => c.id === convId);
+    return row?.sharedBy?.name?.trim() || null;
+  });
+  return React.useMemo(
+    () =>
+      othersChat
+        ? {
+            ...DEFAULT_RESPONSE,
+            stoppedByOther: {
+              title: t('chat.runError.stoppedByOtherTitle'),
+              partialBody: t('chat.runError.stoppedByOtherBodyPartial'),
+            },
+            toolsConnectReadOnlyFor: { agentName: null },
+            ...(ownerName !== null && { approvalCardReadOnlyFor: { name: ownerName } }),
+          }
+        : DEFAULT_RESPONSE,
+    [othersChat, ownerName, t],
+  );
+}
+
 const PlainComposerField = forwardRef<ComposerInputHandle, ComposerFieldProps>(function PlainComposerField(props, ref) {
   return <TextareaComposerField ref={ref} {...props} />;
 });
@@ -766,7 +801,7 @@ export const defaultChatSlots: ChatSlots = {
   MessageList: DefaultMessageList,
   MessageListBody: DefaultMessageListBody,
   SidePanel: AnswerSidePanel,
-  useResponseExtension: () => DEFAULT_RESPONSE,
+  useResponseExtension: useDefaultResponseExtension,
   QueryText: PlainQueryText,
   useQuestionHeading: (question) => question,
   AnswerInlineText: PlainQueryText,

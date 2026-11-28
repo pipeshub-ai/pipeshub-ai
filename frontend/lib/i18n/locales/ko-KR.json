@@ -1997,7 +1997,9 @@
     "runError": {
       "stoppedTitle": "이 응답을 중지했습니다",
       "stoppedBody": "완료된 단계는 위의 기록에 그대로 있습니다.",
-      "stoppedBodyPartial": "중지하기 전에 작성된 내용은 위에 남아 있습니다."
+      "stoppedBodyPartial": "중지하기 전에 작성된 내용은 위에 남아 있습니다.",
+      "stoppedByOtherTitle": "질문한 사람이 이 응답을 중지했습니다",
+      "stoppedByOtherBodyPartial": "중지되기 전에 작성된 내용은 위에 남아 있습니다."
     },
     "answerPanel": {
       "label": "이 답변 정보",

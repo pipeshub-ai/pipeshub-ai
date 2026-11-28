@@ -1914,7 +1914,9 @@
     "runError": {
       "stoppedTitle": "You stopped this response",
       "stoppedBody": "The steps that finished are still in the trail above.",
-      "stoppedBodyPartial": "What was written before you stopped is kept above."
+      "stoppedBodyPartial": "What was written before you stopped is kept above.",
+      "stoppedByOtherTitle": "The person who asked stopped this response",
+      "stoppedByOtherBodyPartial": "What was written before it stopped is kept above."
     },
     "answerPanel": {
       "label": "About this answer",
