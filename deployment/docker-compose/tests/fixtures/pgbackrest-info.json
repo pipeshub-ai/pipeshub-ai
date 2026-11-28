@@ -1,0 +1,18 @@
+[
+  {
+    "archive": [{"database": {"id": 1, "repo-key": 1}, "id": "17-1", "max": "000000010000000000000009", "min": "000000010000000000000001"}],
+    "backup": [
+      {"label": "20261101-000000F", "type": "full", "error": false, "timestamp": {"start": 1793491200, "stop": 1793494800}, "database": {"id": 1, "repo-key": 1}},
+      {"label": "20261101-000000F_20261101-060000I", "type": "incr", "error": false, "timestamp": {"start": 1793512800, "stop": 1793513100}, "database": {"id": 1, "repo-key": 1}},
+      {"label": "20261108-000000F", "type": "full", "error": false, "timestamp": {"start": 1794096000, "stop": 1794103200}, "database": {"id": 1, "repo-key": 1}},
+      {"label": "20261108-000000F_20261108-120000D", "type": "diff", "error": true, "timestamp": {"start": 1794139200, "stop": 1794139800}, "database": {"id": 1, "repo-key": 1}},
+      {"label": "20261108-000000F_20261108-180000I", "type": "incr", "error": false, "timestamp": {"start": 1794160800, "stop": 1794160860}, "database": {"id": 1, "repo-key": 1}},
+      {"label": "20261102-000000F", "type": "full", "error": false, "timestamp": {"start": 1793577600, "stop": 1793588400}, "database": {"id": 1, "repo-key": 2}}
+    ],
+    "cipher": "none",
+    "db": [{"id": 1, "repo-key": 1, "system-id": 7712470652375502863, "version": "17"}],
+    "name": "pipeshub",
+    "repo": [{"cipher": "none", "key": 1, "status": {"code": 0, "message": "ok"}}, {"cipher": "none", "key": 2, "status": {"code": 0, "message": "ok"}}],
+    "status": {"code": 0, "lock": {"backup": {"held": false}, "restore": {"held": false}}, "message": "ok"}
+  }
+]

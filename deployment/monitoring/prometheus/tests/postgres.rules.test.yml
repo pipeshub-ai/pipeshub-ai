@@ -231,6 +231,102 @@ tests:
               summary: "A database grew by more than half in a day"
               description: "pipeshub on a is 3.725GiB and grew over 50% in 24 hours. Check the free space of the data volume."
 
+  - name: backup too old
+    interval: 1m
+    input_series:
+      # promtool's clock starts at 0: at 10m a stop time of 600 - k * schedule is k schedules old
+      - series: 'pipeshub_pg_backup_schedule_seconds{instance="pg-backup:9188", job="pg-backup", type="full"}'
+        values: '604800x10'
+      - series: 'pipeshub_pg_backup_schedule_seconds{instance="pg-backup:9188", job="pg-backup", type="incr"}'
+        values: '21600x10'
+      - series: 'pipeshub_pg_backup_last_success_timestamp_seconds{instance="pg-backup:9188", job="pg-backup", stanza="pipeshub", repo="1", type="full"}'
+        values: '-967080x10'
+      - series: 'pipeshub_pg_backup_last_success_timestamp_seconds{instance="pg-backup:9188", job="pg-backup", stanza="pipeshub", repo="1", type="incr"}'
+        values: '0x10'
+      - series: 'pipeshub_pg_backup_last_success_timestamp_seconds{instance="pg-backup:9188", job="pg-backup", stanza="pipeshub", repo="2", type="full"}'
+        values: '-2116200x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PgBackupTooOld
+        exp_alerts:
+          - exp_labels: {severity: warning, schedule: full, instance: "pg-backup:9188", job: pg-backup, stanza: pipeshub, repo: "1", type: full}
+            exp_annotations:
+              summary: "The newest full backup is older than its schedule allows"
+              description: "The newest full backup of pipeshub in repository 1 is 1.6 times PG_BACKUP_FULL_DAYS old. Read the pg-backup service's log; a restore must replay more WAL the older it is."
+          - exp_labels: {severity: warning, schedule: full, instance: "pg-backup:9188", job: pg-backup, stanza: pipeshub, repo: "2", type: full}
+            exp_annotations:
+              summary: "The newest full backup is older than its schedule allows"
+              description: "The newest full backup of pipeshub in repository 2 is 3.5 times PG_BACKUP_FULL_DAYS old. Read the pg-backup service's log; a restore must replay more WAL the older it is."
+          - exp_labels: {severity: critical, schedule: full, instance: "pg-backup:9188", job: pg-backup, stanza: pipeshub, repo: "2", type: full}
+            exp_annotations:
+              summary: "No full backup for three times its schedule"
+              description: "The newest full backup of pipeshub in repository 2 is 3.5 times PG_BACKUP_FULL_DAYS old. Backups have stopped."
+          - exp_labels: {severity: warning, schedule: any, instance: "pg-backup:9188", job: pg-backup, stanza: pipeshub, repo: "2"}
+            exp_annotations:
+              summary: "The newest backup is older than its schedule allows"
+              description: "The newest backup of any type of pipeshub in repository 2 is 98 times PG_BACKUP_INCR_HOURS old. Read the pg-backup service's log."
+          - exp_labels: {severity: critical, schedule: any, instance: "pg-backup:9188", job: pg-backup, stanza: pipeshub, repo: "2"}
+            exp_annotations:
+              summary: "No backup for three times its schedule"
+              description: "The newest backup of any type of pipeshub in repository 2 is 98 times PG_BACKUP_INCR_HOURS old. Backups have stopped."
+
+  - name: backups on schedule
+    interval: 1m
+    input_series:
+      - series: 'pipeshub_pg_backup_schedule_seconds{instance="pg-backup:9188", job="pg-backup", type="full"}'
+        values: '604800x10'
+      - series: 'pipeshub_pg_backup_schedule_seconds{instance="pg-backup:9188", job="pg-backup", type="incr"}'
+        values: '21600x10'
+      - series: 'pipeshub_pg_backup_last_success_timestamp_seconds{instance="pg-backup:9188", job="pg-backup", stanza="pipeshub", repo="1", type="full"}'
+        values: '-86400x10'
+      - series: 'pipeshub_pg_backup_last_success_timestamp_seconds{instance="pg-backup:9188", job="pg-backup", stanza="pipeshub", repo="1", type="incr"}'
+        values: '-3600x10'
+      - series: 'pipeshub_pg_backup_last_attempt_success{instance="pg-backup:9188", job="pg-backup"}'
+        values: '1x10'
+      - series: 'pipeshub_pg_backup_wal_gap_segments{instance="pg-backup:9188", job="pg-backup"}'
+        values: '0x10'
+      - series: 'up{instance="pg-backup:9188", job="pg-backup"}'
+        values: '1x10'
+    alert_rule_test:
+      - {eval_time: 10m, alertname: PgBackupTooOld, exp_alerts: []}
+      - {eval_time: 10m, alertname: PgBackupFailing, exp_alerts: []}
+      - {eval_time: 10m, alertname: PgBackupWalGap, exp_alerts: []}
+      - {eval_time: 10m, alertname: PgBackupMetricsMissing, exp_alerts: []}
+
+  - name: backups failing, wal dropped, metrics missing
+    interval: 1m
+    input_series:
+      - series: 'pipeshub_pg_backup_last_attempt_success{instance="pg-backup:9188", job="pg-backup"}'
+        values: '1 0x20'
+      - series: 'pipeshub_pg_backup_wal_gap_segments{instance="pg-backup:9188", job="pg-backup"}'
+        values: '0 2x20'
+      - series: 'up{instance="pg-backup:9188", job="pg-backup"}'
+        values: '1 0x20'
+    alert_rule_test:
+      - {eval_time: 10m, alertname: PgBackupFailing, exp_alerts: []}
+      - eval_time: 17m
+        alertname: PgBackupFailing
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: "pg-backup:9188", job: pg-backup}
+            exp_annotations:
+              summary: "Backups are failing"
+              description: "The last backup attempt on pg-backup:9188 failed and none has succeeded for 15 minutes. Read the pg-backup service's log for pgBackRest's error (repository unreachable or full, or the server down)."
+      - eval_time: 2m
+        alertname: PgBackupWalGap
+        exp_alerts:
+          - exp_labels: {severity: critical, instance: "pg-backup:9188", job: pg-backup}
+            exp_annotations:
+              summary: "The server dropped WAL that no backup covers"
+              description: "2 WAL segments were dropped because the archive queue exceeded PGBACKREST_ARCHIVE_PUSH_QUEUE_MAX. Point-in-time restore cannot cross the gap until the full backup pg-backup has started succeeds."
+      - {eval_time: 10m, alertname: PgBackupMetricsMissing, exp_alerts: []}
+      - eval_time: 17m
+        alertname: PgBackupMetricsMissing
+        exp_alerts:
+          - exp_labels: {severity: critical, instance: "pg-backup:9188", job: pg-backup}
+            exp_annotations:
+              summary: "The backup service's metrics cannot be scraped"
+              description: "pg-backup on pg-backup:9188 has not answered a scrape for 15 minutes, so no backup alert can fire. The service is down, or docker-compose.postgres-backup.yml is not in use and no backups are taken."
+
   - name: connections on a server without reserved_connections (PostgreSQL 15 and older)
     interval: 1m
     input_series:
@@ -284,3 +380,78 @@ tests:
             exp_annotations:
               summary: "A PostgreSQL replica is not streaming WAL from its primary"
               description: "The replica restarting has had no streaming WAL receiver for 5 minutes: it falls behind while the primary commits, though its replication lag can still read 0. Check primary_conninfo, the network and the primary's replication slots."
+
+  - name: first full backup never completes
+    interval: 1m
+    input_series:
+      # promtool's clock starts at 0: a scheduler started at 600 - k * schedule has run k full schedules at 10m
+      - series: 'pipeshub_pg_backup_scheduler_start_timestamp_seconds{instance="new", job="pg-backup"}'
+        values: '-86400x10'
+      - series: 'pipeshub_pg_backup_scheduler_start_timestamp_seconds{instance="stuck", job="pg-backup"}'
+        values: '-1209000x10'
+      - series: 'pipeshub_pg_backup_scheduler_start_timestamp_seconds{instance="done", job="pg-backup"}'
+        values: '-1209000x10'
+      - series: 'pipeshub_pg_backup_last_success_timestamp_seconds{instance="done", job="pg-backup", stanza="pipeshub", repo="1", type="full"}'
+        values: '-3600x10'
+      - series: 'pipeshub_pg_backup_schedule_seconds{instance="new", job="pg-backup", type="full"}'
+        values: '604800x10'
+      - series: 'pipeshub_pg_backup_schedule_seconds{instance="stuck", job="pg-backup", type="full"}'
+        values: '604800x10'
+      - series: 'pipeshub_pg_backup_schedule_seconds{instance="done", job="pg-backup", type="full"}'
+        values: '604800x10'
+      - series: 'pipeshub_pg_backup_repository_up{instance="new", job="pg-backup"}'
+        values: '1x10'
+      - series: 'pipeshub_pg_backup_repository_up{instance="stuck", job="pg-backup"}'
+        values: '1x10'
+      - series: 'pipeshub_pg_backup_repository_up{instance="done", job="pg-backup"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PgBackupNoFullBackup
+        exp_alerts:
+          - exp_labels: {severity: critical, instance: stuck, job: pg-backup}
+            exp_annotations:
+              summary: "No full backup has completed since the backup service started"
+              description: "pg-backup on stuck started 2 times PG_BACKUP_FULL_DAYS ago and the repository holds no full backup: nothing can be restored. Read the pg-backup service's log; the first full backup may be failing or still running."
+
+  - name: first full backup check while the repository is unreadable
+    interval: 1m
+    input_series:
+      # the scheduler keeps exporting the last readable backup times (its state is on the persistent volume)
+      - series: 'pipeshub_pg_backup_scheduler_start_timestamp_seconds{instance="unreadable", job="pg-backup"}'
+        values: '-1209000x20'
+      - series: 'pipeshub_pg_backup_schedule_seconds{instance="unreadable", job="pg-backup", type="full"}'
+        values: '604800x20'
+      - series: 'pipeshub_pg_backup_repository_up{instance="unreadable", job="pg-backup"}'
+        values: '0x20'
+      - series: 'pipeshub_pg_backup_last_success_timestamp_seconds{instance="unreadable", job="pg-backup", stanza="pipeshub", repo="1", type="full"}'
+        values: '-3600x20'
+    alert_rule_test:
+      - {eval_time: 20m, alertname: PgBackupNoFullBackup, exp_alerts: []}
+      - eval_time: 20m
+        alertname: PgBackupRepositoryUnreadable
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: unreadable, job: pg-backup}
+            exp_annotations:
+              summary: "The backup repository cannot be read"
+              description: "pgbackrest info has not read the repository on unreadable for 15 minutes (unreachable, wrong credentials, or the stanza in error), so no backup is scheduled. The backup times shown are the last known."
+
+  - name: a repository never readable on a new volume
+    interval: 1m
+    input_series:
+      # nothing is known about the backups: only the unreadable repository is reported
+      - series: 'pipeshub_pg_backup_scheduler_start_timestamp_seconds{instance="never", job="pg-backup"}'
+        values: '-1209000x20'
+      - series: 'pipeshub_pg_backup_schedule_seconds{instance="never", job="pg-backup", type="full"}'
+        values: '604800x20'
+      - series: 'pipeshub_pg_backup_repository_up{instance="never", job="pg-backup"}'
+        values: '0x20'
+    alert_rule_test:
+      - {eval_time: 20m, alertname: PgBackupNoFullBackup, exp_alerts: []}
+      - eval_time: 20m
+        alertname: PgBackupRepositoryUnreadable
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: never, job: pg-backup}
+            exp_annotations:
+              summary: "The backup repository cannot be read"
+              description: "pgbackrest info has not read the repository on never for 15 minutes (unreachable, wrong credentials, or the stanza in error), so no backup is scheduled. The backup times shown are the last known."

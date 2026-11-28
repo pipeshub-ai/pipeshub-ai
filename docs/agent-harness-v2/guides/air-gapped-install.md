@@ -80,8 +80,8 @@ a connected host):
 | `web-readers-gateway` | `nginx:1.27.5-alpine` |
 | `searxng` | `searxng/searxng:2026.9.30-a9d990033` |
 | `crawl4ai` | `unclecode/crawl4ai:0.9.4` |
-| `postgres` | `pipeshubai/postgres:18-1` (`PG_IMAGE`, `PG_MAJOR` and `PG_IMAGE_REV` set it; built from `deployment/docker-compose/postgres`) |
-| `pgbouncer` | `pipeshubai/postgres:18-1` (the same image) |
+| `postgres` | `pipeshubai/postgres:18-2` (`PG_IMAGE`, `PG_MAJOR` and `PG_IMAGE_REV` set it; built from `deployment/docker-compose/postgres`) |
+| `pgbouncer` | `pipeshubai/postgres:18-2` (the same image) |
 | `pipeshub-migrate` | `pipeshubai/pipeshub-migrate:latest` (`PIPESHUB_MIGRATE_IMAGE` and `IMAGE_TAG` set it; built from `backend/db/Dockerfile`) |
 | `postgres-exporter` | `quay.io/prometheuscommunity/postgres-exporter:v0.20.1@sha256:ac5ec343104fae0e2d84a27bb8d69b38430a11910c5382cad85d478d2bab713e` (`postgres-metrics` profile) |
 | `pgbouncer-exporter` | `quay.io/prometheuscommunity/pgbouncer-exporter:v0.12.1@sha256:30f31b6c2efdad3647f8182cc7c1a3a19e42bae5d17387694989f969371c230d` (`postgres-metrics` profile) |

@@ -968,7 +968,7 @@ services:
   postgres:
     <<: *hardened
     profiles: ["postgres"]
-    image: ${PG_IMAGE:-pipeshubai/postgres}:${PG_MAJOR:-18}-${PG_IMAGE_REV:-1}
+    image: ${PG_IMAGE:-pipeshubai/postgres}:${PG_MAJOR:-18}-${PG_IMAGE_REV:-2}
     # The stock entrypoint starts as root: it owns the data directory and the verifier volume for the postgres user
     # (CHOWN, DAC_OVERRIDE, FOWNER) and drops to it with gosu (SETUID, SETGID).
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]
@@ -1031,7 +1031,7 @@ services:
   pgbouncer:
     <<: *hardened
     profiles: ["postgres"]
-    image: ${PG_IMAGE:-pipeshubai/postgres}:${PG_MAJOR:-18}-${PG_IMAGE_REV:-1}
+    image: ${PG_IMAGE:-pipeshubai/postgres}:${PG_MAJOR:-18}-${PG_IMAGE_REV:-2}
     user: postgres
     # One descriptor per client (max_client_conn 1000 in postgres/pgbouncer.ini) and per server connection: the runtime's
     # default soft limit of 1024 refuses clients before max_client_conn does.

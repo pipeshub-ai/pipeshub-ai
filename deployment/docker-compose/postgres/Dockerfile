@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # PostgreSQL image for the opt-in `postgres` compose profile: pgvector, pg_trgm, pg_textsearch,
 # PgBouncer (the same image runs the `postgres` and `pgbouncer` services) and pgBackRest (the opt-in `pg-backup` service).
-#   docker build --build-arg PG_MAJOR=17 -t pipeshubai/postgres:17-1 deployment/docker-compose/postgres
+#   docker build --build-arg PG_MAJOR=17 -t pipeshubai/postgres:17-2 deployment/docker-compose/postgres
 # Both bases are multi-arch (linux/amd64, linux/arm64) and pinned by digest. To bump one, resolve the
 # new digest for the tag, update it here, and run tests/postgres_roles_test.sh and tests/postgres_persistence_test.sh on both majors.
 ARG PG_MAJOR=18
@@ -72,12 +72,12 @@ COPY --from=build /opt/pgbouncer/bin/pgbouncer /usr/local/bin/pgbouncer
 COPY pgbouncer.ini /etc/pgbouncer/pgbouncer.ini
 COPY initdb/ /docker-entrypoint-initdb.d/
 COPY pg-entrypoint.sh /usr/local/bin/pg-entrypoint.sh
-COPY pg-roles.sh scram-verifier.pl pg-backup.sh pgbackrest-archive-push.sh /usr/local/bin/
+COPY pg-roles.sh scram-verifier.pl pg-backup.sh pg-backup-metrics.pl pgbackrest-archive-push.sh /usr/local/bin/
 # /pgbouncer-auth carries the SCRAM verifier file from postgres (writer) to pgbouncer (reader); /pgbackrest-restore is where pg-restore.sh
 # mounts the volume it restores into (a new named volume takes this owner and mode; pg-restore.sh also hands it to postgres as root, for a
 # volume that does not). /var/lib/pgbackrest (the package's, postgres 0750) is the local repository; pg-entrypoint.sh does the same for it.
 RUN chmod 0755 /usr/local/bin/pg-entrypoint.sh /usr/local/bin/pg-roles.sh /usr/local/bin/scram-verifier.pl /usr/local/bin/pg-backup.sh \
-      /usr/local/bin/pgbackrest-archive-push.sh /docker-entrypoint-initdb.d/*.sh \
+      /usr/local/bin/pg-backup-metrics.pl /usr/local/bin/pgbackrest-archive-push.sh /docker-entrypoint-initdb.d/*.sh \
  && install -d -o postgres -g postgres -m 0700 /pgbouncer-auth /pgbackrest-restore \
  && pgbouncer --version >/dev/null && pgbackrest version
 ENTRYPOINT ["pg-entrypoint.sh"]

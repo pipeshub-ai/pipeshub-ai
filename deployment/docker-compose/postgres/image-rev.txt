@@ -1,0 +1,5 @@
+# The revision in the PostgreSQL image's tag (PG_IMAGE_REV, "<major>-<rev>") and the sha256 of this build context it was cut from
+# (every file here but README.md and this one; tests/pg_image_rev_test.sh computes it). Compose reuses an image whose tag is already
+# present, so a change to anything the image is built from needs a new revision, or existing installs keep running the old image.
+# Bump the revision in every compose file and record the new hash here.
+2 d9283dab23155cea089fe23b17ae588273b9f83ab36c5732d6bc177dc8c49bf7

@@ -154,7 +154,7 @@
       "note": "Built and tagged by PipesHub releases or locally; pin the release digest when the release pipeline signs images (SEC-SC-01)."
     },
     {
-      "ref": "pipeshubai/postgres:18-1",
+      "ref": "pipeshubai/postgres:18-2",
       "category": "first-party",
       "files": [
         "deployment/docker-compose/docker-compose.postgres-backup.yml",
