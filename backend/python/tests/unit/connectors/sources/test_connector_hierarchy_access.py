@@ -10,9 +10,7 @@ from app.connectors.sources.google.drive.team.drive_access import (
     item_inherits_parent,
     permission_is_direct,
 )
-from app.connectors.sources.microsoft.sharepoint_online.connector import (
-    unique_file_grants,
-)
+from app.ee.permission_sync.sharepoint_online import unique_file_grants
 from app.models.permission import EntityType, Permission, PermissionType
 
 

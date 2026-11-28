@@ -37,6 +37,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 def _make_mock_deps():
     logger = logging.getLogger("test.sharepoint.full")
     data_entities_processor = MagicMock()
+    data_entities_processor.skips_permission_writes = AsyncMock(return_value=False)
     data_entities_processor.org_id = "org-sp-1"
     data_entities_processor.on_new_app_users = AsyncMock()
     data_entities_processor.on_new_user_groups = AsyncMock()
@@ -1905,6 +1906,7 @@ class TestCreateConnector:
         cs = MagicMock()
 
         processor = MagicMock()
+        processor.skips_permission_writes = AsyncMock(return_value=False)
         processor.org_id = "org-1"
 
         connector = await SharePointConnector.create_connector(
@@ -2201,7 +2203,7 @@ class TestConvertToPermissions:
         perm.link = None
         perm.roles = ["write"]
 
-        with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_roles_to_permission_type", return_value=PermissionType.WRITE):
+        with patch("app.ee.permission_sync.sharepoint_online.map_msgraph_roles_to_permission_type", return_value=PermissionType.WRITE):
             result = await connector._convert_to_permissions([perm])
         assert len(result) == 1
         assert result[0].entity_type == EntityType.USER
@@ -2219,7 +2221,7 @@ class TestConvertToPermissions:
         perm.link = None
         perm.roles = ["read"]
 
-        with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_roles_to_permission_type", return_value=PermissionType.READ):
+        with patch("app.ee.permission_sync.sharepoint_online.map_msgraph_roles_to_permission_type", return_value=PermissionType.READ):
             result = await connector._convert_to_permissions([perm])
         assert len(result) == 1
         assert result[0].entity_type == EntityType.GROUP
@@ -2235,7 +2237,7 @@ class TestConvertToPermissions:
         perm.link.type = "view"
         perm.roles = []
 
-        with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_roles_to_permission_type", return_value=PermissionType.READ):
+        with patch("app.ee.permission_sync.sharepoint_online.map_msgraph_roles_to_permission_type", return_value=PermissionType.READ):
             result = await connector._convert_to_permissions([perm])
         # An anonymous link names no grantee, so it yields no permission.
         assert result == []
@@ -2251,7 +2253,7 @@ class TestConvertToPermissions:
         perm.link.type = "edit"
         perm.roles = []
 
-        with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_roles_to_permission_type", return_value=PermissionType.WRITE):
+        with patch("app.ee.permission_sync.sharepoint_online.map_msgraph_roles_to_permission_type", return_value=PermissionType.WRITE):
             result = await connector._convert_to_permissions([perm])
         assert result == []  # an organization link alone is not a grant
 
@@ -2270,7 +2272,7 @@ class TestConvertToPermissions:
         perm.link = None
         perm.roles = ["read"]
 
-        with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_roles_to_permission_type", return_value=PermissionType.READ):
+        with patch("app.ee.permission_sync.sharepoint_online.map_msgraph_roles_to_permission_type", return_value=PermissionType.READ):
             result = await connector._convert_to_permissions([perm])
         assert len(result) == 1
 
@@ -2289,7 +2291,7 @@ class TestConvertToPermissions:
         perm.link = None
         perm.roles = ["write"]
 
-        with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_roles_to_permission_type", return_value=PermissionType.WRITE):
+        with patch("app.ee.permission_sync.sharepoint_online.map_msgraph_roles_to_permission_type", return_value=PermissionType.WRITE):
             result = await connector._convert_to_permissions([perm])
         assert len(result) == 1
         assert result[0].entity_type == EntityType.USER
@@ -2310,7 +2312,7 @@ class TestConvertToPermissions:
         perm_bad.granted_to_identities_v2 = None
         type(perm_bad).link = PropertyMock(side_effect=Exception("bad perm"))
 
-        with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_roles_to_permission_type", return_value=PermissionType.READ):
+        with patch("app.ee.permission_sync.sharepoint_online.map_msgraph_roles_to_permission_type", return_value=PermissionType.READ):
             result = await connector._convert_to_permissions([perm_bad, perm_good])
         # The bad permission must not abort the batch. Neither input yields a
         # permission: one raises, and an anonymous link names no grantee.

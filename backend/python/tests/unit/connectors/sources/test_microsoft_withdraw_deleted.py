@@ -49,6 +49,7 @@ def _app_user(sid: str, active: bool = True) -> AppUser:
 def _processor(stored_ids: list[str]) -> tuple[MagicMock, dict]:
     stored = {sid: _app_user(sid) for sid in stored_ids}
     proc = MagicMock()
+    proc.skips_permission_writes = AsyncMock(return_value=False)
     proc.org_id = "org"
     proc.on_new_app_users = AsyncMock()
     proc.on_new_user_groups = AsyncMock()

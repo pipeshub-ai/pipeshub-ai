@@ -64,6 +64,7 @@ from app.models.permission import PermissionType
 def _make_connector():
     logger = logging.getLogger("test.sharepoint.ext")
     dep = MagicMock()
+    dep.skips_permission_writes = AsyncMock(return_value=False)
     dep.org_id = "org-sp-1"
     dep.on_new_app_users = AsyncMock()
     dep.on_new_user_groups = AsyncMock()
