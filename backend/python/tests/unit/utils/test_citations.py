@@ -2280,6 +2280,41 @@ class TestRecordLandingPageCitations:
         assert citations == []
         log.warning.assert_called()
 
+    @pytest.mark.parametrize("normalize", [normalize_citations_and_chunks, normalize_citations_and_chunks_for_agent])
+    @pytest.mark.parametrize(("answer", "expected"), [
+        # A label goes, with the space before it and brackets it stood alone in.
+        ("The plan is owned by the sales team ([source]({landing})).", "The plan is owned by the sales team."),
+        ("The plan is owned by the sales team ( [1]({landing}) ).", "The plan is owned by the sales team."),
+        ("Owned by the sales team [1]({landing}) and run by finance.", "Owned by the sales team and run by finance."),
+        # Descriptive text stays in the sentence, without the link.
+        ("The plan is owned by the sales team ([the owner record]({landing})).", "The plan is owned by the sales team (the owner record)."),
+    ])
+    def test_a_record_page_link_whose_record_is_missing_keeps_no_link(self, normalize, answer, expected) -> None:
+        """A record page link no citation could be made for (a run resumed after an approval card lacks
+        the record its first part read) leaves no link: a reader would draw it as a badge carrying
+        another citation's number and title."""
+        landing = f"{BASE}/record/{REC1}"
+        result_text, citations = normalize(answer.format(landing=landing), [], records=[])
+        assert citations == []
+        assert result_text == expected
+
+    @pytest.mark.parametrize("normalize", [normalize_citations_and_chunks, normalize_citations_and_chunks_for_agent])
+    def test_two_record_page_links_side_by_side_that_go_stay_two_words(self, normalize) -> None:
+        first, second = f"{BASE}/record/{REC1}", f"{BASE}/record/{REC2}"
+        result_text, citations = normalize(f"Open items: [renewal terms]({first})[invoice dates]({second}).", [], records=[])
+        assert citations == []
+        assert result_text == "Open items: renewal terms invoice dates."
+
+    @pytest.mark.parametrize("normalize", [normalize_citations_and_chunks, normalize_citations_and_chunks_for_agent])
+    def test_the_other_citations_keep_their_numbers_when_a_record_page_link_goes(self, normalize) -> None:
+        landing = f"{BASE}/record/{REC1}"
+        wiki = "https://en.wikipedia.org/wiki/Larch"
+        web = [{"url": wiki, "title": "Larch - Wikipedia", "content": "The larch is a deciduous conifer."}]
+        answer = f"Owned by the sales team [1]({landing}). The larch is a conifer [2]({wiki}). See [the site](https://example.com/q)."
+        result_text, citations = normalize(answer, [], records=[], web_records=web)
+        assert result_text == f"Owned by the sales team. The larch is a conifer [1]({wiki}). See [the site](https://example.com/q)."
+        assert [c["chunkIndex"] for c in citations] == [1]
+
 
 class _TruthyButEmptyStr:
     """Test double whose bool is True but str() returns empty."""
