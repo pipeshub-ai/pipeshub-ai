@@ -36,6 +36,7 @@ LangChain and SDK types, so both transport families apply the same rules:
 from __future__ import annotations
 
 import hashlib
+import hmac
 import os
 import re
 import threading
@@ -46,6 +47,7 @@ from urllib.parse import urlparse
 
 from harness_core.models.capabilities import model_capabilities
 from harness_core.models.openai_hosts import is_openai_api_host
+from harness_core.security.derived_keys import derive_purpose_key
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -166,14 +168,16 @@ def anthropic_breakpoint(ttl: str = "5m") -> dict[str, str]:
 def routing_key(
     org_id: str, conversation_id: str | None, shards: int, *, family: str = "", principal_id: str = "",
 ) -> str:
-    """``prompt_cache_key`` for one conversation: the org (hashed, so no id
-    leaves the process) and a shard of the conversation. With ``principal_id``
-    the hashed scope is the org and that principal, so a cache route holds one
-    person's content. Stable across processes, unlike ``hash()``."""
-    scope = f"{org_id or ''}\x00{principal_id}" if principal_id else (org_id or "")
-    org = hashlib.sha256(scope.encode()).hexdigest()[:12]
+    """``prompt_cache_key`` for one conversation: a keyed hash of the org and
+    the acting principal, and a shard of the conversation. A cache holds one
+    principal's content, so its key is scoped to that principal, and nobody
+    can compute or guess another's: the key is an HMAC under a key derived from
+    the install secret, and reveals neither id. Stable across processes,
+    unlike ``hash()``."""
+    msg = f"{org_id or ''}\x00{principal_id or ''}".encode()
+    scope = hmac.new(derive_purpose_key("prompt-cache-key"), msg, hashlib.sha256).hexdigest()[:16]
     shard = zlib.crc32((conversation_id or "").encode()) % max(1, shards)
-    return f"pipeshub:{org}:{family}:{shard}" if family else f"pipeshub:{org}:{shard}"
+    return f"pipeshub:{scope}:{family}:{shard}" if family else f"pipeshub:{scope}:{shard}"
 
 
 def anthropic_top_level_allowed(base_url: str | None) -> bool:
