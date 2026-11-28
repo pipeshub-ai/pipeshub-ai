@@ -10,7 +10,7 @@ import json
 import logging
 import os
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 import google_behaviour_fakes as fakes
 import googleapiclient.http
@@ -129,17 +129,25 @@ class FaithfulWorld(DriveWorld):
 
 
 class Sim:
-    def __init__(self, provider: object, org: str, http: object) -> None:
+    """One organization: its Google account (``admin``, ``people`` and ``domain``) and its PipesHub org, which also
+    holds ``guests``, people of other accounts who sign in to it. With ``monkeypatch`` it puts its own Google in
+    place before each run, so two of them can share a graph."""
+
+    def __init__(
+        self, provider: object, org: str, http: object, *, admin: str = ADMIN, people: tuple[str, ...] = PEOPLE,
+        domain: str = "example.com", guests: tuple[str, ...] = (), monkeypatch: pytest.MonkeyPatch | None = None,
+    ) -> None:
         self.provider, self.org, self.http = provider, org, http
+        self.admin, self.people, self.monkeypatch = admin, people, monkeypatch
         self.connector_id = f"conn-{uuid.uuid4().hex[:8]}"
-        self.world = FaithfulWorld(http)
-        self.world.admin_email = ADMIN
+        self.world = FaithfulWorld(http, domain=domain)
+        self.world.admin_email = admin
         self.world.hide_unreadable_parents = True
-        for email in (ADMIN, *PEOPLE):
+        for email in (admin, *people):
             self.world.add_user(email)
         self.processor, _ = build_processor(provider, org)
         self.connector: GoogleDriveTeamConnector | None = None
-        self.user_ids = {e: f"u{i}{uuid.uuid4().hex[:8]}" for i, e in enumerate(PEOPLE)}
+        self.user_ids = {e: f"u{i}{uuid.uuid4().hex[:8]}" for i, e in enumerate((*people, *guests))}
         self.incomplete = False
         self.config: dict = {}
 
@@ -160,12 +168,18 @@ class Sim:
         )
 
     async def sync(self) -> None:
+        if self.monkeypatch is not None:
+            self.http.install(self.monkeypatch)
+        with self.bound():
+            await self._sync()
+
+    async def _sync(self) -> None:
         if self.connector is None:
             key = rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
                 serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode()
             account = {"type": "service_account", "project_id": "sim", "private_key_id": "k", "private_key": key,
                        "client_email": "sync@sim.iam.gserviceaccount.com", "client_id": "1", "token_uri": fakes.TOKEN_URI}
-            self.config["auth"] = {"serviceAccountJson": json.dumps(account), "adminEmail": ADMIN}
+            self.config["auth"] = {"serviceAccountJson": json.dumps(account), "adminEmail": self.admin}
             config = fakes.FakeConfigService(self.connector_id, self.config)
             self.connector = GoogleDriveTeamConnector(
                 logging.getLogger("drive-sim"), self.processor, self.processor.data_store_provider, config,
@@ -177,30 +191,37 @@ class Sim:
         except DriveSyncIncomplete:
             self.incomplete = True
 
+    def bound(self) -> contextlib.AbstractContextManager:
+        """This org as the ambient one, as its sync job and its users' requests run."""
+        return bind(OrgContext(self.org, None, "job", "job:test", "t"))
+
     async def close(self) -> None:
         if self.connector is not None:
-            await self.connector.cleanup()
+            with self.bound():
+                await self.connector.cleanup()
 
     async def full_resync(self, *, unlink: bool = True) -> None:
         """A full sync as the sync runner does it: every sync point of the connector goes first, and what the run
         did not write loses its links after it (not when the run skipped part of the source: ``unlink``)."""
-        _, deleted = await self.provider.delete_sync_points_by_connector_id(connector_id=self.connector_id)
-        assert deleted
-        seen = self.processor.begin_full_sync_run(self.connector_id)
-        try:
-            await self.sync()
-            if unlink:
-                await _unlink_what_full_sync_missed(
-                    self.connector, self.connector_id, self.provider, logging.getLogger("drive-sim"), seen)
-        finally:
-            self.processor.end_full_sync_run(self.connector_id, seen)
+        with self.bound():
+            _, deleted = await self.provider.delete_sync_points_by_connector_id(connector_id=self.connector_id)
+            assert deleted
+            seen = self.processor.begin_full_sync_run(self.connector_id)
+            try:
+                await self.sync()
+                if unlink:
+                    await _unlink_what_full_sync_missed(
+                        self.connector, self.connector_id, self.provider, logging.getLogger("drive-sim"), seen)
+            finally:
+                self.processor.end_full_sync_run(self.connector_id, seen)
 
     def filters(self, **sync_values: object) -> None:
         self.config["filters"] = {"sync": {"values": sync_values}}
 
     async def record(self, file_id: str) -> object:
-        return await self.processor.get_record_by_external_id(
-            connector_id=self.connector_id, external_record_id=file_id)
+        with self.bound():
+            return await self.processor.get_record_by_external_id(
+                connector_id=self.connector_id, external_record_id=file_id)
 
     async def targets(self, node: str, edges: str) -> set[str]:
         found = await self.provider.get_edges_from_node(node, edges)
@@ -208,15 +229,16 @@ class Sim:
 
     async def opens(self, email: str, file_id: str) -> bool:
         record = await self.record(file_id)
-        return record is not None and bool(
-            await self.provider.check_record_access_with_details(self.user_ids[email], self.org, record.id))
+        with self.bound():
+            return record is not None and bool(
+                await self.provider.check_record_access_with_details(self.user_ids[email], self.org, record.id))
 
     async def wrong(self, files: list[str] | None = None) -> list[str]:
         """Every user and file where PipesHub and Google disagree."""
         out = []
         roots = {u.root_id for u in self.world.users.values()} | set(self.world.drives)
         for file_id in files or [f for f in self.world.files if f not in roots]:
-            for email in PEOPLE:
+            for email in self.people:
                 google, here = self.world.can_open(file_id, email), await self.opens(email, file_id)
                 if google != here:
                     out.append(f"{'LEAK' if here else 'LOST'} {email.split('@')[0]} {file_id}")
@@ -229,36 +251,53 @@ STORES = ["arango", "neo4j", *(["postgres"] if os.environ.get("PG_CORE_URL") els
 
 
 @pytest.fixture(params=STORES)
-async def sim(
+async def graph(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, arango_provider: object, neo4j_provider: object,
-) -> AsyncIterator[Sim]:
+) -> AsyncIterator[Callable[[str], object]]:
+    """The graph each org's sync writes to, by org: one store, as on one deployment."""
     if not os.environ.get("SECRET_KEY"):
         monkeypatch.setenv("SECRET_KEY", "simulated")
-    org = uuid.uuid4().hex[:24]
     real_sleep = asyncio.sleep
 
     async def no_wait(_delay: float, *_a: object, **_k: object) -> None:
         await real_sleep(0)
 
-    http = fakes.FakeGoogleHttp()
-    http.install(monkeypatch)
     monkeypatch.setattr(asyncio, "sleep", no_wait)
     monkeypatch.setattr(googleapiclient.http, "time", type("T", (), {"sleep": staticmethod(lambda _s: None)}))
-    async with contextlib.AsyncExitStack() as stack:
-        if request.param == "postgres":
-            from app.core.db import DbConfig, KernelDB
-            from app.services.graph_db.postgres.provider import PostgresGraphProvider
-            db = KernelDB(DbConfig.from_env("connectors"))
-            stack.push_async_callback(db.close)
-            await db.start()
-            provider = OrgBound(PostgresGraphProvider(logging.getLogger("pg-graph"), db), org)
-        else:
-            provider = arango_provider if request.param == "arango" else neo4j_provider
-        world = Sim(provider, org, http)
-        with bind(OrgContext(org, None, "job", "job:test", "t")):
-            stack.push_async_callback(world.close)
-            await world.seed()
-            yield world
+    if request.param == "postgres":
+        from app.core.db import DbConfig, KernelDB
+        from app.services.graph_db.postgres.provider import PostgresGraphProvider
+        db = KernelDB(DbConfig.from_env("connectors"))
+        await db.start()
+        try:
+            pg = PostgresGraphProvider(logging.getLogger("pg-graph"), db)
+            yield lambda org: OrgBound(pg, org)
+        finally:
+            await db.close()
+    else:
+        provider = arango_provider if request.param == "arango" else neo4j_provider
+        yield lambda _org: provider
+
+
+@contextlib.asynccontextmanager
+async def _org(sim: Sim, *, hold: bool = True) -> AsyncIterator[Sim]:
+    """The org seeded; with ``hold`` its context stays bound for the test, which a second org cannot nest in."""
+    try:
+        with sim.bound():
+            await sim.seed()
+        with sim.bound() if hold else contextlib.nullcontext():
+            yield sim
+    finally:
+        await sim.close()
+
+
+@pytest.fixture
+async def sim(graph: Callable[[str], object], monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Sim]:
+    org = uuid.uuid4().hex[:24]
+    http = fakes.FakeGoogleHttp()
+    http.install(monkeypatch)
+    async with _org(Sim(graph(org), org, http)) as world:
+        yield world
 
 
 def foreign(sim: Sim, members: dict[str, str], files: int = 1) -> None:
@@ -720,3 +759,159 @@ async def test_a_leaver_left_out_of_a_cut_user_listing_keeps_a_file_shared_with_
     sim.world.cut_user_listing = None
     await sim.sync()
     assert await sim.wrong() == []
+
+
+PARTNER_ADMIN, DAVE, ERIN = (f"{n}@partner.example" for n in ("admin", "dave", "erin"))
+EDGES = tuple(e.value for e in (
+    CollectionNames.PERMISSION, CollectionNames.BELONGS_TO, CollectionNames.INHERIT_PERMISSIONS,
+    CollectionNames.ENTITY_RELATIONS, CollectionNames.NODE_RELATIONS,
+))
+
+
+class Partnership:
+    """The partner's account owns the drive and syncs it as its own; ours reaches it as a foreign drive. Both Google
+    accounts see the same drive, so every change is made in both."""
+
+    def __init__(self, ours: Sim, theirs: Sim) -> None:
+        self.ours, self.theirs = ours, theirs
+
+    def change(self, apply: Callable[[FaithfulWorld], object]) -> None:
+        for sim in (self.ours, self.theirs):
+            apply(sim.world)
+
+    def member(self, email: str, role: str | None) -> None:
+        def apply(world: FaithfulWorld) -> None:
+            members = world.drives[FOREIGN]["members"]
+            if role is None:
+                members.pop(email, None)
+            else:
+                members[email] = role
+        self.change(apply)
+
+    async def sync(self, *, ours_first: bool = True) -> None:
+        for sim in (self.ours, self.theirs) if ours_first else (self.theirs, self.ours):
+            await sim.sync()
+            assert not sim.incomplete
+
+    async def nodes(self, sim: Sim) -> set[str]:
+        out = {f"{CollectionNames.USERS.value}/{key}" for key in sim.user_ids.values()}
+        out |= {f"{CollectionNames.APPS.value}/{sim.connector_id}", f"{CollectionNames.ORGS.value}/{sim.org}"}
+        with sim.bound():
+            group = await sim.processor.get_record_group_by_external_id(sim.connector_id, FOREIGN)
+        if group is not None:
+            out.add(f"{CollectionNames.RECORD_GROUPS.value}/{group.id}")
+        for file_id in sim.world.files:
+            record = await sim.record(file_id)
+            if record is not None:
+                out.add(f"{CollectionNames.RECORDS.value}/{record.id}")
+        return out
+
+    async def crossings(self) -> list[str]:
+        """Every edge from a node of one org to a node of the other."""
+        ours, theirs = await self.nodes(self.ours), await self.nodes(self.theirs)
+        out = []
+        for sim, mine, other in ((self.ours, ours, theirs), (self.theirs, theirs, ours)):
+            for node in sorted(mine):
+                for edges in EDGES:
+                    with sim.bound():
+                        ends = {_end(e, "to") for e in await sim.provider.get_edges_from_node(node, edges)}
+                        ends |= {_end(e, "from") for e in await sim.provider.get_edges_to_node(node, edges)}
+                    out += [f"{node} -{edges}- {end}" for end in sorted(ends & other)]
+        return out
+
+    async def check(self) -> None:
+        assert await self.ours.wrong() == []
+        assert await self.theirs.wrong() == []
+        assert await self.crossings() == []
+
+
+def _end(edge: dict, side: str) -> str:
+    return edge.get(f"_{side}") or f"{edge.get(f'{side}_collection')}/{edge.get(f'{side}_id')}"
+
+
+@pytest.fixture
+async def partnership(graph: Callable[[str], object], monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Partnership]:
+    """Two orgs on one graph, each with its own Google account. Alice signs in to both orgs under the same address."""
+    org_a, org_b = uuid.uuid4().hex[:24], uuid.uuid4().hex[:24]
+    ours = Sim(graph(org_a), org_a, fakes.FakeGoogleHttp(), monkeypatch=monkeypatch)
+    theirs = Sim(graph(org_b), org_b, fakes.FakeGoogleHttp(), admin=PARTNER_ADMIN, people=(DAVE, ERIN),
+                 domain="partner.example", guests=(ALICE,), monkeypatch=monkeypatch)
+    async with _org(ours, hold=False), _org(theirs, hold=False):
+        yield Partnership(ours, theirs)
+
+
+async def test_a_partners_shared_drive_through_its_life_on_both_orgs(partnership: Partnership) -> None:
+    """The run a live test of a partner's drive would make, on simulated Google: after every step each org's users
+    open exactly what Google opens for them, and no edge joins the two orgs."""
+    p, ours = partnership, partnership.ours
+    members = {DAVE: "organizer", ERIN: "reader", ALICE: "writer", BOB: "reader"}
+    p.change(lambda w: w.add_drive(FOREIGN, "Partner drive", members))
+    ours.world.drives[FOREIGN]["foreign"] = True
+    p.change(lambda w: w.add_item("f0", "f0.txt", parent=FOREIGN))
+    p.change(lambda w: w.add_item("f1", "f1.txt", parent=FOREIGN))
+    p.change(lambda w: w.folder("dir", "dir", parent=FOREIGN))
+    p.change(lambda w: w.add_item("in", "in.txt", parent="dir"))
+    await p.sync()
+    await p.check()
+    assert await ours.opens(ALICE, "in") and await ours.opens(BOB, "f0") and not await ours.opens(CAROL, "f0")
+    with ours.bound():
+        ours_group = await ours.processor.get_record_group_by_external_id(ours.connector_id, FOREIGN)
+    with p.theirs.bound():
+        theirs_group = await p.theirs.processor.get_record_group_by_external_id(p.theirs.connector_id, FOREIGN)
+    assert ours_group.description == FOREIGN_SHARED_DRIVE_DESCRIPTION
+    assert theirs_group.description != FOREIGN_SHARED_DRIVE_DESCRIPTION
+
+    # New work in the drive, and one file shared with Carol, who is not a member.
+    p.change(lambda w: w.add_item("f2", "f2.txt", parent=FOREIGN))
+    p.change(lambda w: w.share("f1", {"type": "user", "role": "reader", "emailAddress": CAROL}))
+    await p.sync(ours_first=False)
+    await p.check()
+    assert await ours.opens(CAROL, "f1") and not await ours.opens(CAROL, "f2")
+
+    # The partner limits a folder and shares one file in it with Alice alone.
+    p.change(lambda w: w.limit("dir"))
+    p.change(lambda w: w.add_item("secret", "secret.txt", parent="dir",
+                                  perms=[{"type": "user", "role": "writer", "emailAddress": ALICE}]))
+    await p.sync()
+    await p.check()
+    assert await ours.opens(ALICE, "secret") and not await ours.opens(BOB, "secret") and not await ours.opens(BOB, "in")
+
+    # Bob leaves; then Alice leaves, keeping a file shared with her.
+    p.member(BOB, None)
+    await p.sync()
+    await p.check()
+    assert not await ours.opens(BOB, "f0")
+    p.change(lambda w: w.share("f0", {"type": "user", "role": "reader", "emailAddress": ALICE}))
+    p.member(ALICE, None)
+    await p.sync(ours_first=False)
+    await p.check()
+    assert await ours.opens(ALICE, "f0") and not await ours.opens(ALICE, "f2")
+
+    # Our full resync, then Alice comes back.
+    await ours.full_resync()
+    await p.check()
+    p.member(ALICE, "reader")
+    await p.sync()
+    await p.check()
+    assert await ours.opens(ALICE, "f2")
+
+    # Our admin leaves the drive out of the sync: it goes from our org only.
+    ours.filters(drive_ids={"operator": "not_in", "type": "list", "value": [FOREIGN]})
+    await p.sync()
+    for file_id in ("f0", "f1", "f2", "in", "secret"):
+        assert await ours.record(file_id) is None
+        assert await p.theirs.record(file_id) is not None
+    assert await p.theirs.wrong() == [] and await p.crossings() == []
+
+    # Brought back by a full resync, as a filter change makes.
+    ours.config.pop("filters")
+    await ours.full_resync()
+    await p.sync()
+    await p.check()
+
+    # The last of our members leaves; a full resync keeps nothing open to them.
+    p.member(ALICE, None)
+    await p.sync()
+    await ours.full_resync()
+    await p.sync()
+    await p.check()
