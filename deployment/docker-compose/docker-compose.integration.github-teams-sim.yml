@@ -1,0 +1,82 @@
+# GitHub simulator for the github_teams_sim suite (integration-tests/connectors/github_teams/github_teams_sim_*_test.py).
+# An override, used after the stack's own file:
+#
+#   deployment/docker-compose/sim-tls/make-certs.sh "$SIM_TLS_DIR"
+#   docker compose -f docker-compose.integration.neo4j.yml -f docker-compose.integration.github-teams-sim.yml up -d
+#
+# The connector calls fixed hosts over HTTPS: https://api.github.com (REST and GraphQL), https://github.com (OAuth
+# token exchange, upload links) and https://private-user-images.githubusercontent.com (the signed storage an upload
+# redirects to). Nothing in the product moves them, so github-tls takes those names as network aliases and answers them
+# with a certificate from a CA made for the run, and pipeshub-ai trusts that CA through SSL_CERT_FILE (httpx, aiohttp and
+# OpenSSL all read it). Only the hosts the connector calls are aliased; the other names of the shared certificate
+# (uploads.github.com, raw.githubusercontent.com, ...) stay with the real DNS, so a call to one of them is not captured
+# and the suite's check of the connector's own host list (GH-SIM-NET-002) fails if the connector ever starts using one.
+#
+# Fail closed: without the aliases the names resolve to the real GitHub. github-guard sits on the stack's network and is
+# healthy only while the names resolve to github-tls's own address there, and pipeshub-ai starts only after it is. The
+# suite checks it again inside the pipeshub-ai container before any sync (connectors/github_teams/sim_world.py,
+# `github_front`). Never stop or recreate github-tls while a connector syncs. Every call to these names from this stack
+# goes to the simulator, so no suite that needs the real GitHub can run on it. nginx resolves github-sim once, when it
+# starts: restart github-tls after recreating github-sim.
+services:
+  github-sim:
+    image: ${GITHUB_SIM_IMAGE:-pipeshub/connectors-simulator:it}
+    restart: always
+    command: ["github"]
+    environment:
+      CONNSIM_SOURCES: github
+      # The world lives in one process's memory.
+      CONNSIM_WORKERS: "1"
+    # 8116, the simulator's own port: 8101-8103, 8106-8115 and 8117-8118 are the other simulators' in the same stack.
+    ports:
+      - "127.0.0.1:8116:80"
+    mem_limit: 512m
+
+  github-tls:
+    image: nginx:1.27.5-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    restart: always
+    depends_on:
+      github-sim:
+        condition: service_healthy
+    volumes:
+      - ./github-teams-sim/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ${SIM_TLS_DIR:?run sim-tls/make-certs.sh and set SIM_TLS_DIR}/tls.pem:/etc/nginx/tls/tls.pem:ro
+      - ${SIM_TLS_DIR}/tls.key:/etc/nginx/tls/tls.key:ro
+    networks:
+      default:
+        aliases:
+          - api.github.com
+          - github.com
+          - private-user-images.githubusercontent.com
+    mem_limit: 128m
+
+  # Healthy only while the three names resolve, on this network, to the TLS front and to nothing else.
+  github-guard:
+    image: nginx:1.27.5-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    restart: always
+    depends_on:
+      github-tls:
+        condition: service_started
+    command: ["sleep", "infinity"]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          front=$$(getent hosts github-tls | cut -d' ' -f1) && [ -n "$$front" ] &&
+          [ "$$(getent hosts api.github.com | cut -d' ' -f1)" = "$$front" ] &&
+          [ "$$(getent hosts github.com | cut -d' ' -f1)" = "$$front" ] &&
+          [ "$$(getent hosts private-user-images.githubusercontent.com | cut -d' ' -f1)" = "$$front" ]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    mem_limit: 32m
+
+  pipeshub-ai:
+    environment:
+      - SSL_CERT_FILE=/etc/pipeshub-it/ca-bundle.pem
+    volumes:
+      - ${SIM_TLS_DIR}/ca-bundle.pem:/etc/pipeshub-it/ca-bundle.pem:ro
+    depends_on:
+      github-guard:
+        condition: service_healthy

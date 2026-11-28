@@ -75,6 +75,13 @@ from connectors.github_teams.github_test_utils import (  # type: ignore[import-n
     teardown_connector,
 )
 
+from connectors.github_teams.sim_world import (  # noqa: F401 - fixtures of the github_teams_sim suite (GITHUB_TEAMS_SIM_ITS.md)
+    github_front,
+    github_sim,
+    github_sim_people,
+    github_world,
+)
+
 logger = logging.getLogger("github-teams-conftest")
 
 
