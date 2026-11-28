@@ -121,7 +121,7 @@ async def _file_blocks(
         return await _choose_records(graph_provider, org_id, keys, connector_id, file_path=file_path, repo=repo,
                                      access=access)
 
-    record_ids, path = await _records_for_path(graph_provider, org_id, file_path, choose=choose)
+    record_ids, path = await _records_for_path(graph_provider, org_id, file_path, choose=choose, connector_id=connector_id, repo=repo)
     if not record_ids:
         return None
     rows = await graph_provider.get_nodes_by_field_in(

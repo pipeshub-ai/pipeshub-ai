@@ -30,12 +30,15 @@ from app.services.graph_db.common.utils import (
 from app.services.graph_db.interface.graph_db_provider import UNSUPPORTED_PAGE_FIELDS
 from app.services.graph_db.postgres.base import (
     _VALIDATOR,
+    CODE_FILE,
+    SCOPE_FIELDS,
     PgBase,
     _arango,
     _doc,
     _j,
     _node,
     _pgbool,
+    _sync_code_file_scope,
 )
 from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -76,6 +79,15 @@ async def _upsert_docs(tx: Tx, org: str, coll: str, docs: list[dict]) -> None:
                      org, coll, _j([{"id": i, "doc": by_id[i]} for i in sorted(by_id)]))
 
 
+_UPSERT_RECORD_DOCS = """/* pipeshub:graph.records_upsert_record_docs */ WITH x AS (SELECT * FROM jsonb_to_recordset($3::jsonb) AS x(id text, doc jsonb))
+        INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, $2, x.id, (SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(x.doc) e WHERE e.value <> 'null'::jsonb) FROM x ORDER BY x.id
+        ON CONFLICT (org_id, coll, id) DO UPDATE SET doc = (SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(
+            graph.nodes.doc || (SELECT (x2.doc - $4::text[]) || CASE
+                WHEN $5::boolean AND coalesce((graph.nodes.doc->>'isPlaceholder')::boolean, false) AND x2.doc->>'isPlaceholder' = 'false'
+                     AND jsonb_typeof(x2.doc->'createdAtTimestamp') = 'number' AND (x2.doc->>'createdAtTimestamp')::numeric > 0
+                THEN jsonb_build_object('createdAtTimestamp', CASE WHEN jsonb_typeof(graph.nodes.doc->'createdAtTimestamp') = 'number' AND (graph.nodes.doc->>'createdAtTimestamp')::numeric > 0
+                    THEN LEAST((graph.nodes.doc->>'createdAtTimestamp')::numeric, (x2.doc->>'createdAtTimestamp')::numeric) ELSE (x2.doc->>'createdAtTimestamp')::numeric END)
+                ELSE '{}'::jsonb END FROM x x2 WHERE x2.id = EXCLUDED.id)) e WHERE e.value <> 'null'::jsonb)"""
 async def _upsert_record_docs(tx: Tx, org: str, docs: list[dict]) -> None:
     """``_upsert_docs`` for the ``records`` collection, with the insert-only fields.
 
@@ -94,16 +106,9 @@ async def _upsert_record_docs(tx: Tx, org: str, docs: list[dict]) -> None:
     rows = [{"id": i, "doc": record_insert_doc(by_id[i])} for i in sorted(by_id)]
     insert_only = record_created_at_insert_only()
     dropped = list(RECORD_UPDATE_DROPPED_FIELDS) if insert_only else ["incarnationId"]
-    await tx.execute("""/* pipeshub:graph.records_upsert_record_docs */ WITH x AS (SELECT * FROM jsonb_to_recordset($3::jsonb) AS x(id text, doc jsonb))
-        INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, $2, x.id, (SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(x.doc) e WHERE e.value <> 'null'::jsonb) FROM x ORDER BY x.id
-        ON CONFLICT (org_id, coll, id) DO UPDATE SET doc = (SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(
-            graph.nodes.doc || (SELECT (x2.doc - $4::text[]) || CASE
-                WHEN $5::boolean AND coalesce((graph.nodes.doc->>'isPlaceholder')::boolean, false) AND x2.doc->>'isPlaceholder' = 'false'
-                     AND jsonb_typeof(x2.doc->'createdAtTimestamp') = 'number' AND (x2.doc->>'createdAtTimestamp')::numeric > 0
-                THEN jsonb_build_object('createdAtTimestamp', CASE WHEN jsonb_typeof(graph.nodes.doc->'createdAtTimestamp') = 'number' AND (graph.nodes.doc->>'createdAtTimestamp')::numeric > 0
-                    THEN LEAST((graph.nodes.doc->>'createdAtTimestamp')::numeric, (x2.doc->>'createdAtTimestamp')::numeric) ELSE (x2.doc->>'createdAtTimestamp')::numeric END)
-                ELSE '{}'::jsonb END FROM x x2 WHERE x2.id = EXCLUDED.id)) e WHERE e.value <> 'null'::jsonb)""",
-                     org, _RECORDS, _j(rows), dropped, insert_only)
+    await tx.execute(_UPSERT_RECORD_DOCS, org, _RECORDS, _j(rows), dropped, insert_only)
+    # The code records (or, a partial document naming no type, maybe one) whose write sets their scope take it to their code files.
+    await _sync_code_file_scope(tx, org, [i for i in by_id if by_id[i].get("recordType", CODE_FILE) == CODE_FILE and any(f in by_id[i] for f in SCOPE_FIELDS)])
 
 
 _RECORD_BY_EXTERNAL_PAGE = 100       # the function's LIMIT

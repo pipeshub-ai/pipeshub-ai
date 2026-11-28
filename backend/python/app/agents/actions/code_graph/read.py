@@ -164,6 +164,7 @@ async def _load_blob(
                 graph_provider, org_id, ids, connector_id,
                 file_path=file_path, repo=repo, access=access,
             ),
+            connector_id=connector_id, repo=repo,
         )
         record_id = record_ids[0] if record_ids else None
         if record_id is None:

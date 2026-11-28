@@ -14,8 +14,10 @@ import pytest
 
 from app.schema.arango.documents import (
     APP_SCHEMA_GENERATION,
+    RECORD_GROUP_SCHEMA_GENERATION,
     RECORD_SCHEMA_GENERATION,
     app_schema,
+    record_group_schema,
     record_schema,
 )
 from app.services.graph_db.arango.record_schema_guard import (
@@ -33,6 +35,10 @@ PINNED = {
     7: "1e9862aa1f14c599127cd4014e6cbeef6c75f1136661ceed458d5f832f7e8add",  # + indexedMd5, pendingTaxonomyRefs
     8: "38cb8cba9a68b08cd185a0e5384b2f785d564d87d4975ceb30b208614f957b7b",  # + CLOUDFLARE R2 connectorName
     9: "eea21e16acad8d9b84cbe912b9c2d9fb1e7919bfc4739b33685ce402f1ddef82",  # + editionFields, chat-attachment uploader fields
+}
+# Change record_group_schema's rule -> bump RECORD_GROUP_SCHEMA_GENERATION, then pin the new hash here.
+RECORD_GROUPS_PINNED = {
+    1: "dc77da539f5b1945ade1c17b978919b1eea54a4ad46b0a210670978ef85114d6",  # + repoKey
 }
 # Change app_schema's rule -> bump APP_SCHEMA_GENERATION, then pin the new hash here.
 APPS_PINNED = {
@@ -84,3 +90,11 @@ def test_only_the_records_schema_message_is_a_narrowing() -> None:
     assert is_record_schema_error('{"errorNum":1620,"errorMessage":"Document does not match the record schema."}')
     assert not is_record_schema_error('{"errorNum":1620,"errorMessage":"Document does not match the file record schema."}')
     assert not is_record_schema_error('{"errorNum":1200,"errorMessage":"Document does not match the record schema."}')
+
+
+def test_the_record_groups_rule_hash_is_pinned_to_its_generation() -> None:
+    assert RECORD_GROUP_SCHEMA_GENERATION in RECORD_GROUPS_PINNED, "a new generation needs its rule hash pinned here"
+    assert _hash(record_group_schema) == RECORD_GROUPS_PINNED[RECORD_GROUP_SCHEMA_GENERATION], (
+        "record_group_schema changed: raise RECORD_GROUP_SCHEMA_GENERATION and pin the new hash in this file"
+    )
+    assert generation_of_schema(record_group_schema) == RECORD_GROUP_SCHEMA_GENERATION

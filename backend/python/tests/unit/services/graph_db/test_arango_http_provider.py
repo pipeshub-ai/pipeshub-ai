@@ -5098,7 +5098,10 @@ class TestEnsureIndexes:
         }
         # A file's path lives here, not on its blocks, so this backs every
         # path-prefix query the code tools make.
-        assert code_files == {("orgId", "filePath")}
+        assert code_files == {
+            ("orgId", "filePath"),
+            ("orgId", "filePath", "connectorId", "recordGroupId"),  # a path within its connector and repo
+        }
 
 
 # ---------------------------------------------------------------------------

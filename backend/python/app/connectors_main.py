@@ -1200,6 +1200,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as e:
             logger.error(f"❌ Code block nameFolded backfill failed: {e}", exc_info=True)
 
+        # A path is looked up within its connector and repo once this has run; meanwhile across the org, as before.
+        try:
+            from app.migrations.code_path_scope_migration import (
+                run_code_path_scope_backfill,
+            )
+
+            await run_code_path_scope_backfill(graph_provider, logger)
+        except Exception as e:
+            error_class.log_failure(logger, "code_path_scope.backfill.failed", e, include_error_text=False)
+
         # After nameFolded: re-indexes repos whose blocks predate this code
         # graph version, once per version.
         try:

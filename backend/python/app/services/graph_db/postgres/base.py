@@ -347,19 +347,44 @@ def _match(filters: dict | None, in_filters: dict | None, first: int, n: str = "
     return sql, args
 
 
+# A code file carries its record's connector and record group (the scoped path lookup reads them). A write that sets either on a record
+# copies them onto its code file in the same transaction, after the write: the copy reads the record as this transaction left it (its row
+# is locked until the commit, so a concurrent writer waits and copies after it), and writes only a code file that differs.
+SCOPE_FIELDS = ("connectorId", "recordGroupId")
+CODE_FILE = "CODE_FILE"
+_SYNC_CODE_FILE_SCOPE = """/* pipeshub:graph.sync_code_file_scope */ UPDATE graph.nodes c
+    SET doc = c.doc || jsonb_build_object('connectorId', r.doc->'connectorId', 'recordGroupId', r.doc->'recordGroupId')
+    FROM graph.nodes r WHERE c.org_id = $1 AND c.coll = 'codeFiles' AND c.id = ANY($2::text[]) AND r.org_id = $1 AND r.coll = 'records' AND r.id = c.id
+      AND r.doc->>'recordType' = 'CODE_FILE'
+      AND (c.doc->'connectorId' IS DISTINCT FROM r.doc->'connectorId' OR c.doc->'recordGroupId' IS DISTINCT FROM r.doc->'recordGroupId')"""
+
+
+async def _sync_code_file_scope(tx: Tx, org: str, record_ids: list[str]) -> None:
+    """Copy the scope of these records, as this transaction left them, onto the code files of the code records among them."""
+    if record_ids:
+        await tx.execute(_SYNC_CODE_FILE_SCOPE, org, sorted(set(record_ids)))
+
+
 def _hot(collection: str, filters: dict | None) -> tuple[str, tuple[str, ...]] | None:
     """The vetted read (graph_0003) that serves a lookup by an indexed key of the document, as ``(function, its leading arguments)``, or None when the
     filters name none of them (or exceed what the function accepts). Row-level security hides the expression indexes (graph_0001) from a plain statement."""
     f = filters or {}
     if not 0 < len(f) <= 32 or not all(0 < len(k) <= 200 for k in f):
         return None
-    rec, conn, name, path = (f.get(k) if isinstance(f.get(k), str) else "" for k in ("recordId", "connectorId", "nameFolded", "filePath"))
+    rec, conn, name, path, group, key, parent = (f.get(k) if isinstance(f.get(k), str) else "" for k in (
+        "recordId", "connectorId", "nameFolded", "filePath", "recordGroupId", "repoKey", "parentExternalGroupId"))
     if collection == "blocks" and 0 < len(rec) <= 200:
         return "blocks_by_record", (rec,)
     if collection == "blocks" and 0 < len(conn) <= 200 and 0 < len(name) <= 1000:
         return "blocks_by_name", (conn, name)
+    if collection == "codeFiles" and 0 < len(path) <= 4096 and 0 < len(conn) <= 200:     # graph_0024: within the connector, and the repo
+        return ("code_files_by_repo", (conn, group, path)) if 0 < len(group) <= 200 else ("code_files_by_scope", (conn, path))
     if collection == "codeFiles" and 0 < len(path) <= 4096:
         return "code_files_by_path", (path,)
+    if collection == "recordGroups" and "repoKey" in f and isinstance(f["repoKey"], str) and len(key) <= 1000:
+        return "record_groups_by_repo_key", (key,)
+    if collection == "recordGroups" and 0 < len(conn) <= 200 and 0 < len(parent) <= 1000:
+        return "record_groups_by_parent", (conn, parent)
     return None
 
 

@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
 from app.services.graph_db.postgres.base import (
     _VALIDATOR,
+    SCOPE_FIELDS,
     PgBase,
     _arango,
     _doc,
@@ -29,6 +30,7 @@ from app.services.graph_db.postgres.base import (
     _hot,
     _j,
     _node,
+    _sync_code_file_scope,
 )
 
 
@@ -45,6 +47,10 @@ _HOT_SQL = {
     "blocks_by_record": "/* pipeshub:graph.blocks_by_record */ SELECT node_id, doc FROM graph.blocks_by_record($1, $2::text[], $3::jsonb[], $4, $5, $6)",
     "blocks_by_name": "/* pipeshub:graph.blocks_by_name */ SELECT node_id, doc FROM graph.blocks_by_name($1, $2, $3::text[], $4::jsonb[], $5, $6, $7)",
     "code_files_by_path": "/* pipeshub:graph.code_files_by_path */ SELECT node_id, doc FROM graph.code_files_by_path($1, $2::text[], $3::jsonb[], $4, $5, $6)",
+    "code_files_by_scope": "/* pipeshub:graph.code_files_by_scope */ SELECT node_id, doc FROM graph.code_files_by_scope($1, $2, $3::text[], $4::jsonb[], $5, $6, $7)",
+    "code_files_by_repo": "/* pipeshub:graph.code_files_by_repo */ SELECT node_id, doc FROM graph.code_files_by_repo($1, $2, $3, $4::text[], $5::jsonb[], $6, $7, $8)",
+    "record_groups_by_repo_key": "/* pipeshub:graph.record_groups_by_repo_key */ SELECT node_id, doc FROM graph.record_groups_by_repo_key($1, $2::text[], $3::jsonb[], $4, $5, $6)",
+    "record_groups_by_parent": "/* pipeshub:graph.record_groups_by_parent */ SELECT node_id, doc FROM graph.record_groups_by_parent($1, $2, $3::text[], $4::jsonb[], $5, $6, $7)",
 }
 _HOT_PAGE = 1000
 
@@ -218,9 +224,15 @@ class CoreMixin(PgBase):
         org = current_org_id()
         upd = {k: v for k, v in node_updates.items() if k not in ("_key", "_id", "id")}
         _VALIDATOR.validate_node_update(collection, upd)
-        r = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.update_node */ WITH u AS (UPDATE graph.nodes SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(doc || $4::jsonb) AS _nv WHERE _nv.value <> 'null'::jsonb)
-            WHERE org_id = $1 AND coll = $2 AND id = $3 RETURNING 1) SELECT count(*) FROM u""", org, collection, key, _j(upd)), transaction, write=True)
-        return bool(r)
+        scoped = collection == CollectionNames.RECORDS.value and any(f in upd for f in SCOPE_FIELDS)
+
+        async def go(tx: Tx) -> int:
+            n = await tx.fetchval("""/* pipeshub:graph.update_node */ WITH u AS (UPDATE graph.nodes SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(doc || $4::jsonb) AS _nv WHERE _nv.value <> 'null'::jsonb)
+                WHERE org_id = $1 AND coll = $2 AND id = $3 RETURNING 1) SELECT count(*) FROM u""", org, collection, key, _j(upd))
+            if scoped and n:
+                await _sync_code_file_scope(tx, org, [key])
+            return n
+        return bool(await self._q(go, transaction, write=True))
 
     async def store_time(self) -> float:
         return float(await self._q(lambda tx: tx.fetchval("/* pipeshub:graph.store_time */ SELECT extract(epoch FROM clock_timestamp())::float8"), None))
@@ -241,10 +253,14 @@ class CoreMixin(PgBase):
         items = [{"id": k, "doc": {f: v for f, v in it.items() if f not in ("id", "_key", "_id")}} for it in nodes if (k := it.get("id") or it.get("_key"))]
         for it in items:
             _VALIDATOR.validate_node_update(collection, it["doc"])
+        scoped = [it["id"] for it in items if any(f in it["doc"] for f in SCOPE_FIELDS)] if collection == CollectionNames.RECORDS.value else []
+
+        async def go(tx: Tx) -> None:
+            await tx.execute("""/* pipeshub:graph.batch_update_nodes */ UPDATE graph.nodes n SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(n.doc || x.doc) AS _nv WHERE _nv.value <> 'null'::jsonb)
+                FROM jsonb_to_recordset($3::jsonb) AS x(id text, doc jsonb) WHERE n.org_id = $1 AND n.coll = $2 AND n.id = x.id""", org, collection, _j(items))
+            await _sync_code_file_scope(tx, org, scoped)
         if items:
-            await self._q(lambda tx: tx.execute("""/* pipeshub:graph.batch_update_nodes */ UPDATE graph.nodes n SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(n.doc || x.doc) AS _nv WHERE _nv.value <> 'null'::jsonb)
-                FROM jsonb_to_recordset($3::jsonb) AS x(id text, doc jsonb) WHERE n.org_id = $1 AND n.coll = $2 AND n.id = x.id""",
-                                                  org, collection, _j(items)), transaction, write=True)
+            await self._q(go, transaction, write=True)
         return True
 
     async def delete_nodes(self, keys: list[str], collection: str, transaction: str | None = None) -> bool:

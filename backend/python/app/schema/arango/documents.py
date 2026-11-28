@@ -930,6 +930,9 @@ code_file_record_schema={
             # type_definition | generated -- see parsers/code_parser/file_role.py
             "fileRole": {"type": ["string", "null"]},
             "commitSha": {"type": ["string", "null"]},
+            # The record's connector and record group, copied from it, so a path is looked up within one repo.
+            "connectorId": {"type": ["string", "null"]},
+            "recordGroupId": {"type": ["string", "null"]},
             # Symbol names referenced by this file (calls, imports, type refs).
             # Used by the edge builder to find files that need re-resolution
             # when a touched file adds or removes a symbol definition.
@@ -1130,6 +1133,8 @@ record_group_schema = {
         "properties": {
             "orgId": {"type": "string"},
             "groupName": {"type": "string", "minLength": 1},
+            # entities.repo_key(groupName): how a repo name finds the group
+            "repoKey": {"type": ["string", "null"]},
             "shortName": {"type": ["string", "null"]},
             "description": {"type": ["string", "null"]},
             # should be a uuid
@@ -1192,6 +1197,11 @@ record_group_schema = {
     "level": "strict",
     "message": "Document does not match the record group schema.",
 }
+
+# Raised by one with every change to ``record_group_schema``'s rule; applied as ``APP_SCHEMA_GENERATION`` is, so an older start cannot put a
+# narrower schema back for good (the newer process's poll widens it again). tests/unit/schema/test_record_schema_generation.py pins its hash.
+RECORD_GROUP_SCHEMA_GENERATION = 1
+record_group_schema["rule"]["$comment"] = f"pipeshub-record-group-schema gen={RECORD_GROUP_SCHEMA_GENERATION}"
 
 named_entity_schema = {
     "rule": {

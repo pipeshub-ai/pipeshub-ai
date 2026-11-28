@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from app.config.constants.arangodb import CollectionNames
 from app.core import org_context
 from app.core.org_context import current_or_system, current_org_id
+from app.models.entities import repo_key
 from app.modules.indexing.record_diagnostics import WriteKind, sql_patch, with_run_patch
 from app.services.graph_db.common.record_visibility import indexed_copy_fields
 from app.services.graph_db.interface.graph_db_provider import CodeFileInfo
@@ -727,6 +728,61 @@ class CodeGraphMixin(PgBase):
                 RETURNING 1) SELECT count(*) FROM u""", org, n), None, write=True) or 0)
         self._raise_failed(errors)
         return done
+
+    async def _code_scope_orgs(self, org_id: str | None) -> list[str | None]:
+        """``org_id`` alone (under an org context it must be the bound org), else every org the sweep reaches."""
+        if org_id is None:
+            return await self._sweep_orgs()
+        if current_or_system().kind == "system":
+            return [org_id]
+        if current_org_id() != org_id:
+            raise ValueError("org_id is not the bound org")
+        return [None]
+
+    async def backfill_code_path_scope(self, limit: int = 5000, *, org_id: str | None = None) -> int:
+        current_or_system()
+        done = 0
+        errors: list[tuple[str, Exception]] = []
+        for sweep_org in await self._code_scope_orgs(org_id):     # ``limit`` bounds the whole pass, as backfill_block_name_folded's
+            if done >= limit:
+                break
+            with self._sweep(sweep_org, errors):
+                org = current_org_id()
+                done += int(await self._q(lambda tx, org=org, n=limit - done: tx.fetchval("""/* pipeshub:graph.backfill_code_file_scope */ WITH u AS (UPDATE graph.nodes c
+                SET doc = c.doc || jsonb_build_object('connectorId', r.doc->'connectorId', 'recordGroupId', r.doc->'recordGroupId')
+                FROM graph.nodes r WHERE c.org_id = $1 AND c.coll = 'codeFiles' AND r.org_id = $1 AND r.coll = 'records' AND r.id = c.id AND NOT (c.doc ? 'connectorId')
+                  AND c.id IN (SELECT f.id FROM graph.nodes f JOIN graph.nodes x ON x.org_id = f.org_id AND x.coll = 'records' AND x.id = f.id
+                    WHERE f.org_id = $1 AND f.coll = 'codeFiles' AND NOT (f.doc ? 'connectorId') AND x.doc->>'connectorId' IS NOT NULL LIMIT $2)
+                RETURNING 1) SELECT count(*) FROM u""", org, n), None, write=True) or 0)
+                if done >= limit:
+                    break
+                groups = await self._q(lambda tx, org=org, n=limit - done: tx.fetch("""/* pipeshub:graph.backfill_group_repo_key_page */ SELECT id, doc->>'groupName' AS name
+                    FROM graph.nodes WHERE org_id = $1 AND coll = 'recordGroups' AND NOT (doc ? 'repoKey') AND doc->>'groupName' IS NOT NULL LIMIT $2""", org, n), None)
+                if groups:
+                    ids, names = [g["id"] for g in groups], [g["name"] for g in groups]
+                    # The name is read again in the update: a rename since the page keeps the key its writer gave it.
+                    done += int(await self._q(lambda tx, org=org, ids=ids, names=names: tx.fetchval("""/* pipeshub:graph.backfill_group_repo_key */ WITH u AS (UPDATE graph.nodes g
+                        SET doc = g.doc || jsonb_build_object('repoKey', k.key) FROM unnest($2::text[], $3::text[], $4::text[]) k(id, name, key)
+                        WHERE g.org_id = $1 AND g.coll = 'recordGroups' AND g.id = k.id AND g.doc->>'groupName' = k.name AND NOT (g.doc ? 'repoKey')
+                        RETURNING 1) SELECT count(*) FROM u""", org, ids, names, [repo_key(n) for n in names]), None, write=True) or 0)
+        self._raise_failed(errors)
+        return done
+
+    async def code_path_scope_pending(self, *, org_id: str | None = None) -> bool:
+        current_or_system()
+        errors: list[tuple[str, Exception]] = []
+        pending = False
+        for sweep_org in await self._code_scope_orgs(org_id):
+            with self._sweep(sweep_org, errors):
+                org = current_org_id()
+                pending = bool(await self._q(lambda tx, org=org: tx.fetchval("""/* pipeshub:graph.code_path_scope_pending */ SELECT
+                    EXISTS (SELECT 1 FROM graph.nodes f JOIN graph.nodes x ON x.org_id = f.org_id AND x.coll = 'records' AND x.id = f.id
+                        WHERE f.org_id = $1 AND f.coll = 'codeFiles' AND NOT (f.doc ? 'connectorId') AND x.doc->>'connectorId' IS NOT NULL)
+                    OR EXISTS (SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = 'recordGroups' AND NOT (doc ? 'repoKey') AND doc->>'groupName' IS NOT NULL)""", org), None))
+            if pending:
+                break
+        self._raise_failed(errors)
+        return pending
 
     # ---- records: revision-guarded write -------------------------------------------------------------------------
     async def compare_and_set_record_fields(self, record_ids: list[str], content_rev: str, fields: dict[str, Any]) -> list[str]:

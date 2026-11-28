@@ -17,6 +17,7 @@ from collections import Counter
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, RecordRelations
+from app.models.entities import repo_key
 from app.modules.code_graph.synced_commit import LAST_SYNCED_COMMIT
 from app.modules.parsers.code_parser.lang_config import LANGUAGES
 from app.utils.error_class import log_failure
@@ -227,6 +228,7 @@ async def resolve_symbol(
             graph_provider, org_id, ids, connector_id,
             file_path=file_path, repo=repo, access=access, ambiguous_ok=True,
         ),
+        connector_id=connector_id, repo=repo,
     )
     if not record_ids:
         return None
@@ -256,9 +258,64 @@ async def resolve_symbol(
     return block
 
 
+# The orgs whose code files carry their scope (the backfill's marker): once set it stays, so it is read once a process.
+_SCOPED_ORGS: set[str] = set()
+
+
+async def _path_scope_ready(graph_provider: IGraphDBProvider, org_id: str) -> bool:
+    from app.migrations.code_path_scope_migration import scope_ready
+    if org_id not in _SCOPED_ORGS and await scope_ready(graph_provider, org_id):
+        _SCOPED_ORGS.add(org_id)
+    return org_id in _SCOPED_ORGS
+
+
+async def _repo_groups(graph_provider: IGraphDBProvider, org_id: str, repo: str, connector_id: str) -> list[str]:
+    """Every record group ``_repo_matches`` can accept for ``repo``, and maybe more: the group ``repo`` names by id, the groups whose ``repoKey`` is the
+    wanted name's (a name matches only if the keys do), and their child groups (named after their parent). The caller still applies ``_repo_matches``."""
+    key = repo_key(repo.casefold().strip("/"))
+    found = {repo}
+    tops = await graph_provider.get_nodes_by_filters(
+        collection=_RECORD_GROUPS, filters={"orgId": org_id, "repoKey": key},
+        return_fields=["_key", "connectorId", "externalGroupId"], raise_on_error=True,
+    ) or []
+    for top in map(_unwrap, tops):
+        if top.get("connectorId") not in (None, "", connector_id):       # another connector's repo holds none of this connector's files
+            continue
+        found.add(top.get("_key") or top.get("id"))
+        if top.get("connectorId") and top.get("externalGroupId"):
+            for child in await graph_provider.get_nodes_by_filters(
+                collection=_RECORD_GROUPS,
+                filters={"orgId": org_id, "connectorId": top["connectorId"], "parentExternalGroupId": top["externalGroupId"]},
+                return_fields=["_key"], raise_on_error=True,
+            ) or []:
+                found.add(_unwrap(child).get("_key") or _unwrap(child).get("id"))
+    return sorted(g for g in found if g)
+
+
+async def _code_files_at(
+    graph_provider: IGraphDBProvider, org_id: str, path: str, connector_id: str | None, groups: list[str] | None,
+) -> list[dict[str, Any]]:
+    """The code files at ``path``: of the organisation, or, once the scope is filled, of the connector (and the record groups), by their index."""
+    fields = ["_key", "commitSha"]
+    if connector_id is None:
+        return await graph_provider.get_nodes_by_filters(
+            collection=_CODE_FILES, filters={"orgId": org_id, "filePath": path}, return_fields=fields, raise_on_error=True,
+        ) or []
+    scope = {"orgId": org_id, "filePath": path, "connectorId": connector_id}
+    if groups is None:
+        return await graph_provider.get_nodes_by_filters(collection=_CODE_FILES, filters=scope, return_fields=fields, raise_on_error=True) or []
+    rows: list[dict[str, Any]] = []
+    for group in groups:
+        rows += await graph_provider.get_nodes_by_filters(
+            collection=_CODE_FILES, filters={**scope, "recordGroupId": group}, return_fields=fields, raise_on_error=True,
+        ) or []
+    return rows
+
+
 async def _records_for_path(
     graph_provider: IGraphDBProvider, org_id: str, file_path: str,
     choose: "Callable[[list[str]], Awaitable[list[str]]] | None" = None,
+    *, connector_id: str | None = None, repo: str | None = None,
 ) -> tuple[list[str], str]:
     """Record ids for a repo-relative path, and the indexed path they were found under.
 
@@ -276,13 +333,11 @@ async def _records_for_path(
     """
     parts = [p for p in file_path.split("/") if p and p != "."]
     candidates = [file_path] + ["/".join(parts[i:]) for i in range(len(parts) - 1)]
+    # ``choose`` keeps only the connector's records (and the repo's): read only those code files, once every one carries its scope.
+    scoped = choose is not None and connector_id is not None and await _path_scope_ready(graph_provider, org_id)
+    groups = await _repo_groups(graph_provider, org_id, repo, connector_id) if scoped and repo else None
     for candidate in dict.fromkeys(candidates):
-        rows = await graph_provider.get_nodes_by_filters(
-            collection=_CODE_FILES,
-            filters={"orgId": org_id, "filePath": candidate},
-            return_fields=["_key", "commitSha"],
-            raise_on_error=True,
-        )
+        rows = await _code_files_at(graph_provider, org_id, candidate, connector_id if scoped else None, groups)
         keys = [key for row in rows or [] if (key := row.get("_key") or row.get("id"))]
         if keys and choose is not None:
             keys = await choose(keys)

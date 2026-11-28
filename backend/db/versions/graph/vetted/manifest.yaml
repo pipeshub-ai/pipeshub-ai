@@ -164,6 +164,123 @@ functions:
           AND n.id > p_after ORDER BY hashtext(n.doc->>'filePath'), n.id LIMIT p_limit)
         SELECT n.id, n.doc FROM m JOIN graph.nodes n ON n.org_id = v_org AND n.coll = 'codeFiles' AND n.id = m.id ORDER BY n.id;
 
+# ---- code paths within a connector and a repo (graph_0024) ------------------------------------------------------------------------------
+  # A connector's code files at one path (index nodes_codefile_scope_seek): the path read within the connector, not across the organisation.
+  - name: graph.code_files_by_scope
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_connector_id, type: text, length: [1, 200]}
+      - {name: p_path, type: text, length: [1, 4096]}
+      - {name: p_keys, type: "text[]", max_items: 32, item_not_null: true, item_length: [1, 200]}
+      - {name: p_vals, type: "jsonb[]", max_items: 32, item_not_null: true}
+      - {name: p_null_absent, type: boolean}
+      - {name: p_after, type: text, default: "''", length: [0, 200]}
+      - {name: p_limit, type: int, default: "1000", range: [1, 1000]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true        # a generic plan walks the primary key in id order to meet the LIMIT instead of using the key's index
+    body: |
+      IF cardinality(p_keys) <> cardinality(p_vals) THEN RAISE EXCEPTION 'p_keys and p_vals differ in length' USING ERRCODE = '22023'; END IF;
+      -- as code_files_by_path: the page's ids by the key's hash and id from the cursor on (graph_0024), the key rechecked, the docs fetched by key
+      RETURN QUERY WITH m AS MATERIALIZED (SELECT n.id FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'codeFiles' AND hashtext((n.doc->>'connectorId') || '/' || (n.doc->>'filePath')) = hashtext(p_connector_id || '/' || p_path)
+          AND n.doc->>'connectorId' IS NOT DISTINCT FROM p_connector_id AND n.doc->>'filePath' IS NOT DISTINCT FROM p_path
+          AND NOT EXISTS (SELECT 1 FROM unnest(p_keys, p_vals) f(k, v)
+            WHERE CASE WHEN p_null_absent AND f.v = 'null' THEN coalesce(n.doc->f.k, f.v) <> f.v
+                       ELSE n.doc->f.k IS DISTINCT FROM f.v END)
+          AND n.id > p_after ORDER BY hashtext((n.doc->>'connectorId') || '/' || (n.doc->>'filePath')), n.id LIMIT p_limit)
+        SELECT n.id, n.doc FROM m JOIN graph.nodes n ON n.org_id = v_org AND n.coll = 'codeFiles' AND n.id = m.id ORDER BY n.id;
+
+  # A connector's code files at one path in one record group (index nodes_codefile_repo_seek).
+  - name: graph.code_files_by_repo
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_connector_id, type: text, length: [1, 200]}
+      - {name: p_group_id, type: text, length: [1, 200]}
+      - {name: p_path, type: text, length: [1, 4096]}
+      - {name: p_keys, type: "text[]", max_items: 32, item_not_null: true, item_length: [1, 200]}
+      - {name: p_vals, type: "jsonb[]", max_items: 32, item_not_null: true}
+      - {name: p_null_absent, type: boolean}
+      - {name: p_after, type: text, default: "''", length: [0, 200]}
+      - {name: p_limit, type: int, default: "1000", range: [1, 1000]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true        # a generic plan walks the primary key in id order to meet the LIMIT instead of using the key's index
+    body: |
+      IF cardinality(p_keys) <> cardinality(p_vals) THEN RAISE EXCEPTION 'p_keys and p_vals differ in length' USING ERRCODE = '22023'; END IF;
+      -- as code_files_by_path: the page's ids by the key's hash and id from the cursor on (graph_0024), the key rechecked, the docs fetched by key
+      RETURN QUERY WITH m AS MATERIALIZED (SELECT n.id FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'codeFiles' AND hashtext((n.doc->>'connectorId') || '/' || (n.doc->>'recordGroupId') || '/' || (n.doc->>'filePath')) = hashtext(p_connector_id || '/' || p_group_id || '/' || p_path)
+          AND n.doc->>'connectorId' IS NOT DISTINCT FROM p_connector_id AND n.doc->>'recordGroupId' IS NOT DISTINCT FROM p_group_id AND n.doc->>'filePath' IS NOT DISTINCT FROM p_path
+          AND NOT EXISTS (SELECT 1 FROM unnest(p_keys, p_vals) f(k, v)
+            WHERE CASE WHEN p_null_absent AND f.v = 'null' THEN coalesce(n.doc->f.k, f.v) <> f.v
+                       ELSE n.doc->f.k IS DISTINCT FROM f.v END)
+          AND n.id > p_after ORDER BY hashtext((n.doc->>'connectorId') || '/' || (n.doc->>'recordGroupId') || '/' || (n.doc->>'filePath')), n.id LIMIT p_limit)
+        SELECT n.id, n.doc FROM m JOIN graph.nodes n ON n.org_id = v_org AND n.coll = 'codeFiles' AND n.id = m.id ORDER BY n.id;
+
+  # The record groups whose repoKey is one key (index nodes_group_repo_key_seek): the candidates a repo name can mean.
+  - name: graph.record_groups_by_repo_key
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_repo_key, type: text, length: [0, 1000]}
+      - {name: p_keys, type: "text[]", max_items: 32, item_not_null: true, item_length: [1, 200]}
+      - {name: p_vals, type: "jsonb[]", max_items: 32, item_not_null: true}
+      - {name: p_null_absent, type: boolean}
+      - {name: p_after, type: text, default: "''", length: [0, 200]}
+      - {name: p_limit, type: int, default: "1000", range: [1, 1000]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true        # a generic plan walks the primary key in id order to meet the LIMIT instead of using the key's index
+    body: |
+      IF cardinality(p_keys) <> cardinality(p_vals) THEN RAISE EXCEPTION 'p_keys and p_vals differ in length' USING ERRCODE = '22023'; END IF;
+      -- as code_files_by_path: the page's ids by the key's hash and id from the cursor on (graph_0024), the key rechecked, the docs fetched by key
+      RETURN QUERY WITH m AS MATERIALIZED (SELECT n.id FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'recordGroups' AND hashtext(n.doc->>'repoKey') = hashtext(p_repo_key)
+          AND n.doc->>'repoKey' IS NOT DISTINCT FROM p_repo_key
+          AND NOT EXISTS (SELECT 1 FROM unnest(p_keys, p_vals) f(k, v)
+            WHERE CASE WHEN p_null_absent AND f.v = 'null' THEN coalesce(n.doc->f.k, f.v) <> f.v
+                       ELSE n.doc->f.k IS DISTINCT FROM f.v END)
+          AND n.id > p_after ORDER BY hashtext(n.doc->>'repoKey'), n.id LIMIT p_limit)
+        SELECT n.id, n.doc FROM m JOIN graph.nodes n ON n.org_id = v_org AND n.coll = 'recordGroups' AND n.id = m.id ORDER BY n.id;
+
+  # A connector's record groups under one parent external id (index nodes_group_parent_seek): the groups a repo's name names.
+  - name: graph.record_groups_by_parent
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_connector_id, type: text, length: [1, 200]}
+      - {name: p_parent_id, type: text, length: [1, 1000]}
+      - {name: p_keys, type: "text[]", max_items: 32, item_not_null: true, item_length: [1, 200]}
+      - {name: p_vals, type: "jsonb[]", max_items: 32, item_not_null: true}
+      - {name: p_null_absent, type: boolean}
+      - {name: p_after, type: text, default: "''", length: [0, 200]}
+      - {name: p_limit, type: int, default: "1000", range: [1, 1000]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true        # a generic plan walks the primary key in id order to meet the LIMIT instead of using the key's index
+    body: |
+      IF cardinality(p_keys) <> cardinality(p_vals) THEN RAISE EXCEPTION 'p_keys and p_vals differ in length' USING ERRCODE = '22023'; END IF;
+      -- as code_files_by_path: the page's ids by the key's hash and id from the cursor on (graph_0024), the key rechecked, the docs fetched by key
+      RETURN QUERY WITH m AS MATERIALIZED (SELECT n.id FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'recordGroups' AND hashtext((n.doc->>'connectorId') || '/' || (n.doc->>'parentExternalGroupId')) = hashtext(p_connector_id || '/' || p_parent_id)
+          AND n.doc->>'connectorId' IS NOT DISTINCT FROM p_connector_id AND n.doc->>'parentExternalGroupId' IS NOT DISTINCT FROM p_parent_id
+          AND NOT EXISTS (SELECT 1 FROM unnest(p_keys, p_vals) f(k, v)
+            WHERE CASE WHEN p_null_absent AND f.v = 'null' THEN coalesce(n.doc->f.k, f.v) <> f.v
+                       ELSE n.doc->f.k IS DISTINCT FROM f.v END)
+          AND n.id > p_after ORDER BY hashtext((n.doc->>'connectorId') || '/' || (n.doc->>'parentExternalGroupId')), n.id LIMIT p_limit)
+        SELECT n.id, n.doc FROM m JOIN graph.nodes n ON n.org_id = v_org AND n.coll = 'recordGroups' AND n.id = m.id ORDER BY n.id;
+
 # ---- more hot lookups (graph_0004) ------------------------------------------------------------------------------------------------
 # The same reason as the code graph's reads above: a plain statement under the service role reaches an expression index on the document
 # only through org_id. Each function answers one lookup the services make on every request or sync step, from the org of app.org_id.

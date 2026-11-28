@@ -42,6 +42,8 @@ UNTOUCHED = {
     "add_taxonomy_aliases": "taxonomy nodes",
     "backfill_app_org_ids": "an App's org",
     "backfill_block_name_folded": "Block nodes",
+    "backfill_code_path_scope": "a code file's connector and group copy, and a record group's repoKey (no name, stub flag or edge)",
+    "_cypher_code_file_scope": "a code file's connector and group copy",
     "backfill_indexed_copy_flags": "a record's indexed-copy flag",
     "batch_create_entity_relations": "entity relation edges",
     "batch_update_connector_status": "an App's status",

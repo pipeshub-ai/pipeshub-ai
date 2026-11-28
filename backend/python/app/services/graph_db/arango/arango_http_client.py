@@ -314,6 +314,8 @@ class ArangoHTTPClient:
         self.record_guard: RecordSchemaGuard | None = None
         # The same for the apps schema, applied at start and by the poll only (an apps write refused meanwhile is not sent again).
         self.apps_guard: RecordSchemaGuard | None = None
+        # The same for the record groups schema.
+        self.record_group_guard: RecordSchemaGuard | None = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """
@@ -1383,6 +1385,7 @@ class ArangoHTTPClient:
         *,
         sparse: bool = False,
         name: str | None = None,
+        in_background: bool = False,
     ) -> bool:
         """
         Create a persistent index on a collection (idempotent).
@@ -1396,6 +1399,8 @@ class ArangoHTTPClient:
                 already holds duplicates, so callers must tolerate a False return.
             name: Index name, for queries that hint it. An index that already
                 exists on the same fields keeps the name it has.
+            in_background: Build without the collection's exclusive lock, so writes go
+                on during the build; queries use the index once it is built.
 
         Returns:
             bool: True if index exists or was created
@@ -1410,6 +1415,8 @@ class ArangoHTTPClient:
             payload["sparse"] = True
         if name:
             payload["name"] = name
+        if in_background:
+            payload["inBackground"] = True
         try:
             session = await self._get_session()
             async with session.post(url, json=payload) as resp:

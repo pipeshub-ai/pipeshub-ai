@@ -105,6 +105,9 @@ class FakeGraphProvider:
             for record_id, path in self.code_files.items()
         ]
 
+    async def get_sync_point(self, key, collection, transaction=None, *, raise_on_error=False) -> dict | None:
+        return None     # no scope marker: a path is looked up across the org
+
     async def get_nodes_by_filters(self, collection, filters, return_fields=None, transaction=None, raise_on_error=False) -> list[dict]:
         if collection == CODE_FILES:
             return [d for d in self._code_file_docs()

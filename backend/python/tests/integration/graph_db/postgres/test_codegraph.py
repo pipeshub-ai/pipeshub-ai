@@ -81,7 +81,7 @@ CALLS = [
     ("get_edge_rollup_by_file_prefix", ("o", "src/", ["CALLS"], "outbound", "c")), ("get_file_paths_for_records", ("o", ["r1"])),
     ("find_blocks_by_external_ref_prefix", ("o", "c", ["time:"], 10)),
     ("find_uncalled_blocks", ("o", "c", ["r1"], ["function"], ["CALLS"], 10)),
-    ("delete_blocks_for_records", (["r1"],)), ("backfill_block_name_folded", ()), ("compare_and_set_record_fields", (["r1"], "1", {"a": 1})),
+    ("delete_blocks_for_records", (["r1"],)), ("backfill_block_name_folded", ()), ("backfill_code_path_scope", ()), ("code_path_scope_pending", ()), ("compare_and_set_record_fields", (["r1"], "1", {"a": 1})),
     ("stage_state_get", ("s",)), ("stage_states_for_revision", ("v", "1")), ("stage_state_create", ({"id": "s"},)),
     ("stage_state_compare_and_set", ("s", "A", "B", {})), ("get_stage_states_with_records", ("o", "c", "entities", "PENDING")),
     ("get_record_content_revs", (["r1"],)), ("stage_states_stale", (["PENDING"], 1, 10)), ("stage_states_delete_for_virtual_records", (["v"],)),
@@ -89,7 +89,7 @@ CALLS = [
     ("stage_states_delete_unheld_revisions", ([("v", "1")],)),
 ]
 SWEEPS = {"get_switch_pointers", "get_revision_pointers", "stage_states_stale", "stage_states_unheld_revisions", "stage_states_delete_unheld_revisions",
-          "backfill_block_name_folded"}
+          "backfill_block_name_folded", "backfill_code_path_scope", "code_path_scope_pending"}
 KWARGS = {"get_stage_states_with_records": {"limit": 10}, "get_record_content_revs": {"status_field": "s", "statuses": ["A"]},
           "stage_states_unheld_revisions": {"updated_before_ms": 1}, "stage_states_delete_unheld_revisions": {"updated_before_ms": 1}}
 
@@ -97,7 +97,7 @@ KWARGS = {"get_stage_states_with_records": {"limit": 10}, "get_record_content_re
 def test_every_public_method_of_the_module_is_in_the_no_org_cases() -> None:
     from app.services.graph_db.postgres.codegraph import CodeGraphMixin
     public = {n for n, f in vars(CodeGraphMixin).items() if not n.startswith("__") and callable(f)}
-    assert public - {"ensure_pipeline_schema", "_pointer_page", "_sweep_orgs", "_sweep", "_raise_failed"} == {c[0] for c in CALLS}
+    assert public - {"ensure_pipeline_schema", "_pointer_page", "_sweep_orgs", "_code_scope_orgs", "_sweep", "_raise_failed"} == {c[0] for c in CALLS}
 
 
 @pytest.mark.parametrize(("name", "args"), CALLS, ids=[c[0] for c in CALLS])

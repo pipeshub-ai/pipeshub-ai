@@ -89,6 +89,7 @@ from app.models.entities import (
     TicketRecord,
     User,
     WebpageRecord,
+    repo_key,
     substitute_user_email,
 )
 from app.models.permission import (
@@ -110,6 +111,7 @@ from app.modules.pipeline import parser_identity
 from app.schema.arango.documents import (
     AGENT_SKILLS_SCHEMA_GENERATION,
     APP_SCHEMA_GENERATION,
+    RECORD_GROUP_SCHEMA_GENERATION,
     RECORD_SCHEMA_GENERATION,
     agent_schema,
     agent_skill_candidates_schema,
@@ -432,6 +434,26 @@ _WRITE_CONFLICT_RE = re.compile(r'"errorNum":\s*1200|\[1200\]')
 _LOCK_TIMEOUT_RE = re.compile(r'"errorNum":\s*18\b|\[18\]')
 _DEADLOCK_RE = re.compile(r'"errorNum":\s*29\b|\[29\]')
 _T = TypeVar("_T")
+# A code file carries its record's connectorId and recordGroupId (the scoped path lookup reads them).
+_CODE_FILE_SCOPE_FIELDS = ("connectorId", "recordGroupId")
+
+
+def _scope_changed_keys(docs: list[dict]) -> list[str]:
+    """The keys of the ``records`` documents whose write sets a field their code file copies."""
+    return [d["_key"] for d in docs if d.get("_key") and any(f in d for f in _CODE_FILE_SCOPE_FIELDS)]
+
+
+def _code_file_keys(docs: list[dict]) -> list[str]:
+    """The keys of the records among ``docs`` that are, or (a partial document naming no type) may be, code records whose write sets a
+    field their code file copies; the copy reads the stored type."""
+    return _scope_changed_keys([d for d in docs if d.get("recordType", "CODE_FILE") == "CODE_FILE"])
+
+
+# After an UPDATE of record ``n`` (NEW) in the same statement: its code file takes the record's scope where it differs. A subquery on the code
+# file's primary key, so a write of another record type reads nothing more.
+_AQL_CODE_FILE_SCOPE = """LET scope = (FOR c IN @@code_files FILTER n.recordType == "CODE_FILE" AND c._key == n._key AND c.orgId == n.orgId
+                    AND (c.connectorId != n.connectorId OR c.recordGroupId != n.recordGroupId)
+                    UPDATE c WITH { connectorId: n.connectorId, recordGroupId: n.recordGroupId } IN @@code_files RETURN 1)"""
 
 
 def _remove_opts(transaction: str | None) -> str:
@@ -1313,6 +1335,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 self.http_client, self.logger, schema=app_schema, generation=APP_SCHEMA_GENERATION,
                 collection=CollectionNames.APPS.value,
             )
+            self.http_client.record_group_guard = RecordSchemaGuard(
+                self.http_client, self.logger, schema=record_group_schema, generation=RECORD_GROUP_SCHEMA_GENERATION,
+                collection=CollectionNames.RECORD_GROUPS.value,
+            )
             self._skill_schema_guards = {
                 name: RecordSchemaGuard(
                     self.http_client, self.logger, schema=schema, generation=AGENT_SKILLS_SCHEMA_GENERATION,
@@ -1350,7 +1376,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         client = self.http_client
         if client is None:
             return []
-        return [g for g in (client.record_guard, client.apps_guard, *self._skill_schema_guards.values()) if g is not None]
+        return [g for g in (client.record_guard, client.apps_guard, client.record_group_guard, *self._skill_schema_guards.values()) if g is not None]
 
     async def _stop_schema_guards(self) -> None:
         """Cancel the polls of the current client's schema guards (they hold the client, so they would keep polling after a disconnect)."""
@@ -1377,7 +1403,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return False
 
     async def _apply_schema(self, name: str, schema: dict[str, Any]) -> bool:
-        """Apply ``schema`` to a collection. The records, apps and agent skills schemas are applied only while the live generation is
+        """Apply ``schema`` to a collection. The records, apps, record groups and agent skills schemas are applied only while the live generation is
         lower than this process's, through the guard's lock and last-look checks. That narrows, but cannot close, the window in which an
         older start puts its schema over a newer one (a schema change is not transactional with the lock); the newer process's poll
         repairs it, eventually (see ``record_schema_guard``)."""
@@ -1387,6 +1413,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             guard = client.record_guard
         elif client is not None and name == CollectionNames.APPS.value:
             guard = client.apps_guard
+        elif client is not None and name == CollectionNames.RECORD_GROUPS.value:
+            guard = client.record_group_guard
         elif client is not None:
             guard = self._skill_schema_guards.get(name)
         if guard is not None:
@@ -1408,7 +1436,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return bool(guard and await guard.ensure_wide(trigger))
 
     def start_record_schema_poll(self, interval: float = 10.0) -> None:
-        """Check the live guarded schemas (records, apps, agent skills) every ``interval`` seconds on the running loop and widen each when it is
+        """Check the live guarded schemas (records, apps, record groups, agent skills) every ``interval`` seconds on the running loop and widen each when it is
         narrower than this process's."""
         for guard in self._schema_guards():
             guard.start(interval)
@@ -1912,6 +1940,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             ["orgId"],
         )
 
+        # COMPOSITE: a repo's candidate groups by repoKey, then their child groups (code_graph.ops._repo_groups),
+        # built in the background as the codeFiles path index above.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORD_GROUPS.value, ["orgId", "repoKey"], in_background=True,
+        )
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORD_GROUPS.value, ["orgId", "connectorId", "parentExternalGroupId"], in_background=True,
+        )
+
         # SINGLE: connectorId (cleanup operations, queried independently)
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORD_GROUPS.value,
@@ -1984,6 +2021,18 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         await self.http_client.ensure_persistent_index(
             CollectionNames.CODE_FILES.value,
             ["orgId", "filePath"],
+        )
+
+        # COMPOSITE: a code tool's path lookup within its connector, and its repo's record groups
+        # (code_graph.ops._code_files_at); the connector-only lookup uses its leftmost prefix. Built in the
+        # background: on a store that holds code files already, writes go on meanwhile. ArangoDB 3.12 docs,
+        # https://docs.arango.ai/arangodb/3.12/indexes-and-search/indexing/basics/ : a persistent index is used
+        # "if either all index attributes is provided in a query, or if a leftmost prefix of the index attributes
+        # is specified", and in the background it is built "not using an exclusive lock during the entire index creation".
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.CODE_FILES.value,
+            ["orgId", "filePath", "connectorId", "recordGroupId"],
+            in_background=True,
         )
 
         # COMPOSITE: free-text symbol lookup, which is repo-agnostic — the agent
@@ -4208,16 +4257,55 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Translate nodes from generic format to ArangoDB format
             arango_nodes = self._translate_nodes_to_arango(nodes)
 
-            if collection == CollectionNames.RECORDS.value and record_created_at_insert_only():
+            if collection != CollectionNames.RECORDS.value:
+                result = await self.http_client.batch_insert_documents(
+                    collection, arango_nodes, txn_id=transaction, overwrite=True
+                )
+                return result.get("errors", 0) == 0
+            code = _code_file_keys(arango_nodes)
+            if not code:
+                return await self._upsert_record_nodes(arango_nodes, transaction)
+            if transaction is not None:
+                written = await self._upsert_record_nodes(arango_nodes, transaction)
+                await self._sync_code_file_scope(code, transaction)
+                return written
+            # The document API's upsert takes no AQL, so the copy is a second request: one stream transaction holds the written records
+            # to the commit, so the copy reads them as written and no writer commits between the two (a batch of other records needs none).
+            # A write conflict or a refusal by a narrow schema rolls the whole transaction back; it is run again, as a write outside one is.
+            attempt = 0
+            while True:
+                txn = await self.http_client.begin_transaction([], [CollectionNames.RECORDS.value, CollectionNames.CODE_FILES.value])
+                committed = False
+                try:
+                    written = await self._upsert_record_nodes(arango_nodes, txn)
+                    await self._sync_code_file_scope(code, txn)
+                    await self.http_client.commit_transaction(txn)
+                    committed = True
+                    return written
+                except Exception as exc:
+                    attempt += 1
+                    if attempt >= _WRITE_CONFLICT_ATTEMPTS or not self.is_transient_error(exc):
+                        raise
+                finally:
+                    if not committed:
+                        await asyncio.shield(self._abort_quietly(txn))
+                await asyncio.sleep(random.uniform(0.02, 0.1) * attempt)
+
+        except Exception:
+            raise
+
+    async def _upsert_record_nodes(self, arango_nodes: list[dict], transaction: str | None) -> bool:
+        """batch_upsert_nodes on ``records``."""
+        try:
+            if record_created_at_insert_only():
                 await self._upsert_record_base_docs(arango_nodes, transaction)
                 return True
 
-            if collection == CollectionNames.RECORDS.value:
-                # the insert-only switch is off: the older write, except that an update never writes the incarnation id
-                arango_nodes = [{k: v for k, v in n.items() if k != "incarnationId"} for n in arango_nodes]
+            # the insert-only switch is off: the older write, except that an update never writes the incarnation id
+            arango_nodes = [{k: v for k, v in n.items() if k != "incarnationId"} for n in arango_nodes]
 
             result = await self.http_client.batch_insert_documents(
-                collection, arango_nodes, txn_id=transaction, overwrite=True
+                CollectionNames.RECORDS.value, arango_nodes, txn_id=transaction, overwrite=True
             )
 
             return result.get("errors", 0) == 0
@@ -4393,10 +4481,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             bool: True if successful
         """
         try:
-            result = await self.http_client.update_document(
-                collection, key, updates, txn_id=transaction
-            )
-            return result is not None
+            if collection == CollectionNames.RECORDS.value and _scope_changed_keys([{**updates, "_key": key}]):
+                # one statement: the record, and its code file's copy of its scope
+                done = await self.http_client.execute_aql(f"""
+                    FOR d IN @@collection FILTER d._key == @key
+                        UPDATE d WITH @updates IN @@collection
+                        LET n = NEW
+                        {_AQL_CODE_FILE_SCOPE}
+                        RETURN 1
+                """, {"@collection": collection, "@code_files": CollectionNames.CODE_FILES.value, "key": key, "updates": updates}, txn_id=transaction)
+                return bool(done)
+            return await self.http_client.update_document(collection, key, updates, txn_id=transaction) is not None
         except Exception:
             raise
 
@@ -4528,6 +4623,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             bind_vars["@collection"] = collection
 
+            if collection == CollectionNames.RECORDS.value and _scope_changed_keys(arango_nodes):
+                # the same statement takes each code record's scope to its code file
+                aql_query = f"""
+                FOR doc IN @nodes
+                    FILTER DOCUMENT(@@collection, doc._key) != null
+                    UPDATE doc IN @@collection
+                    LET n = NEW
+                    {_AQL_CODE_FILE_SCOPE}
+                    RETURN n
+                """
+                bind_vars["@code_files"] = CollectionNames.CODE_FILES.value
             result = await self.http_client.execute_aql(aql_query, bind_vars, txn_id=transaction)
 
             # Check if all updates succeeded
@@ -11481,6 +11587,63 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query, {"@blocks": CollectionNames.BLOCKS.value, "limit": limit}
         )
         return len(result or [])
+
+    async def _sync_code_file_scope(self, keys: list[str], transaction: str | None) -> None:
+        await self.http_client.execute_aql("""
+        FOR k IN @keys
+            FOR c IN @@files
+                FILTER c._key == k
+                LET r = DOCUMENT(@@records, k)
+                FILTER r != null AND r.recordType == "CODE_FILE" AND r.orgId == c.orgId AND (c.connectorId != r.connectorId OR c.recordGroupId != r.recordGroupId)
+                UPDATE c WITH { connectorId: r.connectorId, recordGroupId: r.recordGroupId } IN @@files
+        """, {"keys": sorted(set(keys)), "@files": CollectionNames.CODE_FILES.value, "@records": CollectionNames.RECORDS.value}, txn_id=transaction)
+
+    async def code_path_scope_pending(self, *, org_id: str | None = None) -> bool:
+        """Whether a row the backfill fills remains; see the interface."""
+        rows = await self.http_client.execute_aql("""
+        RETURN LENGTH(FOR c IN @@files FILTER c.connectorId == null AND (@org == null OR c.orgId == @org) LET r = DOCUMENT(@@records, c._key)
+                          FILTER r != null AND r.orgId == c.orgId AND r.connectorId != null LIMIT 1 RETURN 1) > 0
+            OR LENGTH(FOR g IN @@groups FILTER g.repoKey == null AND g.groupName != null AND (@org == null OR g.orgId == @org) LIMIT 1 RETURN 1) > 0
+        """, {"@files": CollectionNames.CODE_FILES.value, "@records": CollectionNames.RECORDS.value, "@groups": CollectionNames.RECORD_GROUPS.value,
+              "org": org_id})
+        return bool(rows and rows[0])
+
+    async def backfill_code_path_scope(self, limit: int = 5000, *, org_id: str | None = None) -> int:
+        """Copy a code file's scope from its record, and set a record group's repoKey; see the interface."""
+        # shortcut: each batch scans codeFiles from the start for rows still lacking connectorId, so a store of N files costs
+        # about N*N/limit reads once; key the walk by _key if a store with millions of code files needs it.
+        files = await self.http_client.execute_aql("""
+        FOR c IN @@files
+            FILTER c.connectorId == null AND (@org == null OR c.orgId == @org)
+            LET r = DOCUMENT(@@records, c._key)
+            FILTER r != null AND r.orgId == c.orgId AND r.connectorId != null
+            LIMIT @limit
+            UPDATE c WITH { connectorId: r.connectorId, recordGroupId: r.recordGroupId } IN @@files
+            RETURN 1
+        """, {"@files": CollectionNames.CODE_FILES.value, "@records": CollectionNames.RECORDS.value, "limit": limit, "org": org_id})
+        done = len(files or [])
+        if done >= limit:
+            return done
+        groups = CollectionNames.RECORD_GROUPS.value
+        page = await self.http_client.execute_aql("""
+        FOR g IN @@groups
+            FILTER g.repoKey == null AND g.groupName != null AND (@org == null OR g.orgId == @org)
+            LIMIT @limit
+            RETURN { key: g._key, name: g.groupName }
+        """, {"@groups": groups, "limit": limit - done, "org": org_id})
+        if not page:
+            return done
+        # AQL LOWER is not str.casefold, so the key is computed here; the name is read again in the update, so a rename
+        # since the page keeps the key its writer gave it.
+        rows = [{**row, "repoKey": repo_key(row["name"])} for row in page]
+        written = await self.http_client.execute_aql("""
+        FOR row IN @rows
+            FOR g IN @@groups
+                FILTER g._key == row.key AND g.groupName == row.name AND g.repoKey == null
+                UPDATE g WITH { repoKey: row.repoKey } IN @@groups
+                RETURN 1
+        """, {"@groups": groups, "rows": rows})
+        return done + len(written or [])
 
     async def update_sync_point_if(
         self,

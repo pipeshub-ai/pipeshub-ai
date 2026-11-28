@@ -5656,6 +5656,24 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def backfill_code_path_scope(self, limit: int = 5000, *, org_id: str | None = None) -> int:
+        """Copy ``connectorId`` and ``recordGroupId`` from each code file's record onto up to ``limit`` ``codeFiles`` lacking ``connectorId``
+        (one whose record has a connector), and set ``repoKey`` (``entities.repo_key`` of ``groupName``) on record groups lacking it.
+        With ``org_id``, only that org's rows (under an org context it must be the bound org). Without it, every org's under a system context;
+        on PostgreSQL under an org context, only the bound org's.
+
+        Returns how many rows this batch updated. 0 does not mean none is left (a writer may have filled the rows the batch picked): ask
+        ``code_path_scope_pending``. Idempotent, and safe beside writers: a row a writer gave the fields is not touched.
+        """
+        pass
+
+    @abstractmethod
+    async def code_path_scope_pending(self, *, org_id: str | None = None) -> bool:
+        """Whether any row ``backfill_code_path_scope`` would fill remains, in the same orgs it would fill for that ``org_id``: a code file lacking
+        ``connectorId`` whose record has one, or a record group with a ``groupName`` and no ``repoKey``. Read directly, so the backfill is done only when this says so, whatever one batch updated."""
+        pass
+
+    @abstractmethod
     async def update_sync_point_if(
         self,
         sync_point_key: str,

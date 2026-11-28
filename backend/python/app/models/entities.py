@@ -3014,6 +3014,12 @@ class ArtifactRecord(Record):
         )
 
         
+def repo_key(name: str | None) -> str | None:
+    """A record group's name as a repo is looked up by it: the last ``/`` segment, casefolded. A name and a repo match only if their keys do
+    (``code_graph.ops._repo_matches``), so the key finds every candidate group by an index."""
+    return None if name is None else name.rsplit("/", 1)[-1].casefold()
+
+
 class RecordGroup(BaseModel):
     id: str = Field(description="Unique identifier for the record group", default_factory=lambda: str(uuid4()))
     org_id: str = Field(description="Unique identifier for the organization", default="")
@@ -3064,6 +3070,7 @@ class RecordGroup(BaseModel):
             "_key": self.id,
             "orgId": self.org_id,
             "groupName": self.name,
+            "repoKey": repo_key(self.name),
             "shortName": self.short_name,
             "description": self.description,
             "externalGroupId": self.external_group_id,
@@ -3180,6 +3187,9 @@ class CodeFileRecord(Record):
             "language": self.language,
             "fileRole": self.file_role,
             "commitSha": self.commit_sha,
+            # The record's scope, so a path is looked up within a connector and a repo, not across the organisation.
+            "connectorId": self.connector_id,
+            "recordGroupId": self.record_group_id,
         }
 
     @staticmethod

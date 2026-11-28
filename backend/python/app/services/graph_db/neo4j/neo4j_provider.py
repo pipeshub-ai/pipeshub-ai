@@ -119,6 +119,7 @@ from app.models.entities import (
     TicketRecord,
     User,
     WebpageRecord,
+    repo_key,
     substitute_user_email,
 )
 from app.models.entities import EntityType as KnowledgeGraphEntityType
@@ -702,6 +703,26 @@ def _cypher_kh_tree_state(v: str) -> str:
                 FOREACH (_ IN CASE WHEN khMany THEN [] ELSE [1] END | REMOVE khNode:KhMultiParent)
                 {_cypher_kh_edge_order("khNode")}
             }}"""
+
+
+_SCOPE_FIELDS = frozenset({"connectorId", "recordGroupId"})
+
+
+def _cypher_code_file_scope(v: str, label: str, written: Iterable[dict[str, Any]]) -> str:
+    """Copy code record `v`'s connectorId and recordGroupId onto its code file where they differ, when the write sets either: the code tools look a
+    path up by the code file's copy, so a stale one hides the file from its repo. Ends the statement's other variables: only `v` is kept."""
+    # a row that names its record type and is no code file needs no copy (an upsert of other records runs no subquery)
+    if label != "Record" or not any(_SCOPE_FIELDS & row.keys() and row.get("recordType", "CODE_FILE") == "CODE_FILE" for row in written):
+        return ""
+    # An id seek only for a code record (a null id matches nothing), and no subquery per row.
+    return f"""WITH {v}
+            OPTIONAL MATCH (codeFile:Codefiles {{id: CASE WHEN {v}.recordType = 'CODE_FILE' THEN {v}.id END}})
+            WHERE codeFile.orgId = {v}.orgId
+              AND (coalesce(codeFile.connectorId, '') <> coalesce({v}.connectorId, '')
+                   OR coalesce(codeFile.recordGroupId, '') <> coalesce({v}.recordGroupId, ''))
+            FOREACH (_ IN CASE WHEN codeFile IS NULL THEN [] ELSE [1] END |
+                SET codeFile.connectorId = {v}.connectorId, codeFile.recordGroupId = {v}.recordGroupId)
+            WITH {v}"""
 
 
 def cypher_kh_stamp_all(batch_size: int) -> str:
@@ -1765,6 +1786,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "FOR (n:RecordGroup) ON (n.connectorId)"
         )
 
+        # COMPOSITE: a repo's candidate groups by name key, and their child groups (code_graph.ops._repo_groups).
+        indexes.append(
+            "CREATE INDEX record_group_org_repo_key IF NOT EXISTS "
+            "FOR (n:RecordGroup) ON (n.orgId, n.repoKey)"
+        )
+        indexes.append(
+            "CREATE INDEX record_group_org_connector_parent IF NOT EXISTS "
+            "FOR (n:RecordGroup) ON (n.orgId, n.connectorId, n.parentExternalGroupId)"
+        )
+
         # SINGLE: groupType (KB filtering)
         indexes.append(
             "CREATE INDEX record_group_type IF NOT EXISTS "
@@ -1859,6 +1890,19 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         indexes.append(
             "CREATE INDEX code_file_org_path IF NOT EXISTS "
             "FOR (n:Codefiles) ON (n.orgId, n.filePath)"
+        )
+
+        # The code tools' path lookup within a connector, and within its repos (code_graph.ops._code_files_at). A composite index serves
+        # only a query on all its properties ("composite indexes can only be used if a predicate filters on all the properties indexed by
+        # the composite index", https://neo4j.com/docs/cypher-manual/current/indexes/search-performance-indexes/using-indexes/), and holds
+        # no node lacking one ("Neo4j indexes do not store null values"), so each lookup gets its own.
+        indexes.append(
+            "CREATE INDEX code_file_org_path_connector IF NOT EXISTS "
+            "FOR (n:Codefiles) ON (n.orgId, n.filePath, n.connectorId)"
+        )
+        indexes.append(
+            "CREATE INDEX code_file_org_path_connector_group IF NOT EXISTS "
+            "FOR (n:Codefiles) ON (n.orgId, n.filePath, n.connectorId, n.recordGroupId)"
         )
 
         # COMPOSITE: orgId + qualifiedName — symbol lookup by identity.
@@ -2480,6 +2524,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         WITH row.rest AS rest, row.ins AS ins
         MERGE (n:{label} {{id: rest.id}}){_CYPHER_RECORD_INSERT_ONLY}
         {_cypher_kh_node_state("n") if label in _KH_STATE_LABELS else ""}
+        {_cypher_code_file_scope("n", label, neo4j_nodes)}
         RETURN n.id
         """
             # documents that share an id are merged first (one rule on every store: ``merge_same_id_record_docs``); with the
@@ -2720,6 +2765,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (n:{label} {{id: $key}})
             SET n += $updates
             {_cypher_kh_node_state("n") if label in _KH_STATE_LABELS else ""}
+            {_cypher_code_file_scope("n", label, [updates])}
             RETURN n
             """
 
@@ -2853,6 +2899,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (n:{label} {{id: node_data.id}})
             SET n += node_data
             {_cypher_kh_node_state("n") if label in _KH_STATE_LABELS else ""}
+            {_cypher_code_file_scope("n", label, neo4j_nodes)}
             RETURN n
             """
 
@@ -10980,6 +11027,73 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             {"limit": limit},
         )
         return int(results[0].get("updated") or 0) if results else 0
+
+    async def backfill_code_path_scope(self, limit: int = 5000, *, org_id: str | None = None) -> int:
+        """Set connectorId/recordGroupId on code files and repoKey on record groups written before them; see the interface."""
+        code_file = collection_to_label(CollectionNames.CODE_FILES.value)
+        record = collection_to_label(CollectionNames.RECORDS.value)
+        group = collection_to_label(CollectionNames.RECORD_GROUPS.value)
+        # The lock makes the second IS NULL read a writer's value that committed while this waited, instead of overwriting it.
+        files = await self.client.execute_query(
+            f"""
+            MATCH (c:{code_file}) WHERE c.connectorId IS NULL AND ($org IS NULL OR c.orgId = $org)
+            MATCH (r:{record} {{id: c.id}}) WHERE r.orgId = c.orgId AND r.connectorId IS NOT NULL
+            WITH c, r LIMIT $limit
+            SET c.{_MATCH_LOCK} = true
+            REMOVE c.{_MATCH_LOCK}
+            WITH c, r WHERE c.connectorId IS NULL
+            SET c.connectorId = r.connectorId, c.recordGroupId = r.recordGroupId
+            RETURN count(c) AS updated
+            """,
+            {"limit": limit, "org": org_id},
+        )
+        done = int(files[0].get("updated") or 0) if files else 0
+        if done >= limit:
+            return done
+        page = await self.client.execute_query(
+            # A group with no orgId is never looked up by one, and could not be matched back below: a page of those would end the backfill early.
+            f"MATCH (g:{group}) WHERE g.repoKey IS NULL AND g.groupName IS NOT NULL AND g.orgId IS NOT NULL AND ($org IS NULL OR g.orgId = $org) "
+            "RETURN g.id AS id, g.groupName AS name LIMIT $limit",
+            {"limit": limit - done, "org": org_id},
+        )
+        if not page:
+            return done
+        # Casefolded in Python: Cypher's toLower is not str.casefold. The name is read again under the lock, so a rename keeps its writer's key.
+        rows = [{"id": p["id"], "name": p["name"], "key": repo_key(p["name"])} for p in page]
+        groups = await self.client.execute_query(
+            f"""
+            UNWIND $rows AS row
+            MATCH (g:{group} {{id: row.id}}) WHERE g.orgId IS NOT NULL
+            SET g.{_MATCH_LOCK} = true
+            REMOVE g.{_MATCH_LOCK}
+            WITH g, row WHERE g.repoKey IS NULL AND g.groupName = row.name
+            SET g.repoKey = row.key
+            RETURN count(g) AS updated
+            """,
+            {"rows": rows},
+        )
+        return done + (int(groups[0].get("updated") or 0) if groups else 0)
+
+    async def code_path_scope_pending(self, *, org_id: str | None = None) -> bool:
+        """Whether a row the backfill fills remains; see the interface."""
+        code_file = collection_to_label(CollectionNames.CODE_FILES.value)
+        record = collection_to_label(CollectionNames.RECORDS.value)
+        group = collection_to_label(CollectionNames.RECORD_GROUPS.value)
+        rows = await self.client.execute_query(
+            f"""
+            CALL () {{
+                MATCH (c:{code_file}) WHERE c.connectorId IS NULL AND ($org IS NULL OR c.orgId = $org)
+                MATCH (r:{record} {{id: c.id}}) WHERE r.orgId = c.orgId AND r.connectorId IS NOT NULL
+                RETURN 1 AS one LIMIT 1
+                UNION
+                MATCH (g:{group}) WHERE g.repoKey IS NULL AND g.groupName IS NOT NULL AND g.orgId IS NOT NULL AND ($org IS NULL OR g.orgId = $org)
+                RETURN 1 AS one LIMIT 1
+            }}
+            RETURN count(one) > 0 AS pending
+            """,
+            {"org": org_id},
+        )
+        return bool(rows and rows[0].get("pending"))
 
     async def update_sync_point_if(
         self,
