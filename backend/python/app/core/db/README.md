@@ -46,7 +46,7 @@ result = await db.run(fn, write=True)            # re-runs fn on 40001 / 40P01 a
   (`pool.acquire`, `create_pool`) is `ConnectionLost("cannot connect")` for the OS, 08xxx, 57P01-57P03 and 53300 (`pool.connect_failure`);
   only 53300 (`TooManyConnections`) is not retried, by `run` or by the vector search.
 * **Timeouts by class** (`config.py`): query 5 s, api 15 s, indexing 60 s, jobs 15 min; an `org_limits` hook
-  (`KernelDB(cfg, org_limits=async fn(org) -> OrgLimits | None)`) can only lower them.
+  (`KernelDB(cfg, org_limits=async fn(org) -> OrgLimits | None)`, default `app.edition.db_org_limits()`) can only lower them.
 * **Capabilities** (`capabilities.py`, `backend/db/capabilities.yaml`): floors and tested-up-to versions as data.
 * **Catalog and lints** (`catalog.py`, `sql_lint.py`): tag every statement `/* pipeshub:<module>.<fn> */`; record with
   `catalog.recording()`, export JSON, and run `explain_gate` in tests; `sql_lint.scan_paths` flags session SQL,

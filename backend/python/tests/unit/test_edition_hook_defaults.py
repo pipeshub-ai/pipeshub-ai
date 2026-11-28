@@ -48,6 +48,11 @@ def test_the_key_value_store_binds_no_org_for_any_key(key: str) -> None:
     assert edition.kv_key_binds_org(key) is False
 
 
+@pytest.mark.skipif(edition_tree_present(), reason="these hooks are another edition's in this checkout")
+def test_the_database_gets_no_org_limits_hook() -> None:
+    assert edition.db_org_limits() is None
+
+
 APP = Path(edition.__file__).parent
 # The sandbox's Docker socket proxy reads no PipesHub setting.
 READS_NO_SETTINGS = {"docker_proxy_main.py"}

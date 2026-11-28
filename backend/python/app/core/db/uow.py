@@ -21,10 +21,11 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from dataclasses import dataclass
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, TypeVar, cast
 
 import asyncpg
 
+from app import edition
 from app.core import org_context
 from app.core.db import capabilities as caps_mod
 from app.core.db import catalog
@@ -326,7 +327,8 @@ class KernelDB:
 
     def __init__(self, cfg: DbConfig, *, org_limits: OrgLimitsHook | None = None) -> None:
         self.cfg = cfg
-        self._org_limits = org_limits
+        # every construction site gets the edition's hook unless the caller names one
+        self._org_limits = org_limits if org_limits is not None else cast("OrgLimitsHook | None", edition.db_org_limits())
         self._pool: asyncpg.Pool | None = None
         self._jobs_pool: asyncpg.Pool | None = None
         # asyncpg pools belong to the event loop that made them; a unit of work started from another loop (the indexing worker

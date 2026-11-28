@@ -37,6 +37,13 @@ def sandbox_org_share() -> float | None:
     return None
 
 
+def db_org_limits() -> object:
+    """The org limits hook every ``KernelDB`` of this process gets (``app.core.db.uow.OrgLimitsHook``): an async function of
+    an org id that returns ``OrgLimits``, which can only lower the statement class defaults. ``None`` for the class defaults.
+    Typed ``object`` so this module stays import-free. Here there is none."""
+    return None
+
+
 def kv_key_binds_org(key: str) -> bool:
     """Whether the PostgreSQL key-value store binds the ambient org (``app.org_id``) while it reads or writes ``key`` (for a
     listing, the prefix it lists). This build's keys belong to the whole install, so it binds none."""
