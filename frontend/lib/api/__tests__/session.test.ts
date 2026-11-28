@@ -501,23 +501,57 @@ describe('a 401 from the server', () => {
 });
 
 describe('a refresh that hands over another account', () => {
+  // Someone else signed in to this browser while the refresh was out: the cookie now names them.
+  const assign = vi.fn();
+  beforeEach(() => {
+    assign.mockReset();
+    vi.stubGlobal('location', { ...window.location, assign });
+  });
+
+  it('keeps the token out of the store, reloads the page and answers account-changed', async () => {
+    const mine = tokenFor('u1', 20);
+    useAuthStore.setState({ accessToken: mine });
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { accessToken: tokenFor('u2') }));
+    expect(await refreshOrSignOut()).toBe('account-changed');
+    expect(useAuthStore.getState().accessToken).toBe(mine);
+    expect(assign).toHaveBeenCalledWith('/chat/');
+    expect(logoutAndRedirect).not.toHaveBeenCalled();
+  });
+
   it('does not send a request made as one account with the token of another', async () => {
-    useAuthStore.setState({ accessToken: tokenFor('u1', 20) });
+    const mine = tokenFor('u1', 20);
+    useAuthStore.setState({ accessToken: mine });
     fetchMock.mockResolvedValueOnce(jsonResponse(200, { accessToken: tokenFor('u2') }));
     const sent = fakeServer({ status: 200 });
     await expect(apiClient.get('/api/v1/users')).rejects.toMatchObject({ type: ErrorType.REQUEST_CANCELLED });
     expect(sent).toHaveLength(0);
+    expect(useAuthStore.getState().accessToken).toBe(mine);
+    expect(assign).toHaveBeenCalledWith('/chat/');
     expect(errorToasts()).toHaveLength(0);
     expect(logoutAndRedirect).not.toHaveBeenCalled();
   });
 
-  it('does not replay a 401 as another account', async () => {
-    useAuthStore.setState({ accessToken: tokenFor('u1') });
+  it('does not replay a 401 as another account, and the next request is not sent as them either', async () => {
+    const mine = tokenFor('u1');
+    useAuthStore.setState({ accessToken: mine });
     fetchMock.mockResolvedValueOnce(jsonResponse(200, { accessToken: tokenFor('u2') }));
     const sent = fakeServer({ status: 401 }, { status: 200 });
     await expect(apiClient.get('/api/v1/users')).rejects.toMatchObject({ type: ErrorType.REQUEST_CANCELLED });
     expect(sent).toHaveLength(1);
+    expect(useAuthStore.getState().accessToken).toBe(mine);
+    expect(assign).toHaveBeenCalledWith('/chat/');
     expect(errorToasts()).toHaveLength(0);
+  });
+
+  it('answers account-changed to a caller whose request was made as another account than the store holds now', async () => {
+    const now = tokenFor('u2', 20);
+    useAuthStore.setState({ accessToken: now });
+    const fresh = tokenFor('u2', 7200);
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { accessToken: fresh }));
+    expect(await refreshOrSignOut(tokenFor('u1'))).toBe('account-changed');
+    // The store's own account did not change: its token is kept and nothing reloads.
+    expect(useAuthStore.getState().accessToken).toBe(fresh);
+    expect(assign).not.toHaveBeenCalled();
   });
 
   it('still sends and replays for the same account', async () => {
@@ -528,6 +562,7 @@ describe('a refresh that hands over another account', () => {
     await expect(apiClient.get('/api/v1/users')).resolves.toMatchObject({ status: 200 });
     expect(sent).toHaveLength(2);
     expect(bearer(sent[1])).toBe(`Bearer ${fresh}`);
+    expect(assign).not.toHaveBeenCalled();
   });
 });
 

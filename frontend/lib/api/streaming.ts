@@ -146,7 +146,9 @@ async function readUploadHttpError(response: Response): Promise<UploadHttpError>
  *
  * Returns the token (possibly refreshed), or `{ sessionExpired: true }` when
  * the refresh failed (the person has been signed out) or the session ended
- * while it was out. Caller should `onError` and bail.
+ * while it was out. Caller should `onError` and bail. Throws an `AbortError`
+ * (a quiet stop) when the refresh handed over another account's token: the
+ * stream is never sent as them.
  */
 async function ensureFreshToken(): Promise<
   { token: string | null; sessionExpired: false } | { token: null; sessionExpired: true }
@@ -157,8 +159,14 @@ async function ensureFreshToken(): Promise<
   }
 
   if (isRefreshInProgress() || isTokenExpired(token)) {
-    if (sessionOver(await refreshOrSignOut())) {
+    const outcome = await refreshOrSignOut(token);
+    if (sessionOver(outcome)) {
       return { token: null, sessionExpired: true };
+    }
+    if (outcome === 'account-changed') {
+      const stop = new Error('The signed-in account changed.');
+      stop.name = 'AbortError';
+      throw stop;
     }
     token = useAuthStore.getState().accessToken;
   }

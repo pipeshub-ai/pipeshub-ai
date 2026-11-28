@@ -17,6 +17,7 @@ import { onSessionEnd, captureSession } from '@/lib/api/session-cache';
 import { reconnectLater, stopReconnecting } from '@/lib/api/session-reconnect';
 import {
   REFRESH_TOKEN_ENDPOINT,
+  accountOfToken,
   requestAccessToken,
   signedInMark,
 } from '@/lib/auth/session-credential';
@@ -68,8 +69,18 @@ export function isTokenExpired(
   return exp < nowSeconds + bufferSeconds;
 }
 
-/** What one refresh attempt found: a new token, a session the server refused, or no answer. */
-export type RefreshAnswer = 'refreshed' | 'refused' | 'unreachable';
+/**
+ * What one refresh attempt found: a new token, a session the server refused, no answer, or a token
+ * for another account than this page's (someone else signed in to this browser meanwhile).
+ */
+export type RefreshAnswer = 'refreshed' | 'refused' | 'unreachable' | 'account-changed';
+
+/** Both tokens name an account and the accounts differ. Unknown on either side is not a change. */
+function accountChanged(before: string | null | undefined, after: string | null | undefined): boolean {
+  const a = accountOfToken(before);
+  const b = accountOfToken(after);
+  return a !== null && b !== null && a !== b;
+}
 
 // ── Shared in-memory refresh lock ────────────────────────────────────────
 // `refreshPromise` is the single in-flight refresh; concurrent callers
@@ -101,7 +112,8 @@ export async function refreshAccessToken(): Promise<RefreshAnswer> {
 
   const current = captureSession();
   const mark = signedInMark();
-  const promise = (async () => {
+  const tokenBefore = useAuthStore.getState().accessToken;
+  const promise = (async (): Promise<RefreshAnswer> => {
     try {
       const answer = await requestAccessToken();
       if (answer.outcome !== 'issued') {
@@ -111,6 +123,12 @@ export async function refreshAccessToken(): Promise<RefreshAnswer> {
       // Signed out while the refresh was out, here or in another tab this one has not heard
       // from yet: storing the token would sign the last user back in.
       if (!current() || signedInMark() !== mark) return 'refused';
+      // Another account's token: storing it would hand this page, its caches and its open requests to
+      // them. The page reloads instead, as when another tab signs in as someone else.
+      if (accountChanged(tokenBefore, answer.accessToken)) {
+        window.location.assign('/chat/');
+        return 'account-changed';
+      }
       useAuthStore.getState().setAccessToken(answer.accessToken);
       return 'refreshed';
     } catch (error) {
@@ -134,7 +152,12 @@ onSessionEnd(() => {
   stopReconnecting();
 });
 
-export type RefreshOutcome = 'refreshed' | 'unreachable' | 'signed-out' | 'session-ended';
+/**
+ * The one verdict every caller acts on. `refreshed`: the store's token may be used for the caller's
+ * request. `account-changed`: it may not (it is another account's, or the request was made as another
+ * account); the caller drops the request without sending it.
+ */
+export type RefreshOutcome = 'refreshed' | 'unreachable' | 'signed-out' | 'session-ended' | 'account-changed';
 
 /** The refresh ended this session (or it had ended already): the request must be dropped. */
 export const sessionOver = (outcome: RefreshOutcome): boolean =>
@@ -145,13 +168,18 @@ export const sessionOver = (outcome: RefreshOutcome): boolean =>
  * asked has already ended: then signing out again would sign out the next person.
  * With no answer (`'unreachable'`) it keeps the session, shows the reconnecting notice and tries
  * again later with backoff (`session-reconnect.ts`); the caller fails only what needed the token.
+ * `madeWith` is the token the caller's request was made with, when it has one.
  */
-export async function refreshOrSignOut(): Promise<RefreshOutcome> {
+export async function refreshOrSignOut(madeWith?: string | null): Promise<RefreshOutcome> {
   const current = captureSession();
   const answer = await refreshAccessToken();
+  if (answer === 'account-changed') {
+    stopReconnecting();
+    return 'account-changed';
+  }
   if (answer === 'refreshed') {
     stopReconnecting();
-    return 'refreshed';
+    return accountChanged(madeWith, useAuthStore.getState().accessToken) ? 'account-changed' : 'refreshed';
   }
   if (!current()) return 'session-ended';
   // No answer is no verdict: the session may still be good, so it is kept and tried again later.
