@@ -31,7 +31,11 @@ import { loadConfigurationManagerConfig } from '../../../modules/configuration_m
 import { userAdminCheck } from '../../../modules/user_management/middlewares/userAdminCheck';
 import { isUserOrgAdmin } from '../../../modules/user_management/services/user-admin.service';
 import type { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
-import { licenseNotice, startupWarnings } from './license-notice';
+import {
+  licenseNotice,
+  startupWarnings,
+  upgradeGraceEndsAt,
+} from './license-notice';
 import {
   checkSeats,
   SEAT_REFUSAL_AT_SIGN_IN,
@@ -170,6 +174,24 @@ export function createLicenseRouter(
     requireScopes(OAuthScopeNames.ORG_ADMIN),
     userAdminCheck,
   ];
+  // No sign-in: the procurement site asks the install, server to server, whether its upgrade grace runs.
+  // Only the end of the grace (null when licensed, not started or ended); nothing about the licence or the org.
+  router.get(
+    '/grace',
+    async (_req: Request, res: Response, next: NextFunction) => {
+      try {
+        const now = new Date();
+        res.json({
+          graceEndsAt: upgradeGraceEndsAt(
+            await licenseStatus(licenseStore, now),
+            now,
+          ),
+        });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
   router.get(
     '/',
     ...admin,

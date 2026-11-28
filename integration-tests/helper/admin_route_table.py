@@ -193,6 +193,7 @@ NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
     # The admin's body is not a licence file, so the licence check refuses it (400) before anything is stored.
     AdminRoute("POST", "/api/v1/license", admin="admin_body"),
     # No row for GET /api/v1/license/notice: any signed-in user reads it (ORG_READ, no admin check).
+    # No row for GET /api/v1/license/grace: public on purpose, no sign-in; it answers only when the upgrade grace ends.
     # user_management/routes/org.routes.ts
     AdminRoute("PUT", "/api/v1/org", admin="invalid"),
     _no_admin("DELETE", "/api/v1/org", "deletes the test org"),
