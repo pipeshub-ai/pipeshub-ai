@@ -39,7 +39,7 @@ env:
   # The open-api commit whose generation settings this job uses (gen.yaml, workflow.yaml, the
   # overlay, filter_sdk_spec.py and the Speakeasy CLI version in generate-sdks.yml), so the SDK
   # under test equals the published one. Move it when open-api changes them.
-  OPEN_API_REF: f037e457cba7aa491245b40703406db25c67fc16
+  OPEN_API_REF: 40687261224e971465c52fa9c3529eebbd6f88b2
   COMPOSE_FILE: docker-compose.integration.neo4j.yml
   SDK_WORK_DIR: ${{ github.workspace }}/sdk-work
   SDK_RELEASED_DIR: ${{ github.workspace }}/sdk-released
