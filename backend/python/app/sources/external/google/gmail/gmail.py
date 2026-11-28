@@ -1,12 +1,16 @@
 import asyncio
+import contextvars
 import functools
 import logging
 import threading
 from concurrent.futures import Executor
 from threading import Lock
-from typing import Any, Callable, Dict, Optional, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, TypeVar
 
 from app.sources.client.google.google import GOOGLE_HTTP_NUM_RETRIES, GoogleClient
+
+if TYPE_CHECKING:
+    from app.sources.client.resilience import ResiliencePolicy
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +28,8 @@ class GoogleGmailDataSource:
         self,
         client: GoogleClient,
         *,
-        executor: Optional[Executor] = None
+        executor: Optional[Executor] = None,
+        resilience: "Optional[ResiliencePolicy]" = None,
     ) -> None:
         """
         Initialize with Gmail API client.
@@ -33,9 +38,13 @@ class GoogleGmailDataSource:
             executor: Optional executor to run blocking calls on -- normally the
                 connector's capped lease on the shared connector thread pool. When
                 omitted, falls back to the event loop's default executor.
+            resilience: The syncing connector's policy, taken once per request: its
+                local rate and its vendor's shared budget (G-31). An agent toolset
+                passes none; its tool call has already taken from the budget.
         """
         self.client = client
         self._executor = executor
+        self._resilience = resilience
         # googleapiclient services share one httplib2.Http per instance, which is
         # not thread-safe, so at most one in-flight request per datasource instance.
         self._execute_lock = asyncio.Lock()
@@ -57,10 +66,14 @@ class GoogleGmailDataSource:
             )
         async with self._execute_lock:
             logger.debug("Gmail datasource %#x: execute lock acquired", id(self))
+            if self._resilience is not None:
+                await self._resilience.acquire()
             loop = asyncio.get_running_loop()
             try:
+                # The copied context carries the running tool call's send tracker into the worker thread.
                 return await loop.run_in_executor(
                     self._executor,
+                    contextvars.copy_context().run,
                     self._run_transport_operation,
                     operation,
                 )

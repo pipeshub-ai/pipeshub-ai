@@ -4,9 +4,13 @@ import sinon from 'sinon'
 import { Types } from 'mongoose'
 import * as controller from '../../../../src/modules/enterprise_search/controller/es_controller'
 import * as conversationArtifacts from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
+import * as durableTransaction from '../../../../src/libs/repositories/agent-harness/durable-transaction'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
+import { MongoConversationRepository } from '../../../../src/libs/repositories/conversation/mongo'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 /**
  * Sharing an agent conversation is read-only: the owner shares, a recipient can
@@ -160,6 +164,9 @@ const sharedWithOf = (s: Setup): string[] =>
 const share = (userIds: unknown, accessLevel?: string) => ({ userIds, ...(accessLevel ? { accessLevel } : {}) })
 
 describe('es_controller agent-chat sharing: read-only for recipients, owner-only to change', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
+
   // The users of the caller's organisation, and every filter the recipient lookup was asked with.
   let orgUsers: Set<string>
   let userLookups: Array<Record<string, any>>
@@ -237,7 +244,7 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
       await callJson(unshareHandler(), request(owner, agentParams(s), { userIds: [String(RECIPIENT)] }))
 
       const calls = s.ai.calls.filter((c) => /\/chat\/attachments\/permissions$/.test(c.url))
-      expect(calls.map((c) => c.method)).to.deep.equal(['POST', 'DELETE'])
+      expect(calls.map((c) => c.method)).to.deep.equal(['POST', 'DELETE', 'DELETE'])
       for (const c of calls) expect(c.body).to.deep.equal({ userIds: [String(RECIPIENT)], recordIds: ['rec-1'] })
     })
 
@@ -494,6 +501,231 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
       expect(sharedWithOf(s)).to.deep.equal([String(RECIPIENT)])
     })
 
+    describe('unshare revokes before it removes: a refused revoke changes nothing', () => {
+      const ATT = /\/chat\/attachments\/permissions$/
+      const ART = /\/chat\/artifacts\/permissions$/
+      const withAttachment = (s: Setup): void => {
+        const chat = s.store.session(s.agentChatId)
+        if (chat) s.store.addMessage(chat, { messageType: 'user_query', content: 'See file', attachments: [{ recordId: 'rec-1' }] })
+        s.store.writes.length = 0
+      }
+      const deletes = (s: Setup): string[] =>
+        s.ai.calls.filter((c) => c.method === 'DELETE').map((c) => (ATT.test(c.url) ? 'att' : 'art'))
+      const unshareRecipient = (s: Setup, ids = [RECIPIENT]) =>
+        callJson(unshareHandler(), request(owner, agentParams(s), { userIds: ids.map(String) }))
+
+      it('artifacts 503 Retry-After: 5 -> 503 with retryAfter, list and store untouched', async () => {
+        const s = setup()
+        shareWith(s, RECIPIENT)
+        s.ai.reply(ART, 503, { detail: 'DATABASE_UNREACHABLE' }, { 'retry-after': '5' })
+
+        const out = await unshareRecipient(s)
+
+        expect(out.status).to.equal(undefined)
+        expect(out.error?.statusCode).to.equal(503)
+        expect((out.error as any)?.metadata?.retryAfter).to.equal('5')
+        expect(sharedWithOf(s)).to.deep.equal([String(RECIPIENT)])
+        expect(s.store.writes).to.deep.equal([])
+      })
+
+      it('attachments 503 -> 503, no artifacts call, list untouched', async () => {
+        const s = setup()
+        withAttachment(s)
+        shareWith(s, RECIPIENT)
+        s.ai.reply(ATT, 503, { detail: 'DATABASE_UNREACHABLE' }, { 'retry-after': '5' })
+
+        const out = await unshareRecipient(s)
+
+        expect(out.error?.statusCode).to.equal(503)
+        expect(deletes(s)).to.deep.equal(['att'])
+        expect(sharedWithOf(s)).to.deep.equal([String(RECIPIENT)])
+      })
+
+      it('attachments 500 -> 5xx, list untouched', async () => {
+        const s = setup()
+        withAttachment(s)
+        shareWith(s, RECIPIENT)
+        s.ai.reply(ATT, 500, { detail: 'boom' })
+
+        const out = await unshareRecipient(s)
+
+        expect(out.error?.statusCode).to.be.at.least(500)
+        expect(sharedWithOf(s)).to.deep.equal([String(RECIPIENT)])
+      })
+
+      it('query service unreachable -> 503, list untouched', async () => {
+        const s = setup()
+        shareWith(s, RECIPIENT)
+        s.ai.failNetwork(ART, Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }))
+
+        const out = await unshareRecipient(s)
+
+        expect(out.error?.statusCode).to.equal(503)
+        expect(sharedWithOf(s)).to.deep.equal([String(RECIPIENT)])
+      })
+
+      it('query service timeout -> 504, list untouched', async () => {
+        const s = setup()
+        shareWith(s, RECIPIENT)
+        s.ai.failNetwork(ART, Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' }))
+
+        const out = await unshareRecipient(s)
+
+        expect(out.error?.statusCode).to.equal(504)
+        expect(sharedWithOf(s)).to.deep.equal([String(RECIPIENT)])
+      })
+
+      it('a chat without attachments sends no attachments DELETE', async () => {
+        const s = setup()
+        shareWith(s, RECIPIENT)
+
+        const out = await unshareRecipient(s)
+
+        expect(out.status).to.equal(200)
+        expect(deletes(s)).to.deep.equal(['art', 'art'])
+      })
+
+      it('an attachment added while the revokes run is revoked after the commit', async () => {
+        const s = setup()
+        withAttachment(s)
+        shareWith(s, RECIPIENT)
+        let added = false
+        s.ai.replyWith(ART, () => {
+          const chat = s.store.session(s.agentChatId)
+          if (!added && chat) {
+            added = true
+            s.store.addMessage(chat, { messageType: 'user_query', content: 'One more', attachments: [{ recordId: 'rec-2' }] })
+          }
+          return { status: 200, body: {} }
+        })
+
+        const out = await unshareRecipient(s)
+
+        expect(out.status).to.equal(200)
+        expect(deletes(s)).to.deep.equal(['att', 'art', 'att', 'art'])
+        const repeat = s.ai.calls.filter((c) => c.method === 'DELETE' && ATT.test(c.url))[1]
+        expect((repeat?.body as { recordIds: string[] }).recordIds).to.have.members(['rec-1', 'rec-2'])
+      })
+
+      it('a failed re-read after the commit still answers 200 and repeats the revoke on the earlier list', async () => {
+        const s = setup()
+        withAttachment(s)
+        shareWith(s, RECIPIENT)
+        const read = sinon.stub(MongoConversationRepository.prototype, 'listAttachmentsAndCitedRecords')
+        read.callThrough()
+        read.onSecondCall().rejects(new Error('store down'))
+
+        const out = await unshareRecipient(s)
+
+        expect(out.status).to.equal(200)
+        expect(sharedWithOf(s)).to.deep.equal([])
+        expect(deletes(s)).to.deep.equal(['att', 'art', 'att', 'art'])
+        const repeat = s.ai.calls.filter((c) => c.method === 'DELETE' && ATT.test(c.url))[1]
+        expect((repeat?.body as { recordIds: string[] }).recordIds).to.deep.equal(['rec-1'])
+      })
+
+      it('a refused revoke writes no participant-journal event; the retry writes one', async () => {
+        const s = setup()
+        shareWith(s, RECIPIENT)
+        // The real one needs a replica set; the unit of work it wraps is the same either way.
+        sinon.stub(durableTransaction, 'inDurableTransaction').callsFake((work) => work(undefined as never))
+        const participantsChanged = sinon.stub().resolves()
+        const handler = controller.unshareAgentConversation(appConfig, () => ({ participantsChanged }) as never) as JsonHandler
+        const unshare = () => callJson(handler, request(owner, agentParams(s), { userIds: [String(RECIPIENT)] }))
+        s.ai.reply(ART, 503, { detail: 'DATABASE_UNREACHABLE' }, { 'retry-after': '5' })
+
+        expect((await unshare()).error?.statusCode).to.equal(503)
+        expect(participantsChanged.called).to.equal(false)
+
+        s.ai.resetReplies()
+        expect((await unshare()).status).to.equal(200)
+        expect(participantsChanged.callCount).to.equal(1)
+      })
+
+      it('outage then retry: 200, recipient removed, DELETEs att, art, commit, att, art', async () => {
+        const s = setup()
+        withAttachment(s)
+        shareWith(s, RECIPIENT)
+        s.ai.reply(ART, 503, { detail: 'DATABASE_UNREACHABLE' }, { 'retry-after': '5' })
+        await unshareRecipient(s)
+        s.ai.resetReplies()
+        s.ai.calls.length = 0
+        const order: string[] = []
+        const at = (tag: string) => (): { status: number; body: unknown } => {
+          order.push(`${tag}@${s.store.writes.length}`)
+          return { status: 200, body: { revoked: 0 } }
+        }
+        s.ai.replyWith(ATT, at('att'))
+        s.ai.replyWith(ART, at('art'))
+
+        const out = await unshareRecipient(s)
+
+        expect(out.status).to.equal(200)
+        expect(sharedWithOf(s)).to.deep.equal([])
+        expect(order).to.deep.equal(['att@0', 'art@0', 'att@1', 'art@1'])
+      })
+
+      it('a 2xx that revoked nothing is a success', async () => {
+        const s = setup()
+        shareWith(s, RECIPIENT)
+        s.ai.reply(ART, 200, { revoked: 0 })
+
+        const out = await unshareRecipient(s)
+
+        expect(out.status).to.equal(200)
+        expect(sharedWithOf(s)).to.deep.equal([])
+      })
+
+      it('two users, artifacts 503 -> both still listed', async () => {
+        const s = setup()
+        shareWith(s, RECIPIENT, SECOND_RECIPIENT)
+        s.ai.reply(ART, 503, { detail: 'DATABASE_UNREACHABLE' })
+
+        const out = await unshareRecipient(s, [RECIPIENT, SECOND_RECIPIENT])
+
+        expect(out.error?.statusCode).to.equal(503)
+        expect(sharedWithOf(s)).to.have.members([String(RECIPIENT), String(SECOND_RECIPIENT)])
+      })
+
+      it('the post-commit repeat failing does not fail the unshare', async () => {
+        const s = setup()
+        shareWith(s, RECIPIENT)
+        let n = 0
+        s.ai.replyWith(ART, () => (++n === 1 ? { status: 200, body: { revoked: 1 } } : { status: 503, body: { detail: 'x' } }))
+
+        const out = await unshareRecipient(s)
+
+        expect(out.status).to.equal(200)
+        expect(sharedWithOf(s)).to.deep.equal([])
+        expect(n).to.equal(2)
+      })
+
+      for (const status of [401, 403, 422]) {
+        it(`a ${status} from the query service fails the unshare as a 500 (never relayed to the owner) and keeps the list`, async () => {
+          const s = setup()
+          shareWith(s, RECIPIENT)
+          s.ai.reply(ART, status, { detail: 'Invalid service token' })
+
+          const out = await unshareRecipient(s)
+
+          expect(out.status).to.equal(undefined)
+          expect(out.error?.statusCode).to.equal(500)
+          expect(out.error?.message).to.not.include('Invalid service token')
+          expect(sharedWithOf(s)).to.deep.equal([String(RECIPIENT)])
+        })
+      }
+
+      it('the share route stays best-effort: a refused grant still shares', async () => {
+        const s = setup()
+        s.ai.reply(ART, 503, { detail: 'DATABASE_UNREACHABLE' })
+
+        const out = await callJson(shareHandler(), request(owner, agentParams(s), share([String(RECIPIENT)])))
+
+        expect(out.status).to.equal(200)
+        expect(sharedWithOf(s)).to.deep.equal([String(RECIPIENT)])
+      })
+    })
+
     it('the agent unshare route cannot touch a plain chat', async () => {
       const s = setup()
       s.store.session(s.plainChatId)?.set({ isShared: true, sharedWith: [{ userId: RECIPIENT, accessLevel: 'read' }] })
@@ -506,6 +738,7 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
 
       expect(out.error?.statusCode).to.equal(404)
       expect(s.store.writes).to.deep.equal([])
+      expect(s.ai.calls).to.deep.equal([])
     })
   })
 
@@ -520,7 +753,7 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
       const conversation = (out.body as { conversation: Record<string, unknown> }).conversation
       expect(conversation.title).to.equal('Roadmap review')
       expect(conversation.messages).to.have.length(2)
-      expect(conversation.access).to.deep.equal({ isOwner: false, accessLevel: 'read' })
+      expect(conversation.access).to.deep.equal({ isOwner: false, accessLevel: 'read', role: 'viewer' })
       expect(conversation.sharedWith, 'other recipients stay private').to.equal(undefined)
       expect((conversation.sharedBy as { userId: string }).userId).to.equal(String(OWNER))
     })
@@ -550,7 +783,7 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
       const out = await callJson(getHandler(), request(owner, agentParams(s)))
 
       const conversation = (out.body as { conversation: Record<string, unknown> }).conversation
-      expect(conversation.access).to.deep.equal({ isOwner: true, accessLevel: 'read' })
+      expect(conversation.access).to.deep.equal({ isOwner: true, accessLevel: 'read', role: 'owner' })
       expect((conversation.sharedWith as unknown[]).length).to.equal(1)
       expect(conversation.sharedBy).to.equal(undefined)
       expect(s.ai.calls).to.deep.equal([])

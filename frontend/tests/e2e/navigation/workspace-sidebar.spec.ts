@@ -19,6 +19,8 @@ const SIDEBAR_ITEMS = [
 
 // These sit under the collapsible "People" section.
 const PEOPLE_ITEMS = new Set(['Users', 'Teams', 'Groups']);
+// And these under the collapsible "Security" section.
+const SECURITY_ITEMS = new Set(['Authentication']);
 
 test.describe('Workspace Sidebar Navigation', () => {
   test.beforeEach(async ({ page }) => {
@@ -38,7 +40,7 @@ test.describe('Workspace Sidebar Navigation', () => {
     await expect(page).toHaveURL(/\/workspace\/groups\//);
     await expect(
       page.getByRole('heading', {
-        name: /Group permissions are available in the Enterprise Edition/i,
+        name: /Group permissions are available in Enterprise Edition/i,
       })
     ).toBeVisible({ timeout: 10_000 });
   });
@@ -52,6 +54,9 @@ test.describe('Workspace Sidebar Navigation', () => {
         .first();
       if (PEOPLE_ITEMS.has(item.label) && !(await sidebarLink.isVisible())) {
         await page.getByRole('button', { name: 'People' }).click();
+      }
+      if (SECURITY_ITEMS.has(item.label) && !(await sidebarLink.isVisible())) {
+        await page.getByRole('button', { name: 'Security' }).click();
       }
       await expect(sidebarLink, `the ${item.label} link should be in the sidebar`).toBeVisible({
         timeout: 5_000,

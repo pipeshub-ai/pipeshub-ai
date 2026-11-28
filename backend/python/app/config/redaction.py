@@ -10,8 +10,9 @@ REDACTED_PLACEHOLDER = "••••••••"
 
 
 def hide_secrets_by_default() -> bool:
-    """Same switch as the Node config routes: HIDE_SECRET_CONFIG=true masks stored secrets."""
-    return os.getenv("HIDE_SECRET_CONFIG") == "true"
+    """Same switch as the Node config routes: stored secrets are masked unless
+    HIDE_SECRET_CONFIG is explicitly "false", so an install that never sets it fails closed."""
+    return os.getenv("HIDE_SECRET_CONFIG") != "false"
 
 
 def reveal_requested(request: Request) -> bool:

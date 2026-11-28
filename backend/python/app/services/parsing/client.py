@@ -29,18 +29,23 @@ from app.services.base_client import (
     BaseServiceClient,
     ServiceBackpressureError,
     ServiceCallError,
+    earlier_attempt_delivered,
 )
+from app.services.docling.client import DoclingNotServing, DoclingUnavailableError
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
 from app.services.messaging.config import messaging_env
 from app.services.paid_cache.orphan import RecordGone, RecordHandBack, current_guard
 from app.services.paid_cache.run import current_run
 from app.services.parsing.interface import (
+    DOCLING_UNAVAILABLE_REASON,
+    STORED_ROWS_PART,
     ParseErrorCode,
     ParseResult,
     ParserProvider,
 )
 from app.services.parsing.remote_concurrency import remote_parse_concurrency
 from app.utils.converters.caption_map import apply_caption_map
+from app.utils.table_row_memory import encode_stored_tables, previous_row_texts
 
 if TYPE_CHECKING:
     from app.services.messaging.backpressure import BackpressureCoordinator
@@ -88,6 +93,19 @@ class ParsingClientError(Exception):
 
 MAX_PARSE_READ_TIMEOUT_SECONDS = 2400.0  # Docling's own PDF budget
 PARSE_SHARE_OF_RECORD_BUDGET = 0.8
+
+
+async def _stored_rows_part(record_name: str) -> tuple[str, bytes, str] | None:
+    """The stored version's table rows this delivery offered, as a part of the parse request, so the parsing service keeps an
+    unchanged row's text as indexing does. ``None`` when none were offered (not an update) or they are too large to send."""
+    tables = await previous_row_texts()
+    if not tables:
+        return None
+    raw = encode_stored_tables(tables)
+    if raw is None:
+        logger.warning("Parse of %s: the stored version's table rows are too large to send; its tables are described again", record_name)
+        return None
+    return ("stored_rows.json", raw, "application/json")
 
 
 class ParsingClient(BaseServiceClient):
@@ -205,10 +223,7 @@ class ParsingClient(BaseServiceClient):
         — this is retryable, unlike the other error codes.
         Raises :class:`ServiceCallError` on connection / retry exhaustion.
         """
-        if not extension:
-            extension = file_types.extension_for_mime(mime_type)
-            if not extension and "." in record_name:
-                extension = record_name.rsplit(".", 1)[-1]
+        extension = file_types.service_extension(mime_type, extension, record_name)
 
         form_data: dict[str, str] = {
             "record_name": record_name,
@@ -233,10 +248,14 @@ class ParsingClient(BaseServiceClient):
             form_data["refresh_token"] = run.refresh_token
 
         record_budget = messaging_env.record_processing_timeout_for(extension, mime_type)
+        files = {"file": (record_name, file_content, mime_type or "application/octet-stream")}
+        stored_rows = await _stored_rows_part(record_name)
+        if stored_rows is not None:
+            files[STORED_ROWS_PART] = stored_rows
         try:
             response = await self._post_multipart(
                 "/api/v1/parse",
-                files={"file": (record_name, file_content, mime_type or "application/octet-stream")},
+                files=files,
                 data=form_data,
                 operation="parse",
                 budget_seconds=record_budget,
@@ -269,16 +288,24 @@ class ParsingClient(BaseServiceClient):
                 code = ParseErrorCode(code_str)
             except ValueError:
                 code = ParseErrorCode.PARSE_FAILED
+            details = error.get("details") or {}
+            if code == ParseErrorCode.PARSE_BACKPRESSURE and details.get("reason") == DOCLING_UNAVAILABLE_REASON:
+                message = error.get("message", "Docling is not serving")
+                if earlier_attempt_delivered(response):
+                    # An earlier answer of this call (a 5xx) may have been Docling failing on the file: counted.
+                    raise DoclingUnavailableError(message)
+                # The service's Docling never received the file: wait for it, as the in-process path does.
+                raise DoclingNotServing(message)
             if code == ParseErrorCode.PASSWORD_REQUIRED:
                 # The typed error the legacy pipeline raises for the same file.
                 raise PasswordProtectedError(
                     error.get("message", "The file is password-protected"),
-                    details=error.get("details", {}),
+                    details=details,
                 )
             raise ParsingClientError(
                 code=code,
                 message=error.get("message", "Parsing failed"),
-                details=error.get("details", {}),
+                details=details,
             )
 
         try:

@@ -164,6 +164,159 @@ async def test_generated_worlds_read_from_kg_equal_the_walk(layer, pg_provider, 
     assert _served(tally, "by_parent") and _served(tally, "depths"), dict(tally.c)
 
 
+# The walk's level reads before they went upwards from the asked ids: down from every member of the parent (every record of a group, of every group of a connector), then cut
+# to the asked ids. Kept to hold the upward reads to the same answers.
+LEGACY_DEPTHS = {
+    "app": """WITH RECURSIVE w(id, lvl) AS (
+          SELECT s.id, 1 FROM (SELECT b.from_id AS id FROM graph.nodes g JOIN graph.edges b ON b.org_id = g.org_id AND b.coll = 'belongsTo'
+              AND b.to_coll = 'recordGroups' AND b.to_id = g.id AND b.from_coll = 'records'
+            WHERE g.org_id = $1 AND g.coll = 'recordGroups' AND g.doc->>'connectorId' = $2 AND NOT coalesce((g.doc->>'isDeleted')::boolean, false)
+            UNION SELECT b.from_id FROM graph.edges b WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.to_coll = 'apps' AND b.to_id = $2
+              AND b.from_coll = 'records') s
+          UNION SELECT nx.to_id, w.lvl + 1 FROM w JOIN LATERAL (SELECT e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations'
+              AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') AND e.from_coll = 'records' AND e.from_id = w.id AND e.to_coll = 'records') nx ON true
+          WHERE w.lvl <= $4)
+        SELECT id, min(lvl) AS lvl FROM w WHERE id = ANY($3::text[]) GROUP BY id""",
+    "recordGroup": """WITH RECURSIVE w(id, lvl) AS (
+          SELECT b.from_id, 1 FROM graph.edges b WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.to_coll = 'recordGroups' AND b.to_id = $2
+            AND b.from_coll = 'records'
+          UNION SELECT nx.to_id, w.lvl + 1 FROM w JOIN LATERAL (SELECT e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations'
+              AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') AND e.from_coll = 'records' AND e.from_id = w.id AND e.to_coll = 'records') nx ON true
+          WHERE w.lvl <= $4)
+        SELECT id, min(lvl) AS lvl FROM w WHERE id = ANY($3::text[]) GROUP BY id""",
+    None: """WITH RECURSIVE w(id, lvl) AS (SELECT $2::text, 0
+          UNION SELECT nx.to_id, w.lvl + 1 FROM w JOIN LATERAL (SELECT e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations'
+              AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') AND e.from_coll = 'records' AND e.from_id = w.id AND e.to_coll = 'records') nx ON true
+          WHERE w.lvl < $4)
+        SELECT id, min(lvl) AS lvl FROM w WHERE id = ANY($3::text[]) AND lvl >= 1 GROUP BY id""",
+}
+
+
+async def _legacy_depths(db, org: str, parent_id: str, parent_type: str | None, ids: list[str], max_depth: int) -> dict[str, int]:
+    safe = max(1, min(int(max_depth), 10))
+
+    async def read(tx) -> dict[str, int]:
+        return {r["id"]: int(r["lvl"]) for r in await tx.fetch(LEGACY_DEPTHS[parent_type], org, parent_id, ids, safe if parent_type is None else max(1, safe - 1))}
+    with ctx(org):
+        return await db.run(read)
+
+
+async def _depth_diffs(layer: HierLayer, prov, db, worlds: list, tag: str) -> tuple[list[str], int]:
+    await layer.preload(worlds)
+    diffs, asked = [], 0
+    for i, w in enumerate(worlds):
+        ns = await layer._ns(w)
+        org = _hex(ns.org)
+        records = [n for n in w.nodes if n.kind == "record"]
+        for n in w.nodes:
+            ptype = {"app": "app", "group": "recordGroup", "record": None}[n.kind]
+            ids = [ns.id(r.id) for r in records] + ["nope"]      # every record of the world (other connectors' too) and an id that is none
+            for depth in (1, 2, 3, 6):
+                with _switch("0"), _bound(org):
+                    new = await prov.get_node_depths_batch(ns.id(n.id), ids, depth, ptype)
+                old = await _legacy_depths(db, org, ns.id(n.id), ptype, ids, depth)
+                asked += 1
+                if new != old:
+                    diffs.append(f"{tag}{i} {n.id} {ptype} {depth}: upward {new} downward {old}")
+    await layer.release(worlds)
+    return diffs, asked
+
+
+async def test_the_upward_level_walk_answers_as_the_downward_one_did(layer, pg_provider, pg_db) -> None:
+    """The walk's levels read upwards from the asked ids equal the levels it read downwards from the parent's members, for every node of the corpus and of the generated worlds
+    as parent, at several depths: several parents at different depths (the shallowest wins either way), attachments, cycles, records of other connectors, deleted groups."""
+    worlds = [s.final_world() for s in load_all()] + [w for kind in sorted(gen.GENERATORS) for w in gen.generate(kind, gen.seeds()[0], 2)]
+    diffs, asked = [], 0
+    for start in range(0, len(worlds), CHUNK):
+        d, a = await _depth_diffs(layer, pg_provider, pg_db, worlds[start:start + CHUNK], f"w{start}x")
+        diffs += d
+        asked += a
+    assert asked > 500 and diffs == [], "\n".join(diffs[:20])
+
+
+async def test_a_node_with_parents_at_different_depths_takes_its_shallowest_level(pg_provider, pg_db) -> None:
+    """c hangs under f (a member of g1, so level 2) and under a (level 2, f > a), and d under b (f > a > b > d) and straight under f too: the shallowest path counts, upwards
+    as downwards, under the group, the connector and a record."""
+    org = new_org()
+    await _tree(pg_provider, pg_db, org, links=[edge("f", "records", "d", "records", relationshipType="ATTACHMENT"), edge("b", "records", "d", "records", relationshipType="PARENT_CHILD")])
+    for parent, ptype in (("g1", "recordGroup"), ("app1", "app"), ("f", None), ("a", None)):
+        with _switch("0"), _bound(org):
+            new = await pg_provider.get_node_depths_batch(parent, list("fabcd"), 5, ptype)
+        assert new == await _legacy_depths(pg_db, org, parent, ptype, list("fabcd"), 5), (parent, new)
+    with _switch("0"), _bound(org):
+        assert (await pg_provider.get_node_depths_batch("f", ["c", "d"], 5, None)) == {"c": 1, "d": 1}
+
+
+async def _group_world(p, db, org: str, n: int) -> None:
+    """app1 > g1 holding ``n`` records, each the parent of one more (2n records in all), and a record r above the ``n`` (no member)."""
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": "g1", "groupName": "g1", "connectorId": "app1", "orgId": org, "accessRule": "OPEN", "permissionModel": "RECORD_LEVEL"}], "recordGroups")
+        await p.batch_upsert_nodes([{"_key": f"{k}{i}", "recordName": f"{k}{i}", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}
+                                    for i in range(n) for k in "mc"] + [{"_key": "r", "recordName": "r", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}],
+                                   "records")
+        await p.batch_create_edges([edge("g1", "recordGroups", "app1", "apps"), *(edge(f"m{i}", "records", "g1", "recordGroups") for i in range(n))], "belongsTo")
+        await p.batch_create_edges([*(edge(f"m{i}", "records", f"c{i}", "records", relationshipType="PARENT_CHILD") for i in range(n)),
+                                    *(edge("r", "records", f"m{i}", "records", relationshipType="PARENT_CHILD") for i in range(n))], "nodeRelations")
+
+
+@pytest.mark.parametrize("parent, ptype, site", [("g1", "recordGroup", "group"), ("app1", "app", "app"), ("r", None, "record")])
+async def test_the_level_walk_reads_about_the_asked_nodes_whatever_the_size_of_the_group(pg_provider, pg_db, monkeypatch, parent, ptype, site) -> None:
+    """The walk's levels of ten records under a group (its connector, a record above them) of 200 and of 2,000 members: the buffers its statement reads (EXPLAIN ANALYZE,
+    BUFFERS) are about the same at either size, read from the asked records upwards, not from every member of the parent down."""
+    import os
+
+    import asyncpg
+
+    import app.core.db.uow as uow
+    real = uow.Tx._run
+    read = {}
+    for n in (200, 2000):
+        org = new_org()
+        await _group_world(pg_provider, pg_db, org, n)
+        ran = []
+
+        async def spy(self, op, sql, *args, internal=False, ran=ran) -> object:
+            if f"get_node_depths_batch_{site} " in sql[:80]:      # the statement alone, not the settings around it
+                ran.append((sql, args))
+            return await real(self, op, sql, *args, internal=internal)
+        monkeypatch.setattr(uow.Tx, "_run", spy)
+        with _switch("0"), _bound(org):
+            got = await pg_provider.get_node_depths_batch(parent, [f"c{i}" for i in range(10)], 3, ptype)
+        monkeypatch.setattr(uow.Tx, "_run", real)
+        assert got == {f"c{i}": 2 for i in range(10)} and len(ran) == 1
+        con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+        try:
+            async with con.transaction():
+                await con.execute("SET LOCAL enable_sort = off")      # as the walk reads it (hierarchy.DEPTHS_SORTS_OFF)
+                plan = json.loads(await con.fetchval("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + ran[0][0], *ran[0][1]))
+        finally:
+            await con.close()
+        top = plan_gate.root(plan)
+        read[n] = top.get("Shared Hit Blocks", 0) + top.get("Shared Read Blocks", 0)
+    assert read[2000] < read[200] * 1.5 + 50, read
+
+
+async def test_a_level_walk_that_fails_retryably_is_retried_with_its_own_error(pg_provider, pg_db, monkeypatch) -> None:
+    """The walk's level read fails once with a serialization failure (raised by the server, so the transaction aborts): the unit of work sees that error and runs the
+    walk again, which answers. Nothing after the failed read runs in the aborted transaction, where it would fail too and put its own error in place of the retryable one."""
+    import app.core.db.uow as uow
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    real = uow.Tx._run
+    injected: list[str] = []
+
+    async def failing(self, op, sql, *args, internal=False) -> object:
+        if "get_node_depths_batch_group " in sql[:80] and not injected:
+            injected.append(sql)
+            return await real(self, "execute", "DO $$ BEGIN RAISE EXCEPTION 'injected' USING ERRCODE = '40001'; END $$")
+        return await real(self, op, sql, *args, internal=internal)
+    monkeypatch.setattr(uow.Tx, "_run", failing)
+    with _switch("0"), _bound(org):
+        got = await pg_provider.get_node_depths_batch("g1", list("fabcd"), 5, "recordGroup")
+    assert injected and got == await _legacy_depths(pg_db, org, "g1", "recordGroup", list("fabcd"), 5) and got, got
+
+
 # ---- one thing at a time -----------------------------------------------------------------------------------------------------------------------------------------------------------
 
 async def _tree(p, db, org: str, *, extra: list[dict] | None = None, links: list[dict] | None = None) -> None:
@@ -361,7 +514,7 @@ async def test_an_asked_record_that_is_gone_while_its_edge_stays_takes_the_walk(
     assert got == walk == {"b": 1}
     assert tally.c[("depths", "not_projected")] and not _served(tally, "depths"), dict(tally.c)
 
-@pytest.mark.parametrize("what", ["by_parent", "depths", "by_group"])
+@pytest.mark.parametrize("what", ["by_parent", "depths", "depths_group", "depths_app", "by_group"])
 async def test_a_sampled_read_that_differs_from_the_walk_takes_the_connector_back_to_the_walk(pg_provider, pg_db, monkeypatch, what) -> None:
     """The safety net: with every read sampled, a read kg answers is read again by kg and by the walk in one snapshot; a seeded difference in kg's structure (b moved under f in kg
     alone, and dropped from g2 there) demotes the connector, and the next read is the walk's."""
@@ -377,6 +530,10 @@ async def test_a_sampled_read_that_differs_from_the_walk_takes_the_connector_bac
             assert got == ["a", "c"]                                       # kg answered, from the seeded structure
         elif what == "depths":
             assert "b" not in await pg_provider.get_node_depths_batch("a", ["b", "c"], 3, None)
+        elif what == "depths_group":      # kg has b in no group below g1 and under f: one level less than the graph's
+            assert (await pg_provider.get_node_depths_batch("g1", ["b"], 5, "recordGroup")) == {"b": 2}
+        elif what == "depths_app":
+            assert (await pg_provider.get_node_depths_batch("app1", ["b"], 5, "app")) == {"b": 2}
         else:
             assert "b" not in _ids(await pg_provider.get_records_by_record_group("g1", "app1", org, -1))
         await net.settle()
@@ -394,6 +551,7 @@ async def test_a_sampled_read_that_differs_from_the_walk_takes_the_connector_bac
 N = 12_000
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_every_statement_is_answered_by_index_searches(pg_provider, pg_db) -> None:
     """EXPLAIN gate: on a connector of 12,000 records (a chain under f, a wide group), never analysed and then analysed, no statement scans a kg or graph table whole."""
     org = new_org()

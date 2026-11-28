@@ -69,6 +69,9 @@ interface MentionComposerFieldProps {
   onSelectionChange?: (next: ChatKnowledgeFilters) => void;
   style?: React.CSSProperties;
   'aria-label'?: string;
+  /** Another listbox the field drives while its own menu is closed (the /command menu, SLASH1). */
+  listboxControls?: string;
+  listboxActiveDescendant?: string;
 }
 
 export const MentionComposerField = forwardRef<HTMLTextAreaElement, MentionComposerFieldProps>(
@@ -91,6 +94,8 @@ export const MentionComposerField = forwardRef<HTMLTextAreaElement, MentionCompo
       onSelectionChange,
       style,
       'aria-label': ariaLabel,
+      listboxControls,
+      listboxActiveDescendant,
     },
     ref,
   ) {
@@ -481,8 +486,8 @@ export const MentionComposerField = forwardRef<HTMLTextAreaElement, MentionCompo
           rows={1}
           aria-label={ariaLabel}
           aria-autocomplete="list"
-          aria-controls={menuOpen ? listId : undefined}
-          aria-activedescendant={menuOpen ? activeOption : undefined}
+          aria-controls={menuOpen ? listId : listboxControls}
+          aria-activedescendant={menuOpen ? activeOption : listboxActiveDescendant}
           placeholder={placeholder}
           onChange={(event) => {
             onChange(event.target.value);

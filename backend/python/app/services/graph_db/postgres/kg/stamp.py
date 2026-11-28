@@ -13,7 +13,8 @@ of the compiler (``REASONS``). A record that was never stamped has all of them N
 
 A change that reaches more than ``inline_max()`` records beyond its seeds is not restamped in the writer's unit: in that same unit the records it reaches that kg holds are hidden
 (``fence_job``; a change to a whole connector hides the connector with a queue row of kind ``app``) and a restamp job is queued (restamp.py), so a reader never answers from a
-stamp the change has outdated; the worker restamps them afterwards. The seeds themselves are always stamped in the unit. A stamp that reaches a connector the unit holds no lock for
+stamp the change has outdated; the worker restamps them afterwards. A reach of more than ``REACH_MAX`` records is not found whole in the unit either: it stops there, hides the
+connectors whole and leaves the walk below what it found to a subtree job (``restamp.enqueue_subtree``). The seeds themselves are always stamped in the unit. A stamp that reaches a connector the unit holds no lock for
 raises :class:`locks.NeedLocks` before anything is written, and the unit starts again with the larger set.
 """
 from __future__ import annotations
@@ -26,6 +27,7 @@ from typing import TYPE_CHECKING
 
 from app.services.graph_db.postgres.kg import stampgraph
 from app.services.graph_db.postgres.kg.dependents import (
+    children_capped,
     children_of,
     held_apps,
     held_keys,
@@ -33,9 +35,7 @@ from app.services.graph_db.postgres.kg.dependents import (
 )
 from app.services.graph_db.postgres.kg.locks import NeedLocks, bump
 from app.services.graph_db.postgres.kg.model import (
-    CODE_COLL,
     COLL_CODE,
-    HIERARCHY,
     KIND,
     MAX_ID,
     RECORD_COLLS,
@@ -57,12 +57,19 @@ REASONS = {"deny": 0, "missing_node": 1, "too_many_paths": 2, "too_many_seeds": 
 SELF = classes.SELF
 MAX_DEPTH = 64                      # the primary chain stored in ``path``; deeper (or a cycle) leaves it NULL
 INLINE_MAX = 20000                  # records a change may reach before they are hidden and restamped by the worker instead of in the writer's unit
+REACH_MAX = 50_000                  # records the writer's unit finds and marks one by one; beyond it the connector is hidden whole and a job walks the rest (restamp.enqueue_subtree)
+WALK_STEP = 1000                    # keys per read of the walk below a change
 
 
 def inline_max() -> int:
-    """Records a change may reach beyond its seeds before they are hidden and restamped by the worker (``PG_KG_INLINE_MAX``)."""
-    v = os.environ.get("PG_KG_INLINE_MAX")
-    return int(v) if v and v.isdigit() else INLINE_MAX
+    """Records a change may reach beyond its seeds before they are hidden and restamped by the worker (``PG_KG_INLINE_MAX``): a whole number, unset or empty is the default,
+    anything else raises (``flush.check_env``)."""
+    v = os.environ.get("PG_KG_INLINE_MAX", "")
+    if not v:
+        return INLINE_MAX
+    if not (v.isascii() and v.isdigit()):
+        raise ValueError(f"PG_KG_INLINE_MAX={v!r} is not understood: set it to a whole number of records, or leave it unset")
+    return int(v)
 
 
 @dataclass
@@ -79,11 +86,6 @@ class StampStats:
     diffs: list[str] = field(default_factory=list)       # a dry run: the records whose stamps differ from a fresh compile
 
 
-def _ids(keys: set[Key]) -> list[str]:
-    """The ids of ``keys`` for a query that filters on ``id``: the rows it returns are checked against the (collection, id) pairs, so equal ids of two collections never mix."""
-    return sorted({k[1] for k in keys})
-
-
 def _nks(keys: set[Key]) -> list[str]:
     return sorted(stampgraph.nk(c, i) for c, i in keys)
 
@@ -91,48 +93,6 @@ def _nks(keys: set[Key]) -> list[str]:
 def aid(connector_nk: str) -> str:
     """The app id of a node's ``connector_id`` (a compiler id), or "" for none."""
     return stampgraph.split(connector_nk)[1]
-
-
-async def _keys_of(tx: Tx, org: str, sks: set[int]) -> set[Key]:
-    if not sks:
-        return set()
-    rows = await tx.fetch("/* pipeshub:kg.stamp_keys_of */ SELECT coll, id FROM kg.node_keys WHERE org_id = $1 AND sk = ANY($2::bigint[])", org, sorted(sks))
-    return {(CODE_COLL[r["coll"]], r["id"]) for r in rows}
-
-
-async def _kg_neighbours(tx: Tx, org: str, keys: set[Key], *, down: bool) -> set[Key]:
-    """Children and members (``down``) or parents and groups (not) of ``keys`` in the rows kg held, which still name an edge the graph has since lost.
-    Each step is an index lookup on the sks of the keys (primary keys, ``records_parent``, ``records_group``, the links' primary key and ``links_child``)."""
-    sk_of = await load_sks(tx, org, {k for k in keys if k[0] in COLL_CODE})
-    sks = sorted(sk_of.values())
-    if not sks:
-        return set()
-    found: set[int] = set()
-    if down:
-        found |= {r["x"] for r in await tx.fetch("/* pipeshub:kg.stamp_kids_parent */ SELECT sk AS x FROM kg.records WHERE org_id = $1 AND parent_sk = ANY($2::bigint[])", org, sks)}
-        found |= {r["x"] for r in await tx.fetch("/* pipeshub:kg.stamp_kids_group */ SELECT sk AS x FROM kg.records WHERE org_id = $1 AND group_sk = ANY($2::bigint[])", org, sks)}
-        found |= {r["x"] for r in await tx.fetch("/* pipeshub:kg.stamp_kids_links */ SELECT child_sk AS x FROM kg.links WHERE org_id = $1 AND parent_sk = ANY($2::bigint[])", org, sks)}
-    else:
-        found |= {r["x"] for r in await tx.fetch("/* pipeshub:kg.stamp_ups_parent */ SELECT parent_sk AS x FROM kg.records WHERE org_id = $1 AND sk = ANY($2::bigint[]) AND parent_sk IS NOT NULL", org, sks)}
-        found |= {r["x"] for r in await tx.fetch("/* pipeshub:kg.stamp_ups_group */ SELECT group_sk AS x FROM kg.records WHERE org_id = $1 AND sk = ANY($2::bigint[]) AND group_sk IS NOT NULL", org, sks)}
-        found |= {r["x"] for r in await tx.fetch("/* pipeshub:kg.stamp_ups_links */ SELECT parent_sk AS x FROM kg.links WHERE org_id = $1 AND child_sk = ANY($2::bigint[])", org, sks)}
-    return await _keys_of(tx, org, found)
-
-
-async def _graph_down(tx: Tx, org: str, keys: set[Key]) -> set[Key]:
-    ids = _ids(keys)
-    kids = await tx.fetch("""/* pipeshub:kg.stamp_g_kids */ SELECT e.to_coll, e.to_id, e.from_coll, e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_id = ANY($2::text[])
-        AND e.doc->>'relationshipType' = ANY($3::text[]) AND e.to_coll = ANY($4::text[])""", org, ids, list(HIERARCHY), list(RECORD_COLLS))
-    members = await tx.fetch("""/* pipeshub:kg.stamp_g_members */ SELECT e.from_coll, e.from_id, e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo'
-        AND e.to_id = ANY($2::text[]) AND e.from_coll = ANY($3::text[])""", org, ids, list(RECORD_COLLS))
-    return {(r["to_coll"], r["to_id"]) for r in kids if (r["from_coll"], r["from_id"]) in keys} | {(r["from_coll"], r["from_id"]) for r in members if (r["to_coll"], r["to_id"]) in keys}
-
-
-async def _graph_up(tx: Tx, org: str, keys: set[Key]) -> set[Key]:
-    ids = _ids(keys)
-    ups = await tx.fetch("""/* pipeshub:kg.stamp_g_ups */ SELECT e.from_coll, e.from_id, e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_id = ANY($2::text[])
-        AND e.doc->>'relationshipType' = ANY($3::text[]) AND e.from_coll = ANY($4::text[])""", org, ids, list(HIERARCHY), list(RECORD_COLLS))
-    return {(r["from_coll"], r["from_id"]) for r in ups if (r["to_coll"], r["to_id"]) in keys}
 
 
 async def app_nodes(tx: Tx, org: str, app_id: str) -> set[Key]:
@@ -152,11 +112,14 @@ async def stamped_over(tx: Tx, org: str, app_sk: int, limit: int) -> bool:
     return n > limit
 
 
-async def affected(tx: Tx, org: str, seeds: set[Key], apps: dict[str, tuple[int, bool, bool]], *, defer_over: int | None = None) -> tuple[set[Key], set[str], set[str]]:
-    """Every record-like key whose class can differ after a change to ``seeds``, the connectors restamped whole, and those of them left to a restamp job.
+async def affected(tx: Tx, org: str, seeds: set[Key], apps: dict[str, tuple[int, bool, bool]], *, defer_over: int | None = None,
+                   cap: int | None = None) -> tuple[set[Key], set[str], set[str], set[Key]]:
+    """Every record-like key whose class can differ after a change to ``seeds``, the connectors restamped whole, those of them left to a restamp job, and the keys found whose
+    children were not read (empty unless ``cap`` stopped the walk).
 
     ``apps``: app id -> (sk, opens, has_group_level) as the graph says now. A connector is restamped whole when its app node is a seed or the stored facts differ. With ``defer_over``,
-    a connector that holds more stamped records than that is not enumerated: it is returned in the third set for the caller to hide and queue."""
+    a connector that holds more stamped records than that is not enumerated: it is returned in the third set for the caller to hide and queue. With ``cap``, the walk stops once it
+    has found more than ``cap`` keys beyond the seeds, and every read it makes stops there too: a group of a million members costs the writer's unit ``cap`` rows, not a million."""
     whole: set[str] = set()
     deferred: set[str] = set()
     for app_id, (sk, opens, rgl) in apps.items():
@@ -167,13 +130,23 @@ async def affected(tx: Tx, org: str, seeds: set[Key], apps: dict[str, tuple[int,
     out = {k for k in seeds if k[0] in RECORD_COLLS}
     for app_id in whole - deferred:
         out |= await app_nodes(tx, org, app_id)
-    frontier = set(out)
+    frontier = sorted(out)
     while frontier:
-        nxt = (await _graph_down(tx, org, frontier)) | (await _kg_neighbours(tx, org, frontier, down=True))
-        nxt = {k for k in nxt if k[0] in RECORD_COLLS} - out
+        nxt: set[Key] = set()
+        for i in range(0, len(frontier), WALK_STEP):
+            room = None if cap is None else cap + 1 - len((out | nxt) - seeds)
+            # a read may also return keys found already (the seeds above all): it stops only once it has more rows than those and the room left
+            got, cut = await children_capped(tx, org, set(frontier[i:i + WALK_STEP]), None if room is None else max(room, 1) + len(out | nxt))
+            new = got - out - nxt
+            if room is not None and (cut or len(new) >= room):
+                # the parents of this step stay unread, so a child left out here is found again from them
+                new = set(sorted(new)[:max(room, 1)])
+                return out | nxt | new, whole, deferred, set(frontier[i:]) | (nxt - out) | new
+            nxt |= new
+        nxt -= out
         out |= nxt
-        frontier = nxt
-    return out, whole, deferred
+        frontier = sorted(nxt)
+    return out, whole, deferred, set()
 
 
 def _under_deleted(i: str, nodes: dict[str, StampNode]) -> bool:
@@ -256,19 +229,32 @@ async def stamp(tx: Tx, org: str, seeds: set[Key], *, also: set[Key] | None = No
     _need(app_ids, locked, org_wide=org_wide)
     app_sks, facts = await _facts(tx, org, w, app_ids)
     limit = inline_max()
-    a_set, whole, deferred = await affected(tx, org, recs, {a: (app_sks[a], f.opens, f.has_group_level) for a, f in facts.items()}, defer_over=limit)
+    now = {a: (app_sks[a], f.opens, f.has_group_level) for a, f in facts.items()}
+    a_set, whole, deferred, unread = await affected(tx, org, recs, now, defer_over=limit, cap=REACH_MAX)
     st.whole_apps = len(whole)
     # A record kg holds no row for yet is still in the change log (every committed graph change is) and is stamped when its own projection comes, from the graph as it is
     # then: restamping it here would compile it twice and leave a row of nothing but a key.
     a_set = (await held_keys(tx, org, a_set - every)) | (a_set & every)
+    skip = frozenset(app_sks[x] for x in deferred)
+    rest = a_set - every
+    if unread:
+        # more than the unit can find one by one: the connectors are hidden whole and a job walks down from what was found and from what was not read below
+        st.hidden = await restamp.enqueue_subtree(tx, org, rest | (unread & every), skip_apps=skip, locked=locked, org_wide=org_wide)
+        if st.hidden is None:
+            # shortcut: a reach through rows of no connector or across connectors is still found whole in the unit; walk it by connector when that is seen at scale
+            a_set, whole, deferred, unread = await affected(tx, org, recs, now, defer_over=limit)
+            a_set = (await held_keys(tx, org, a_set - every)) | (a_set & every)
+            skip, rest = frozenset(app_sks[x] for x in deferred), a_set - every
+            st.hidden = 0
+        else:
+            a_set -= rest
     for a in sorted(whole):
         await w.app_facts_set(app_sks[a], opens=facts[a].opens, group_level=facts[a].has_group_level)
     for a in sorted(deferred):
         await restamp.enqueue_app(tx, org, app_sks[a], "app")
         st.deferred += 1
-    rest = a_set - every
-    if len(rest) > limit:
-        st.hidden = await restamp.enqueue_rows(tx, org, rest, "reach", skip_apps=frozenset(app_sks[x] for x in deferred), locked=locked, org_wide=org_wide)
+    if not unread and len(rest) > limit:
+        st.hidden = await restamp.enqueue_rows(tx, org, rest, "reach", skip_apps=skip, locked=locked, org_wide=org_wide)
         a_set -= rest
     await stamp_keys(tx, org, a_set | every, st, app_sks=app_sks, facts=facts, skip_apps=deferred, known=seed_nodes, locked=locked, org_wide=org_wide)
     return st
@@ -377,10 +363,10 @@ async def stamp_keys(tx: Tx, org: str, keys: set[Key], st: StampStats | None = N
         st.diffs += [f"s|{r['id']}" for r in changed] + [f"r13|{r['id']}" for r in r13_changed if r not in changed]
         st.diffs += [f"sc|{by_sk[x[0]]}" for x in set_scopes] + [f"sc|{by_sk[x]}" for x in drop_scopes]
     else:
-        if changed:
-            st.written += await w.stamps_set(changed)
-        if r13_changed:
-            await w.r13_set([(r["sk"], r["coll"], r["id"], r["kind"], r["r13"]) for r in r13_changed])
+        if changed or r13_changed:
+            want = {r["sk"] for r in changed} | {r["sk"] for r in r13_changed}
+            await w.stamps_set([r for r in rows if r["sk"] in want])
+            st.written += len(changed)
         if set_scopes:
             await w.scopes_set(set_scopes)
         if drop_scopes:

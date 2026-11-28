@@ -5,7 +5,7 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from app.config.configuration_service import ConfigurationService
-from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
+from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.config.constants.arangodb import AppGroups, CollectionNames, Connectors, PermissionModel
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -235,6 +235,8 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
 
     async def run_sync(self) -> None:
         """Sync projects and issues visible to the configured user; no permission APIs."""
+        self._kept_unread_access = False
+        self._kept_after_refusal = []
         try:
             self.logger.info(
                 "▶️ Jira DC Personal connector %s: run_sync starting (data_source_ready=%s, site_url=%s)",
@@ -261,6 +263,8 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
                     self.connector_id,
                     self.site_url,
                 )
+
+            await self._stop_if_signed_out()
 
             # Force a fresh ConnectorGroup upsert each run so re-runs after the
             # creator email is rotated pick up the new identity instead of
@@ -356,6 +360,11 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
                 last_sync_time,
             )
             sync_stats = await self._sync_all_project_issues(projects, [], last_sync_time)
+            failed_statuses = sync_stats.get("failed_project_statuses") or {}
+            for key in sync_stats.get("failed_project_keys") or []:
+                # Issues not read would look gone to a full sync's unlink.
+                self._note_unread(failed_statuses.get(key), ("project_issues", key))
+            await self._note_kept_after_refusal(projects)
 
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
 
@@ -380,6 +389,7 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
                     "⚠️ Jira DC Personal sync: %s/%s project(s) failed to sync issues: %s",
                     len(failed_keys), len(projects), preview,
                 )
+                await self._stop_if_signed_out()
                 await self.notify(
                     type=NotificationType.CONNECTOR_SYNC_ERROR,
                     severity=NotificationSeverity.ERROR,
@@ -403,7 +413,7 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
 
         except Exception as e:
             self.logger.error("Error during Jira DC Personal sync: %s", e, exc_info=True)
-            if not isinstance(e, ConnectorInitError):
+            if not await self._notify_if_signed_out(e):
                 await self.notify(
                     type=NotificationType.CONNECTOR_SYNC_ERROR,
                     severity=NotificationSeverity.ERROR,

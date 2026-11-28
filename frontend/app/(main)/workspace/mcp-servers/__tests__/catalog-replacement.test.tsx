@@ -19,7 +19,8 @@ vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null })
 vi.mock('@/app/components/ui/lottie-loader', () => ({ LottieLoader: () => null }));
 
 import { isOfferedForNewServers, replacementFor } from '../catalog-replacement';
-import { McpCatalogLayout } from '../team/components/mcp-catalog-layout';
+import { McpServersLayout } from '../components/mcp-servers-layout';
+import { EnterpriseFeatureNotice } from '@/config';
 import { McpAddServerDialog } from '../personal/components/mcp-add-server-dialog';
 
 function template(overrides: Partial<McpServerTemplate> = {}): McpServerTemplate {
@@ -62,19 +63,27 @@ function instance(typeId: string): McpMyServerEntry {
 function renderCatalog(templates: McpServerTemplate[], instances: McpMyServerEntry[]) {
   const noop = vi.fn();
   renderInTheme(
-    <McpCatalogLayout
-      templates={templates}
-      instances={instances}
+    // As the team page draws it.
+    <McpServersLayout
+      title="MCP servers"
+      subtitle=""
+      actions={null}
       isLoading={false}
       searchQuery=""
       onSearchChange={noop}
-      onAddCustom={noop}
-      onSetupTemplate={noop}
-      onAddInstanceForTemplate={noop}
-      onManageTemplate={noop}
-      onEditInstance={noop}
-      onDeleteInstance={noop}
-      onRefresh={noop}
+      instances={instances}
+      templates={templates}
+      catalog={templates.filter(isOfferedForNewServers)}
+      catalogDescription=""
+      emptyTitle="No MCP servers yet"
+      emptyDescription=""
+      isAdmin
+      busyInstanceId={null}
+      onOpen={noop}
+      onConnect={noop}
+      onReconnect={noop}
+      onAdd={noop}
+      footer={<EnterpriseFeatureNotice title="People's own MCP servers" description="" />}
     />
   );
 }
@@ -101,17 +110,17 @@ describe('replaced catalog entries', () => {
     expect(screen.getByText('Slack')).toBeTruthy();
   });
 
-  it('still show where servers made from them exist, with the replacement and no "+"', () => {
+  it('keep the servers made from them listed, named after the entry, while only the replacement is offered', () => {
     renderCatalog([template(), OFFICIAL], [instance('slack')]);
-    expect(screen.getByText('Slack (community)')).toBeTruthy();
-    expect(screen.getByText('No longer maintained. Add Slack instead.')).toBeTruthy();
-    // The official entry is unused, so its card offers Setup rather than "+"; the replaced one offers neither.
-    expect(screen.queryByRole('button', { name: 'Add another instance' })).toBeNull();
+    expect(screen.getByText('Team Slack')).toBeTruthy();
+    expect(screen.getByText(/^Slack \(community\) · /)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Set up' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Add another' })).toBeNull();
   });
 
-  it('leave "+" on an entry still offered', () => {
+  it('offer "Add another" on an entry still offered that is already in use', () => {
     renderCatalog([template(), OFFICIAL], [instance('slack'), instance('slack_official')]);
-    expect(screen.getAllByRole('button', { name: 'Add another instance' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Add another' })).toHaveLength(1);
   });
 
   it('are left out of the personal "add server" list', () => {
@@ -134,6 +143,6 @@ describe('the admin catalog in this edition', () => {
     renderCatalog([OFFICIAL], []);
     const notice = screen.getByTestId('enterprise-feature-notice');
     expect(notice.textContent).toContain("People's own MCP servers");
-    expect(notice.textContent).toContain('Available in EE');
+    expect(notice.textContent).toContain('Available in Enterprise');
   });
 });

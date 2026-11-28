@@ -141,6 +141,11 @@ def _is_retryable(instance: object, exception: Exception) -> bool:
     return isinstance(store, DataStoreProvider) and store.is_transient_error(exception) is True
 
 
+def is_retryable(instance: object, exception: Exception) -> bool:
+    """Whether retry_on_deadlock retries this failure of a method of ``instance`` (attempts left or not)."""
+    return _is_retryable(instance, exception)
+
+
 # False while retry_on_deadlock still has an attempt left after the current one.
 _ON_LAST_ATTEMPT: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "retry_on_deadlock_on_last_attempt", default=True
@@ -699,9 +704,10 @@ class GraphTransactionStore(TransactionStore):
 
     async def replace_record_entity_relations(
         self, record_id: str, to_collections: list[str], origin: str, edges: list[dict],
+        *, keep_edge_types: Collection[str] = (),
     ) -> None:
         await self.graph_provider.replace_record_entity_relations(
-            record_id, to_collections, origin, edges, transaction=self.txn,
+            record_id, to_collections, origin, edges, transaction=self.txn, keep_edge_types=keep_edge_types,
         )
 
     async def delete_edges_by_relationship_types(
@@ -1207,6 +1213,37 @@ class GraphTransactionStore(TransactionStore):
         """
         await self.graph_provider.rollback_transaction(self.txn)
 
+    async def publish_with_commit(
+        self, producer: Any, topic: str, messages: list[tuple[str | None, dict]],  # noqa: ANN401
+    ) -> bool:
+        """Publish ``messages`` inside this transaction, so they are delivered exactly when it commits: never lost to a crash
+        after the commit, never sent for a write that rolled back. Only where the graph and the broker are one PostgreSQL
+        database (``DATA_STORE`` and ``MESSAGE_BROKER`` both ``postgres``: both log in as ``DbConfig.from_env(runtime_service())``).
+        False anywhere else, and the caller publishes after the commit, as before (at least once through the stranded-record
+        sweep; a second store cannot share the transaction). Raises when the publish fails: the block must not commit without it."""
+        from app.services.messaging.config import (
+            MessageBrokerType,
+            get_message_broker_type,
+        )
+        from app.services.messaging.postgres.queue import joined_to
+
+        run = getattr(self.graph_provider, "run_in_transaction", None)
+        if run is None or get_message_broker_type() != MessageBrokerType.POSTGRES:
+            return False
+        sent = 0
+
+        async def in_this_transaction(fn: Callable[[Any], Awaitable[None]]) -> None:
+            nonlocal sent
+            await run(self.txn, fn)
+            sent += 1
+
+        with joined_to(in_this_transaction):
+            acked = await producer.send_messages(topic, messages)
+        if sent == 0 or not all(acked):
+            # A producer that published on its own (not the PostgreSQL queue) would deliver for a write that may still roll back.
+            raise RuntimeError(f"the {topic} events were not written into the transaction")
+        return True
+
     async def create_record_relation(
         self,
         from_record_id: str,
@@ -1617,8 +1654,10 @@ class GraphDataStore(DataStoreProvider):
                 self.logger.warning("Transaction commit failed (%s); aborting it", type(e).__name__)
                 # The store may still have applied it: callers that created something outside the
                 # transaction (a pushed record's storage document) must not undo it on this error.
-                with suppress(Exception):
-                    e.commit_outcome_unknown = True  # type: ignore[attr-defined]
+                # Not when the store says the COMMIT was never sent (PostgreSQL: a step before it failed).
+                if not getattr(e, "commit_not_sent", False):
+                    with suppress(Exception):
+                        e.commit_outcome_unknown = True  # type: ignore[attr-defined]
                 try:
                     await tx_store.rollback()
                 except ValueError:
@@ -2029,7 +2068,7 @@ _HARMLESS_WRITERS = frozenset({
     "upsert_person_by_email", "upsert_person_by_source_key", "ensure_app_membership", "reap_stale_external_app_relations", "create_user_group_hierarchy",
     "create_user_group_membership", "batch_create_user_app_edges", "batch_upsert_user_groups",
     "batch_upsert_app_roles", "batch_upsert_app_users", "ensure_team_app_edge", "upsert_authenticated_as", "remove_authenticated_as",
-    "batch_upsert_orgs", "commit", "rollback", "create_user_groups", "create_users", "create_orgs", "create_sync_point",
+    "batch_upsert_orgs", "commit", "rollback", "publish_with_commit", "create_user_groups", "create_users", "create_orgs", "create_sync_point",
     "delete_sync_point", "update_sync_point", "batch_create_entity_relations",
     "remove_nodes_by_field", "create_taxonomy_node_if_absent", "add_taxonomy_aliases", "take_back_kept_record_group",
     "batch_upsert_records", "batch_upsert_record_groups", "delete_records_recursive", "soft_delete_records", "restore_records",

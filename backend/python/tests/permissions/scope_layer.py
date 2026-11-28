@@ -26,6 +26,7 @@ from app.services.permissions.viewer import ViewerScopeResolver
 
 from . import oracle
 from .graph import Graph, Namespace, compile_world
+from .layers import world_org
 
 if TYPE_CHECKING:
     from .layers import GraphCheckLayer
@@ -182,7 +183,8 @@ class GraphScopeLayer:
 
     async def viewer_scopes(self, world: World, viewer: str) -> ViewerScopes:
         ns = await self._layer._ns(world)
-        return _localise(ns, await self._resolver.resolve(ns.org, ns.id(viewer)))
+        with world_org(ns):
+            return _localise(ns, await self._resolver.resolve(ns.org, ns.id(viewer)))
 
 
 def resolver_for(layer: GraphCheckLayer) -> ViewerScopeResolver:

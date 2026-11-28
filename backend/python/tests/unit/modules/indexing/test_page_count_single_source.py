@@ -33,7 +33,11 @@ def _coverage_page_writers(source: str) -> list[int]:
 
 
 def _violations(files: dict[str, str]) -> list[str]:
-    return [name for name, source in files.items() if _coverage_page_writers(source) and "open_pdf" not in source]
+    # Parse only what could hold such a writer: parsing all of app/ (60 MB) ran past the unit timeout on a busy runner.
+    return [
+        name for name, source in files.items()
+        if "open_pdf" not in source and "coverage" in source and "pages" in source and _coverage_page_writers(source)
+    ]
 
 
 def test_every_writer_of_coverage_pages_calls_open_pdf() -> None:

@@ -6,6 +6,7 @@ import {
 } from '../../../libs/middlewares/types';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { Logger } from '../../../libs/services/logger.service';
+import { parseKvObject } from '../../../libs/utils/kv-object.utils';
 import { configPaths } from '../paths/paths';
 import {
   BadRequestError,
@@ -16,7 +17,9 @@ import {
   ServiceUnavailableError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
-import { handleBackendError } from '../../../libs/errors/backend-error';
+import { handleBackendError, safeCause } from '../../../libs/errors/backend-error';
+import { withCause } from '../../../libs/errors/base.error';
+import { markClientSafe } from '../../../libs/errors/reader-friendly';
 import {
   googleWorkspaceBusinessCredentialsSchema,
   googleWorkspaceIndividualCredentialsSchema,
@@ -32,18 +35,27 @@ import {
 } from '../constants/constants';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { RENAMED_SIGN_IN_METHODS } from '../../../edition';
-import { setMetricCollectionEnabled } from '../../../libs/services/telemetry/modules/collection-metrics';
-import { normalizeOrgId } from '../../../libs/services/telemetry/identity';
-import { TelemetryService } from '../../../libs/services/telemetry/telemetry.service';
+import {
+  normalizeOrgId,
+  setMetricCollectionEnabled,
+} from '../../../libs/services/telemetry/telemetry-impl';
+import { TelemetryService } from '../../../libs/services/telemetry/telemetry-runtime';
 import { loadConfigurationManagerConfig } from '../config/config';
 import {
-  GENERATION_KEY,
-  nextGeneration,
   readMembership,
-  readStoredPlatformBlob,
   savePutsArtifactReadsAtRisk,
 } from '../utils/artifactRollout';
 import { findActiveOrgById } from '../../user_management/utils/org.utils';
+import { createHarnessRollout } from '../../agent-harness/composition';
+import { HarnessRolloutPolicy } from '../../agent-harness/ports/harness-rollout';
+import {
+  agentHarnessSwitchedOn,
+  harnessReconcileEnabled,
+  isAgentHarnessInfrastructureReady,
+  orgHarnessTurnedOn,
+} from '../../agent-harness/config';
+import { engineRunsServed } from '../../../libs/repositories/agent-harness/engine-runs-probe';
+import { EnvFlagEnvironment } from '../../../libs/utils/env-flags';
 
 import {
   DefaultStorageConfig,
@@ -71,11 +83,31 @@ import {
   AIServiceCommand,
 } from '../../../libs/commands/ai_service/ai.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
-import { PLATFORM_FEATURE_FLAGS } from '../constants/constants';
+import {
+  actorRefOfUser,
+  controlPlaneHttpError,
+  ControlPlaneTransaction,
+  orgScope,
+} from '../../control-plane';
+import { canonicalDigest } from '../../agent-harness/contracts/canonical-json';
+import {
+  aiModelsRepository,
+  plainAiModelsSave,
+  type AiModelsSave,
+} from '../utils/ai-models-save';
+import {
+  AGENT_HARNESS_LABS_FLAGS,
+  PLATFORM_FEATURE_FLAGS,
+} from '../constants/constants';
+import { DURABLE_AGENT_FLAG } from '../utils/flag-overrides';
 import { REASONING_EFFORT_VALUES } from '../../enterprise_search/constants/constants';
 import {
   getPlatformSettingsFromStore,
+  LABS_CHANGED,
+  PlatformSettingsChanged,
+  type PlatformSettingsSave,
   readStoredAiModelsConfig,
+  savePlatformSettings,
 } from '../utils/util';
 import { AIModelConfiguration, AIModelsConfig, SystemPromptsConfig } from '../types/ai-models.types';
 import {
@@ -89,15 +121,27 @@ import {
   WebSearchProviderConfiguration,
   canSearch,
 } from '../types/web-search.types';
+import { getCurrentOrgId } from '../../../libs/context/orgContext';
 import { localStorageReplicaProblem } from '../../storage/utils/replicas';
 import {
   CONFIG_SECRET_PLACEHOLDER,
   SMTP_SECRET_KEYS,
+  ATLASSIAN_CONNECTOR_SECRET_KEYS,
+  GOOGLE_WORKSPACE_CONNECTOR_SECRET_KEYS,
+  GOOGLE_WORKSPACE_CREDENTIAL_SECRET_KEYS,
+  MICROSOFT_CONNECTOR_SECRET_KEYS,
+  maskConnectorSecrets,
   maskSmtpConfig,
   mergeSmtpConfigPlaceholders,
   stripAiModelsStoredConfig,
   stripAiModelSecrets,
   mergeAiModelCredentials,
+  AI_MODEL_DESTINATION_KEYS,
+  aiModelDestinationChanged,
+  aiModelDestinationsDiffer,
+  hasForwardingCredentials,
+  reusesSavedAiModelCredentials,
+  withoutForwardingCredentials,
   maskWebSearchProvider,
   maskWebSearchProviderForMember,
   mergeWebSearchProviderPlaceholders,
@@ -127,6 +171,8 @@ import {
   resolveS3Credentials,
   S3_PARTIAL_CREDENTIALS_MESSAGE,
 } from '../../storage/utils/s3-credentials.util';
+import { modelDisplayName } from '../utils/model-display-name';
+import { currentOrgContext } from '../../../libs/context/orgContext';
 
 const logger = Logger.getInstance({
   service: 'ConfigurationManagerController',
@@ -146,9 +192,9 @@ type SlackBotStore = {
 };
 
 
-/** Returns true when the HIDE_SECRET_CONFIG env var is set to "true". */
+/** Hides secrets unless HIDE_SECRET_CONFIG is explicitly "false", so an install that never sets it fails closed. */
 function shouldHideSecrets(): boolean {
-  return process.env.HIDE_SECRET_CONFIG === 'true';
+  return process.env.HIDE_SECRET_CONFIG !== 'false';
 }
 
 async function requesterIsOrgAdmin(
@@ -253,8 +299,6 @@ export const createStorageConfig =
               missingFields: { [resolvedCredentials.missingField]: true },
             });
           }
-          const usingIamRole = resolvedCredentials.kind === 'iamRole';
-
           const s3Config: {
             accessKeyId?: string;
             secretAccessKey?: string;
@@ -297,10 +341,6 @@ export const createStorageConfig =
               s3: encryptedS3Config,
             }),
           );
-
-          logger.info('S3 storage configuration saved successfully', {
-            authMode: usingIamRole ? 'iamRole' : 'explicitCredentials',
-          });
           break;
         }
 
@@ -340,7 +380,6 @@ export const createStorageConfig =
               }),
             );
           }
-          logger.info('Azure Blob storage configuration saved successfully');
           break;
         }
 
@@ -360,8 +399,6 @@ export const createStorageConfig =
               local: JSON.stringify(localConfig),
             }),
           );
-
-          logger.info('Local storage configuration saved successfully');
           break;
         }
 
@@ -372,7 +409,6 @@ export const createStorageConfig =
         message: 'Storage configuration saved successfully',
       });
     } catch (error: any) {
-      logger.error('Error creating storage config', { error });
       next(error);
     }
   };
@@ -389,7 +425,7 @@ export const getStorageConfig =
         (await keyValueStoreService.get<string>(configPaths.storageService)) ||
         '{}';
 
-      const parsedConfig = JSON.parse(storageConfig); // Parse JSON string
+      const parsedConfig = parseKvObject(storageConfig);
       const userId =
         (_req as AuthenticatedUserRequest).user?.userId ?? null;
 
@@ -491,7 +527,6 @@ export const getStorageConfig =
       });
       return;
     } catch (error: any) {
-      logger.error('Error getting storage config', { error });
       next(error);
       return;
     }
@@ -568,7 +603,6 @@ export const createSmtpConfig =
         .json({ message: 'SMTP config created successfully' })
         .end();
     } catch (error: any) {
-      logger.error('Error creating smtp config', { error });
       next(error);
     }
   };
@@ -626,7 +660,6 @@ export const getSmtpConfig =
       }
       res.status(200).json({}).end();
     } catch (error: any) {
-      logger.error('Error getting smtp config', { error });
       next(error);
     }
   };
@@ -652,7 +685,6 @@ export const getSmtpConfigStatus =
       );
       res.status(200).json({ configured }).end();
     } catch (error: any) {
-      logger.error('Error getting smtp config status', { error });
       next(error);
     }
   };
@@ -683,7 +715,6 @@ export const deleteSmtpConfig =
         .json({ message: 'SMTP config deleted successfully' })
         .end();
     } catch (error: unknown) {
-      logger.error('Error deleting smtp config', { error });
       next(error);
     }
   };
@@ -722,7 +753,6 @@ export const setSmtpConfigEnabled =
       );
       res.status(200).json({ enabled }).end();
     } catch (error: unknown) {
-      logger.error('Error turning smtp config on or off', { error });
       next(error);
     }
   };
@@ -751,8 +781,10 @@ const parseSlackBotStore = (
     };
   } catch (error) {
     // Answering "no bots" here would let the next save overwrite every stored bot.
-    logger.error('Failed to read stored slack bot settings', { error });
-    throw new InternalServerError(SLACK_BOT_SETTINGS_UNREADABLE);
+    throw withCause(
+      new InternalServerError(SLACK_BOT_SETTINGS_UNREADABLE),
+      safeCause(error),
+    );
   }
 };
 
@@ -861,7 +893,6 @@ export const getSlackBotConfigs =
         })
         .end();
     } catch (error: any) {
-      logger.error('Error getting slack bot configs', { error });
       next(error);
     }
   };
@@ -883,7 +914,6 @@ export const getInternalSlackBotConfigs =
         })
         .end();
     } catch (error: any) {
-      logger.error('Error getting internal slack bot configs', { error });
       next(error);
     }
   };
@@ -939,7 +969,6 @@ export const createSlackBotConfig =
         })
         .end();
     } catch (error: any) {
-      logger.error('Error creating slack bot config', { error });
       next(error);
     }
   };
@@ -1010,7 +1039,6 @@ export const updateSlackBotConfig =
         })
         .end();
     } catch (error: any) {
-      logger.error('Error updating slack bot config', { error });
       next(error);
     }
   };
@@ -1038,25 +1066,82 @@ export const deleteSlackBotConfig =
         })
         .end();
     } catch (error: any) {
-      logger.error('Error deleting slack bot config', { error });
       next(error);
     }
   };
 
 // Platform settings
+/** The flags without the agent harness's, as a release without the harness has them (ADR-OPS-06). */
+const withoutHarnessFlags = <T>(flags: Record<string, T>): Record<string, T> =>
+  Object.fromEntries(
+    Object.entries(flags).filter(
+      ([key]) => !AGENT_HARNESS_LABS_FLAGS.includes(key.toUpperCase()),
+    ),
+  );
+
+export const AGENT_HARNESS_OFF_MESSAGE =
+  'The agent harness is not enabled on this install. Set AGENT_HARNESS_WORKER_ENABLED=true and restart to use it.';
+
+/** What a Labs save decides, for its audit entry: the settings it sends, by path; never `expected`. */
+const labsDecision = (save: {
+  fileUploadMaxSizeBytes?: unknown;
+  featureFlags?: Record<string, unknown>;
+  notices?: unknown;
+  agentHarness?: unknown;
+}): { decided: Record<string, unknown>; paths: string[] } => {
+  const decided = Object.fromEntries(
+    Object.entries(save).filter(([, value]) => value !== undefined),
+  );
+  const paths = Object.keys(decided).flatMap((key) =>
+    key === 'featureFlags' && save.featureFlags !== undefined
+      ? Object.keys(save.featureFlags).map((flag) => `featureFlags.${flag}`)
+      : [key],
+  );
+  return { decided, paths: [...new Set(paths)].sort() };
+};
+
+/**
+ * One Labs save is one audited control-plane write (CPD-1, R2 CP1): UX2's
+ * compare-and-set save is the transaction's effect, so `config.changed` is
+ * recorded only when the save landed; a refused save records nothing.
+ */
 export const setPlatformSettings =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (
+    keyValueStoreService: KeyValueStoreService,
+    controlPlane: ControlPlaneTransaction,
+    env: EnvFlagEnvironment = process.env,
+  ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const { fileUploadMaxSizeBytes, featureFlags } = req.body;
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const stored = await readStoredPlatformBlob(keyValueStoreService);
-      type Flags = Record<string, unknown> | undefined;
-      const storedFlags = stored.featureFlags as Flags;
-      const requestedFlags = featureFlags as Flags;
+      const {
+        fileUploadMaxSizeBytes,
+        featureFlags,
+        notices,
+        agentHarness,
+        expected,
+      } = req.body as PlatformSettingsSave;
+      if (
+        !agentHarnessSwitchedOn(env) &&
+        (agentHarness !== undefined ||
+          Object.keys(featureFlags ?? {}).some((key) =>
+            AGENT_HARNESS_LABS_FLAGS.includes(key.toUpperCase()),
+          ))
+      ) {
+        throw new BadRequestError(AGENT_HARNESS_OFF_MESSAGE, {
+          reasonCode: 'agent_harness_off',
+        });
+      }
+      const orgId = String(currentOrgContext().orgId);
+      const current = await getPlatformSettingsFromStore(keyValueStoreService);
       // Turning artifact reads on while an indexing member that does not follow the stored-write
       // protocol may run, or while the membership check cannot be seen, could serve a mismatch.
-      if (savePutsArtifactReadsAtRisk(storedFlags, requestedFlags)) {
+      // A save sends only the flags it changes, so the flags after it are the stored ones with those applied.
+      if (
+        savePutsArtifactReadsAtRisk(current.featureFlags, {
+          ...current.featureFlags,
+          ...(featureFlags as Record<string, unknown> | undefined),
+        })
+      ) {
         const verdict = await readMembership(keyValueStoreService);
         if (!verdict.ok) {
           throw new ConflictError(
@@ -1067,38 +1152,73 @@ export const setPlatformSettings =
           );
         }
       }
-      // Server-side only: never taken from the request body.
-      const generation = nextGeneration(
-        stored[GENERATION_KEY],
-        storedFlags,
-        requestedFlags,
+      const { decided, paths } = labsDecision({
+        fileUploadMaxSizeBytes,
+        featureFlags,
+        notices,
+        agentHarness,
+      });
+      const { result } = await controlPlane.run(
+        { orgId, actor: actorRefOfUser(String(req.user?.userId)) },
+        (tx) =>
+          Promise.resolve({
+            // UX1: only the flags the admin changed are recorded; UX2: as a compare-and-set, never over a newer choice.
+            result: tx.external(() =>
+              savePlatformSettings(keyValueStoreService, {
+                fileUploadMaxSizeBytes,
+                featureFlags,
+                notices,
+                agentHarness,
+                expected,
+              }),
+            ),
+            change: {
+              scope: orgScope(orgId),
+              object: { type: 'platform-settings', id: 'labs' },
+              revisionFrom: null,
+              revisionTo: null,
+              changeDigest: canonicalDigest(decided),
+              changed: paths,
+            },
+          }),
       );
-      const encryptedPlatformSettings = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(
-        JSON.stringify({
-          fileUploadMaxSizeBytes,
-          featureFlags,
-          [GENERATION_KEY]: generation,
-          updatedAt: new Date().toISOString(),
-        }),
-      );
-
-      await keyValueStoreService.set<string>(
-        configPaths.platform.settings,
-        encryptedPlatformSettings,
-      );
-
-      res.status(200).json({ message: 'Platform settings saved' }).end();
+      const settings = result.value;
+      res
+        .status(200)
+        .json({ message: 'Platform settings saved', settings })
+        .end();
+      // ADR-OPS-08: the org's harness just turned on; its control-plane grants catch up in the background.
+      if (
+        agentHarnessSwitchedOn(env) &&
+        current.featureFlags[DURABLE_AGENT_FLAG] !== true &&
+        settings.featureFlags[DURABLE_AGENT_FLAG] === true
+      ) {
+        orgHarnessTurnedOn(orgId);
+      }
     } catch (error: any) {
-      logger.error('Error setting platform settings', { error });
-      next(error);
+      // The error middleware's line is the one failure line (#6353): no log here.
+      if (error instanceof PlatformSettingsChanged) {
+        next(
+          new ConflictError(
+            'Someone else changed these settings since you opened them. Review them and save again.',
+            { reasonCode: LABS_CHANGED, stale: error.stale },
+          ),
+        );
+        return;
+      }
+      if (error instanceof BadRequestError) {
+        next(error);
+        return;
+      }
+      next(controlPlaneHttpError(error));
     }
   };
 
 export const getPlatformSettings =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (
+    keyValueStoreService: KeyValueStoreService,
+    env: EnvFlagEnvironment = process.env,
+  ) =>
   async (
     _req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,
@@ -1106,15 +1226,28 @@ export const getPlatformSettings =
   ) => {
     try {
       const settings = await getPlatformSettingsFromStore(keyValueStoreService);
+      if (!agentHarnessSwitchedOn(env)) {
+        const { agentHarness: _harness, ...rest } = settings;
+        res
+          .status(200)
+          .json({
+            ...rest,
+            featureFlags: withoutHarnessFlags(settings.featureFlags),
+            featureFlagOverrides: withoutHarnessFlags(
+              settings.featureFlagOverrides ?? {},
+            ),
+          })
+          .end();
+        return;
+      }
       res.status(200).json(settings).end();
     } catch (error: any) {
-      logger.error('Error getting platform settings', { error });
       next(error);
     }
   };
 
 export const getAvailablePlatformFeatureFlags =
-  () =>
+  (env: EnvFlagEnvironment = process.env) =>
   async (
     _req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,
@@ -1123,14 +1256,25 @@ export const getAvailablePlatformFeatureFlags =
     // Only expose user-toggleable flags. Hidden flags are still seeded with
     // their defaults by getPlatformSettingsFromStore but never surface in the
     // Labs UI.
-    const flags = PLATFORM_FEATURE_FLAGS.filter((f) => !f.hidden);
+    // `previousDefault` only reads settings saved before overrides (UX1); the page never needs it.
+    const harnessOn = agentHarnessSwitchedOn(env);
+    const flags = PLATFORM_FEATURE_FLAGS.filter(
+      (f) => !f.hidden && (harnessOn || f.requiresAgentHarness !== true),
+    ).map(({ previousDefault: _previous, ...flag }) => flag);
     res.status(200).json({ flags }).end();
   };
 
 export const getEffectivePlatformFeatureFlags =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (
+    keyValueStoreService: KeyValueStoreService,
+    harnessRollout: HarnessRolloutPolicy = createHarnessRollout(
+      keyValueStoreService,
+    ),
+    env: EnvFlagEnvironment = process.env,
+    engineRuns: () => Promise<boolean> = engineRunsServed,
+  ) =>
   async (
-    _req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,
     next: NextFunction,
   ) => {
@@ -1142,11 +1286,49 @@ export const getEffectivePlatformFeatureFlags =
       const { featureFlags } = await getPlatformSettingsFromStore(
         keyValueStoreService,
       );
-      res.status(200).json({ featureFlags }).end();
+      if (!agentHarnessSwitchedOn(env)) {
+        // ADR-OPS-06: the browser shows nothing of the harness; the fields stay for clients that read them.
+        res
+          .status(200)
+          .json({
+            featureFlags: withoutHarnessFlags(featureFlags),
+            agentHarness: null,
+            harnessReconcile: false,
+            continuePrivately: false,
+            engineRuns: false,
+          })
+          .end();
+        return;
+      }
+      // The browser follows the rollout policy's answer instead of reading
+      // the raw Labs flag, so kill switch and readiness apply to it as well.
+      const orgId = getOrgIdFromRequest(req);
+      const agentHarness = orgId
+        ? await harnessRollout.decideForOrg(orgId)
+        : null;
+      featureFlags.ENABLE_AGENT_HARNESS = agentHarness?.useHarness === true;
+      // Each harness surface follows the org's harness (ADR-OPS-08): with it off the org reads what an install with
+      // the switch off answers.
+      const harnessOn = agentHarness?.harnessOn === true;
+      const harnessReconcile = harnessOn && harnessReconcileEnabled(env);
+      // Personal AI accounts serve only engine runs (UX3): the settings offer
+      // them while a worker runs those.
+      const engineRunsOn = harnessOn && (await engineRuns().catch(() => false));
+      // The fork route (SS3) serves exactly when this holds; the browser
+      // offers "Continue privately" from it instead of a button that answers 503.
+      const continuePrivately =
+        harnessOn && isAgentHarnessInfrastructureReady(env);
+      res
+        .status(200)
+        .json({
+          featureFlags,
+          agentHarness,
+          harnessReconcile,
+          continuePrivately,
+          engineRuns: engineRunsOn,
+        })
+        .end();
     } catch (error: any) {
-      logger.error('Error getting effective platform feature flags', {
-        error,
-      });
       next(error);
     }
   };
@@ -1181,31 +1363,41 @@ async function restoreStoredAuthSecrets<T extends Record<string, unknown>>(
   return config;
 }
 
+/**
+ * The Microsoft sign-in settings and the record they come from. Azure AD sign-in became Microsoft sign-in; until the
+ * startup migration copies its settings over, those are served, and a save restores its placeholders from them too.
+ */
+async function readMicrosoftAuthConfig(
+  keyValueStoreService: KeyValueStoreService,
+): Promise<{ path: string; config: Record<string, unknown> | null }> {
+  const configManagerConfig = loadConfigurationManagerConfig();
+  const read = async (
+    path: string,
+  ): Promise<Record<string, unknown> | null> => {
+    const encrypted = await keyValueStoreService.get<string>(path);
+    if (!encrypted) return null;
+    return JSON.parse(
+      EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).decrypt(encrypted),
+    ) as Record<string, unknown>;
+  };
+  const microsoft = await read(configPaths.auth.microsoft);
+  if (!microsoft?.clientId && RENAMED_SIGN_IN_METHODS.azureAd === 'microsoft') {
+    const azureAd = await read(configPaths.auth.azureAD);
+    if (azureAd?.clientId)
+      return { path: configPaths.auth.azureAD, config: azureAd };
+  }
+  return { path: configPaths.auth.microsoft, config: microsoft };
+}
+
 export const getMicrosoftAuthConfig =
   (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const readAuthConfig = async (
-        path: string,
-      ): Promise<Record<string, unknown> | null> => {
-        const encrypted = await keyValueStoreService.get<string>(path);
-        if (!encrypted) return null;
-        return JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encrypted),
-        ) as Record<string, unknown>;
-      };
-
-      let authConfig = await readAuthConfig(configPaths.auth.microsoft);
-      // Azure AD sign-in became Microsoft sign-in; until the startup migration
-      // copies its settings over, serve those.
-      if (!authConfig?.clientId && RENAMED_SIGN_IN_METHODS.azureAd === 'microsoft') {
-        const azureAd = await readAuthConfig(configPaths.auth.azureAD);
-        if (azureAd?.clientId) authConfig = azureAd;
-      }
+      const { config: authConfig } =
+        await readMicrosoftAuthConfig(keyValueStoreService);
 
       if (authConfig) {
         const hideSecrets = applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
@@ -1214,7 +1406,6 @@ export const getMicrosoftAuthConfig =
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting auth config', { error });
       next(error);
     }
   };
@@ -1225,9 +1416,19 @@ export const setMicrosoftAuthConfig =
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
 
+      // Placeholders come back for what the read showed, so they are restored from the record it read. With none,
+      // nothing stored is read: a record that cannot be decrypted can still be replaced.
+      const masked = MICROSOFT_AUTH_SECRET_KEYS.some(
+        (key) =>
+          (req.body as Record<string, unknown> | undefined)?.[key] ===
+          CONFIG_SECRET_PLACEHOLDER,
+      );
+      const source = masked
+        ? (await readMicrosoftAuthConfig(keyValueStoreService)).path
+        : configPaths.auth.microsoft;
       const { clientId, tenantId, enableJit } = await restoreStoredAuthSecrets(
         keyValueStoreService,
-        configPaths.auth.microsoft,
+        source,
         req.body,
         MICROSOFT_AUTH_SECRET_KEYS,
       );
@@ -1248,7 +1449,6 @@ export const setMicrosoftAuthConfig =
         .json({ message: 'Microsoft Auth config created successfully' })
         .end();
     } catch (error: any) {
-      logger.error('Error creating smtp config', { error });
       next(error);
     }
   };
@@ -1276,7 +1476,6 @@ export const getGoogleAuthConfig =
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting auth config', { error });
       next(error);
     }
   };
@@ -1309,7 +1508,6 @@ export const setGoogleAuthConfig =
         .json({ message: 'Google Auth config created successfully' })
         .end();
     } catch (error: any) {
-      logger.error('Error creating smtp config', { error });
       next(error);
     }
   };
@@ -1337,7 +1535,6 @@ export const createArangoDbConfig =
         })
         .end();
     } catch (error: any) {
-      logger.error('Error creating db config', { error });
       next(error);
     }
   };
@@ -1362,7 +1559,6 @@ export const getArangoDbConfig =
       }
       res.status(200).json({}).end();
     } catch (error: any) {
-      logger.error('Error getting db config', { error });
       next(error);
     }
   };
@@ -1390,7 +1586,6 @@ export const createMongoDbConfig =
         })
         .end();
     } catch (error: any) {
-      logger.error('Error creating db config', { error });
       next(error);
     }
   };
@@ -1417,7 +1612,6 @@ export const getMongoDbConfig =
       }
       res.status(200).json({}).end();
     } catch (error: any) {
-      logger.error('Error getting db config', { error });
       next(error);
     }
   };
@@ -1438,7 +1632,6 @@ export const createRedisConfig =
       );
       res.status(200).json({ message: 'Redis config created successfully' });
     } catch (error: any) {
-      logger.error('Error creating key value store config', { error });
       next(error);
     }
   };
@@ -1464,7 +1657,6 @@ export const getRedisConfig =
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting key value store config', { error });
       next(error);
     }
   };
@@ -1489,7 +1681,6 @@ export const createKafkaConfig =
         .json({ message: 'Kafka config created successfully', warningMessage })
         .end();
     } catch (error: any) {
-      logger.error('Error creating kafka config', { error });
       next(error);
     }
   };
@@ -1515,7 +1706,6 @@ export const getKafkaConfig =
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting kafka config', { error });
       next(error);
     }
   };
@@ -1541,7 +1731,15 @@ export const createGoogleWorkspaceCredentials =
       switch (userType.toLowerCase()) {
         case googleWorkspaceTypes.INDIVIDUAL.toLowerCase():
           {
-            configData = req.body;
+            // The read masks the tokens; a client saving what it read sends the placeholder for the stored one.
+            // Only the keys this record stores: the client id and secret the read also shows live in the OAuth
+            // config, and the schema drops them here.
+            configData = await restoreStoredAuthSecrets(
+              keyValueStoreService,
+              `${configPaths.connectors.googleWorkspace.credentials.individual}/${userId}`,
+              req.body,
+              ['access_token', 'refresh_token'],
+            );
 
             // validate config schema
 
@@ -1648,10 +1846,6 @@ export const createGoogleWorkspaceCredentials =
             }
             topicName = req.body.topicName;
           }
-
-          logger.debug('enableRealTimeUpdates:', enableRealTimeUpdates);
-          logger.debug('realTimeUpdatesEnabled:', realTimeUpdatesEnabled);
-          logger.debug('topicName:', topicName);
 
           let configData;
 
@@ -1789,14 +1983,24 @@ export const createGoogleWorkspaceCredentials =
       }
       res.status(200).json({ message: 'Successfully updated' });
     } catch (error: any) {
-      logger.error('Error creating google workspace credentials', { error });
       next(error);
     }
   };
 
 export const getGoogleWorkspaceCredentials =
-  (keyValueStoreService: KeyValueStoreService, userId: string, orgId: string) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  (
+    keyValueStoreService: KeyValueStoreService,
+    userId: string,
+    orgId: string,
+    applyMasking = true,
+  ) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    const hideSecrets =
+      applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
+    const shown = (config: Record<string, unknown>): Record<string, unknown> =>
+      hideSecrets
+        ? maskConnectorSecrets(config, GOOGLE_WORKSPACE_CREDENTIAL_SECRET_KEYS)
+        : config;
     try {
       const org = await findActiveOrgById(orgId);
       if (!org) {
@@ -1837,7 +2041,13 @@ export const getGoogleWorkspaceCredentials =
                 ...googleWorkspaceOauthConfig,
               };
 
-              res.status(200).json(combinedResponse).end();
+              res
+
+                .status(200)
+
+                .json(shown(combinedResponse as Record<string, unknown>))
+
+                .end();
             } else {
               res.status(200).json({}).end();
             }
@@ -1858,7 +2068,12 @@ export const getGoogleWorkspaceCredentials =
                 configManagerConfig.secretKey,
               ).decrypt(encryptedGoogleWorkspaceCredentials),
             );
-            res.status(200).json(googleWorkspaceCredentials).end();
+            res
+              .status(200)
+              .json(
+                shown(googleWorkspaceCredentials as Record<string, unknown>),
+              )
+              .end();
           } else {
             res.status(200).json({}).end();
           }
@@ -1870,7 +2085,6 @@ export const getGoogleWorkspaceCredentials =
           );
       }
     } catch (error: any) {
-      logger.error('Error getting google workspace credentials', { error });
       next(error);
     }
   };
@@ -1899,7 +2113,6 @@ export const getGoogleWorkspaceBusinessCredentials =
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting google workspace credentials', { error });
       next(error);
     }
   };
@@ -1932,7 +2145,6 @@ export const deleteGoogleWorkspaceCredentials =
           );
       }
     } catch (error: any) {
-      logger.error('Error getting google workspace credentials', { error });
       next(error);
     }
   };
@@ -1944,7 +2156,14 @@ export const setGoogleWorkspaceOauthConfig =
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const { clientId, clientSecret, enableRealTimeUpdates } = req.body;
+      // A client that read the masked config may send the placeholder back.
+      const { clientId, clientSecret, enableRealTimeUpdates } =
+        await restoreStoredAuthSecrets(
+          keyValueStoreService,
+          configPaths.connectors.googleWorkspace.config,
+          req.body,
+          GOOGLE_WORKSPACE_CONNECTOR_SECRET_KEYS,
+        );
       let topicName = '';
       const realTimeUpdatesEnabled =
         enableRealTimeUpdates === undefined
@@ -2038,14 +2257,13 @@ export const setGoogleWorkspaceOauthConfig =
         .status(200)
         .json({ message: 'Google Workspace credentials created successfully' });
     } catch (error: any) {
-      logger.error('Error creating Google Workspace config', { error });
       next(error);
     }
   };
 
 export const getGoogleWorkspaceOauthConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
       const encryptedGoogleWorkSpaceConfig =
@@ -2059,18 +2277,29 @@ export const getGoogleWorkspaceOauthConfig =
             configManagerConfig.secretKey,
           ).decrypt(encryptedGoogleWorkSpaceConfig),
         );
-        res.status(200).json(googleWorkSpaceConfig).end();
+        const hideSecrets =
+          applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
+        res
+          .status(200)
+          .json(
+            hideSecrets
+              ? maskConnectorSecrets(
+                  googleWorkSpaceConfig,
+                  GOOGLE_WORKSPACE_CONNECTOR_SECRET_KEYS,
+                )
+              : googleWorkSpaceConfig,
+          )
+          .end();
       } else {
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting Google Workspace config', { error });
       next(error);
     }
   };
 
 export const getAtlassianOauthConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
   async (
     req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,
@@ -2092,12 +2321,23 @@ export const getAtlassianOauthConfig =
             configManagerConfig.secretKey,
           ).decrypt(encryptedAtlassianConfig),
         );
-        res.status(200).json(atlassianConfig).end();
+        const hideSecrets =
+          applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
+        res
+          .status(200)
+          .json(
+            hideSecrets
+              ? maskConnectorSecrets(
+                  atlassianConfig,
+                  ATLASSIAN_CONNECTOR_SECRET_KEYS,
+                )
+              : atlassianConfig,
+          )
+          .end();
       } else {
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting Atlassian config', { error });
       next(error);
     }
   };
@@ -2110,11 +2350,17 @@ export const setAtlassianOauthConfig =
     next: NextFunction,
   ) => {
     try {
-      const oauthConfig = req.body;
       const orgId = getOrgIdFromRequest(req);
       if (!orgId) {
         throw new BadRequestError('Organisation not found');
       }
+      // A client that read the masked config may send the placeholder back.
+      const oauthConfig = await restoreStoredAuthSecrets(
+        keyValueStoreService,
+        `${configPaths.connectors.atlassian.config}/${orgId}`,
+        req.body,
+        ATLASSIAN_CONNECTOR_SECRET_KEYS,
+      );
       const configManagerConfig = loadConfigurationManagerConfig();
       const encryptedAtlassianConfig = EncryptionService.getInstance(
         configManagerConfig.algorithm,
@@ -2128,13 +2374,12 @@ export const setAtlassianOauthConfig =
         .status(200)
         .json({ message: 'Atlassian config created successfully' });
     } catch (error: any) {
-      logger.error('Error creating Atlassian config', { error });
       next(error);
     }
   };
 
 export const getAtlassianCredentials =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
   async (
     req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,
@@ -2157,12 +2402,23 @@ export const getAtlassianCredentials =
             configManagerConfig.secretKey,
           ).decrypt(encryptedAtlassianCredentials),
         );
-        res.status(200).json(atlassianCredentials).end();
+        const hideSecrets =
+          applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
+        res
+          .status(200)
+          .json(
+            hideSecrets
+              ? maskConnectorSecrets(
+                  atlassianCredentials,
+                  ATLASSIAN_CONNECTOR_SECRET_KEYS,
+                )
+              : atlassianCredentials,
+          )
+          .end();
       } else {
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting Atlassian credentials', { error });
       next(error);
     }
   };
@@ -2175,12 +2431,18 @@ export const setAtlassianCredentials =
     next: NextFunction,
   ) => {
     try {
-      const credentials = req.body;
       const configManagerConfig = loadConfigurationManagerConfig();
       const orgId = getOrgIdFromRequest(req);
       if (!orgId) {
         throw new BadRequestError('Organisation not found');
       }
+      // A client that read the masked config may send the placeholder back.
+      const credentials = await restoreStoredAuthSecrets(
+        keyValueStoreService,
+        `${configPaths.connectors.atlassian.credentials}/${orgId}`,
+        req.body,
+        ATLASSIAN_CONNECTOR_SECRET_KEYS,
+      );
       // Todo: Do a health check for the credentials
       const encryptedAtlassianCredentials = EncryptionService.getInstance(
         configManagerConfig.algorithm,
@@ -2194,13 +2456,12 @@ export const setAtlassianCredentials =
         .status(200)
         .json({ message: 'Atlassian credentials created successfully' });
     } catch (error: any) {
-      logger.error('Error creating Atlassian credentials', { error });
       next(error);
     }
   };
 
 export const getOneDriveCredentials =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
   async (
     req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,
@@ -2223,12 +2484,23 @@ export const getOneDriveCredentials =
             configManagerConfig.secretKey,
           ).decrypt(encryptedOneDriveCredentials),
         );
-        res.status(200).json(oneDriveCredentials).end();
+        const hideSecrets =
+          applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
+        res
+          .status(200)
+          .json(
+            hideSecrets
+              ? maskConnectorSecrets(
+                  oneDriveCredentials,
+                  MICROSOFT_CONNECTOR_SECRET_KEYS,
+                )
+              : oneDriveCredentials,
+          )
+          .end();
       } else {
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting OneDrive credentials', { error });
       next(error);
     }
   };
@@ -2241,12 +2513,18 @@ export const setOneDriveCredentials =
     next: NextFunction,
   ) => {
     try {
-      const credentials = req.body;
       const configManagerConfig = loadConfigurationManagerConfig();
       const orgId = getOrgIdFromRequest(req);
       if (!orgId) {
         throw new BadRequestError('Organisation not found');
       }
+      // A client that read the masked config may send the placeholder back.
+      const credentials = await restoreStoredAuthSecrets(
+        keyValueStoreService,
+        `${configPaths.connectors.onedrive.config}/${orgId}`,
+        req.body,
+        MICROSOFT_CONNECTOR_SECRET_KEYS,
+      );
       // Todo: Do a health check for the credentials
       const encryptedOneDriveCredentials = EncryptionService.getInstance(
         configManagerConfig.algorithm,
@@ -2260,13 +2538,12 @@ export const setOneDriveCredentials =
         .status(200)
         .json({ message: 'OneDrive credentials created successfully' });
     } catch (error: any) {
-      logger.error('Error creating OneDrive credentials', { error });
       next(error);
     }
   };
 
 export const getSharePointCredentials =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
   async (
     req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,
@@ -2289,12 +2566,23 @@ export const getSharePointCredentials =
             configManagerConfig.secretKey,
           ).decrypt(encryptedSharePointCredentials),
         );
-        res.status(200).json(sharePointCredentials).end();
+        const hideSecrets =
+          applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
+        res
+          .status(200)
+          .json(
+            hideSecrets
+              ? maskConnectorSecrets(
+                  sharePointCredentials,
+                  MICROSOFT_CONNECTOR_SECRET_KEYS,
+                )
+              : sharePointCredentials,
+          )
+          .end();
       } else {
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting SharePoint credentials', { error });
       next(error);
     }
   };
@@ -2307,12 +2595,18 @@ export const setSharePointCredentials =
     next: NextFunction,
   ) => {
     try {
-      const credentials = req.body;
       const configManagerConfig = loadConfigurationManagerConfig();
       const orgId = getOrgIdFromRequest(req);
       if (!orgId) {
         throw new BadRequestError('Organisation not found');
       }
+      // A client that read the masked config may send the placeholder back.
+      const credentials = await restoreStoredAuthSecrets(
+        keyValueStoreService,
+        `${configPaths.connectors.sharepoint.config}/${orgId}`,
+        req.body,
+        MICROSOFT_CONNECTOR_SECRET_KEYS,
+      );
       // Todo: Do a health check for the credentials
       const encryptedSharePointCredentials = EncryptionService.getInstance(
         configManagerConfig.algorithm,
@@ -2326,7 +2620,6 @@ export const setSharePointCredentials =
         .status(200)
         .json({ message: 'SharePoint credentials created successfully' });
     } catch (error: any) {
-      logger.error('Error creating SharePoint credentials', { error });
       next(error);
     }
   };
@@ -2351,7 +2644,6 @@ export const createQdrantConfig =
         warningMessage,
       });
     } catch (error: any) {
-      logger.error('Error creating Sso config', { error });
       next(error);
     }
   };
@@ -2377,7 +2669,6 @@ export const getQdrantConfig =
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting SsoConfig', { error });
       next(error);
     }
   };
@@ -2387,7 +2678,7 @@ export const getFrontendUrl =
     try {
       const url =
         (await keyValueStoreService.get<string>(configPaths.endpoint)) || '{}';
-      const parsedUrl = JSON.parse(url);
+      const parsedUrl = parseKvObject(url);
       if (parsedUrl?.frontend?.publicEndpoint) {
         res
           .status(200)
@@ -2398,7 +2689,6 @@ export const getFrontendUrl =
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting Frontend Public Url', { error });
       next(error);
     }
   };
@@ -2432,7 +2722,7 @@ export const getDesktopFrontendUrl =
       }
       const urls =
         (await keyValueStoreService.get<string>(configPaths.endpoint)) || '{}';
-      const parsedUrls = JSON.parse(urls);
+      const parsedUrls = parseKvObject(urls);
       res.status(200).json({
         frontendUrl: resolveFrontendPublicUrl(
           parsedUrls?.frontend?.publicEndpoint,
@@ -2468,7 +2758,7 @@ export const setFrontendUrl =
       }
       const urls =
         (await keyValueStoreService.get<string>(configPaths.endpoint)) || '{}';
-      let parsedUrls = JSON.parse(urls);
+      let parsedUrls = parseKvObject(urls);
       // Preserve existing `auth` object if it exists, otherwise create a new one
       parsedUrls.frontend = {
         ...parsedUrls.frontend,
@@ -2492,7 +2782,6 @@ export const setFrontendUrl =
         message: 'Frontend Url saved successfully',
       });
     } catch (error: any) {
-      logger.error('Error setting frontend url', { error });
       next(error);
     }
   };
@@ -2503,7 +2792,7 @@ export const getConnectorPublicUrl =
     try {
       const url =
         (await keyValueStoreService.get<string>(configPaths.endpoint)) || '{}';
-      const parsedUrl = JSON.parse(url);
+      const parsedUrl = parseKvObject(url);
       if (parsedUrl?.connectors?.publicEndpoint) {
         res
           .status(200)
@@ -2514,7 +2803,6 @@ export const getConnectorPublicUrl =
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting Connector Public Url', { error });
       next(error);
     }
   };
@@ -2544,7 +2832,7 @@ export const setConnectorPublicUrl =
       const urls =
         (await keyValueStoreService.get<string>(configPaths.endpoint)) || '{}';
 
-      let parsedUrls = JSON.parse(urls);
+      let parsedUrls = parseKvObject(urls);
 
       // Preserve existing `auth` object if it exists, otherwise create a new one
       parsedUrls.connectors = {
@@ -2573,7 +2861,6 @@ export const setConnectorPublicUrl =
         message: 'Connector Url saved successfully',
       });
     } catch (error: any) {
-      logger.error('Error setting Connector url', { error });
       next(error);
     }
   };
@@ -2603,7 +2890,7 @@ const getMetricsCollectionConfig = async (
     return parsed && typeof parsed === 'object' ? parsed : {};
   } catch (error) {
     logger.warn('Failed to parse metrics collection config, using empty config', {
-      error,
+      error: safeCause(error),
     });
     return {};
   }
@@ -2651,7 +2938,6 @@ export const toggleMetricsCollection =
         .status(200)
         .json({ message: 'Metrics collection toggled successfully' });
     } catch (error: any) {
-      logger.warn('Error toggling metrics collection', { error });
       next(error);
     }
   };
@@ -2665,7 +2951,6 @@ export const getMetricsCollection =
       );
       res.status(200).json(metricsCollection).end();
     } catch (error: any) {
-      logger.warn('Error getting metrics collection', { error });
       next(error);
     }
   };
@@ -2688,7 +2973,6 @@ export const setMetricsCollectionPushInterval =
         .status(200)
         .json({ message: 'Metrics collection push interval set successfully' });
     } catch (error: any) {
-      logger.warn('Error setting metrics collection push interval', { error });
       next(error);
     }
   };
@@ -2709,7 +2993,6 @@ export const setMetricsCollectionRemoteServer =
         .status(200)
         .json({ message: 'Metrics collection remote server set successfully' });
     } catch (error: any) {
-      logger.warn('Error setting metrics collection remote server', { error });
       next(error);
     }
   };
@@ -2720,7 +3003,10 @@ async function sendEvent(eventService: EntitiesEventProducer | AiConfigEventProd
     await eventService.publishEvent(event);
     await eventService.stop();
   } catch (error) {
-    logger.error('Error sending event', { error });
+    logger.error('broker.event.publish_failed', {
+      event_type: event.eventType,
+      error,
+    });
   }
 }
 
@@ -2751,7 +3037,9 @@ const throwUnlessHealthy = (
       healthCheckFailureMessage(response.data, fallback),
     );
   }
-  throw new InternalServerError(fallback, response?.data);
+  throw withCause(new InternalServerError(fallback), {
+    status: response?.statusCode,
+  });
 };
 
 export const createAIModelsConfig =
@@ -2759,6 +3047,7 @@ export const createAIModelsConfig =
     keyValueStoreService: KeyValueStoreService,
     eventService: AiConfigEventProducer,
     appConfig: AppConfig,
+    save: AiModelsSave = plainAiModelsSave(keyValueStoreService),
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
@@ -2777,8 +3066,6 @@ export const createAIModelsConfig =
           headers: req.headers as Record<string, string>,
           body: aiConfig.llm,
         };
-
-        logger.debug('Health Check for AI llm Config API calling');
 
         // Don't use nested try/catch with next() inside
         const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
@@ -2799,8 +3086,6 @@ export const createAIModelsConfig =
           headers: req.headers as Record<string, string>,
           body: aiConfig.embedding,
         };
-
-        logger.debug('Health Check for AI embedding Config API calling');
 
         // Don't use nested try/catch with next() inside
         const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
@@ -2858,7 +3143,10 @@ export const createAIModelsConfig =
         });
       }
 
-      await new AiModelsConfigRepository(keyValueStoreService).replace(aiConfig);
+      await aiModelsRepository(keyValueStoreService, save, req, [
+        'embedding',
+        'llm',
+      ]).replace(aiConfig);
 
       // Notify other services about the new AI config. The initial config
       // may include LLM and/or embedding models; fire a separate event per
@@ -2888,7 +3176,6 @@ export const createAIModelsConfig =
 
       res.status(200).json({ message: 'AI config created successfully' }).end();
     } catch (error: any) {
-      logger.error('Error creating ai models config', { error });
       next(error);
     }
   };
@@ -2908,7 +3195,6 @@ export const getAIModelsConfig =
         )
         .end();
     } catch (error: any) {
-      logger.error('Error getting ai models config', { error });
       next(error);
     }
   };
@@ -2920,7 +3206,6 @@ export const getInternalAIModelsConfig =
       const aiConfig = await readStoredAiModelsConfig(keyValueStoreService);
       res.status(200).json(aiConfig ?? {}).end();
     } catch (error: any) {
-      logger.error('Error getting internal ai models config', { error });
       next(error);
     }
   };
@@ -2967,7 +3252,6 @@ export const getAIModelsProviders =
         message: 'AI models retrieved successfully',
       });
     } catch (error: any) {
-      logger.error('Error getting AI models providers', { error });
       next(error);
     }
   };
@@ -3018,7 +3302,6 @@ export const getModelsByType =
         message: `Found ${configs.length} ${modelType} models`,
       });
     } catch (error: any) {
-      logger.error('Error getting models by type', { error });
       next(error);
     }
   };
@@ -3095,9 +3378,10 @@ export const getAvailableModelsByType =
         // Create a flattened entry for each individual model
         let markDefault = config.isDefault === true;
 
-        // Only include modelFriendlyName if there's a single model (not comma-separated)
-        const shouldIncludeFriendlyName =
-          modelNames.length === 1 && config.modelFriendlyName;
+        // Only when the admin named it: a client falls back to the model name itself.
+        const hasFriendlyName =
+          typeof config.modelFriendlyName === 'string' &&
+          config.modelFriendlyName.trim().length > 0;
         // Unlike the friendly name, the default applies to every model in the entry.
         const defaultReasoningEffort = storedDefaultReasoningEffort(config);
 
@@ -3110,7 +3394,9 @@ export const getAvailableModelsByType =
             isMultimodal: config.isMultimodal || false,
             isReasoning: config.isReasoning || false,
             isDefault: markDefault,
-            ...(shouldIncludeFriendlyName && { modelFriendlyName: config.modelFriendlyName }),
+            ...(hasFriendlyName && {
+              modelFriendlyName: modelDisplayName(config, modelName),
+            }),
             ...(defaultReasoningEffort && { defaultReasoningEffort }),
           };
           markDefault = false; // Only mark first model as default
@@ -3125,7 +3411,6 @@ export const getAvailableModelsByType =
       });
       return;
     } catch (error: any) {
-      logger.error('Error getting available models by type', { error });
       next(error);
     }
   };
@@ -3170,7 +3455,6 @@ export const prepareEmbeddingModel =
 
       res.status(response.status).json(response.data);
     } catch (error: any) {
-      logger.error('Error preparing embedding model', { error });
       if (error.response) {
         res.status(error.response.status).json(error.response.data);
         return;
@@ -3224,7 +3508,7 @@ export const streamEmbeddingDownloadProgress =
           break;
         }
       } catch (error: any) {
-        logger.error('Lost connection to embedding server', { error });
+        logger.warn('Lost connection to embedding server', { error });
         if (!closed) {
           res.write(
             `event: progress\ndata: ${JSON.stringify({
@@ -3371,6 +3655,7 @@ export const addAIModelProvider =
     keyValueStoreService: KeyValueStoreService,
     eventService: AiConfigEventProducer,
     appConfig: AppConfig,
+    save: AiModelsSave = plainAiModelsSave(keyValueStoreService),
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
@@ -3427,8 +3712,6 @@ export const addAIModelProvider =
         body: healthCheckPayload,
       };
 
-      logger.debug('Health Check for AI embedding Config API calling');
-
       // Don't use nested try/catch with next() inside
       const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponseData =
@@ -3445,11 +3728,11 @@ export const addAIModelProvider =
               );
 
         // The reason is written for the admin filling in the dialog ("Incorrect
-        // API key provided"); the raw body behind it is for the log only.
-        logger.error('AI model health check failed', {
-          modelType,
-          statusCode: aiResponseData?.statusCode,
-          details: errData,
+        // API key provided"); the provider's text is never logged.
+        logger.warn('ai_model.health_check.failed', {
+          model_type: modelType,
+          provider,
+          status: aiResponseData?.statusCode,
         });
         res.status(aiResponseData?.statusCode ?? 500).json({
           error: {
@@ -3462,7 +3745,9 @@ export const addAIModelProvider =
 
       const modelFriendlyName = configuration.modelFriendlyName;
       let modelKey = '';
-      await new AiModelsConfigRepository(keyValueStoreService).mutate((aiModels) => {
+      await aiModelsRepository(keyValueStoreService, save, req, [
+        modelType,
+      ]).mutate((aiModels) => {
         const existingKeys = new Set(
           AI_MODEL_TYPES.flatMap((type) =>
             (aiModels[type] ?? []).map((config) => config.modelKey),
@@ -3526,17 +3811,35 @@ export const addAIModelProvider =
         },
       });
     } catch (error: any) {
-      logger.error('Error adding AI model provider', { error });
       const handleError = handleBackendError(error, 'add AI model provider');
       next(handleError);
     }
   };
+
+function destinationHost(
+  incoming: Record<string, unknown>,
+  existing: Record<string, unknown>,
+  provider: unknown,
+): string | undefined {
+  // A key the request leaves out is unchanged, so it is never the moved one.
+  const key = AI_MODEL_DESTINATION_KEYS.find(
+    (k) =>
+      k in incoming &&
+      aiModelDestinationChanged({ [k]: incoming[k] }, existing, provider),
+  );
+  try {
+    return new URL(String(incoming[key as string])).host;
+  } catch {
+    return undefined;
+  }
+}
 
 export const updateAIModelProvider =
   (
     keyValueStoreService: KeyValueStoreService,
     eventService: AiConfigEventProducer,
     appConfig: AppConfig,
+    save: AiModelsSave = plainAiModelsSave(keyValueStoreService),
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
@@ -3556,17 +3859,6 @@ export const updateAIModelProvider =
         isDefault = false,
         contextLength,
       } = req.body;
-
-      logger.debug('updateAIModelProvider', {
-        modelType,
-        modelKey,
-        provider,
-        configuration,
-        isMultimodal,
-        isReasoning,
-        isDefault,
-        contextLength,
-      });
 
       // Validate required fields
       if (!provider || !configuration) {
@@ -3628,11 +3920,62 @@ export const updateAIModelProvider =
         return;
       }
 
+      // Saved credentials are restored below, so a new destination must come
+      // with credentials typed again or they would be sent to it.
+      const savedConfiguration: Record<string, unknown> = stored ?? {};
+      const destinationChanged = aiModelDestinationChanged(
+        incoming,
+        savedConfiguration,
+        targetModel.provider,
+      );
+      const reusesCredentials = reusesSavedAiModelCredentials(
+        incoming,
+        savedConfiguration,
+      );
+      // The save keeps the stored provider, so a check run as another provider
+      // would not describe what is saved.
+      if (
+        targetModel.provider &&
+        String(provider).toLowerCase() !== targetModel.provider.toLowerCase()
+      ) {
+        res.status(400).json({
+          status: 'error',
+          message: 'Provider does not match saved model',
+        });
+        return;
+      }
+
+      const securityContext: Record<string, unknown> = {
+        orgId: getCurrentOrgId(),
+        userId: req.user?.userId,
+        modelKey,
+        host: destinationChanged
+          ? destinationHost(incoming, savedConfiguration, targetModel.provider)
+          : undefined,
+      };
+      if (destinationChanged && reusesCredentials) {
+        logger.warn('AI model destination change refused', {
+          securityEvent: 'model_destination_change_refused',
+          ...securityContext,
+        });
+        res.status(400).json({
+          status: 'error',
+          error_code: 'credential_reentry_required',
+          message: 'Enter the credentials again to use this new endpoint.',
+        });
+        return;
+      }
+
       // GET only returns the public allowlist, so the client can only send back
       // keys it retyped. Restore the rest from storage before the health check.
+      // Forwarding credentials are not retyped, so a new destination does not get them.
+      const restorable = (
+        saved: Record<string, unknown>,
+      ): Record<string, unknown> =>
+        destinationChanged ? withoutForwardingCredentials(saved) : saved;
       const mergedConfiguration = mergeAiModelCredentials(
         configuration,
-        targetModel.configuration as Record<string, unknown>,
+        restorable(targetModel.configuration as Record<string, unknown>),
       );
 
       const healthCheckPayload: Record<string, unknown> = {
@@ -3666,13 +4009,11 @@ export const updateAIModelProvider =
       }
 
       const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/health-check/${modelType}`,
+        uri: `${appConfig.aiBackend}/api/v1/health-check/${encodeURIComponent(targetModelType)}`,
         method: HttpMethod.POST,
         headers: req.headers as Record<string, string>,
         body: healthCheckPayload,
       };
-
-      logger.debug('Health Check for AI embedding Config API calling');
 
       // Don't use nested try/catch with next() inside
       const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
@@ -3690,11 +4031,11 @@ export const updateAIModelProvider =
               );
 
         // The reason is written for the admin filling in the dialog ("Incorrect
-        // API key provided"); the raw body behind it is for the log only.
-        logger.error('AI model health check failed', {
-          modelType,
-          statusCode: aiResponseData?.statusCode,
-          details: errData,
+        // API key provided"); the provider's text is never logged.
+        logger.warn('ai_model.health_check.failed', {
+          model_type: modelType,
+          provider,
+          status: aiResponseData?.statusCode,
         });
         res.status(aiResponseData?.statusCode ?? 500).json({
           error: {
@@ -3732,16 +4073,46 @@ export const updateAIModelProvider =
 
       const modelFriendlyName = configuration.modelFriendlyName;
       let saved: AIModelsConfig;
+      // Set inside the mutate callback, so assert boolean to stop narrowing to false.
+      let forwardingCredentialsCleared = false as boolean;
+      let movedDuringCheck = false as boolean;
       try {
-        saved = await new AiModelsConfigRepository(keyValueStoreService).mutate((latest) => {
+        saved = await aiModelsRepository(keyValueStoreService, save, req, [
+          targetModelType,
+        ]).mutate((latest) => {
+          movedDuringCheck = false;
           const current = findModelEntry(latest, modelKey);
           if (!current || current.modelType !== targetModelType) {
             throw new AiModelsWriteAborted();
           }
           // A credential rotation can land during the health check; keep its keys.
+          const latestSaved =
+            (current.model.configuration as
+              Record<string, unknown> | undefined) ?? {};
+          // Another save can also move the model during the check. Its stored
+          // credentials belong to that endpoint, which this check never used,
+          // so compare against the latest document, not the earlier read.
+          const latestDestinationChanged = aiModelDestinationChanged(
+            incoming,
+            latestSaved,
+            current.model.provider,
+          );
+          // The check ran against the endpoint read before it, which also
+          // covers a request that leaves the endpoint out.
+          if (
+            aiModelDestinationsDiffer(savedConfiguration, latestSaved) ||
+            (latestDestinationChanged &&
+              reusesSavedAiModelCredentials(incoming, latestSaved))
+          ) {
+            movedDuringCheck = true;
+            throw new AiModelsWriteAborted();
+          }
+          const moved = destinationChanged || latestDestinationChanged;
+          forwardingCredentialsCleared =
+            moved && hasForwardingCredentials(latestSaved);
           current.model.configuration = mergeAiModelCredentials(
             configuration,
-            current.model.configuration as Record<string, unknown>,
+            moved ? withoutForwardingCredentials(latestSaved) : latestSaved,
           );
           current.model.isMultimodal = isMultimodal;
           current.model.isDefault = isDefault;
@@ -3759,6 +4130,19 @@ export const updateAIModelProvider =
           }
         });
       } catch (error) {
+        if (error instanceof AiModelsWriteAborted && movedDuringCheck) {
+          logger.warn('AI model destination change refused', {
+            securityEvent: 'model_destination_change_refused',
+            ...securityContext,
+            reason: 'moved_during_check',
+          });
+          res.status(409).json({
+            status: 'error',
+            message:
+              'This model was moved to another endpoint while it was being checked. Reload it and enter the credentials again.',
+          });
+          return;
+        }
         if (error instanceof AiModelsWriteAborted) {
           res.status(404).json({
             status: 'error',
@@ -3769,6 +4153,12 @@ export const updateAIModelProvider =
         throw error;
       }
       const updatedModel = findModelEntry(saved, modelKey)?.model ?? targetModel;
+      if (destinationChanged) {
+        logger.warn('AI model destination changed', {
+          securityEvent: 'model_destination_changed',
+          ...securityContext,
+        });
+      }
 
       const event: Event =
         targetModelType === 'embedding'
@@ -3799,20 +4189,70 @@ export const updateAIModelProvider =
           contextLength: modelForResponse.contextLength,
           isMultimodal: modelForResponse.isMultimodal,
           isReasoning: modelForResponse.isReasoning,
+          ...(forwardingCredentialsCleared
+            ? { forwardingCredentialsCleared: true }
+            : {}),
         },
       });
     } catch (error: any) {
-      logger.error('Error updating AI model provider', { error });
       const handleError = handleBackendError(error, 'update AI model provider');
       next(handleError);
     }
   };
+
+const MODEL_USAGE_UNVERIFIABLE =
+  "We couldn't check which agents use this model, so it wasn't deleted. Please try again in a few seconds.";
+const WEB_SEARCH_USAGE_UNVERIFIABLE =
+  "We couldn't check which agents use this web search provider, so it wasn't deleted. Please try again in a few seconds.";
+// No usage check in this module sets a budget to match; AIServiceCommand's default (620s) is sized for model downloads.
+// shortcut: a usage read slower than 30s refuses the delete; raise it if large orgs hit that.
+const AGENT_USAGE_TIMEOUT_MS = 30_000;
+
+type AgentUsage = { name?: string; _key?: string; creatorName?: string | null };
+
+/**
+ * The agents the AI service says use a model or web search provider (`path` under /api/v1/agent/).
+ * Anything but a well-formed 200 refuses the delete with a 503 in `refusal`'s words: a check that
+ * cannot be made must never read as "no agents".
+ */
+async function readAgentUsage(
+  path: string,
+  req: AuthenticatedUserRequest,
+  appConfig: AppConfig,
+  refusal: string,
+): Promise<AgentUsage[]> {
+  const unverifiable = (cause: unknown): ServiceUnavailableError =>
+    withCause(markClientSafe(new ServiceUnavailableError(refusal)), cause);
+  const answer = await new AIServiceCommand<{ success?: boolean; agents?: AgentUsage[] }>({
+    uri: `${appConfig.aiBackend}/api/v1/agent/${path}`,
+    method: HttpMethod.GET,
+    headers: {
+      ...(req.headers as Record<string, string>),
+      'Content-Type': 'application/json',
+    },
+    timeoutMs: AGENT_USAGE_TIMEOUT_MS,
+  })
+    .execute()
+    // safeCause: a non-JSON body's SyntaxError quotes the body, which must not reach the log
+    .catch((error: unknown) => {
+      throw unverifiable(safeCause(error));
+    });
+  if (
+    answer.statusCode !== 200 ||
+    answer.data?.success !== true ||
+    !Array.isArray(answer.data.agents)
+  ) {
+    throw unverifiable({ status: answer.statusCode });
+  }
+  return answer.data.agents;
+}
 
 export const deleteAIModelProvider =
   (
     keyValueStoreService: KeyValueStoreService,
     eventService: AiConfigEventProducer,
     appConfig: AppConfig,
+    save: AiModelsSave = plainAiModelsSave(keyValueStoreService),
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
@@ -3856,40 +4296,13 @@ export const deleteAIModelProvider =
         return;
       }
 
-      // Check if any agents are using this model before allowing deletion.
-      // Fail-closed: if the usage check itself errors, block deletion rather than risk
-      // deleting a model that active agents depend on.
-      const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/agent/model-usage/${encodeURIComponent(deletedModel.modelKey)}`,
-        method: HttpMethod.GET,
-        headers: {
-          ...(req.headers as Record<string, string>),
-          'Content-Type': 'application/json',
-        },
-      };
-      const aiCommand = new AIServiceCommand<{ success?: boolean; agents?: any[] }>(aiCommandOptions);
-
-      let aiResponse;
-      try {
-        aiResponse = await aiCommand.execute();
-      } catch (usageError: any) {
-        logger.error('Agent usage check failed; blocking AI model deletion (fail-closed)', { error: usageError.message });
-        throw new InternalServerError(
-          'Cannot delete this model: unable to verify if it is in use by agents. Please try again or contact support.',
-        );
-      }
-
-      if (aiResponse?.statusCode !== 200 || !aiResponse?.data?.success) {
-        logger.error('Agent usage check returned non-success response; blocking AI model deletion', {
-          statusCode: aiResponse?.statusCode,
-          data: aiResponse?.data,
-        });
-        throw new InternalServerError(
-          'Cannot delete this model: unable to verify if it is in use by agents. Please try again or contact support.',
-        );
-      }
-
-      const agentsUsing = Array.isArray(aiResponse.data.agents) ? aiResponse.data.agents : [];
+      // Before the delete: a model agents still name leaves them unable to chat.
+      const agentsUsing = await readAgentUsage(
+        `model-usage/${encodeURIComponent(deletedModel.modelKey)}`,
+        req,
+        appConfig,
+        MODEL_USAGE_UNVERIFIABLE,
+      );
 
       if (agentsUsing.length > 0) {
         // Bake agent names into the message string itself. The error middleware
@@ -3963,7 +4376,9 @@ export const deleteAIModelProvider =
       let wasDefault = deletedModel.isDefault || false;
 
       try {
-        await new AiModelsConfigRepository(keyValueStoreService).mutate((latest) => {
+        await aiModelsRepository(keyValueStoreService, save, req, [
+          targetModelType,
+        ]).mutate((latest) => {
           const current = findModelEntry(latest, modelKey);
           if (!current || current.modelType !== targetModelType) {
             throw new AiModelsWriteAborted();
@@ -4031,7 +4446,6 @@ export const deleteAIModelProvider =
         },
       });
     } catch (error: any) {
-      logger.error('Error deleting AI model provider', { error });
       next(error);
     }
   };
@@ -4041,6 +4455,7 @@ export const updateDefaultAIModel =
     keyValueStoreService: KeyValueStoreService,
     eventService: AiConfigEventProducer,
     appConfig: AppConfig,
+    save: AiModelsSave = plainAiModelsSave(keyValueStoreService),
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
@@ -4107,10 +4522,6 @@ export const updateDefaultAIModel =
       // `/health-check/{type}` endpoint which validates reachability and
       // credentials.
       if ((AI_MODEL_TYPES as readonly string[]).includes(targetModelType)) {
-        logger.debug(
-          `Health Check for AI ${targetModelType} default-update API calling`,
-        );
-
         let aiResponseData: AIServiceResponse;
         if (targetModelType === 'embedding') {
           // Embedding uses the collection-managing endpoint.
@@ -4163,7 +4574,9 @@ export const updateDefaultAIModel =
       }
 
       try {
-        await new AiModelsConfigRepository(keyValueStoreService).mutate((latest) => {
+        await aiModelsRepository(keyValueStoreService, save, req, [
+          targetModelType,
+        ]).mutate((latest) => {
           const current = findModelEntry(latest, modelKey);
           if (!current || current.modelType !== targetModelType) {
             throw new AiModelsWriteAborted();
@@ -4214,7 +4627,6 @@ export const updateDefaultAIModel =
         },
       });
     } catch (error: any) {
-      logger.error('Error updating default AI model', { error });
       next(error);
     }
   };
@@ -4251,7 +4663,6 @@ export const getConnectorConfig =
 
       res.status(200).json(config).end();
     } catch (error: any) {
-      logger.error('Error getting connector config by name', { error });
       next(error);
     }
   };
@@ -4307,7 +4718,6 @@ export const getCustomSystemPrompt =
         .json({ customSystemPrompt: '', customSystemPromptWebSearch: '', customSystemPromptAgent: '' })
         .end();
     } catch (error: any) {
-      logger.error('Error getting custom system prompt', { error });
       next(error);
     }
   };
@@ -4382,7 +4792,6 @@ export const setCustomSystemPrompt =
         customSystemPromptAgent,
       });
     } catch (error: any) {
-      logger.error('Error setting custom system prompt', { error });
       next(error);
     }
   };
@@ -4397,10 +4806,10 @@ async function proxyAiBackendGet(
   res: Response,
   next: NextFunction,
   path: string,
-  options: { query?: URLSearchParams; logMessage: string },
+  query?: URLSearchParams,
 ): Promise<void> {
   try {
-    const qs = options.query?.toString();
+    const qs = query?.toString();
     const url = `${appConfig.aiBackend}${path}${qs ? `?${qs}` : ''}`;
 
     const headers: Record<string, string> = {};
@@ -4411,11 +4820,15 @@ async function proxyAiBackendGet(
     const response = await axios.get(url, { timeout: 10000, headers });
     res.status(response.status).json(response.data);
   } catch (error: any) {
-    logger.error(options.logMessage, { error });
     if (error?.response) {
       res.status(error.response.status).json(error.response.data);
     } else {
-      next(new ServiceUnavailableError('AI model registry service is unavailable'));
+      next(
+        withCause(
+          new ServiceUnavailableError('AI model registry service is unavailable'),
+          error,
+        ),
+      );
     }
   }
 }
@@ -4432,10 +4845,14 @@ export const getAIModelRegistry =
     if (search) params.set('search', String(search));
     if (capability) params.set('capability', String(capability));
 
-    await proxyAiBackendGet(appConfig, req, res, next, '/api/v1/ai-models/registry', {
-      query: params,
-      logMessage: 'Error proxying AI model registry request',
-    });
+    await proxyAiBackendGet(
+      appConfig,
+      req,
+      res,
+      next,
+      '/api/v1/ai-models/registry',
+      params,
+    );
   };
 
 export const getAIModelRegistryCapabilities =
@@ -4451,7 +4868,6 @@ export const getAIModelRegistryCapabilities =
       res,
       next,
       '/api/v1/ai-models/registry/capabilities',
-      { logMessage: 'Error proxying AI model capabilities request' },
     );
   };
 
@@ -4473,7 +4889,7 @@ export const getAIModelProviderSchema =
       res,
       next,
       `/api/v1/ai-models/registry/${encodeURIComponent(providerId)}/schema`,
-      { query: params, logMessage: 'Error proxying AI model provider schema request' },
+      params,
     );
   };
 
@@ -4531,7 +4947,6 @@ export const getWebSearchProviders =
         message: 'Web search providers retrieved successfully',
       });
     } catch (error: any) {
-      logger.error('Error getting web search providers', { error });
       next(error);
     }
   };
@@ -4616,7 +5031,6 @@ export const updateWebSearchSettings =
         settings: normalizedSettings,
       });
     } catch (error: any) {
-      logger.error('Error updating web search settings', { error });
       next(error);
     }
   };
@@ -4643,8 +5057,6 @@ export const addWebSearchProvider =
         headers: req.headers as Record<string, string>,
         body: { provider, configuration },
       };
-
-      logger.debug('Health check for web search provider before adding');
 
       const webSearchHealthCheckCommand = new AIServiceCommand(webSearchHealthCheckOptions);
       const webSearchHealthCheckResponse = (await webSearchHealthCheckCommand.execute()) as AIServiceResponse;
@@ -4726,7 +5138,6 @@ export const addWebSearchProvider =
         },
       });
     } catch (error: any) {
-      logger.error('Error adding web search provider', { error });
       next(error);
     }
   };
@@ -4795,8 +5206,6 @@ export const updateWebSearchProvider =
         body: { provider, configuration: effectiveConfiguration },
       };
 
-      logger.debug('Health check for web search provider before updating');
-
       const webSearchHealthCheckCommand = new AIServiceCommand(webSearchHealthCheckOptions);
       const webSearchHealthCheckResponse = (await webSearchHealthCheckCommand.execute()) as AIServiceResponse;
 
@@ -4853,7 +5262,6 @@ export const updateWebSearchProvider =
         },
       });
     } catch (error: any) {
-      logger.error('Error updating web search provider', { error });
       next(error);
     }
   };
@@ -4899,34 +5307,19 @@ export const deleteWebSearchProvider =
 
       const deletedProvider = webSearchConfig.providers[providerIndex];
 
-      // Check if any agents are using this provider before allowing deletion
-      try {
-        const aiCommandOptions: AICommandOptions = {
-          uri: `${appConfig.aiBackend}/api/v1/agent/web-search-usage/${encodeURIComponent(deletedProvider.provider)}`,
-          method: HttpMethod.GET,
-          headers: {
-            ...(req.headers as Record<string, string>),
-            'Content-Type': 'application/json',
-          },
-        };
-        const aiCommand = new AIServiceCommand<{ success?: boolean; agents?: any[] }>(aiCommandOptions);
-        const aiResponse = await aiCommand.execute();
-
-        const agents =
-          aiResponse?.data?.success && Array.isArray(aiResponse.data.agents)
-            ? aiResponse.data.agents
-            : [];
-
-        if (agents.length > 0) {
-          res.status(409).json({
-            status: 'error',
-            message: `Cannot delete this provider because it is currently used by ${agents.length} ${agents.length === 1 ? 'agent' : 'agents'}. Please remove the web search configuration from these agents first.`,
-            agents,
-          });
-          return;
-        }
-      } catch (usageError: any) {
-        logger.warn('Failed to check agent usage before deleting web search provider; proceeding with deletion', { error: usageError.message });
+      const agents = await readAgentUsage(
+        `web-search-usage/${encodeURIComponent(deletedProvider.provider)}`,
+        req,
+        appConfig,
+        WEB_SEARCH_USAGE_UNVERIFIABLE,
+      );
+      if (agents.length > 0) {
+        res.status(409).json({
+          status: 'error',
+          message: `Cannot delete this provider because it is currently used by ${agents.length} ${agents.length === 1 ? 'agent' : 'agents'}. Please remove the web search configuration from these agents first.`,
+          agents,
+        });
+        return;
       }
 
       const wasDefault = deletedProvider.isDefault || false;
@@ -4966,7 +5359,6 @@ export const deleteWebSearchProvider =
         },
       });
     } catch (error: any) {
-      logger.error('Error deleting web search provider', { error });
       next(error);
     }
   };
@@ -5132,8 +5524,6 @@ export const updateDefaultWebSearchProvider =
         body: { provider: targetProvider.provider, configuration: targetProvider.configuration },
       };
 
-      logger.debug('Health check for web search provider before setting as default');
-
       const webSearchHealthCheckCommand = new AIServiceCommand(webSearchHealthCheckOptions);
       const webSearchHealthCheckResponse = (await webSearchHealthCheckCommand.execute()) as AIServiceResponse;
 
@@ -5183,7 +5573,6 @@ export const updateDefaultWebSearchProvider =
         },
       });
     } catch (error: any) {
-      logger.error('Error updating default web search provider', { error });
       next(error);
     }
   };
@@ -5208,13 +5597,15 @@ export const getModelRoles =
         modelRoles: aiModels.modelRoles ?? {},
       });
     } catch (error: any) {
-      logger.error('Error getting model roles', { error });
       next(error);
     }
   };
 
 export const updateModelRoles =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (
+    keyValueStoreService: KeyValueStoreService,
+    save: AiModelsSave = plainAiModelsSave(keyValueStoreService),
+  ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const { roles } = req.body as {
@@ -5232,7 +5623,12 @@ export const updateModelRoles =
       let rejection: string | null = null;
       let savedRoles: AIModelsConfig['modelRoles'] = roles;
       try {
-        const saved = await new AiModelsConfigRepository(keyValueStoreService).mutate((aiModels) => {
+        const saved = await aiModelsRepository(
+          keyValueStoreService,
+          save,
+          req,
+          ['roles'],
+        ).mutate((aiModels) => {
           for (const [roleName, assignment] of Object.entries(roles)) {
             if (!assignment || typeof assignment !== 'object' || Array.isArray(assignment)) {
               rejection = `Role "${roleName}" assignment must be an object`;
@@ -5279,7 +5675,6 @@ export const updateModelRoles =
         modelRoles: savedRoles,
       });
     } catch (error: any) {
-      logger.error('Error updating model roles', { error });
       next(error);
     }
   };

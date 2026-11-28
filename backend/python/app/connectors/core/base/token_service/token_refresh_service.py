@@ -4,13 +4,15 @@ Handles automatic token refresh for OAuth connectors
 """
 
 import asyncio
+import hashlib
 import logging
+import time
 import weakref
 from contextlib import AbstractContextManager
 from datetime import datetime, timedelta
 from typing import Optional
 
-from app.core.org_context import spawn_detached
+from app.core.org_context import spawn_detached, spawn_in_request
 from app.core.org_jobs import for_each_org
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
@@ -25,8 +27,11 @@ from app.connectors.core.base.token_service.oauth_service import (
     RefreshConfigError,
     RefreshTokenInvalidError,
 )
+from app.connectors.services.kafka_service import KafkaService
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.interface.producer import IMessagingProducer
+from app.services.notification.notification_service import NotificationService
+from app.services.notification.types import NotificationOrigin, NotificationSeverity, NotificationType
 from app.utils.credential_refresh_log import (
     EVENT_APP_DISABLED_EVENT_FAILED,
     EVENT_DEAUTHENTICATE_FAILED,
@@ -48,6 +53,7 @@ from app.utils.logging_fields import log_event
 from app.utils.oauth_config import (
     carry_oauth_url_settings,
     get_oauth_config,
+    oauth_app_owner,
     pin_oauth_urls,
 )
 from app.utils.request_context import (
@@ -59,6 +65,8 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Consecutive rejections before deactivating; guards against provider blips
 MAX_REFRESH_TOKEN_INVALID_FAILURES = 3
+# Long enough for the run that turned a connector off to finish and stop asking its owner to reconnect.
+SWITCHED_OFF_NOTICE_WINDOW_SECONDS = 15 * 60
 
 CREDENTIAL_SAVE_ATTEMPTS = 3
 CREDENTIAL_SAVE_RETRY_DELAY_SECONDS = 0.5
@@ -116,6 +124,13 @@ class TokenRefreshService:
         self._refresh_lock = asyncio.Lock()  # Prevent concurrent refresh operations
         self._processing_connectors: set = set()  # Track connectors currently being processed to prevent recursion
         self._invalid_refresh_failures: dict[str, int] = {}  # Consecutive refresh-token rejections per connector
+        # Consecutive runs whose token the source rejected and nothing can refresh, with that token's digest:
+        # a new sign-in starts the count again.
+        self._rejected_access_tokens: dict[str, tuple[str, int]] = {}
+        # When each connector was turned off and its owner told. The run that ran into it sends no
+        # reconnect notice of its own, so the owner gets one notice, not two.
+        self._told_switched_off: dict[str, float] = {}
+        self._switch_off_tasks: set[asyncio.Task] = set()  # held so a running one is not collected
         # Per-connector lock: Atlassian-style rotating RTs are single-use.
         # refresh_now / delayed / immediate must not POST the same RT twice.
         self._connector_refresh_locks: dict[str, asyncio.Lock] = {}
@@ -562,6 +577,7 @@ class TokenRefreshService:
         """
         oauth_config_id = auth_config.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
         connector_scope = auth_config.get(ConnectorRequestKeys.CONNECTOR_SCOPE, "team")
+        shared_oauth_config: dict[str, any] = {}
 
         # Try to use shared OAuth config first
         if oauth_config_id:
@@ -582,7 +598,7 @@ class TokenRefreshService:
                     oauth_flow_config[AuthFieldKeys.CLIENT_ID] = client_id
                     oauth_flow_config[AuthFieldKeys.CLIENT_SECRET] = client_secret
                     self.logger.debug("Using the shared OAuth config")
-                    return oauth_flow_config
+                    return self._with_address_rule(oauth_flow_config, connector_scope, shared_oauth_config)
 
                 self.logger.warning("OAuth config found but missing credentials, falling back to auth config")
 
@@ -606,6 +622,17 @@ class TokenRefreshService:
         oauth_flow_config[AuthFieldKeys.CLIENT_ID] = client_id
         oauth_flow_config[AuthFieldKeys.CLIENT_SECRET] = client_secret
 
+        return self._with_address_rule(oauth_flow_config, connector_scope, shared_oauth_config)
+
+    @staticmethod
+    def _with_address_rule(
+        oauth_flow_config: dict[str, any], connector_scope: str, shared_oauth_config: dict[str, any]
+    ) -> dict[str, any]:
+        """A person's own connector may carry addresses they typed, so its refresh reaches public
+        addresses only, unless it is linked to an org app (one an administrator set up)."""
+        linked_to_org_app = bool(shared_oauth_config) and oauth_app_owner(shared_oauth_config) is None
+        if str(connector_scope or "").lower() == "personal" and not linked_to_org_app:
+            oauth_flow_config["publicOnly"] = True
         return oauth_flow_config
 
     @staticmethod
@@ -704,24 +731,60 @@ class TokenRefreshService:
         self._invalid_refresh_failures.pop(connector_id, None)
         await self._mark_connector_unauthenticated(connector_id)
 
-    async def _mark_connector_unauthenticated(self, connector_id: str) -> None:
-        """Flip the connector to unauthenticated so refresh scans stop until re-auth."""
+    async def note_access_token_rejected(self, connector_id: str, access_token: str, cause: Exception) -> bool:
+        """A sync's access token was rejected and has no refresh token. True when this rejection, the last of
+        MAX_REFRESH_TOKEN_INVALID_FAILURES in a row, switched the connector off and its owner was told."""
+        digest = hashlib.sha256(access_token.encode()).hexdigest()
+        rejected, count = self._rejected_access_tokens.get(connector_id, (digest, 0))
+        strikes = count + 1 if rejected == digest else 1
+        log_strike(self.logger, strike=strikes, max_strikes=MAX_REFRESH_TOKEN_INVALID_FAILURES, cause=cause)
+        if strikes < MAX_REFRESH_TOKEN_INVALID_FAILURES:
+            self._rejected_access_tokens[connector_id] = (digest, strikes)
+            return False
+        self._rejected_access_tokens.pop(connector_id, None)
+        return await self._mark_connector_unauthenticated(connector_id, reason="access_token_rejected")
+
+    def note_access_token_accepted(self, connector_id: str) -> None:
+        self._rejected_access_tokens.pop(connector_id, None)
+        self._told_switched_off.pop(connector_id, None)
+
+    def told_switched_off_recently(self, connector_id: str) -> bool:
+        """Whether this connector was turned off, and its owner told, in the last few minutes."""
+        told_at = self._told_switched_off.get(connector_id)
+        return told_at is not None and time.monotonic() - told_at < SWITCHED_OFF_NOTICE_WINDOW_SECONDS
+
+    async def _mark_connector_unauthenticated(
+        self, connector_id: str, *, reason: str = "refresh_token_invalid"
+    ) -> bool:
+        """Flip the connector to unauthenticated so refresh scans stop until re-auth.
+        Returns whether its owner was told."""
         # Cancelling our own task here would abort the state update below.
         existing_task = self._refresh_tasks.get(connector_id)
         if existing_task is not None and existing_task is not asyncio.current_task():
             self._cancel_existing_refresh_task(connector_id)
         self._scheduled_at.pop(connector_id, None)
 
+        # appDisabled stops a sync of this connector, and this may be running inside that sync; the stop can
+        # land while the event is still being published. Cancelling it must not cut off the event, the state
+        # write or the owner's notice: nothing tells them once it is off.
+        switch_off = spawn_in_request(
+            self._switch_off(connector_id, reason=reason), name=f"switch-off-{connector_id}"
+        )
+        self._switch_off_tasks.add(switch_off)
+        switch_off.add_done_callback(self._switch_off_tasks.discard)
+        return await asyncio.shield(switch_off)
+
+    async def _switch_off(self, connector_id: str, *, reason: str) -> bool:
         updates = {
             ConnectorStateKeys.IS_AUTHENTICATED: False,
             ConnectorStateKeys.UPDATED_AT_TIMESTAMP: get_epoch_timestamp_in_ms(),
         }
-
         # The appDisabled consumer owns isActive and sync-stop; write directly if it can't be reached
         event_sent = await self._send_app_disabled_event(connector_id)
         if not event_sent:
             updates[ConnectorStateKeys.IS_ACTIVE] = False
 
+        updated = False
         try:
             updated = await self.graph_provider.update_node(
                 connector_id,
@@ -730,13 +793,55 @@ class TokenRefreshService:
             )
             if updated:
                 log_deauthenticated(
-                    self.logger, reason="refresh_token_invalid", strikes=MAX_REFRESH_TOKEN_INVALID_FAILURES,
+                    self.logger, reason=reason, strikes=MAX_REFRESH_TOKEN_INVALID_FAILURES,
                     app_disabled_event="sent" if event_sent else "direct_write",
                 )
             else:
                 log_event(self.logger, EVENT_DEAUTHENTICATE_FAILED, level=logging.ERROR, outcome="failure", reason="not_updated")
         except Exception as e:
             log_refresh_failure(self.logger, EVENT_DEAUTHENTICATE_FAILED, e, level=logging.ERROR)
+        told = bool(event_sent or updated) and await self._notify_switched_off(connector_id)
+        if told:
+            self._told_switched_off[connector_id] = time.monotonic()
+        return told
+
+    async def _notify_switched_off(self, connector_id: str) -> bool:
+        """Tell the creator and whoever last synced it; from here on no sync runs to tell them."""
+        producer = self._messaging_producer
+        if producer is None:
+            return False
+        try:
+            app_doc = await self.graph_provider.get_document(connector_id, CollectionNames.APPS.value) or {}
+            org_id = org_of(app_doc)
+            recipients = list(dict.fromkeys(
+                user for user in (app_doc.get(ConnectorStateKeys.CREATED_BY), app_doc.get("lastSyncedBy")) if user
+            ))
+            if not org_id or not recipients:
+                return False
+            connector_type = str(app_doc.get("type") or "")
+            name = app_doc.get("name") or connector_type or "Connector"
+            service = NotificationService(
+                KafkaService(self.configuration_service, self.logger, producer), self.logger
+            )
+            return await service.publish_notification(
+                org_id=org_id,
+                origin=NotificationOrigin.CONNECTOR,
+                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=f"{name}: sync turned off, sign-in no longer accepted",
+                message=(
+                    f"{connector_type or 'The source'} kept rejecting this connector's sign-in. It may have been "
+                    "revoked or expired, or the OAuth app may have changed. Syncing is off until someone signs in "
+                    "again from the connector's settings and turns sync back on."
+                ),
+                redirect_link=f"workspace/connectors/{app_doc.get('scope')}/?connectorType={connector_type}",
+                recipient_user_ids=recipients,
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Could not notify that connector %s was turned off: %s", connector_id, type(e).__name__
+            )
+            return False
 
     async def _send_app_disabled_event(self, connector_id: str) -> bool:
         """Publish the platform appDisabled event for this connector instance."""

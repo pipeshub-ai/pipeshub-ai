@@ -31,8 +31,8 @@ ARGS = {
     "create_kb_permissions": {"kb_id": "kb1", "requester_id": "u1", "user_ids": ["u2"], "team_ids": [], "role": "READER"},
     "update_kb_permission": {"kb_id": "kb1", "requester_id": "u1", "user_ids": ["u2"], "team_ids": [], "new_role": "READER"},
     "remove_kb_permission": {"kb_id": "kb1", "requester_id": "u1", "user_ids": ["u2"], "team_ids": []},
-    "upload_records_to_kb": {"kb_id": "kb1", "user_id": "u1", "org_id": "org1", "files": []},
-    "upload_records_to_folder": {"kb_id": "kb1", "folder_id": "f1", "user_id": "u1", "org_id": "org1", "files": []},
+    "upload_records_to_kb": {"kb_id": "kb1", "user_id": "u1", "org_id": "org1", "files": [], "granted_documents": {}},
+    "upload_records_to_folder": {"kb_id": "kb1", "folder_id": "f1", "user_id": "u1", "org_id": "org1", "files": [], "granted_documents": {}},
     "validate_folder_for_upload": {"kb_id": "kb1", "folder_id": "f1", "user_id": "u1", "org_id": "org1"},
     "move_record": {"kb_id": "kb1", "record_id": "r1", "new_parent_id": None, "user_id": "u1"},
 }
@@ -238,6 +238,117 @@ async def test_finish_delete_never_raises(service) -> None:
     assert (await service.finish_delete("org1", "kb1"))["success"] is False
 
 
+# ---- a cascade the store could not confirm ---------------------------------------------------------------------
+
+NOT_FOUND = {"success": False, "error": "Connector instance kb1 not found"}  # a rival delete finished the KB first
+LOST_REPLY = {"success": False, "error": "Failed to delete connector instance: reply lost"}  # applied, the answer lost
+UNCONFIRMED = pytest.mark.parametrize("answer", [NOT_FOUND, LOST_REPLY], ids=["rival_finished", "lost_reply"])
+
+
+def unconfirmed(service: KnowledgeBaseService, answer: dict, *, status: str | None = None, gone: bool = True,
+                reread_error: Exception | None = None) -> None:
+    """The cascade answers *answer*; the KB then reads as gone (or still there, or the read fails)."""
+    order = owner(service, status=status)
+    g = service.graph_provider
+    kb = g.get_document.return_value
+
+    async def get_document(*_a: object, raise_on_error: bool = False, **_kw: object) -> dict | None:
+        if "cascade" not in order:
+            return kb
+        if reread_error is not None:
+            if raise_on_error:
+                raise reread_error
+            return None  # like the providers: a read error they swallow reads as "not found"
+        return None if gone else kb
+
+    async def cascade(**_kw: object) -> dict:
+        order.append("cascade")
+        return answer
+
+    g.get_document = AsyncMock(side_effect=get_document)
+    g.delete_connector_instance = AsyncMock(side_effect=cascade)
+
+
+def warnings(service: KnowledgeBaseService) -> list[str]:
+    return [c.args[0] for c in service.logger.warning.call_args_list]
+
+
+def published(service: KnowledgeBaseService) -> list[tuple[str, dict]]:
+    return [(c.args[1]["eventType"], c.args[1]["payload"]) for c in service.kafka_service.publish_event.await_args_list]
+
+
+# What a confirmed delete of a membership-tagged KB publishes, with the groups left to the entity store.
+GONE_KB_EVENTS = [
+    ("deleteConnectorEmbeddings", {"orgId": "org1", "connectorId": "kb1", "connectorName": "KB", "recordGroupIds": []}),
+    ("deleteConnectorEntities", {"orgId": "org1", "connectorId": "kb1", "connectorName": "KB", "recordGroupIds": None}),
+]
+
+
+@UNCONFIRMED
+@pytest.mark.asyncio
+async def test_an_owner_delete_of_a_kb_that_is_gone_answers_200(service, monkeypatch, answer) -> None:
+    """The vector cleanup goes out without the lost answer, the lane is freed, the storage release starts once."""
+    unconfirmed(service, answer)
+    free_lane = AsyncMock()
+    monkeypatch.setattr(kb_module, "free_lane_of_deleted_connector", free_lane)
+    storage = MagicMock()
+    monkeypatch.setattr(service, "_start_storage_cleanup", storage)
+
+    result = await service.delete_knowledge_base("kb1", "u1", "org1")
+
+    assert result == {"success": True, "reason": "Knowledge base and all contents deleted successfully", "code": 200}
+    service.graph_provider.get_document.assert_awaited_with("kb1", "apps", raise_on_error=True)
+    assert published(service) == GONE_KB_EVENTS
+    free_lane.assert_awaited_once_with(service.logger, "kb1")
+    storage.assert_called_once_with("org1", "kb1")
+    assert "Knowledge base %s is already deleted from the graph" in warnings(service)
+    assert not [w for w in warnings(service) if "Failed to delete knowledge base" in w]
+
+
+@UNCONFIRMED
+@pytest.mark.asyncio
+async def test_the_finisher_of_a_kb_that_is_gone_reports_it_deleted(service, monkeypatch, answer) -> None:
+    unconfirmed(service, answer, status=APP_STATUS_DELETING)
+    free_lane = AsyncMock()
+    monkeypatch.setattr(kb_module, "free_lane_of_deleted_connector", free_lane)
+    assert (await service.finish_delete("org1", "kb1"))["success"] is True
+    assert published(service) == GONE_KB_EVENTS
+    free_lane.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_gone_kb_whose_cleanup_publish_fails_still_answers_200(service, monkeypatch) -> None:
+    unconfirmed(service, LOST_REPLY)
+    monkeypatch.setattr(kb_module, "free_lane_of_deleted_connector", AsyncMock())
+    monkeypatch.setattr(service, "_start_storage_cleanup", MagicMock())
+    monkeypatch.setattr(service, "_publish_with_retry", AsyncMock(side_effect=RuntimeError("broker down")))
+    failures = MagicMock()
+    monkeypatch.setattr(kb_module, "log_cleanup_publish_failure", failures)
+
+    result = await service.delete_knowledge_base("kb1", "u1", "org1")
+
+    assert (result["success"], result["code"]) == (True, 200)
+    assert [c.args[1]["eventType"] for c in failures.call_args_list] == [e for e, _ in GONE_KB_EVENTS]
+
+
+@pytest.mark.asyncio
+async def test_a_kb_still_there_after_a_failed_cascade_is_still_500(service, monkeypatch) -> None:
+    unconfirmed(service, LOST_REPLY, gone=False)
+    free_lane = AsyncMock()
+    monkeypatch.setattr(kb_module, "free_lane_of_deleted_connector", free_lane)
+    result = await service.delete_knowledge_base("kb1", "u1", "org1")
+    assert (result["success"], result["code"]) == (False, 500)
+    assert service.graph_provider.update_knowledge_base.await_count == 1, "the KB stays DELETING"
+    service.kafka_service.publish_event.assert_not_awaited()
+    free_lane.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_reread_that_fails_is_never_taken_for_gone(service) -> None:
+    unconfirmed(service, LOST_REPLY, reread_error=ConnectionError("store down"))
+    result = await service.delete_knowledge_base("kb1", "u1", "org1")
+    assert (result["success"], result["code"]) == (False, 500)
+    service.kafka_service.publish_event.assert_not_awaited()
 
 
 def test_the_refusal_wording_is_the_one_the_gateway_recognises() -> None:

@@ -4,7 +4,13 @@ Sibling of `google_drive.py` — see that module's docstring for why Google Work
 MCP endpoint per product instead of a single combined one.
 """
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -44,6 +50,12 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             ),
         ),
         tags=["email", "productivity"],
+        category=MCPCategory.COMMUNICATION,
+        capabilities=[
+            "Search email",
+            "Draft a reply",
+            "Label and organize mail",
+        ],
     )
 )
 class GmailMCPServer:

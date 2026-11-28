@@ -7,7 +7,8 @@
                                                       asked for it (kg.analyze_requests; db/lib/kg_stats.py); needs PG_JOBS_URL
 
     python -m db.maintain fold [--watch [SECONDS]]    fold the point-count and term-frequency deltas of every org (collection_stats, lexical_df), one transaction
-                                                      per org; needs PG_JOBS_URL. --watch repeats (default 30 s)
+                                                      per org, then fill the term bounds an upgrade left missing (lexical_bound_pending, up to 200
+                                                      per transaction and 20,000 per org per pass); needs PG_JOBS_URL. --watch repeats (default 30 s)
     python -m db.maintain recount [<org>]             recompute the point counts and term frequencies from the live rows (every org, or one); needs PG_JOBS_URL
     python -m db.maintain group-gc                    delete the membership of groups that have no point (every org); needs PG_JOBS_URL
     python -m db.maintain build-indexes               the vector indexes of every points leaf for every embedding space, sized to the leaf
@@ -153,16 +154,20 @@ def _watch(url: str, interval: float) -> None:
             time.sleep(interval)
 
 
-def _fold_pass() -> tuple[dict[str, int], dict[str, str]]:
+def _fold_pass() -> tuple[dict[str, int], dict[str, str], tuple[dict[str, int], dict[str, str], int]]:
+    """Fold the deltas, then fill the term bounds that are missing (after an upgrade, or a delta without one)."""
     with psycopg.connect(_jobs_url(), autocommit=True) as jobs:
-        return fold.run(jobs)
+        return (*fold.run(jobs), fold.fill_bounds(jobs))
 
 
-def _fold_log(folded: dict[str, int], failed: dict[str, str]) -> int:
+def _fold_log(folded: dict[str, int], failed: dict[str, str], bounds: tuple[dict[str, int], dict[str, str], int]) -> int:
     """Log the result of a fold pass; the exit code (6 when any org failed)."""
     if folded or failed:
         log(f"point counts folded for {len(folded)} org(s), {sum(folded.values())} deltas" + _failed_line(failed))
-    return EXIT_PARTIAL if failed else 0
+    filled, bad, pending = bounds
+    if filled or bad:
+        log(f"term bounds filled: {sum(filled.values())} in {len(filled)} org(s), {pending} collection(s) still pending" + _failed_line(bad))
+    return EXIT_PARTIAL if failed or bad else 0
 
 
 def _fold_watch(interval: float) -> None:
@@ -250,13 +255,18 @@ def main(argv: list[str]) -> int:
         if cmd == "recount" and len(argv) in (1, 2):
             if len(argv) == 2 and not placement.is_org_id(argv[1]):
                 raise RunnerError(EXIT_CONFIG, USAGE)
-            busy = 0
+            busy = failed = 0
             with psycopg.connect(_jobs_url(), autocommit=True) as jobs:
                 for org in argv[1:] or fold.orgs_to_recount(jobs):
-                    done = fold.recount_org(jobs, org)
+                    try:
+                        done = fold.recount_org(jobs, org)
+                    except psycopg.Error as exc:       # a held org (25006) or a database error: reported, the next run retries it
+                        failed += 1
+                        log(f"org {org}: failed: {_first_line(exc)}")
+                        continue
                     busy += done is None
                     log(f"org {org}: " + ("busy (a fold or recount holds it; run again)" if done is None else ", ".join(f"collection {c} space {s}: {n}" for c, s, n in done) or "no points"))
-            return EXIT_PARTIAL if busy else 0
+            return EXIT_PARTIAL if busy or failed else 0
         if cmd == "fold" and (len(argv) == 1 or (len(argv) in (2, 3) and argv[1] == "--watch")):
             if len(argv) == 1:
                 return _fold_log(*_fold_pass())

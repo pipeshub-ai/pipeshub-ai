@@ -12,6 +12,10 @@ import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
 import { RecordRelationService } from '../services/kb.relation.service';
 import { IRecordDocument } from '../types/record';
 import { IFileRecordDocument } from '../types/file_record';
+import {
+  KbUploadGrantScope,
+  signKbUploadGrant,
+} from '../../../libs/utils/kbUploadGrant';
 import { ConnectorServiceCommand } from '../../../libs/commands/connector_service/connector.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import {
@@ -25,6 +29,12 @@ import {
 } from '../../../libs/utils/file-extension.util';
 import { mapWithConcurrency } from '../../../libs/utils/concurrency.util';
 import { handleBackendError } from '../../../libs/errors/backend-error';
+import { withCause } from '../../../libs/errors/base.error';
+import {
+  classifyError,
+  ErrorClass,
+  levelFor,
+} from '../../../libs/utils/error-class';
 
 const logger = Logger.getInstance({
   service: 'knowledge_base.utils',
@@ -120,28 +130,27 @@ export const createPlaceholderDocument = async (
   // the user route can stay locked down against abuse.
   storageToken: string,
 ): Promise<PlaceholderResult> => {
-  const formData = new FormData();
-
-  // Add the file with proper metadata
-  formData.append('file', file.buffer, {
-    filename: file.originalname,
-    contentType: file.mimetype,
-  });
-  const storageUrl = await storedServiceEndpoint(
-    keyValueStoreService,
-    'storage',
-    defaultConfig.endpoint,
-  );
-
-  // Add other required fields
-  formData.append(
-    'documentPath',
-    `PipesHub/KnowledgeBase/private/${req.user?.userId}`,
-  );
-  formData.append('isVersionedFile', isVersionedFile.toString());
-  formData.append('documentName', getFilenameWithoutExtension(documentName));
-
+  // Read inside the try, so a failed endpoint read is logged like a failed upload.
+  let storageUrl: string;
+  let created: { _id?: string; documentName?: string } | undefined;
   try {
+    storageUrl = await storedServiceEndpoint(
+      keyValueStoreService,
+      'storage',
+      defaultConfig.endpoint,
+    );
+    const formData = new FormData();
+    formData.append('file', file.buffer, {
+      filename: file.originalname,
+      contentType: file.mimetype,
+    });
+    formData.append(
+      'documentPath',
+      `PipesHub/KnowledgeBase/private/${req.user?.userId}`,
+    );
+    formData.append('isVersionedFile', isVersionedFile.toString());
+    formData.append('documentName', getFilenameWithoutExtension(documentName));
+
     const response = await axiosInstance.post(
       `${storageUrl}/api/v1/document/internal/upload`,
       formData,
@@ -154,19 +163,7 @@ export const createPlaceholderDocument = async (
     );
 
     // Direct upload successful, no redirect needed
-    const created = response.data as
-      | { _id?: string; documentName?: string }
-      | undefined;
-    if (!created?._id) {
-      // Nothing to attach a record to, so the file is not saved as far as the
-      // person uploading is concerned.
-      logger.error('Storage saved the file but returned no document id');
-      throw new Error(STORAGE_WRITE_FAILED_MESSAGE);
-    }
-    return {
-      documentId: created._id,
-      documentName: created.documentName ?? documentName,
-    };
+    created = response.data as typeof created;
   } catch (error: unknown) {
     // Storage answers a large file with a redirect to a signed URL, which axios
     // raises as an error.
@@ -203,14 +200,6 @@ export const createPlaceholderDocument = async (
         documentName = rawDocName;
       }
 
-      if (process.env.NODE_ENV == 'development') {
-        logger.info('Placeholder created, upload required', {
-          redirectUrl,
-          documentId,
-          documentName,
-        });
-      }
-
       // Return placeholder info with a LAZY upload starter. The caller invokes
       // `upload()` under a concurrency limit, so the byte transfer to the signed
       // URL only begins when a slot is free — not eagerly here (which would let
@@ -226,9 +215,8 @@ export const createPlaceholderDocument = async (
               file.mimetype,
               redirectUrl,
               documentId,
-              documentName,
             );
-          } catch {
+          } catch (uploadError: unknown) {
             // Storage removes the placeholder only if it confirms the file never arrived.
             await axiosInstance
               .post(
@@ -248,18 +236,21 @@ export const createPlaceholderDocument = async (
                   },
                 );
               });
-            // uploadFileToSignedUrl logged the storage vendor's own response.
-            throw new Error(STORAGE_WRITE_FAILED_MESSAGE);
+            // uploadFileToSignedUrl logged the refusal's status.
+            throw withCause(
+              new Error(STORAGE_WRITE_FAILED_MESSAGE),
+              uploadError,
+            );
           }
         },
       };
     } else {
-      logger.error('Error creating placeholder document', {
-        error: axios.isAxiosError(error)
-          ? ((error.response?.data as unknown) ?? error.message)
-          : error instanceof Error
-            ? error.message
-            : String(error),
+      const errorClass = classifyError(error);
+      logger[levelFor(errorClass)]('Error creating placeholder document', {
+        status: axios.isAxiosError(error) ? error.response?.status : undefined,
+        error_class: errorClass,
+        // Our own failure (the endpoint read, a bug) needs its stack.
+        ...(errorClass === 'internal' ? { error } : {}),
       });
       // Storage's own error body is written for the uploader; a refused
       // connection or a proxy's page would put our hosts on their screen.
@@ -273,9 +264,19 @@ export const createPlaceholderDocument = async (
       if (typeof storageMessage === 'string' && storageMessage !== '') {
         throw error;
       }
-      throw new Error(STORAGE_WRITE_FAILED_MESSAGE);
+      throw withCause(new Error(STORAGE_WRITE_FAILED_MESSAGE), error);
     }
   }
+  if (!created?._id) {
+    // Nothing to attach a record to, so the file is not saved as far as the
+    // person uploading is concerned.
+    logger.error('Storage saved the file but returned no document id');
+    throw new Error(STORAGE_WRITE_FAILED_MESSAGE);
+  }
+  return {
+    documentId: created._id,
+    documentName: created.documentName ?? documentName,
+  };
 };
 
 /**
@@ -288,8 +289,8 @@ export const uploadFileToSignedUrl = async (
   _mimetype: string,
   redirectUrl: string,
   documentId: string,
-  documentName: string,
 ): Promise<void> => {
+  let status: number | undefined;
   try {
     const response = await fetch(redirectUrl, {
       method: 'PUT',
@@ -298,28 +299,58 @@ export const uploadFileToSignedUrl = async (
         'Content-Length': buffer.length.toString(),
       },
     });
-
-    if (response.ok) {
-      logger.info('File uploaded to storage successfully', {
-        documentId,
-        documentName,
-        status: response.status,
+    status = response.status;
+    if (!response.ok) {
+      // The vendor's body quotes the signed request (bucket path, file name): it is never read.
+      await response.body?.cancel();
+      throw withCause(new Error('Upload to the signed URL was refused'), {
+        status,
       });
-    } else {
-      const errorBody = await response.text();
-      throw new Error(
-        `Upload failed with status ${response.status}: ${errorBody}`,
-      );
     }
-  } catch (error: any) {
-    logger.error('File upload to signed URL failed', {
+    logger.debug('File uploaded to storage successfully', {
       documentId,
-      documentName,
-      error: error.message,
-      status: error.status,
+      status,
+    });
+  } catch (error: unknown) {
+    logger.warn('File upload to signed URL failed', {
+      status,
+      error_class: classifyError(error),
     });
     throw error;
   }
+};
+
+/** Why a batch's indexing step failed: sets the batch line's level. */
+export interface UploadBatchFailure {
+  status?: number;
+  error_class: ErrorClass;
+  error?: unknown;
+}
+
+/**
+ * Writes an upload batch's one `kb.upload.batch.end` line from the totals of
+ * its `done` summary: INFO, or the indexing failure's level.
+ */
+export const logUploadBatchEnd = (
+  logger: Logger,
+  totals: { files: number; succeeded: number; failed: number },
+  startedAt: number,
+  failure?: UploadBatchFailure,
+): void => {
+  logger[failure ? levelFor(failure.error_class) : 'info'](
+    'kb.upload.batch.end',
+    {
+      outcome:
+        totals.failed === 0
+          ? 'success'
+          : totals.succeeded > 0
+            ? 'partial'
+            : 'failure',
+      ...totals,
+      duration_ms: Date.now() - startedAt,
+      ...failure,
+    },
+  );
 };
 
 /** Writes a single per-file outcome to the upload SSE response stream. */
@@ -331,8 +362,9 @@ export type UploadStreamPublish = (
 /**
  * Uploads the accepted files to storage, creates their records via the indexing
  * service, and STREAMS a terminal per-file event for each (success or failure)
- * through `publish`. Returns the batch's succeeded/failed counts so the caller
- * can emit a final `done` summary. Runs inline within the streaming upload
+ * through `publish`. Returns the batch's succeeded/failed counts, and why
+ * indexing failed when it did, so the caller can emit a final `done` summary
+ * and the batch line. Runs inline within the streaming upload
  * request (no longer fire-and-forget).
  */
 export const processUploadsInBackground = async (
@@ -344,9 +376,12 @@ export const processUploadsInBackground = async (
   headers: Record<string, string>,
   logger: Logger,
   publish: UploadStreamPublish,
-): Promise<{ succeeded: number; failed: number }> => {
-  const uploadStartTime = Date.now();
-
+  grantScope: KbUploadGrantScope,
+): Promise<{
+  succeeded: number;
+  failed: number;
+  failure?: UploadBatchFailure;
+}> => {
   // Track successful and failed files separately
   const successfulResults: PlaceholderResultWithMetadata[] = [];
   const failedResults: Array<{
@@ -392,23 +427,18 @@ export const processUploadsInBackground = async (
   // Batch outcome counts, returned to the caller for the final `done` summary.
   let batchSucceeded = 0;
   let batchFailed = 0;
+  let failure: UploadBatchFailure | undefined;
 
   try {
     // STEP 1: Upload files to storage with BOUNDED CONCURRENCY. Previously this
     // ran strictly sequentially, so a single large file (e.g. 100 MB) stalled
     // every smaller file behind it. Now up to UPLOAD_STORAGE_CONCURRENCY uploads
     // run at once; the big file occupies one slot while the rest keep flowing.
-    logger.info('Starting bounded-concurrency file uploads', {
-      totalFiles: placeholderResults.length,
-      uploadsRequired: placeholderResults.filter((r) => r.placeholderResult.upload).length,
-      concurrency: UPLOAD_STORAGE_CONCURRENCY,
-    });
-
     await mapWithConcurrency(
       placeholderResults,
       UPLOAD_STORAGE_CONCURRENCY,
       async (result) => {
-        const { placeholderResult, metadata } = result;
+        const { placeholderResult } = result;
 
         if (placeholderResult.upload) {
           try {
@@ -416,20 +446,14 @@ export const processUploadsInBackground = async (
             successfulResults.push(result);
             logger.debug('Background upload completed', {
               documentId: placeholderResult.documentId,
-              documentName: placeholderResult.documentName,
-              fileName: metadata.fileName,
             });
           } catch (uploadError: any) {
             failedResults.push({
               result,
               error: uploadError.message || 'Upload failed',
             });
-            logger.error('Background upload failed', {
-              documentId: placeholderResult.documentId,
-              documentName: placeholderResult.documentName,
-              fileName: metadata.fileName,
-              error: uploadError.message,
-              stack: uploadError.stack,
+            logger.debug('Background upload failed', {
+              error_class: classifyError(uploadError),
             });
             // Continue with other files even if one fails.
           }
@@ -440,14 +464,6 @@ export const processUploadsInBackground = async (
       },
     );
 
-    const uploadDuration = Date.now() - uploadStartTime;
-    logger.info('All background uploads completed', {
-      totalFiles: placeholderResults.length,
-      successfulUploads: successfulResults.length,
-      failedUploads: failedResults.length,
-      durationMs: uploadDuration,
-    });
-
     // Per-file storage-upload failures → stream as `file:failed` (stage upload).
     for (const fr of failedResults) {
       publishFailure(fr.result.metadata, fr.error, 'upload');
@@ -455,10 +471,6 @@ export const processUploadsInBackground = async (
 
     // Nothing to index if every upload failed.
     if (successfulResults.length === 0) {
-      logger.warn('No successful uploads to process', {
-        totalFiles: placeholderResults.length,
-        failedFiles: failedResults.length,
-      });
       batchFailed = failedResults.length;
       return { succeeded: batchSucceeded, failed: batchFailed };
     }
@@ -509,10 +521,21 @@ export const processUploadsInBackground = async (
     });
 
     // STEP 5: Call Python service with only successful files
-    logger.info('Calling Python service with successful files', {
-      successfulRecords: processedFiles.length,
-      failedRecords: failedResults.length,
-      pythonServiceUrl,
+    // The connector never accepts a storage document id from a request body.
+    // It uses only the ids in this grant: the documents this request just
+    // created, bound to the org, user, KB and folder.
+    const grant = signKbUploadGrant({
+      secret: grantScope.secret,
+      orgId,
+      userId: grantScope.userId,
+      kbId,
+      folderId: grantScope.folderId,
+      documents: processedFiles.map((pf) => ({
+        recordKey: pf.record._key,
+        documentId: pf.record.externalRecordId,
+        mimeType: pf.record.mimeType ?? '',
+        extension: pf.fileRecord.extension ?? '',
+      })),
     });
 
     const connectorCommandOptions = {
@@ -524,13 +547,12 @@ export const processUploadsInBackground = async (
       },
       body: {
         files: processedFiles,
+        grant,
       },
     };
 
     const connectorCommand = new ConnectorServiceCommand(connectorCommandOptions);
     const response = await connectorCommand.execute();
-
-    const totalDuration = Date.now() - uploadStartTime;
 
     if (response.statusCode === 200 || response.statusCode === 201) {
       // Python may partially fail: a 200 can still carry `failedFiles` (the
@@ -583,17 +605,6 @@ export const processUploadsInBackground = async (
           !failedPathSet.has(pf.filePath) && !skippedPathSet.has(pf.filePath),
       );
 
-      logger.info('Python service called successfully after uploads', {
-        requestedRecords: processedFiles.length,
-        indexedRecords: succeededFiles.length,
-        serverFailedRecords: pythonFailedFiles.length,
-        skippedRecords: pythonSkippedFiles.length,
-        uploadFailedRecords: failedResults.length,
-        statusCode: response.statusCode,
-        totalDurationMs: totalDuration,
-        uploadDurationMs: uploadDuration,
-      });
-
       // Stream a terminal per-file event for every file in this batch: success
       // for the records that were created, failure for the ones the server
       // could not create, and a duplicate-name failure for the skipped ones.
@@ -634,13 +645,10 @@ export const processUploadsInBackground = async (
         pythonFailedFiles.length +
         pythonSkippedFiles.length;
     } else {
-      logger.error('Python service call failed after uploads', {
-        statusCode: response.statusCode,
-        message: response.msg,
-        successfulRecords: processedFiles.length,
-        failedRecords: failedResults.length,
-        totalDurationMs: totalDuration,
-      });
+      failure = {
+        status: response.statusCode,
+        error_class: classifyError(response.statusCode),
+      };
 
       // Whole indexing request failed → every uploaded record failed (index).
       const indexFailure = handleBackendError(
@@ -662,14 +670,7 @@ export const processUploadsInBackground = async (
       batchFailed = failedResults.length + processedFiles.length;
     }
   } catch (error: any) {
-    const totalDuration = Date.now() - uploadStartTime;
-    logger.error('Background processing failed', {
-      error: error.message,
-      stack: error.stack,
-      totalDurationMs: totalDuration,
-      successfulUploads: successfulResults.length,
-      failedUploads: failedResults.length,
-    });
+    failure = { error_class: classifyError(error), error };
 
     // Catastrophic failure after uploads succeeded → mark the uploaded-but-
     // unindexed files as failed (storage-upload failures were already streamed).
@@ -682,7 +683,9 @@ export const processUploadsInBackground = async (
     // Don't rethrow — every file's outcome has already been streamed.
   }
 
-  return { succeeded: batchSucceeded, failed: batchFailed };
+  return failure
+    ? { succeeded: batchSucceeded, failed: batchFailed, failure }
+    : { succeeded: batchSucceeded, failed: batchFailed };
 };
 
 // NOTE: getFilenameWithoutExtension now lives in libs/utils/file-extension.util.ts
@@ -750,28 +753,20 @@ export const uploadNextVersionToStorage = async (
     defaultConfig.endpoint,
   );
 
-  try {
-    const response = await axiosInstance.post(
-      `${storageUrl}/api/v1/document/internal/${documentId}/uploadNextVersion`,
-      formData,
-      {
-        headers: {
-          ...formData.getHeaders(),
-          Authorization: `Bearer ${storageToken}`,
-        },
+  // A failure propagates unlogged: its call line has the status, and the caller reports it once.
+  const response = await axiosInstance.post(
+    `${storageUrl}/api/v1/document/internal/${documentId}/uploadNextVersion`,
+    formData,
+    {
+      headers: {
+        ...formData.getHeaders(),
+        Authorization: `Bearer ${storageToken}`,
       },
-    );
+    },
+  );
 
-    return {
-      documentId: response.data?._id,
-      documentName: response.data?.documentName,
-    };
-  } catch (error: any) {
-    logger.error('Error uploading file to storage', {
-      documentId,
-      error: error.response?.message || error.message,
-      status: error.response?.status,
-    });
-    throw error;
-  }
+  return {
+    documentId: response.data?._id,
+    documentName: response.data?.documentName,
+  };
 };

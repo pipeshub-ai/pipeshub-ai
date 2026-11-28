@@ -6,8 +6,22 @@ import { TYPES } from '../../../libs/types/container.types';
 import { NotificationProducer } from '../service/notification.producer';
 import { NotificationConsumer } from '../service/notification.consumer';
 import { Logger } from '../../../libs/services/logger.service';
-import { IMessageConsumer } from '../../../libs/types/messaging.types';
-import { createNotificationMessageConsumer } from '../../../libs/services/message-broker.factory';
+import {
+  IMessageConsumer,
+  IMessageProducer,
+} from '../../../libs/types/messaging.types';
+import {
+  createMessageProducer,
+  createNotificationMessageConsumer,
+  resolveMessageBrokerConfig,
+} from '../../../libs/services/message-broker.factory';
+import { MailProducer } from '../../mail/services/mail.producer';
+import {
+  PLATFORM_ADMIN_RECIPIENTS,
+  PlatformAdminRecipientsResolver,
+  PlatformAlertHandler,
+  logIfPlatformAlertsBlocked,
+} from '../service/platform-alert.handler';
 
 const loggerConfig = {
   service: 'NotificationContainer',
@@ -36,7 +50,29 @@ export class NotificationContainer {
       .bind<IMessageConsumer>('MessageConsumer')
       .toConstantValue(messageConsumer);
 
+    // Connected on first use: only installation-wide alerts that email publish here.
+    const messageProducer: IMessageProducer = createMessageProducer(
+      resolveMessageBrokerConfig(appConfig),
+      this.logger,
+    );
+    container
+      .bind<IMessageProducer>('MessageProducer')
+      .toConstantValue(messageProducer);
+
     container.bind(NotificationService).toSelf().inSingletonScope();
+    container.bind(MailProducer).toSelf().inSingletonScope();
+    container
+      .bind<PlatformAdminRecipientsResolver>(PLATFORM_ADMIN_RECIPIENTS)
+      // Who receives installation-wide alerts is chosen in src/config.ts. Loaded on
+      // first use: config.ts re-exports the routers, and the user controller they
+      // build on loads this container, so a static import here is a cycle.
+      .toConstantValue(() =>
+        import('../../../config').then((edition) =>
+          edition.resolvePlatformAdminRecipients(),
+        ),
+      );
+    container.bind(PlatformAlertHandler).toSelf().inSingletonScope();
+    logIfPlatformAlertsBlocked(this.logger);
 
     container.bind(NotificationProducer).toSelf().inSingletonScope();
     container.bind(NotificationConsumer).toSelf().inSingletonScope();
@@ -67,6 +103,16 @@ export class NotificationContainer {
         const consumer = c.get<IMessageConsumer>('MessageConsumer');
         if (consumer.isConnected()) {
           await consumer.disconnect();
+        }
+      }
+    } catch {
+      // ignore disconnect errors during shutdown
+    }
+    try {
+      if (c.isBound('MessageProducer')) {
+        const producer = c.get<IMessageProducer>('MessageProducer');
+        if (producer.isConnected()) {
+          await producer.disconnect();
         }
       }
     } catch {

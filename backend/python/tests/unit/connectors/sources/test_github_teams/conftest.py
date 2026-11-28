@@ -11,6 +11,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.connectors.core.base.connector.failure_notices import SyncRunState
+from app.connectors.sources.github_teams.runtime import RefreshOutcome
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -40,6 +43,7 @@ def make_mock_connector() -> MagicMock:
     c.logger = MagicMock()
     c.data_source = MagicMock()
     c.display_name = "GitHub"
+    c.run_state = SyncRunState()
 
     dep = MagicMock()
     dep.org_id = "org-1"
@@ -69,7 +73,7 @@ def make_mock_connector() -> MagicMock:
     runtime.ds_call = AsyncMock()
     runtime.search_call = AsyncMock()
     runtime.refresh_token_if_needed = AsyncMock()
-    runtime.force_refresh_oauth_token = AsyncMock(return_value=True)
+    runtime.force_refresh_oauth_token = AsyncMock(return_value=RefreshOutcome.REFRESHED)
 
     # The real one caches; the mock goes straight through ds_call so a test
     # that dispatches on ``c.data_source.get_repo_by_id`` keeps working.

@@ -15,6 +15,7 @@ from app.config.constants.service import (
     config_node_constants,
 )
 from app.core import org_context
+from app.utils import error_class
 from app.utils.jwt import mint_service_token
 from app.utils.logger import create_logger
 from app.utils.user_messages import DATABASE_UNREACHABLE
@@ -46,16 +47,20 @@ def caller_node_ensurer() -> Callable[[str, str], Awaitable[bool]] | None:
 
 
 async def get_caller_user(
-    graph_provider: IGraphDBProvider, user_id: str | None, *, raise_on_error: bool = False
+    graph_provider: IGraphDBProvider, user_id: str | None, *, raise_on_error: bool = False, org_id: str | None = None
 ) -> dict[str, Any] | None:
     """The user's graph record, read once more after the caller's own record is written when it is missing.
 
     A brand-new account calls before the userAdded event that writes its graph user has been consumed. Only the user
     the request's verified token names, in that token's org, is written, from their live identity record; anyone
     else, a service or job, or an account that is deleted or disabled, stays None.
+
+    ``org_id``, when the caller knows its organisation, binds both reads to it.
     """
     # Passed only when asked for, so each call site keeps the call it made before.
     read = {"raise_on_error": True} if raise_on_error else {}
+    if org_id is not None:
+        read.update(org_id=org_id)
     user = await graph_provider.get_user_by_user_id(user_id, **read)
     if user or not user_id:
         return user
@@ -97,17 +102,21 @@ def connectors_user_node_ensurer(config_service: ConfigurationService) -> Callab
     return ensure
 
 
-async def get_user_or_503(graph_provider: IGraphDBProvider, user_id: str | None) -> dict[str, Any] | None:
-    """The user's record, or None when there is no such user.
+async def get_user_or_503(
+    graph_provider: IGraphDBProvider, user_id: str | None, *, org_id: str | None = None,
+) -> dict[str, Any] | None:
+    """The user's record, or None when there is no such user. ``org_id``, when given, binds the read to that org.
 
     Without ``raise_on_error`` the providers answer a failed read with None too,
     and a route that turns None into 404 or 401 tells a person who is there that
     they are not; a 401 also signs them out. A failed read is a 503 instead.
     """
     try:
-        return await get_caller_user(graph_provider, user_id, raise_on_error=True)
+        if org_id is None:
+            return await get_caller_user(graph_provider, user_id, raise_on_error=True)
+        return await get_caller_user(graph_provider, user_id, raise_on_error=True, org_id=org_id)
     except Exception as e:
-        raise _database_unreachable() from e
+        raise _database_unreachable(e) from e
 
 
 async def get_org_or_503(graph_provider: IGraphDBProvider, org_id: str) -> dict[str, Any] | None:
@@ -120,7 +129,7 @@ async def get_document_or_503(graph_provider: IGraphDBProvider, key: str, collec
     try:
         return await graph_provider.get_document(key, collection, raise_on_error=True)
     except Exception as e:
-        raise _database_unreachable() from e
+        raise _database_unreachable(e) from e
 
 
 async def get_record_or_503(graph_provider: IGraphDBProvider, record_id: str) -> Record | None:
@@ -128,7 +137,7 @@ async def get_record_or_503(graph_provider: IGraphDBProvider, record_id: str) ->
     try:
         return await graph_provider.get_record_by_id(record_id, raise_on_error=True)
     except Exception as e:
-        raise _database_unreachable() from e
+        raise _database_unreachable(e) from e
 
 
 async def check_record_access_or_503(
@@ -136,17 +145,56 @@ async def check_record_access_or_503(
 ) -> dict[str, Any] | None:
     """The record's access details, or None when the user may not open it; a failed read is a 503.
 
-    Like its siblings it answers every exception with 503, a bug of ours included; the cause is kept for the request log.
+    Like its siblings it answers every exception with 503, a bug of ours included; the cause is kept, text-hidden, for the
+    request log.
     """
     try:
         return await graph_provider.check_record_access_with_details(user_id, org_id, record_id)
     except Exception as e:
-        raise _database_unreachable() from e
+        raise _database_unreachable(e) from e
 
 
-def _database_unreachable() -> HTTPException:
+def raise_if_unavailable(cause: BaseException) -> None:
+    """Raise the 503 (with Retry-After) for a failure the store could not answer just now (``error_class.retry_later``), so
+    the web app asks again by itself; any other failure returns, for the caller's own 500."""
+    if error_class.retry_later(cause):
+        raise _database_unreachable(cause) from cause
+
+
+async def await_or_503[T](op: Awaitable[T]) -> T:
+    """``op``'s result; a failure the store could not answer just now is :func:`raise_if_unavailable`'s 503, any
+    other is raised as is, for the route's own 500."""
+    try:
+        return await op
+    except Exception as e:
+        raise_if_unavailable(e)
+        raise
+
+
+def _database_unreachable(cause: BaseException) -> HTTPException:
+    error_class.mark_error(cause, hide_text=True)  # a driver's text can quote what was sent (an email, a value)
     return HTTPException(
         status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
         detail=DATABASE_UNREACHABLE,
         headers={"Retry-After": "5"},
+    )
+
+
+def is_live_identity(node: dict[str, Any]) -> bool:
+    """False once an account has been removed or switched off.
+
+    Two separate signals, because they are written by different things.
+    Soft-delete leaves the user node and clears `isActive`
+    (`entity.py` `_handle_user_deleted`). Disabling is its own field, carried
+    from user management on the update event, and deliberately not stored in
+    `isActive` — a rename sets that one back to true, so a disable kept there
+    would not survive one.
+
+    Absence is read as live for both. Nodes written before these fields
+    existed carry neither, and treating those as dead would cut off agents
+    that work today.
+    """
+    return (
+        node.get("isActive", True) is not False
+        and node.get("isDisabled", False) is not True
     )

@@ -24,7 +24,6 @@ from app.agent_loop_lib.core.messages import (
 )
 from app.agent_loop_lib.core.tool_schema import ToolSchema
 from app.agent_loop_lib.transport.tool_images import (
-    RELOCATED_IMAGES_NOTE,
     has_tool_result_images,
 )
 from app.agents.agent_loop.converters import (
@@ -219,7 +218,8 @@ class TestMessageToLangchain:
         assert converted[1].content == "[ref1] (image)"
         assert isinstance(converted[-1], HumanMessage)
         assert converted[-1].content == [
-            {"type": "text", "text": f'<context_note source="agent">\n{RELOCATED_IMAGES_NOTE}'},
+            # After the run of results it came from, naming the call, as the direct transports send it.
+            {"type": "text", "text": '<context_note source="agent">\nImages returned by the tool results above (tc1):'},
             {"type": "image_url", "image_url": {"url": "https://x/y.png"}},
             {"type": "text", "text": "</context_note>"},
         ]
@@ -471,6 +471,39 @@ class TestInvalidToolCallRecovery:
         assert len(result.tool_calls) == 2
         names = {c.name for c in result.tool_calls}
         assert names == {"search", "run_code"}
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ('```json\n{"a": 1}\n```', {"a": 1}),
+            ('```\n{"a": 1}\n```', {"a": 1}),
+            ('```json {"a": 1} ```', {"a": 1}),
+            ('```json\n{"a": [1, 2,],}\n```', {"a": [1, 2]}),
+            ('{"a": "x```"}', {"a": "x```"}),
+        ],
+    )
+    def test_dur2_t2_fences_and_commas_repair_as_before(self, raw: str, expected: dict[str, object]) -> None:
+        ai_message = AIMessage(
+            content="", invalid_tool_calls=[{"name": "t", "args": raw, "id": "c", "error": "invalid json"}]
+        )
+        assert convert_assistant_message_from_langchain(ai_message).tool_calls[0].arguments == expected
+
+    @pytest.mark.parametrize(
+        "filler", [" " * 400_000, " \n" * 200_000, "\t" * 400_000], ids=["spaces", "lines", "tabs"]
+    )
+    def test_dur2_t2_a_whitespace_runaway_is_refused_in_linear_time(self, filler: str) -> None:
+        """A truncated call whose argument ran away in whitespace (the fence regex this replaced
+        retried its ``\\s*`` from every position: minutes at this size, on the event loop)."""
+        from tests.support.cpu_budget import thread_cpu
+
+        ai_message = AIMessage(
+            content="",
+            invalid_tool_calls=[{"name": "t", "args": '{"answer": "x",' + filler, "id": "c", "error": "e"}],
+        )
+        with thread_cpu() as cpu:
+            call = convert_assistant_message_from_langchain(ai_message).tool_calls[0]
+        assert cpu.seconds < 0.5
+        assert MALFORMED_TOOL_CALL_ARGS_KEY in call.arguments
 
     def test_no_invalid_tool_calls_leaves_behavior_unchanged(self) -> None:
         ai_message = AIMessage(content="just text")

@@ -15,14 +15,14 @@ import concurrent.futures
 import contextlib
 import json
 import logging
+import re
 import socket
 import sys
 import textwrap
 import traceback
 import weakref
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 
-from app.agent_loop_lib.core.exceptions import RunCancelled, TransportError
 from app.services.base_client import ServiceAuthRefusedError
 from app.services.messaging.error_classifier import CONTENT_ERRORS, extract_status_code
 from app.utils.log_redaction import (
@@ -35,6 +35,10 @@ from app.utils.oauth_errors import (
     CLIENT_REJECTED_ERROR_CODES,
     is_permanent_grant_rejection,
 )
+
+# The kernel module itself, not the legacy app.agent_loop_lib path: that package installs the agent loop's
+# composition, and the harness worker imports this module while it must stay free of the loop stack (D-7).
+from harness_core.kernel.core.exceptions import RunCancelled, TransportError
 
 ERROR_CLASSES: frozenset[str] = frozenset({
     "auth_expired", "forbidden", "not_found", "rate_limited", "timeout", "upstream_5xx",
@@ -65,6 +69,9 @@ _LOGGED_ATTR = "_pipeshub_logged"
 _HIDDEN_EXCEPTIONS: "weakref.WeakKeyDictionary[logging.LogRecord, BaseException]" = weakref.WeakKeyDictionary()
 _MAX_GROUP_WIDTH = 15  # traceback's own max_group_width and max_group_depth
 _MAX_GROUP_DEPTH = 10
+# A provider's machine code (content_filter, DeploymentNotFound). The server writes it, so digits, dots and hyphens are
+# refused: they are what account ids, keys, tokens and request ids are made of.
+_PROVIDER_CODE = re.compile(r"[A-Za-z][A-Za-z_]{1,63}")
 
 
 def level_for(error_class: str) -> int:
@@ -100,9 +107,14 @@ def on_chain(exc: BaseException, target: BaseException) -> bool:
     return any(link is target for link in _chain(exc))
 
 
+def chain_link(exc: BaseException, *types: type[BaseException]) -> BaseException | None:
+    """The first of ``exc`` and the links of its chain (see ``_chain``) that is one of ``types``, or None."""
+    return next((link for link in _chain(exc) if isinstance(link, types)), None)
+
+
 def chain_has(exc: BaseException, *types: type[BaseException]) -> bool:
     """Whether ``exc`` or a link of its chain (see ``_chain``) is one of ``types``."""
-    return any(isinstance(link, types) for link in _chain(exc))
+    return chain_link(exc, *types) is not None
 
 
 def first_leaf(exc: BaseException) -> BaseException:
@@ -187,7 +199,8 @@ def _classify_link(link: BaseException) -> str | None:
     ):
         return _status_class(status)
     if isinstance(link, (ConnectionError, socket.gaierror, *_types("httpx", "TransportError"),
-                         *_types("aiohttp", "ClientConnectionError"), *_types("openai", "APIConnectionError"))):
+                         *_types("aiohttp", "ClientConnectionError"), *_types("openai", "APIConnectionError"),
+                         *_types("neo4j.exceptions", "ServiceUnavailable", "SessionExpired"))):
         return "unavailable"
     if isinstance(link, (*CONTENT_ERRORS, json.JSONDecodeError, UnicodeDecodeError)):
         return "bad_request"
@@ -212,6 +225,93 @@ def classify_error(exc_or_status: BaseException | int) -> str:
     return "internal"
 
 
+_RETRY_LATER = frozenset({"unavailable", "timeout"})
+
+
+def retry_later(exc: BaseException) -> bool:
+    """Whether ``exc`` is a store or service that could not answer just now (``unavailable`` or ``timeout``), not a fault of
+    ours: the same request is worth sending again. The first decisive link of the chain decides, as in :func:`classify_error`;
+    an exception group in it decides by its members, and only when every one of them is retry-later, so a bug beside an
+    outage is still a bug. Never raises."""
+    # Only links still being walked: a member met again beside its twin (a shared cause) is judged again, not a loop.
+    active: set[int] = set()
+
+    def walk(error: BaseException) -> bool:
+        entered: list[int] = []
+        try:
+            for link in _chain(error):
+                if id(link) in active:  # a member that points back at its group
+                    return False
+                active.add(id(link))
+                entered.append(id(link))
+                if isinstance(link, BaseExceptionGroup):
+                    return bool(link.exceptions) and all(walk(member) for member in link.exceptions)
+                found = _classify_link(link)
+                if found is not None:
+                    return found in _RETRY_LATER
+            return classify_error(error) in _RETRY_LATER  # no decisive link: a retryable transport error is still one
+        finally:
+            active.difference_update(entered)
+
+    try:
+        return walk(exc)
+    except Exception:
+        return False
+
+
+def first_to_raise(failures: list[Exception]) -> Exception:
+    """Of several failures, the one to raise: the first that is not an outage (a bug of ours stays one), else the first."""
+    return next((e for e in failures if not retry_later(e)), failures[0])
+
+
+async def attempt_each(items: list[str], delete: Callable[[str], Awaitable[None]], what: str) -> None:
+    """Runs ``delete`` on every item, the rest too when one fails; then raises :func:`first_to_raise` of the failures."""
+    failures: list[Exception] = []
+    for item in items:
+        try:
+            await delete(item)
+        except Exception as e:
+            failures.append(e)
+    if failures:
+        first = first_to_raise(failures)
+        first.add_note(f"{len(failures)} of {len(items)} {what} failed")
+        raise first
+
+
+def provider_code(exc: BaseException) -> str | None:
+    """The provider's machine code for the failure (``content_filter``, ``context_length_exceeded``,
+    ``overloaded_error``): openai's ``code``, else ``type`` (anthropic's error type), from the first link that has
+    one. A value that isn't a plain word is ``"other"``: never an id, a key or message text. Never raises: callers run it
+    on the failure path, so an SDK property that raises is skipped like a missing one."""
+    try:
+        for link in _chain(exc):
+            for attr in ("code", "type"):
+                try:
+                    value = getattr(link, attr, None)
+                except Exception:
+                    continue
+                if isinstance(value, str) and value:
+                    plain = _PROVIDER_CODE.fullmatch(value) is not None and redact_secrets_in_text(value) == value
+                    return value if plain else "other"
+    except Exception:
+        pass
+    return None
+
+
+def failure_reason(exc: BaseException, error_class: str | None = None) -> str:
+    """Why ``exc`` failed, without its text: class, provider code, innermost type and HTTP status, as in
+    ``bad_request: content_filter (BadRequestError, HTTP 400)``. For what leaves a log line's reach (frames, tool
+    results, run results, traces): a provider's or a driver's message can quote the prompt, an email or a key."""
+    try:
+        status = next((s for link in _chain(exc)
+                       if isinstance(s := extract_status_code(link), int) and not isinstance(s, bool)), None)  # type: ignore[arg-type]
+        code = provider_code(exc)
+        head = (error_class or classify_error(exc)) + (f": {code}" if code else "")
+        return f"{head} ({innermost_type(exc)}" + (f", HTTP {status})" if status is not None else ")")
+    except Exception:  # an SDK property read by extract_status_code or provider_code can raise
+        return f"internal ({type(exc).__name__})"
+
+
 def mark_error(exc: BaseException, error_class: str | None = None, *, hide_text: bool = False) -> None:
     """Record on ``exc`` the class a lower layer (a database client) found, and whether its text can quote what was sent.
     :func:`classify_error` then answers that class and :func:`log_failure` leaves the text out, for every handler that logs the
@@ -228,6 +328,20 @@ def is_stamped(exc: BaseException) -> bool:
     """:func:`mark_error` already gave this instance a class: a lower layer recorded it (a class-level ``log_error_class``,
     declared by an exception type, does not count)."""
     return "log_error_class" in getattr(exc, "__dict__", {})
+
+
+def chain_stamped(exc: BaseException) -> bool:
+    """A lower layer recorded ``exc``, or an exception it was raised ``from``: :func:`mark_error` gave a link its class (a
+    client wrapper wrote ``db.query.failed``). Explicit causes only: an error raised while handling a recorded one, without
+    ``from``, is a new failure (a fallback that failed in turn)."""
+    seen: set[int] = set()
+    link: BaseException | None = exc
+    while link is not None and id(link) not in seen:
+        if is_stamped(link):
+            return True
+        seen.add(id(link))
+        link = link.__cause__
+    return False
 
 
 def _hides_text(exc: BaseException) -> bool:
@@ -317,6 +431,12 @@ def _stack_text(exc: BaseException, *, with_messages: bool) -> str:
     return redact_secrets_in_text(URL_PATTERN.sub("[url]", text.rstrip("\n")))[-_MAX_STACK:]
 
 
+def stack_text_without_messages(exc: BaseException) -> str:
+    """``exc``'s stack with every exception line cut to its type (frames kept), as ``log_failure(include_error_text=False)``
+    writes it: for a sink outside the logs (a trace) that wants where it failed, not what the error said."""
+    return _stack_text(exc, with_messages=False)
+
+
 def record_exception(record: logging.LogRecord) -> BaseException | None:
     """The exception a record was logged with, also when a text-free stack replaced its ``exc_info``
     (:func:`hide_record_text`, :func:`log_failure`), for a filter that reads it (uvicorn's duplicate-line filter).
@@ -350,7 +470,8 @@ def hide_record_text(record: logging.LogRecord) -> None:
 
 def log_failure(
     logger: logging.Logger, event: str, exc: BaseException, /, *,
-    level: int | None = None, error_class: str | None = None, include_error_text: bool = True, **fields: object,
+    level: int | None = None, error_class: str | None = None, include_error_text: bool = True, stacklevel: int = 1,
+    **fields: object,
 ) -> None:
     """The one failure line, at the layer that handles ``exc``.
 
@@ -362,7 +483,9 @@ def log_failure(
     whose text can echo what was sent (tool arguments in an MCP or OpenAPI server's answer); the
     stack written at ERROR then keeps its frames but shows each exception as ``Type: <message omitted>``, and the record
     carries that stack as ``exc_text`` only, with no ``exc_info``. A chain that :func:`mark_error` stamped with
-    ``hide_text`` (a database driver's error) is always logged that way. Never raises: it runs inside ``except`` blocks.
+    ``hide_text`` (a database driver's error) is always logged that way. ``stacklevel`` is ``logging``'s: a
+    wrapper that logs for its caller (``harness_core.log_lines``) passes how many frames up the caller is.
+    Never raises: it runs inside ``except`` blocks.
     """
     try:
         include_error_text = include_error_text and not _hides_text(exc)
@@ -382,7 +505,7 @@ def log_failure(
                 redact_error_for_log(_chain_text(exc), max_len=_MAX_ERROR_MESSAGE) if include_error_text else None
             ),
         })
-        filename, lineno, func, _ = logger.findCaller(stacklevel=2)
+        filename, lineno, func, _ = logger.findCaller(stacklevel=1 + stacklevel)
         # Without error text, no exc_info: a handler or formatter that reads it would print the raw message.
         exc_info = (type(exc), exc, exc.__traceback__) if with_stack and include_error_text else None
         record = logger.makeRecord(logger.name, emitted, filename, lineno, event, (), exc_info, func, extra)
@@ -396,7 +519,7 @@ def log_failure(
     except Exception:
         # Text-free on purpose: this path skips the masking and include_error_text.
         with contextlib.suppress(Exception):
-            logger.log(level or logging.ERROR, event, extra={"error_type": type(exc).__name__}, stacklevel=2)
+            logger.log(level or logging.ERROR, event, extra={"error_type": type(exc).__name__}, stacklevel=1 + stacklevel)
 
 
 def log_unit_end(

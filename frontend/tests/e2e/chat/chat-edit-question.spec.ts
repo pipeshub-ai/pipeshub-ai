@@ -164,6 +164,9 @@ const composer = (page: Page) => page.locator('textarea').last();
 
 /** The icon fades in on hover, so the pointer has to be over the question first. */
 async function startEdit(page: Page, question: string) {
+  // The row's buttons are icons: until the icon font is in, a late swap moves "Edit" under the pointer's target
+  // and the click lands on "Save as command" beside it (seen on a loaded lane, WP-71).
+  await page.evaluate(() => document.fonts.ready);
   await questionHeading(page, question).first().hover();
   await editButton(page).click();
   await expect(page.getByText('Edit query')).toBeVisible();

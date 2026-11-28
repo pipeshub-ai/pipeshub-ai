@@ -7,6 +7,7 @@ import Citation from '../../../../src/modules/enterprise_search/schema/citation.
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import { Logger } from '../../../../src/libs/services/logger.service'
 import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../../src/libs/errors/backend-error'
+import { InternalServerError } from '../../../../src/libs/errors/http.errors'
 import { createMockRequest, createMockResponse, createMockNext } from '../../../helpers/mock-request'
 
 // POST /api/v1/retrieve is called by developers' apps on every request they
@@ -15,6 +16,8 @@ import { createMockRequest, createMockResponse, createMockNext } from '../../../
 
 describe('retrieve controller', () => {
   const appConfig: any = { aiBackend: 'http://ai.test' }
+  // The handler is typed for Express's Response; the mock carries only what retrieve uses.
+  const handle = retrieve(appConfig) as unknown as (req: unknown, res: unknown, next: unknown) => Promise<void>
   let seen: { uri?: string; body?: any }
 
   const arm = (statusCode: number, data: Record<string, unknown>) => {
@@ -33,7 +36,7 @@ describe('retrieve controller', () => {
       body: { query: 'rollback', limit: 5, filters: { kb: ['kb1'] }, modifiedAfter: '2026-01-01' },
       user: { userId: 'u1', orgId: 'o1' },
     })
-    await retrieve(appConfig)(req, createMockResponse(), createMockNext())
+    await handle(req, createMockResponse(), createMockNext())
 
     expect(seen.uri).to.equal('http://ai.test/api/v1/retrieve')
     expect(seen.body).to.deep.equal({
@@ -51,7 +54,7 @@ describe('retrieve controller', () => {
     const res = createMockResponse()
     const next = createMockNext()
 
-    await retrieve(appConfig)(req, res, next)
+    await handle(req, res, next)
 
     expect(next.called).to.be.false
     expect(res.status.calledWith(200)).to.be.true
@@ -60,12 +63,73 @@ describe('retrieve controller', () => {
     expect(save.called).to.be.false
   })
 
+  describe('record page links', () => {
+    const answer = async (frontendUrl: string | undefined, citation: Record<string, unknown>) => {
+      sinon.restore()
+      arm(200, { chunks: [{ id: 'v1:0', text: 't', citation }], incomplete: false })
+      const res = createMockResponse()
+      await retrieve({ ...appConfig, frontendUrl })(
+        createMockRequest({ body: { query: 'q' }, user: { userId: 'u1', orgId: 'o1' } }),
+        res,
+        createMockNext(),
+      )
+      return res.json.firstCall.args[0].chunks[0].citation
+    }
+
+    it('turns a record page path into a full web app URL', async () => {
+      const citation = await answer('https://pipeshub.example.com', {
+        url: '/record/r1', recordUrl: '/record/r1', pageNum: null, blockIndex: 0,
+      })
+      expect(citation).to.deep.equal({
+        url: 'https://pipeshub.example.com/record/r1',
+        recordUrl: 'https://pipeshub.example.com/record/r1',
+        pageNum: null,
+        blockIndex: 0,
+      })
+    })
+
+    it('keeps a web app served under a path, and a trailing slash adds none', async () => {
+      const citation = await answer('https://example.com/pipeshub/', { url: '/record/r1', recordUrl: '/record/r1' })
+      expect(citation.url).to.equal('https://example.com/pipeshub/record/r1')
+    })
+
+    it('leaves a source URL as it is', async () => {
+      const url = 'https://acme.atlassian.net/browse/PP-1#:~:text=x'
+      const citation = await answer('https://pipeshub.example.com', { url, recordUrl: 'https://acme.atlassian.net/browse/PP-1' })
+      expect(citation.url).to.equal(url)
+      expect(citation.recordUrl).to.equal('https://acme.atlassian.net/browse/PP-1')
+    })
+
+    it('never turns a protocol-relative link into one on the web app', async () => {
+      const citation = await answer('https://pipeshub.example.com', { url: '//evil.example/x', recordUrl: null })
+      expect(citation).to.deep.equal({ url: '//evil.example/x', recordUrl: null })
+    })
+
+    it('leaves the path when no web app URL is configured', async () => {
+      for (const frontendUrl of [undefined, '', 'not a url']) {
+        const citation = await answer(frontendUrl as string, { url: '/record/r1', recordUrl: '/record/r1' })
+        expect(citation.url).to.equal('/record/r1')
+      }
+    })
+
+    it('passes an answer without chunks on as it is', async () => {
+      arm(200, { chunks: [], incomplete: false, message: 'none' })
+      const res = createMockResponse()
+      await retrieve({ ...appConfig, frontendUrl: 'https://x.test' })(
+        createMockRequest({ body: { query: 'q' }, user: { userId: 'u1', orgId: 'o1' } }),
+        res,
+        createMockNext(),
+      )
+      expect(res.json.firstCall.args[0]).to.deep.include({ chunks: [], incomplete: false, message: 'none' })
+    })
+  })
+
   it('logs a 402 refusal as a warning, not an error', async () => {
     arm(402, { detail: { code: 'PAYMENT_REQUIRED', message: 'Payment required by the upstream service' } })
     const error = sinon.stub(Logger.prototype, 'error')
     const warn = sinon.stub(Logger.prototype, 'warn')
     const next = createMockNext()
-    await retrieve(appConfig)(
+    await handle(
       createMockRequest({ body: { query: 'q' }, user: { userId: 'u1', orgId: 'o1' } }),
       createMockResponse(),
       next,
@@ -79,7 +143,7 @@ describe('retrieve controller', () => {
   it('passes an AI service failure on as an error with its status', async () => {
     arm(503, { message: 'index unreachable' })
     const next = createMockNext()
-    await retrieve(appConfig)(
+    await handle(
       createMockRequest({ body: { query: 'q' }, user: { userId: 'u1', orgId: 'o1' } }),
       createMockResponse(),
       next,
@@ -90,11 +154,53 @@ describe('retrieve controller', () => {
     expect(err.statusCode ?? err.status).to.equal(503)
   })
 
+  // A proxy's HTML page in front of the AI service: the command keeps the status and drops the body.
+  for (const status of [413, 503]) {
+    it(`keeps the status of a ${status} whose body was not JSON`, async () => {
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: status, data: undefined, msg: 'x' } as any)
+      const next = createMockNext()
+      await handle(
+        createMockRequest({ body: { query: 'q' }, user: { userId: 'u1', orgId: 'o1' } }),
+        createMockResponse(),
+        next,
+      )
+
+      expect(next.firstCall.args[0].statusCode).to.equal(status)
+    })
+  }
+
+  it('keeps the Retry-After of a 503 whose body was not JSON', async () => {
+    sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+      statusCode: 503, data: undefined, msg: 'Service Unavailable', headers: { 'retry-after': '5' },
+    } as any)
+    const next = createMockNext()
+    await handle(
+      createMockRequest({ body: { query: 'q' }, user: { userId: 'u1', orgId: 'o1' } }),
+      createMockResponse(),
+      next,
+    )
+
+    expect(next.firstCall.args[0].statusCode).to.equal(503)
+    expect(next.firstCall.args[0].metadata.retryAfter).to.equal('5')
+  })
+
+  it('answers a 200 with no body as our failure', async () => {
+    sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: undefined } as any)
+    const next = createMockNext()
+    await handle(
+      createMockRequest({ body: { query: 'q' }, user: { userId: 'u1', orgId: 'o1' } }),
+      createMockResponse(),
+      next,
+    )
+
+    expect(next.firstCall.args[0]).to.be.instanceOf(InternalServerError)
+  })
+
   const failedCall = async (error: unknown) => {
     sinon.stub(Logger.prototype, 'error')
     sinon.stub(AIServiceCommand.prototype, 'execute').rejects(error)
     const next = createMockNext()
-    await retrieve(appConfig)(
+    await handle(
       createMockRequest({ body: { query: 'q' }, user: { userId: 'u1', orgId: 'o1' } }),
       createMockResponse(),
       next,

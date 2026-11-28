@@ -1,6 +1,7 @@
 'use client';
 
 import { asArray } from '@/lib/utils/safe';
+import { isSafeRedirectUrl } from '@/lib/utils/safe-redirect-url';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import axios, { AxiosError, isAxiosError } from 'axios';
@@ -247,6 +248,8 @@ export function OAuthAuthorizeView() {
           if (redirectError) {
             setErrorCode(redirectError.code);
             setError(redirectError.description);
+          } else if (!isSafeRedirectUrl(data.redirectUrl)) {
+            setError(t('oauthConsent.noRedirect'));
           } else {
             window.location.href = data.redirectUrl;
           }
@@ -364,7 +367,7 @@ export function OAuthAuthorizeView() {
         { suppressErrorToast: true }
       );
 
-      if (data.redirectUrl) {
+      if (data.redirectUrl && isSafeRedirectUrl(data.redirectUrl)) {
         setOutcome({ type: 'success', redirectUrl: data.redirectUrl, consent });
         return;
       }
@@ -494,7 +497,7 @@ export function OAuthAuthorizeView() {
                     className="material-icons-outlined"
                     style={{
                       fontSize: 16,
-                      color: 'var(--gray-10)',
+                      color: 'var(--gray-11)',
                       marginTop: 1,
                       flexShrink: 0,
                     }}
@@ -863,7 +866,8 @@ export function OAuthAuthorizeView() {
 
           <Text size="2" color="gray">
             {t('oauthConsent.legalNotice', { appName })}
-            {consentData.app.privacyPolicyUrl ? (
+            {consentData.app.privacyPolicyUrl &&
+            isSafeRedirectUrl(consentData.app.privacyPolicyUrl) ? (
               <>
                 {' '}
                 <a

@@ -114,7 +114,30 @@ describe('entity search controller', () => {
     expect(error.message).to.contain('local file storage')
   })
 
-  it('refuses person and organization with 400 before the AI service is called, and forwards named_entity, as the routes chain them', async () => {
+  // A proxy's HTML page in front of the AI service: the command keeps the status and drops the body.
+  for (const status of [413, 501, 503]) {
+    it(`keeps the status of a ${status} whose body was not JSON`, async () => {
+      answer(status, undefined)
+      const { error } = await run(grepRecords(appConfig), { pattern: 'x' })
+      expect(error.statusCode).to.equal(status)
+    })
+  }
+
+  it('keeps the Retry-After of a 503 whose body was not JSON', async () => {
+    execute.resolves({ statusCode: 503, data: undefined, msg: 'Service Unavailable', headers: { 'retry-after': '5' } })
+    const { error } = await run(grepRecords(appConfig), { pattern: 'x' })
+    expect(error.statusCode).to.equal(503)
+    expect(error.metadata.retryAfter).to.equal('5')
+  })
+
+  it('answers a 200 with no body as our failure', async () => {
+    answer(200, undefined)
+    const { error } = await run(grepRecords(appConfig), { pattern: 'x' })
+    expect(error.statusCode).to.equal(500)
+    expect(error.message).to.equal('Failed to get response from AI service')
+  })
+
+  it('forwards a search narrowed to person or organization, refuses expanding them with 400 before the AI service is called, and forwards named_entity, as the routes chain them', async () => {
     // the validator then the controller, in the order es.routes.ts mounts them; the extraction flag is read only by the AI service
     const route = async (schema: any, handler: any, body: any) => {
       const req: any = { body, query: {}, params: {}, headers: {}, path: '/', method: 'POST' }
@@ -124,13 +147,14 @@ describe('entity search controller', () => {
     }
     answer(200, { status: 'success', results: [], records: [] })
     for (const kind of ['person', 'organization']) {
-      expect((await route(enterpriseSearchEntitiesSchema, searchEntities(appConfig), { query: 'x', entityTypes: [kind] }))?.statusCode, kind).to.equal(400)
       expect((await route(enterpriseSearchEntityNeighborsSchema, entityNeighbors(appConfig), { entityId: 'e', entityType: kind }))?.statusCode, kind).to.equal(400)
     }
     expect(bodies).to.deep.equal([])
+    expect(await route(enterpriseSearchEntitiesSchema, searchEntities(appConfig), { query: 'x', entityTypes: ['person', 'organization'] })).to.equal(undefined)
     expect(await route(enterpriseSearchEntitiesSchema, searchEntities(appConfig), { query: 'x', entityTypes: ['named_entity'] })).to.equal(undefined)
     expect(await route(enterpriseSearchEntityNeighborsSchema, entityNeighbors(appConfig), { entityId: 'e', entityType: 'named_entity' })).to.equal(undefined)
     expect(bodies.map((b) => JSON.parse(b))).to.deep.equal([
+      { query: 'x', entityTypes: ['person', 'organization'] },
       { query: 'x', entityTypes: ['named_entity'] },
       { entityId: 'e', entityType: 'named_entity' },
     ])
@@ -198,6 +222,12 @@ describe('entity routes match the published spec', () => {
       expect(enterpriseSearchEntityNeighborsSchema.safeParse({ body: { entityId: 'e', entityType: t } }).success, t).to.equal(true)
     }
     expect(enterpriseSearchEntityNeighborsSchema.safeParse({ body: { entityId: 'e', entityType: 'galaxy' } }).success).to.equal(false)
+    const searchable: string[] = spec.components.schemas.EntitySearchResultType.enum
+    expect(spec.components.schemas.EntitySearchRequest.properties.entityTypes.items.$ref).to.equal('#/components/schemas/EntitySearchResultType')
+    expect(searchable).to.include.members(['person', 'organization'])
+    for (const t of searchable) {
+      expect(enterpriseSearchEntitiesSchema.safeParse({ body: { query: 'x', entityTypes: [t] } }).success, t).to.equal(true)
+    }
     for (const name of ['GrepRequest', 'EntitySearchRequest', 'EntityNeighborsRequest']) {
       const fields = Object.keys(spec.components.schemas[name].properties)
       expect(fields.filter((f) => /^(org|user)/i.test(f)), name).to.deep.equal([])

@@ -34,6 +34,12 @@ import {
 } from '../container/authService.container';
 import { emailCheck } from '../../../libs/utils/zod-formats';
 import { AuthMethodType } from '../types/auth-method';
+import {
+  clearRefusedSessionCookie,
+  refreshTokenFromCookie,
+  sessionCameFromCookie,
+  signOutSessionCookie,
+} from '../session-cookie';
 
 const otpGenerationBody = z.object({
   email: z.string().check(emailCheck('Invalid email')),
@@ -259,9 +265,14 @@ export function createUserAccountRouter(container: Container) {
     },
   );
 
+  const refreshTokenValidator = authMiddleware.scopedTokenValidator(
+    TokenScopes.TOKEN_REFRESH,
+  );
+
   router.post(
     '/refresh/token',
-    authMiddleware.scopedTokenValidator(TokenScopes.TOKEN_REFRESH),
+    refreshTokenFromCookie(),
+    refreshTokenValidator,
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
         const userAccountController = container.get<UserAccountController>(
@@ -276,12 +287,43 @@ export function createUserAccountRouter(container: Container) {
         next(error);
       }
     },
+    clearRefusedSessionCookie(),
   );
+
+  // Signed out with the cookie alone (the page's access token already gone), the refresh token names the caller.
+  const signOutCaller = (
+    req: AuthSessionRequest,
+    res: Response,
+    next: NextFunction,
+  ): void => {
+    if (!sessionCameFromCookie(res)) {
+      void authenticate(req, res, (error?: unknown) => {
+        if (error) {
+          next(error);
+          return;
+        }
+        requireSessionAuth(req, res, next);
+      });
+      return;
+    }
+    void refreshTokenValidator(req, res, (error?: unknown) => {
+      if (error) {
+        next(error);
+        return;
+      }
+      const payload = (req as AuthenticatedServiceRequest).tokenPayload;
+      req.user = {
+        userId: payload?.userId as string | undefined,
+        orgId: payload?.orgId as string | undefined,
+      };
+      next();
+    });
+  };
 
   router.post(
     '/logout/manual',
-    authenticate,
-    requireSessionAuth,
+    signOutSessionCookie(),
+    signOutCaller,
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
         const userAccountController = container.get<UserAccountController>(

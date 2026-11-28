@@ -153,6 +153,7 @@ async def _gate(layer: KgLayer, prov, worlds: list, tag: str, decided: Counter, 
     over: list[str] = []
     under: list[str] = []
     rows: list[str] = []
+    per_node: list[str] = []
     pairs = 0
     for i, w in enumerate(worlds):
         ns = await layer._ns(w)
@@ -162,8 +163,12 @@ async def _gate(layer: KgLayer, prov, worlds: list, tag: str, decided: Counter, 
             uid = ns.id(viewer)
             with _bound(org):
                 access = await prov.get_knowledge_hub_access_v3(uid, org)
+                gate = await prov._q(lambda tx, u=uid, o=org: prov._check_gate(tx, o, u), None)      # the access a check reads when given none: grants read per node
             walk = await _ask(prov, org, uid, ids, access, "0")
             got = await _ask(prov, org, uid, ids, access, None)
+            for switch in ("0", None):
+                probed = await _ask(prov, org, uid, ids, gate, switch)
+                per_node += [f"{tag}{i} {viewer} {switch} {x}" for x in sorted({*probed, *walk}) if probed.get(x) != walk.get(x)]
             pairs += len(ids)
             over += [f"{tag}{i} {viewer} {x}" for x in sorted(set(got) - set(walk))]
             under += [f"{tag}{i} {viewer} {x}" for x in sorted(set(walk) - set(got))]
@@ -177,6 +182,7 @@ async def _gate(layer: KgLayer, prov, worlds: list, tag: str, decided: Counter, 
     assert over == [], over[:10]
     assert under == [], under[:10]
     assert rows == [], rows[:10]
+    assert per_node == [], per_node[:10]
     assert pairs > 0
     assert not need_kg or (decided["admit"] > 0 and decided["denied"] > 0), f"kg decided too little to prove anything: {dict(decided)}"
 
@@ -209,6 +215,8 @@ class Case:
 
 
 async def _admin(sql: str, *args) -> None:
+    if not os.environ.get("PG_ADMIN_URL"):
+        pytest.skip("PG_ADMIN_URL is not set (an owner DSN: this test plants rows no service role may write)")
     con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
     try:
         await con.execute(sql, *args)
@@ -284,18 +292,6 @@ async def test_with_the_switch_at_zero_nothing_reads_kg(layer, pg_provider, pg_d
     with _switch("0"):
         assert kg_read.enabled() is False
         assert await _ask(pg_provider, c.org, c.uid, c.ids, c.access, "0")
-
-
-async def test_with_the_projection_off_the_connectors_go_back_to_the_walk(layer, pg_provider, pg_db, monkeypatch) -> None:
-    c = await _case(layer, pg_provider, pg_db)
-    assert c.x in (await _decide(pg_db, c.org, c.ids, c.access)).admit
-    monkeypatch.setenv("PG_KG_PROJECT", "0")
-    rec = next(n for n in c.world.nodes if n.kind == "record")
-    with _bound(c.org):
-        await pg_provider.batch_upsert_nodes([{"id": c.ns.id(rec.id), "recordName": "renamed"}], "records")      # the write takes back its log rows: kg cannot tell it is behind
-    d = await _decide(pg_db, c.org, c.ids, c.access)
-    assert not d.admit and d.denied == 0 and set(d.walk) == set(c.ids)
-    await _same_as_walk(pg_provider, c)
 
 
 async def test_a_connector_that_is_not_enforced_or_not_current_takes_the_walk(layer, pg_provider, pg_db, monkeypatch) -> None:
@@ -407,6 +403,7 @@ async def test_an_explicit_transaction_the_system_role_and_a_failing_read_take_t
     assert await _ask(pg_provider, c.org, c.uid, c.ids, c.access, None) == want       # fails closed to the walk, not to nothing
 
 
+@pytest.mark.pg_table_lock           # LOCK TABLE kg.records
 async def test_a_blocked_or_slow_read_hands_the_call_to_the_walk_at_once(layer, pg_provider, pg_db, monkeypatch) -> None:
     c = await _case(layer, pg_provider, pg_db)
     want = await _ask(pg_provider, c.org, c.uid, c.ids, c.access, "0")
@@ -459,9 +456,12 @@ N = 12_000
 KEY_OF = {"records_id": "id", "records_pkey": "sk", "records_parent": "parent_sk", "links_pkey": "parent_sk", "node_keys_org_id_sk_key": "sk", "scope_classes_pkey": "id"}
 
 
-def _not_seeks(plan: dict[str, Any], indexes: set[str]) -> list[str]:
+def _not_seeks(plan: dict[str, Any], indexes: set[str], levels: dict[str, int]) -> list[str]:
     """What in an ``EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`` plan is not a seek: a scan of a kg table that is not one of ``indexes``, whose index condition does not bound
-    the key column, or that returns more than one row or reads more than a few pages per probe; and an index of ``indexes`` the plan never uses."""
+    the key column, that returns or filters out more than one row per probe, or that reads more pages per probe than a descent of the index (``levels``: its btree
+    level), the next leaf and one more page (the row's heap page, or an index-only scan's visibility map page); and an index of ``indexes`` the plan never uses.
+    The bound holds on vacuumed tables, which the gate measures (EXPLAIN counts buffers, not which of them are the index's): an index-only scan that still fetched
+    from the heap ran on pages not all-visible, a measurement the bound cannot judge, and is reported as such."""
     found: list[str] = []
     used: set[str] = set()
 
@@ -470,17 +470,58 @@ def _not_seeks(plan: dict[str, Any], indexes: set[str]) -> list[str]:
             continue
         loops = node.get("Actual Loops", 0)
         pages = (node.get("Shared Hit Blocks", 0) + node.get("Shared Read Blocks", 0)) / max(loops, 1)
+        fetches = node.get("Heap Fetches", 0) / max(loops, 1)
+        removed = node.get("Rows Removed by Filter", 0) + node.get("Rows Removed by Index Recheck", 0)
         bounds = plan_gate.bounds(node)
         used.update(index for index, _ in bounds)
+        seen = f"{node['Actual Rows']} rows, {removed} filtered out, {pages:.1f} pages ({fetches:.1f} heap fetches) per probe ({loops} probes)"
         if not bounds or any(index not in indexes for index, _ in bounds):
             found.append(f"{node['Node Type']} {[index for index, _ in bounds]} on {node['Relation Name']}")
         elif bad := [(index, cond) for index, cond in bounds if "org_id = " not in cond or not re.search(rf"\b{KEY_OF[index]}( = | >= |, )", cond)]:
             found.append(f"the index condition does not bound the key: {bad}")
-        elif loops and (node["Actual Rows"] > 1 or pages > 8):
-            found.append(f"{bounds[0][0]}: {node['Actual Rows']} rows and {pages:.1f} pages per probe ({loops} probes)")
+        elif loops and (node["Actual Rows"] > 1 or removed > 1):
+            found.append(f"{bounds[0][0]}: {seen}")
+        elif loops and node["Node Type"] == "Index Only Scan" and fetches:
+            found.append(f"{bounds[0][0]}: fetched from the heap, so its pages were not all-visible when measured (vacuum first): {seen}")
+        elif loops and pages > levels[bounds[0][0]] + 3:
+            found.append(f"{bounds[0][0]}: more pages than a descent of its {levels[bounds[0][0]] + 1} levels, the next leaf and one heap or visibility map page: {seen}")
     return found + [f"{i} is not used" for i in sorted(indexes - used)]
 
 
+async def _btree_levels(indexes: set[str]) -> dict[str, int]:
+    """Each kg index's btree level (0: the root is a leaf), from its metapage (pageinspect, dropped again if this added it). pageinspect is for superusers only,
+    so ``PG_ADMIN_URL`` must name one here (``scripts/prepare_pg_test_db.sh`` takes a superuser's DSN); an owner that is not one skips the test, saying so."""
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        if not await con.fetchval("SELECT rolsuper FROM pg_roles WHERE rolname = current_user"):
+            pytest.skip("PG_ADMIN_URL is not a superuser: the reader plan gate reads each index's btree level with pageinspect, which only a superuser may use")
+        had = await con.fetchval("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pageinspect')")
+        await con.execute("CREATE EXTENSION IF NOT EXISTS pageinspect")
+        try:
+            return {i: await con.fetchval("SELECT (bt_metap($1)).level", f"kg.{i}") for i in sorted(indexes)}
+        finally:
+            if not had:
+                await con.execute("DROP EXTENSION pageinspect")
+    finally:
+        await con.close()
+
+
+def test_the_seek_check_bounds_rows_and_pages_on_vacuumed_tables() -> None:
+    """A probe is judged by its shape: one row, nothing filtered out, and no more pages than a descent of the index, the next leaf and one more page. An index-only
+    scan that fetched from the heap was measured on pages not all-visible: buffers do not say how many of its pages were the index's, so it is not passed."""
+    def scan(kind: str = "Index Only Scan", **kw: Any) -> dict[str, Any]:  # noqa: ANN401
+        return {"Plan": {"Node Type": kind, "Schema": "kg", "Relation Name": "records", "Index Name": "records_parent",
+                         "Index Cond": "((org_id = r.org_id) AND (parent_sk >= r.sk))", "Actual Loops": 1, "Actual Rows": 1, **kw}}
+    levels = {"records_parent": 2}
+    assert _not_seeks(scan(**{"Shared Hit Blocks": 5}), {"records_parent"}, levels) == []                     # 3 levels, the next leaf, the visibility map
+    assert _not_seeks(scan("Index Scan", **{"Shared Hit Blocks": 5}), {"records_parent"}, levels) == []       # 3 levels, the next leaf, the row's heap page
+    assert len(_not_seeks(scan(**{"Shared Hit Blocks": 6}), {"records_parent"}, levels)) == 1
+    assert len(_not_seeks(scan(**{"Shared Hit Blocks": 9, "Heap Fetches": 5}), {"records_parent"}, levels)) == 1      # 7 index pages could hide in these 9
+    assert len(_not_seeks(scan(**{"Actual Rows": 40, "Shared Hit Blocks": 4}), {"records_parent"}, levels)) == 1
+    assert len(_not_seeks(scan(**{"Rows Removed by Filter": 300, "Shared Hit Blocks": 4}), {"records_parent"}, levels)) == 1
+
+
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_every_statement_of_the_reader_is_answered_by_index_searches(layer, pg_provider, pg_db) -> None:
     """EXPLAIN gate: on an org of 12,000 records, as the reader's unit runs the statements (custom plans, bitmap scans off), never analysed and then analysed, each is bounded by its
     inputs: no sequential scan, and the index conditions (a bitmap heap scan's are its bitmap index scans') are the org and the key asked. Run as well (EXPLAIN ANALYZE), every scan of a kg table is a seek: the statement's
@@ -488,6 +529,8 @@ async def test_every_statement_of_the_reader_is_answered_by_index_searches(layer
     c = await _case(layer, pg_provider, pg_db, literal_kind=3)
     await _admin("INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk, leaf) SELECT $1, 50000000 + g, 3, 'plans-r' || g, 3, $2, true FROM generate_series(1, $3) g", c.org, c.app_sk, N)
     await _admin("INSERT INTO kg.links (org_id, parent_sk, kind, child_sk) SELECT $1, 50000000 + g, 1, 60000000 + g FROM generate_series(1, $2) g", c.org, N)
+    # pages are counted per probe: dead index entries (the rows earlier tests and runs deleted, before autovacuum reaches them) would be counted too
+    await _admin("VACUUM kg.records, kg.node_keys, kg.scope_classes, kg.links")
     ids = [*c.ids, *(f"plans-r{j}" for j in range(1, N, 240))]
     sks = [c.lit, c.x_sk, *(50000000 + j for j in range(1, N, 240))]
     wants = {
@@ -495,6 +538,7 @@ async def test_every_statement_of_the_reader_is_answered_by_index_searches(layer
         "classes": (kg_read.CLASSES, [[1, 2, 3]], ("scope_classes_pkey", "Index Cond: ((org_id = ", "id = q.id"), {"scope_classes_pkey"}),
         "literals": (kg_read.LITERALS, [sks], ("records_pkey", "Index Cond: ((org_id = ", "sk = q.sk", "records_parent", "links_pkey"), {"records_pkey", "records_parent", "links_pkey"}),
     }
+    levels = await _btree_levels(set(KEY_OF))
     for state in ("fresh", "analysed"):
         if state == "analysed":
             await _admin("ANALYZE kg.records; ANALYZE kg.node_keys; ANALYZE kg.scope_classes; ANALYZE kg.links")
@@ -508,10 +552,11 @@ async def test_every_statement_of_the_reader_is_answered_by_index_searches(layer
                 plan, ran = await pg_db.run(go, custom_plan=True)
             if "Seq Scan" in plan or any(t not in plan for t in must):
                 pytest.fail(f"{state} {name}: a scan the ids do not bound, or an index condition missing ({must})\n{plan}")
-            if bad := _not_seeks(ran, indexes):
+            if bad := _not_seeks(ran, indexes, levels):
                 pytest.fail(f"{state} {name}: not a seek per key: {bad}\n{plan}")
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_a_chunk_of_asked_ids_is_read_without_compiling_the_statement(layer, pg_provider, pg_db) -> None:
     """The reader's statements are seeks, never worth compiling: under the reader's profile a full chunk of ids (``CHUNK``) is read without JIT, even with ``jit_above_cost``
     at 0 (whatever the version's cost model makes of the estimate: on PostgreSQL 17 it passes the default threshold at a full chunk, on 18 it does not). Without the profile
@@ -546,7 +591,7 @@ async def test_the_read_profile_ends_with_the_read_on_its_pooled_connection(pg_r
     async def settings(tx) -> dict[str, Any]:
         return dict(await tx.fetchrow("/* pipeshub:test.read_settings */ SELECT pg_backend_pid() AS pid, current_setting('enable_sort') AS sort, "
                                       "current_setting('enable_bitmapscan') AS bitmap, current_setting('statement_timeout') AS statement, current_setting('lock_timeout') AS lock, "
-                                      "current_setting('jit') AS jit"))
+                                      "current_setting('jit') AS jit, current_setting('plan_cache_mode') AS plans"))
 
     async def walk(ids, vrids, acc) -> list:
         return []
@@ -565,6 +610,7 @@ async def test_the_read_profile_ends_with_the_read_on_its_pooled_connection(pg_r
         with _bound(org):
             before = await db.run(settings)
             assert (await db.run(profiled))["sort"] == "off" and (await db.run(profiled))["jit"] == "off"           # in force while the read runs
+            assert (await db.run(profiled))["plans"] == "force_custom_plan" and before["plans"] != "force_custom_plan"
             for broken in (False, True):
                 with monkeypatch.context() as m:
                     if broken:

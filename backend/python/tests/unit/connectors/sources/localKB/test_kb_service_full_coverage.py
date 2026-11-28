@@ -1440,44 +1440,6 @@ class TestListKbPermissions:
 
 
 
-class TestListKbRecords:
-    @pytest.mark.asyncio
-    async def test_success(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
-        service.graph_provider.list_kb_records = AsyncMock(return_value=(
-            [{"id": "r1"}], 1, {}
-        ))
-
-        result = await service.list_kb_records("kb1", "user1", "org1")
-        assert result["records"] == [{"id": "r1"}]
-
-    @pytest.mark.asyncio
-    async def test_user_not_found(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
-        result = await service.list_kb_records("kb1", "user1", "org1")
-        assert result["success"] is False
-        assert result["code"] == 404
-
-    @pytest.mark.asyncio
-    async def test_with_filters(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
-        service.graph_provider.list_kb_records = AsyncMock(return_value=([], 0, {}))
-
-        result = await service.list_kb_records(
-            "kb1", "user1", "org1", search="x",
-            record_types=["FILE"], date_from=100, date_to=200,
-            sort_by="recordName", sort_order="asc"
-        )
-        assert "search" in result["filters"]["applied"]
-
-    @pytest.mark.asyncio
-    async def test_exception(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(side_effect=Exception("err"))
-        result = await service.list_kb_records("kb1", "user1", "org1")
-        assert result["records"] == []
-        assert "error" in result
-
-
 class TestGetKbChildren:
     @pytest.mark.asyncio
     async def test_success(self, service):
@@ -1495,6 +1457,22 @@ class TestGetKbChildren:
         assert result["userPermission"]["canUpload"] is True
         assert result["userPermission"]["canDelete"] is True
         assert result["pagination"]["totalItems"] == 3
+        assert result["pagination"]["totalCapped"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["get_kb_children", "get_folder_children"])
+    async def test_a_total_past_the_cap_is_reported_capped_and_the_next_page_still_exists(self, service, method) -> None:
+        """A listing's total stops at 10,000 and says so, as the knowledge hub's does; the pages it names stop there too, and a next page is the exact answer."""
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="READER")
+        service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        args = ("kb1", "f1", "user1") if method == "get_folder_children" else ("kb1", "user1")
+        for total, page, want in ((50_001, 500, (10_000, 500, True, True)), (10_000, 500, (10_000, 500, False, False)), (10_001, 501, (10_000, 500, False, True)),
+                                  (0, 1, (0, 0, False, False))):
+            setattr(service.graph_provider, method, AsyncMock(return_value={"success": True, "totalCount": total, "counts": {"folders": 0, "records": 0},
+                                                                            "availableFilters": {}}))
+            got = (await getattr(service, method)(*args, page=page, limit=20))["pagination"]
+            assert (got["totalItems"], got["totalPages"], got["hasNext"], got["totalCapped"]) == want, (total, page)
 
     @pytest.mark.asyncio
     async def test_user_not_found(self, service):
@@ -1714,19 +1692,19 @@ class TestUploadRecords:
     @pytest.mark.asyncio
     async def test_upload_to_kb(self, service):
         service._upload_records = AsyncMock(return_value={"success": True, "totalCreated": 1})
-        result = await service.upload_records_to_kb("kb1", "user1", "org1", [{"name": "f.txt"}])
+        result = await service.upload_records_to_kb("kb1", "user1", "org1", [{"name": "f.txt"}], {"rec-1": "d1"})
         assert result["success"] is True
         service._upload_records.assert_awaited_once_with(
-            "kb1", "user1", "org1", [{"name": "f.txt"}], parent_folder_id=None
+            "kb1", "user1", "org1", [{"name": "f.txt"}], parent_folder_id=None, granted_documents={"rec-1": "d1"}
         )
 
     @pytest.mark.asyncio
     async def test_upload_to_folder(self, service):
         service._upload_records = AsyncMock(return_value={"success": True, "totalCreated": 1})
-        result = await service.upload_records_to_folder("kb1", "f1", "user1", "org1", [{"name": "f.txt"}])
+        result = await service.upload_records_to_folder("kb1", "f1", "user1", "org1", [{"name": "f.txt"}], {"rec-1": "d1"})
         assert result["success"] is True
         service._upload_records.assert_awaited_once_with(
-            "kb1", "user1", "org1", [{"name": "f.txt"}], parent_folder_id="f1"
+            "kb1", "user1", "org1", [{"name": "f.txt"}], parent_folder_id="f1", granted_documents={"rec-1": "d1"}
         )
 
 
@@ -2266,7 +2244,7 @@ class TestValidationFailuresReachingThePerson:
             "reason": "psycopg2.OperationalError: could not connect to server",
         })
 
-        result = await service._upload_records("kb1", "user1", "org1", [], None)
+        result = await service._upload_records("kb1", "user1", "org1", [], None, {})
         assert result["code"] == 500
         assert result["reason"] == action_failed("upload these files")
         assert result["valid"] is False

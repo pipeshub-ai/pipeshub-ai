@@ -1,7 +1,10 @@
 """Zoom connector — all past user meetings with incremental sync via report APIs."""
 
 import asyncio
+import functools
+import re
 import urllib.parse
+from collections.abc import Awaitable, Callable
 from datetime import date, datetime, timedelta, timezone
 from logging import Logger
 from typing import Any, Optional
@@ -18,8 +21,18 @@ from app.config.constants.arangodb import (
     MimeTypes,
     ProgressStatus,
 )
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.failure_notices import (
+    NO_REFRESH_TOKEN,
+    ReconnectRequiredError,
+    SyncIncompleteError,
+    SyncRunState,
+    notify_init_failed,
+    renew_access_token,
+    reports_failed_sync,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -55,6 +68,7 @@ from app.connectors.core.registry.filters import (
     FilterType,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.zoom.common.apps import ZoomApp
 from app.models.blocks import (
     BlockGroup,
@@ -73,7 +87,7 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.sources.client.zoom.zoom import ZoomClient
+from app.sources.client.zoom.zoom import ZoomClient, ZoomResponse
 from app.sources.external.zoom.zoom import ZoomDataSource
 from app.utils.text_fragments import SourceFormat, build_text_fragment_url
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
@@ -95,6 +109,9 @@ _ZOOM_CODES_MEETING_NOT_FOUND = {3001, 3301}
 # Kept conservative to stay under Zoom's Heavy-rate endpoint limits
 # (GET /v2/report/meetings/{id}/participants is the bottleneck at ~10-20 req/s).
 _MEETING_CONCURRENCY = 8
+
+# Stored meetings read per page when a full sync keeps those older than its report range.
+_STORED_MEETINGS_PAGE = 500
 
 # ---------------------------------------------------------------------------
 # Zoom API response models
@@ -181,6 +198,25 @@ class ZoomRecordingDetail(BaseModel):
 # ---------------------------------------------------------------------------
 # ConnectorBuilder
 # ---------------------------------------------------------------------------
+
+
+_HTTP_STATUS_IN_MESSAGE = re.compile(r"status (\d{3})$")
+
+
+class ZoomRefusedError(RuntimeError):
+    """Zoom refused a read for good, which repeats every sync until the app's scopes or plan change."""
+
+
+def _zoom_status(response: ZoomResponse) -> int | None:
+    """Most list calls leave ``status_code`` unset and carry the status only in ``message``."""
+    if isinstance(response.status_code, int):
+        return response.status_code
+    found = _HTTP_STATUS_IN_MESSAGE.search(response.message) if isinstance(response.message, str) else None
+    return int(found.group(1)) if found else None
+
+
+def _is_refusal(status: int | None) -> bool:
+    return status is not None and 400 <= status < 500 and status not in (401, 408, 429)
 
 
 @ConnectorBuilder("Zoom")\
@@ -294,6 +330,10 @@ class ZoomConnector(BaseConnector):
         )
         self.sync_filters: Optional[FilterCollection] = None
         self.indexing_filters: Optional[FilterCollection] = None
+        self.run_state = SyncRunState()
+        self._user_list_refused = False
+        # Set False when this sync left part of Zoom unread; see full_sync_coverage.
+        self._read_everything = True
 
     # ============================================================================
     # Initialization
@@ -316,6 +356,9 @@ class ZoomConnector(BaseConnector):
     # ============================================================================
     # Core sync
     # ============================================================================
+
+    async def on_background_init_failed(self, error: Optional[Exception]) -> None:
+        await notify_init_failed(self, "Zoom", error)
 
     async def _register_authenticated_identity(self) -> None:
         """Record which source account this connector is authenticated as, so a creator whose
@@ -340,8 +383,11 @@ class ZoomConnector(BaseConnector):
             source_user_id.strip() if isinstance(source_user_id, str) else None,
         )
 
+    @reports_failed_sync("Zoom")
     async def run_sync(self) -> None:
         """Sync meetings — checkpoint-driven; handles both first run and incremental."""
+        self._read_everything = True
+        self._user_list_refused = False
         try:
             if not self.data_source:
                 await self.init()
@@ -358,26 +404,104 @@ class ZoomConnector(BaseConnector):
 
             users = await self._list_users()
             self.logger.info("👥 Zoom: %d active users found.", len(users))
+            if not users and self._user_list_refused:
+                raise self._user_list_error()
 
             app_users = self._build_app_users(users)
             if app_users:
                 await self.data_entities_processor.on_new_app_users(app_users)
                 self.logger.info("👥 Zoom: synced %d app users", len(app_users))
 
+            refused = 0
             for zoom_user in users:
                 try:
                     await self._sync_meetings_for_user(zoom_user, today)
+                except ReconnectRequiredError:
+                    raise
                 except Exception as exc:
+                    refused += isinstance(exc, ZoomRefusedError)
                     self.logger.error(
                         "❌ Zoom: error syncing user %s: %s", zoom_user.id or "unknown", exc, exc_info=True
                     )
+                    self._read_everything = False
                     continue
 
+            if users and refused == len(users):
+                self.run_state.note(
+                    "Zoom refused every user's meeting report. Add the scope report:read:user:admin to the Zoom app "
+                    "(reports need a paid Zoom plan) and reconnect the connector."
+                )
+                raise SyncIncompleteError("Zoom refused the meeting reports of every user")
+            if self._user_list_refused:
+                raise self._user_list_error()
             self.logger.info("✅ Zoom: sync complete.")
 
         except Exception as exc:
             self.logger.error("❌ Zoom: sync failed: %s", exc, exc_info=True)
             raise
+
+    def _user_list_error(self) -> SyncIncompleteError:
+        self.run_state.note(
+            "Zoom refused the list of users. Add the scope user:read:list_users:admin to the Zoom app and "
+            "reconnect the connector with a Zoom admin account."
+        )
+        return SyncIncompleteError("Zoom refused the list of users")
+
+    def _token_in_use(self) -> str | None:
+        client = self.external_client
+        return client.get_client().get_token() if client is not None else None
+
+    async def _renew_or_reject(self, sent_with: str | None) -> None:
+        """After a 401 for the token ``sent_with``: return with a new access token in use, or raise when there
+        is none to get."""
+        # Signed in again, or renewed by the background refresh or another call, since the call was sent.
+        if self._token_in_use() != sent_with:
+            return
+        await self._get_fresh_datasource()
+        if self._token_in_use() != sent_with:
+            return
+        why = await renew_access_token(self)
+        if why is not None:
+            raise self._reject(why, sent_with if why == NO_REFRESH_TOKEN else None)
+        await self._get_fresh_datasource()
+
+    def _reject(self, why: str, unrefreshable_token: str | None = None) -> ReconnectRequiredError:
+        self.logger.error(
+            "Zoom rejected the connector's credentials (HTTP 401) and they cannot be renewed (%s). The token was "
+            "revoked, expired or is wrong, or its app was removed. The sync stops until the connector is reconnected.",
+            why,
+        )
+        return self.run_state.reject(
+            f"Zoom rejected this connector's sign-in ({why}). It may have been revoked or expired, or the Zoom app "
+            "may have been removed. Syncing stopped and nothing was removed. Reconnect it in the connector's "
+            "settings; if that fails, check the app in the Zoom Marketplace.",
+            unrefreshable_token=unrefreshable_token,
+        )
+
+    async def _signed_in(self, call: Callable[[], Awaitable[ZoomResponse]]) -> ZoomResponse:
+        """``call``'s answer, sent again with a renewed token after a 401; raises when Zoom refuses that too."""
+        sent_with = self._token_in_use()
+        response = await call()
+        if response.success or _zoom_status(response) != HttpStatusCode.UNAUTHORIZED.value:
+            return self._noting_rate_limit(response)
+        await self._renew_or_reject(sent_with)
+        sent_with = self._token_in_use()
+        response = await call()
+        if not response.success and _zoom_status(response) == HttpStatusCode.UNAUTHORIZED.value:
+            if self._token_in_use() != sent_with:
+                return response  # refused a token replaced meanwhile; the next call uses the new one
+            raise self._reject("also after a token refresh")
+        return self._noting_rate_limit(response)
+
+    def _noting_rate_limit(self, response: ZoomResponse) -> ZoomResponse:
+        if _zoom_status(response) == HttpStatusCode.TOO_MANY_REQUESTS.value:
+            # The next run reads what the limit cut off: nobody has anything to fix.
+            self.run_state.rate_limited = True
+        return response
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync that left part of Zoom unread unlinks nothing it did not write."""
+        return FullSyncCoverage(complete=self._read_everything)
 
     async def run_incremental_sync(self) -> None:
         """Incremental sync — delegates to run_sync which handles checkpoint logic."""
@@ -411,6 +535,9 @@ class ZoomConnector(BaseConnector):
             len(chunks),
         )
 
+        if self.data_entities_processor.full_sync_running(self.connector_id):
+            await self._keep_meetings_before(user_id, date.fromisoformat(chunks[0][0]) if chunks else today)
+
         if not chunks:
             await self._update_user_meeting_sync_point(user_id, today - timedelta(days=1))
             return
@@ -428,9 +555,11 @@ class ZoomConnector(BaseConnector):
                 return_exceptions=True,
             )
 
+            if any(isinstance(r, BaseException) for r in results):
+                self._read_everything = False
             chunk_records: list[tuple[Record, list[Permission]]] = [
                 r for r in results  # type: ignore[misc]
-                if r is not None and not isinstance(r, Exception)
+                if r is not None and not isinstance(r, BaseException)
             ]
 
             # Flush each chunk immediately — bounds memory and ensures partial
@@ -443,6 +572,33 @@ class ZoomConnector(BaseConnector):
                 )
 
         await self._update_user_meeting_sync_point(user_id, today - timedelta(days=1))
+
+    async def _keep_meetings_before(self, user_id: str, read_from: date) -> None:
+        """Note kept the user's stored meetings that started before what this full sync lists.
+
+        Zoom's report API lists one month per call and only within the last six months
+        (ZOOM_REPORT_MAX_HISTORY_DAYS), so an older meeting is unread, not gone. Its grants
+        cannot change once it is over, so they are kept as stored rather than dropped as a
+        reported window would drop them. The report's from/to dates may be in the account's
+        timezone, so the first day read is kept too: a meeting on it may not have been listed.
+        """
+        cut = datetime.combine(read_from + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+        cut_ms = int(cut.timestamp() * 1000)
+        processor = self.data_entities_processor
+        kept: list[str] = []
+        after: Optional[str] = None
+        while True:
+            page = await processor.get_records_in_record_group(
+                self.connector_id, user_id, _STORED_MEETINGS_PAGE, after
+            )
+            kept.extend(
+                r.id for r in page
+                if isinstance(r.source_created_at, int) and r.source_created_at < cut_ms
+            )
+            if len(page) < _STORED_MEETINGS_PAGE:
+                break
+            after = page[-1].id
+        processor.note_kept_records(self.connector_id, kept)
 
     # ============================================================================
     # Utilities
@@ -579,13 +735,16 @@ class ZoomConnector(BaseConnector):
         all_users: list[ZoomUser] = []
         next_page_token: Optional[str] = None
         while True:
-            resp = await datasource.users(
+            resp = await self._signed_in(functools.partial(
+                datasource.users,
                 status="active",
                 page_size=ZOOM_PAGE_SIZE,
                 next_page_token=next_page_token,
-            )
+            ))
             if not resp.success or not resp.data:
                 self.logger.warning("Zoom: users() failed — %s", resp.message)
+                self._user_list_refused = _is_refusal(_zoom_status(resp))
+                self._read_everything = False
                 break
             all_users.extend(
                 ZoomUser.model_validate(u)
@@ -604,14 +763,15 @@ class ZoomConnector(BaseConnector):
         meetings: list[ZoomMeetingReport] = []
         next_page_token: Optional[str] = None
         while True:
-            res = await datasource.report_meetings(
+            res = await self._signed_in(functools.partial(
+                datasource.report_meetings,
                 userId=user_id,
                 from_=from_str,
                 to=to_str,
                 page_size=ZOOM_PAGE_SIZE,
                 next_page_token=next_page_token,
-            )
-            if not res.success or not res.data:
+            ))
+            if not res.success:
                 zoom_code = res.data.get("code") if isinstance(res.data, dict) else None
                 zoom_message = res.data.get("message") if isinstance(res.data, dict) else None
                 self.logger.warning(
@@ -619,7 +779,18 @@ class ZoomConnector(BaseConnector):
                     "(http=%s, zoom_code=%s, zoom_message=%s)",
                     user_id, from_str, to_str, res.message, zoom_code, zoom_message,
                 )
-                break
+                # A partial list would let the user's checkpoint move past the lost meetings.
+                failure = ZoomRefusedError if _is_refusal(_zoom_status(res)) else RuntimeError
+                raise failure(
+                    f"Zoom report_meetings({user_id}, {from_str}–{to_str}) failed: "
+                    f"http={res.message}, zoom_code={zoom_code}"
+                )
+            if not res.data:
+                # A 2xx with no body is not an empty month; ending here would drop the rest.
+                raise RuntimeError(
+                    f"Zoom report_meetings({user_id}, {from_str}–{to_str}) returned no body: "
+                    f"http={res.message}"
+                )
             meetings.extend(
                 ZoomMeetingReport.model_validate(m)
                 for m in (res.data.get("meetings") or [])  # type: ignore[union-attr]
@@ -630,15 +801,20 @@ class ZoomConnector(BaseConnector):
         return meetings
 
     async def _list_meeting_participants(
-        self, encoded_uuid: str, raise_on_error: bool = False
+        self,
+        encoded_uuid: str,
+        raise_on_error: bool = False,
+        read_so_far: Optional[list[ZoomParticipant]] = None,
     ) -> list[ZoomParticipant]:
         """GET /v2/report/meetings/{uuid}/participants — paginated.
 
         Sync builds permissions best-effort and must not abort on one bad
         meeting, so failures stop pagination silently unless *raise_on_error*.
+        Pages are collected into *read_so_far* when given, so a caller still
+        has the pages read before a raise.
         """
         datasource = await self._get_fresh_datasource()
-        participants: list[ZoomParticipant] = []
+        participants: list[ZoomParticipant] = [] if read_so_far is None else read_so_far
         next_page_token: Optional[str] = None
         while True:
             res = await datasource.report_meeting_participants(
@@ -647,17 +823,22 @@ class ZoomConnector(BaseConnector):
                 next_page_token=next_page_token,
             )
             if not res.success or not res.data:
-                if raise_on_error and not res.success:
+                if raise_on_error:
+                    # A 2xx with no body is a failed read too, not the end of the list.
+                    message = (
+                        res.message or res.error
+                        if not res.success
+                        else "Zoom returned a participants page with no body"
+                    )
                     self.logger.warning(
-                        "Zoom: participants call failed for %s — %s",
-                        encoded_uuid, res.message,
+                        "Zoom: participants call failed for %s — %s", encoded_uuid, message,
                     )
                     raise_for_stream_fetch(
                         success=False,
                         has_payload=False,
                         connector=self.display_name,
                         status=res.status_code,
-                        message=res.message or res.error,
+                        message=message,
                     )
                 break
             participants.extend(
@@ -819,17 +1000,22 @@ class ZoomConnector(BaseConnector):
                     recording_url=recording_url,
                 )
                 encoded_uuid = self._encode_uuid(meeting_uuid)
-                perms = await self._build_meeting_permissions(
+                perms, participants_read = await self._build_meeting_permissions(
                     meeting_detail=meeting_detail,
                     encoded_uuid=encoded_uuid,
                     host_email=host_email,
                 )
+                if not participants_read or meeting_detail is None:
+                    # Only some of the meeting's grants were read, so add them and
+                    # keep the stored ones rather than replace them with fewer.
+                    rec.adds_permissions = True
                 return (rec, perms)
             except Exception as exc:
                 self.logger.error(
                     "❌ Zoom: failed to process meeting %s: %s", meeting_uuid, exc,
                     exc_info=True,
                 )
+                self._read_everything = False
                 return None
 
     # ============================================================================
@@ -998,7 +1184,7 @@ class ZoomConnector(BaseConnector):
         meeting_detail: Optional[ZoomMeetingDetail],
         encoded_uuid: str,
         host_email: str,
-    ) -> list[Permission]:
+    ) -> tuple[list[Permission], bool]:
         """Build permission list from host, alt-hosts, participants, and invitees.
 
         Flow:
@@ -1007,6 +1193,8 @@ class ZoomConnector(BaseConnector):
         3. Participants (report API) → READ each
         4. Invitees (settings.meeting_invitees[].email) → READ each
         5. All deduplicated via seen_emails set
+
+        Returns (permissions, whether the participants were read in full).
         """
         perms: list[Permission] = []
         seen_emails: set[str] = set()
@@ -1034,11 +1222,19 @@ class ZoomConnector(BaseConnector):
                 seen_emails.add(alt_email)
 
         # 3 — participants → READ
+        # A read that fails part way still grants the participants it returned;
+        # the caller then adds these grants instead of replacing the stored ones.
+        participants_read = True
+        read_so_far: list[ZoomParticipant] = []
         try:
-            participants = await self._list_meeting_participants(encoded_uuid)
-            self._add_participant_permissions(perms, participants, seen_emails)
+            participants = await self._list_meeting_participants(
+                encoded_uuid, raise_on_error=True, read_so_far=read_so_far
+            )
         except Exception as exc:
+            participants = read_so_far
+            participants_read = False
             self.logger.warning("Zoom: failed to fetch participants: %s", exc)
+        self._add_participant_permissions(perms, participants, seen_emails)
 
         # 4 — invitees → READ
         for inv in settings.meeting_invitees:
@@ -1051,7 +1247,7 @@ class ZoomConnector(BaseConnector):
                 ))
                 seen_emails.add(inv_email)
 
-        return perms
+        return perms, participants_read
 
     @staticmethod
     def _add_participant_permissions(

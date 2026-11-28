@@ -1,0 +1,849 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/run-spec.schema.json",
+  "title": "PipeshubRunSpecExtension",
+  "description": "RunSpec.extensions['x.pipeshub']: PipesHub product data interpreted only by app.harness.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "knowledge",
+    "mcp",
+    "skills",
+    "mounts",
+    "via"
+  ],
+  "properties": {
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agentKey",
+        "definitionVersion",
+        "mode"
+      ],
+      "properties": {
+        "agentKey": {
+          "$ref": "../../core/common.schema.json#/$defs/Id"
+        },
+        "definitionVersion": {
+          "$ref": "../../core/common.schema.json#/$defs/PosInt"
+        },
+        "mode": {
+          "$ref": "../../core/common.schema.json#/$defs/Name"
+        }
+      },
+      "description": "Absent for the default assistant. Node authorizes agentKey at admission. definitionVersion is the agent's published version (OWD-14), whose definition the worker runs; a run admitted before versions pinned the agent's edit time (epoch ms) and runs the live agent."
+    },
+    "chat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "internalSearch"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "internal_search",
+            "web_search"
+          ],
+          "description": "The built-in assistant's chat mode (ChatModePolicy name)."
+        },
+        "internalSearch": {
+          "type": "boolean",
+          "description": "Whether the run may search the organization's knowledge (the knowledge tools and the upfront retrieval)."
+        }
+      },
+      "description": "The built-in assistant's grant, when there is no agent: its chat mode and whether it searches knowledge. Web search is the web tool grant in grants.tools. Absent for an agent, and for assistant runs pinned before P1b."
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "modelKey",
+        "modelName"
+      ],
+      "properties": {
+        "modelKey": {
+          "$ref": "../../core/common.schema.json#/$defs/Id"
+        },
+        "modelName": {
+          "$ref": "../../core/common.schema.json#/$defs/Text"
+        }
+      },
+      "description": "The configured model the first core model route names. Absent when the org default applies."
+    },
+    "knowledge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "apps",
+        "kb",
+        "strictScope"
+      ],
+      "properties": {
+        "apps": {
+          "type": "array",
+          "items": {
+            "$ref": "../../core/common.schema.json#/$defs/Id"
+          }
+        },
+        "kb": {
+          "type": "array",
+          "items": {
+            "$ref": "../../core/common.schema.json#/$defs/Id"
+          }
+        },
+        "strictScope": {
+          "type": "boolean"
+        },
+        "recordGroups": {
+          "description": "SYNC4 (#4255): the record groups the request selected below app level, each with its nested groups. Sorted, unique, at most 200 ids across the selection. The ids as asked, never their expansion: each attempt resolves them and checks access again (prepare_turn_scope).",
+          "$ref": "#/$defs/SelectionIds"
+        },
+        "records": {
+          "description": "SYNC4: the folders and records selected, each with everything under it.",
+          "$ref": "#/$defs/SelectionIds"
+        },
+        "recordsExact": {
+          "description": "SYNC4: the records selected alone.",
+          "$ref": "#/$defs/SelectionIds"
+        },
+        "sourceLimits": {
+          "description": "SYNC4 (S12): a saved agent's sources limited to some of their record groups and records, as admission read them. The worker intersects the live agent's limits with these, so an owner widening a limit never widens a running run. Empty lists limit the source to nothing. Present only on an agent run with a limited source.",
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "connectorId",
+              "recordGroups",
+              "records"
+            ],
+            "properties": {
+              "connectorId": {
+                "$ref": "../../core/common.schema.json#/$defs/Id"
+              },
+              "recordGroups": {
+                "$ref": "#/$defs/SelectionIds"
+              },
+              "records": {
+                "$ref": "#/$defs/SelectionIds"
+              }
+            }
+          }
+        }
+      }
+    },
+    "mcp": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "instanceId",
+          "manifestDigest"
+        ],
+        "properties": {
+          "instanceId": {
+            "$ref": "../../core/common.schema.json#/$defs/Id"
+          },
+          "manifestDigest": {
+            "$ref": "../../core/common.schema.json#/$defs/Digest"
+          },
+          "digestVersion": {
+            "description": "2: manifestDigest is the digest of the approved manifest entries (MCP hub, P2.8) of the server's tools the run was granted, and a claim verifies it. Absent: an unverified digest of the names (pins before version 2, or nothing approved to bind).",
+            "type": "integer",
+            "enum": [
+              2
+            ]
+          },
+          "tools": {
+            "description": "ADR-OWD-07 D-LAZY-2: `at_first_use` grants the server whole: the tools its first listing in the run offers, which the worker pins then (`mcp.pins`). The run's tool grants name none of its tools. Written only for a worker that advertises `mcp_first_use`. Absent: the run is granted the server's tools its tool grants name.",
+            "enum": [
+              "at_first_use"
+            ]
+          },
+          "pins": {
+            "description": "ADR-OWD-07 D-LAZY-5 (R31HOT2): a child's first-use pin of the server, carried from its parent: each tool the parent's first listing served, by the server's own name, at its descriptor digest, narrowed to the tools the child holds. The worker holds the server to it as the run's own pin (a tool outside it is not the run's, one at another digest is refused) and builds the tools from the stored catalog when every one is there at its digest, without listing the server again. Written only on a child, for a worker that advertises `mcp_carried_pins`. Absent: the run pins the server at its own first use.",
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 500,
+            "propertyNames": {
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "additionalProperties": {
+              "$ref": "../../core/common.schema.json#/$defs/Digest"
+            }
+          }
+        }
+      }
+    },
+    "skills": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "bundleDigest"
+        ],
+        "properties": {
+          "name": {
+            "$ref": "../../core/common.schema.json#/$defs/Name"
+          },
+          "bundleDigest": {
+            "$ref": "../../core/common.schema.json#/$defs/Digest"
+          }
+        }
+      }
+    },
+    "mounts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/WorkspaceMount"
+      }
+    },
+    "via": {
+      "description": "How the actor reached the run.",
+      "enum": [
+        "session",
+        "pat",
+        "oauth_app",
+        "trigger",
+        "service"
+      ]
+    },
+    "surface": {
+      "description": "Where the run was started, as admission logs it (`surface`): the web app, Slack or MCP. API clients start runs on `web` with `via` pat or oauth_app. Pinned only on a run that requires the worker feature run_surface, which admission requires only while a live worker advertises it; absent otherwise. The worker shows main's MCP sign-in card only on `web` with `via` session.",
+      "enum": [
+        "web",
+        "slack",
+        "mcp"
+      ]
+    },
+    "subAgent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "toolNames"
+      ],
+      "properties": {
+        "role": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "The spawn's role (legacy spawn_agent's `role`): names the sub-agent and its prompt."
+        },
+        "domainAgent": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+          "description": "The composed domain agent the child runs as, when the spawn delegated to exactly one."
+        },
+        "toolNames": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "description": "The model-visible tool names the child may call; its grant (grants.tools) bounds them."
+        }
+      },
+      "description": "A child run's sub-agent definition (K-L): what deep mode's spawn pool would build for the spawn. Pinned by Node from the child's admission request; absent for every root run."
+    },
+    "inheritedLabel": {
+      "$ref": "turn-label.schema.json",
+      "description": "A child run's inherited context (UX2): its parent's P2.5a label when the parent asked for the child, pinned by Node from the child's admission request. The child's source ledger starts from it instead of treating its parent's unseen work as unknown. Absent for every root run, and for a child whose parent sent none."
+    },
+    "inheritedGrants": {
+      "description": "A child run's inherited conversation grants (FLOWASK): the tool and destination pairs a person allowed for the rest of the conversation that its parent held when it asked for the child, pinned by Node from the child's admission request. A child journals on its own stream, which holds none of them; its approval policy holds them as its own. Absent for every root run, and for a child whose parent held none.",
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "toolId",
+          "key"
+        ],
+        "properties": {
+          "toolId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "key": {
+            "$ref": "../../core/common.schema.json#/$defs/Digest"
+          },
+          "sensitivity": {
+            "enum": [
+              "public",
+              "private",
+              "unknown"
+            ],
+            "description": "FLOWGRANT: the data the run had read when the person allowed it; the grant answers asks with the same or less sensitive data. Absent on a pin from before grants named it: it holds as it did then."
+          }
+        }
+      }
+    },
+    "parentAsks": {
+      "description": "ANSWER-CONTRACT-FU-3 (ADR-RUN-03 D2): a child run's parent can put a question to a person, pinned by Node at the child's admission: true when the parent is a person's run (runKind interactive) or a child whose own pin says true; false under a schedule's or a webhook's firing, where nobody watches. The worker offers the child the gateway's ask_user only when it is true; otherwise nothing waits on an answer, and the run's answer says what was not found and its closest matches instead. Pinned only on a run that requires the worker feature child_asks, which admission requires only while a live worker advertises it. Absent for every root run, and on a child pinned without it, which is not offered ask_user.",
+      "type": "boolean"
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workspaceId",
+        "forkOf"
+      ],
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "pattern": "^ws:\\S+:fork:\\S+$",
+          "maxLength": 512,
+          "description": "The child's own workspace: a fork of its parent's, the only workspace it may write."
+        },
+        "forkOf": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "workspaceId",
+            "revision"
+          ],
+          "properties": {
+            "workspaceId": {
+              "type": "string",
+              "pattern": "^ws:\\S+$",
+              "maxLength": 512,
+              "description": "The parent's workspace the fork was taken from, and that its changes merge back into."
+            },
+            "revision": {
+              "$ref": "../../core/common.schema.json#/$defs/UInt",
+              "description": "The parent workspace's revision the fork holds (its head at the child's admission)."
+            }
+          }
+        }
+      },
+      "description": "A child run's workspace fork (P6.4), pinned by Node at admission when the child is granted the /workspace mount; absent for every root run and for a child without a workspace."
+    },
+    "engineCarry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runId",
+        "checkpoint"
+      ],
+      "properties": {
+        "runId": {
+          "$ref": "../../core/common.schema.json#/$defs/Id",
+          "description": "The earlier engine run of the conversation whose state the child starts from."
+        },
+        "checkpoint": {
+          "$ref": "../../core/events/engine.checkpointed.schema.json#/$defs/EngineCheckpointedData",
+          "description": "That run's last engine.checkpointed data, as it journaled it."
+        },
+        "snapshot": {
+          "$ref": "../../core/events/engine.snapshotted.schema.json#/$defs/EngineSnapshottedData",
+          "description": "That run's last engine.snapshotted data (P5.9b); absent when it took none."
+        }
+      },
+      "description": "LCFIX: the engine state a code_task child (CTL-6) starts from, pinned by Node at admission: the last checkpoint of the conversation's latest completed code_task child of the same actor, when that child ran the same engine kind. Each code_task child journals on its own stream, so only admission sees the earlier one. Absent for every other run, and when nothing is carried (another engine kind decided last, or it left no state). An engine version or state schema the adapter cannot read is refused there, and the turn resumes from the workspace, flagged."
+    },
+    "codeTask": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile"
+      ],
+      "properties": {
+        "profile": {
+          "$ref": "../../core/engine-profile.schema.json",
+          "description": "The engine profile admission resolved for the agent (org ceiling, agent, request): the authority its code_task child narrows, never re-resolved."
+        },
+        "autoRoute": {
+          "type": "boolean",
+          "description": "DEEPROUTE: false when the org turned off automatic hand-off (the admin's \"Hand long work to the coding engine\"): the loop still offers code_task for the model to choose, but no turn boundary hands the run to the engine on its own. Absent: on."
+        }
+      },
+      "description": "CTL-6: the run's engine authority. A coder agent's turn runs on the loop, which offers code_task (an engine child) only when this is pinned; pinned by Node while a live worker runs engines. Requires the worker feature code_task_tool."
+    },
+    "audience": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sessionRole",
+        "ownerRef",
+        "ownRuns"
+      ],
+      "properties": {
+        "sessionRole": {
+          "$ref": "../../core/common.schema.json#/$defs/SessionRole"
+        },
+        "ownerRef": {
+          "$ref": "../../core/common.schema.json#/$defs/PrincipalRef",
+          "description": "The session's owner: history imported from the conversation without a sender is theirs."
+        },
+        "ownRuns": {
+          "type": "array",
+          "maxItems": 1000,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "../../core/common.schema.json#/$defs/Id"
+          },
+          "description": "The session's earlier root runs this run's actor started (the latest 1000, sorted). Every other run's turns reach the model as a stub unless listed in visibleRuns."
+        },
+        "visibleRuns": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "../../core/common.schema.json#/$defs/Id"
+          },
+          "description": "Other participants' earlier root runs whose confidentiality label passed for this run's actor at admission (P2.5a): complete, and every source readable with the actor's own credential (sorted). They reach the model as their question and final answer text, never their tool rows. Absent when none passed."
+        }
+      },
+      "description": "Whose turns this run's model may see (SS2, P2.5a), pinned by Node for a run in a shared context: the actor's role, the session's owner, the actor's own earlier runs and the other participants' runs whose label passed for the actor. Absent in a personal session: the run sees its whole session."
+    },
+    "memory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recalled",
+        "writeScopes"
+      ],
+      "properties": {
+        "recalled": {
+          "type": "array",
+          "maxItems": 20,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "../../core/common.schema.json#/$defs/Id"
+          },
+          "description": "The memories recalled into this run (P7.3), newest first: accepted, labelled complete, and passing for the run's actor with the actor's own credential at admission. The worker fetches their content from Node; one deleted since is not served."
+        },
+        "writeScopes": {
+          "type": "array",
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "user",
+              "session",
+              "agent"
+            ]
+          },
+          "description": "The scopes the run's remember tool may propose to; empty: the run proposes nothing."
+        }
+      },
+      "description": "Governed memory (P7.3), pinned by Node at admission when the org's memory policy recalls or grants anything; absent otherwise (today's behaviour). Requires the worker feature governed_memory."
+    },
+    "resolved": {
+      "type": "object",
+      "description": "The run's ResolvedRunConfig (contracts/control-plane/resolved-run-config.schema.json; CPD-5), validated by Node when it pins. Copied at claim only for a run that requires the resolved_config worker feature, which admission requires only while a live worker advertises it; absent otherwise, and the legacy fields above are derived from it. A worker that gets it reads approvals, the flow rule, the model and the Labs stages from it and nothing live."
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pipeshubContract",
+        "catalogDigest"
+      ],
+      "description": "What the run was admitted under beyond its executor (C2.07, SL-14): the /pipeshub contract version its engine image must declare, one digest over its granted catalog (tools, MCP manifests, skills) and the org policy revision its control-plane pin read. Pinned only on a run that requires the worker feature release_pin, which admission requires only while a live worker advertises it. The engine image's own digest is the core pins.sandboxImage. Like the rest of the spec it is never re-resolved: a re-claim runs under the same pin, and a worker refuses an engine image that no longer matches it (engine_image_changed).",
+      "properties": {
+        "pipeshubContract": {
+          "description": "The /pipeshub contract version (CONTRACT-V1) the run's engine sandbox must declare in /pipeshub/VERSION.",
+          "$ref": "../../core/common.schema.json#/$defs/PosInt"
+        },
+        "catalogDigest": {
+          "description": "Canonical digest of {tools: grants.tools, mcp, skills} as this spec pins them.",
+          "$ref": "../../core/common.schema.json#/$defs/Digest"
+        },
+        "policyRevision": {
+          "description": "The org policy head revision the run's control-plane pin read (resolved.headRevision); absent when the control plane pinned nothing (CONTROL_PLANE_PIN=off).",
+          "$ref": "../../core/common.schema.json#/$defs/UInt"
+        },
+        "policyDigest": {
+          "description": "The digest of that control-plane pin (resolved.digest); present exactly when policyRevision is.",
+          "$ref": "../../core/common.schema.json#/$defs/Digest"
+        }
+      }
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "url"
+      ],
+      "properties": {
+        "url": {
+          "type": "string",
+          "maxLength": 2048,
+          "pattern": "^https://[^/@?#\\s]+/[^?#@\\s]+$",
+          "description": "The repository's https URL, without credentials (https://github.com/owner/name)."
+        },
+        "baseRef": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "The branch the session branch starts from and its pull request targets; absent, the repository's default branch."
+        },
+        "toolsetInstanceId": {
+          "$ref": "../../core/common.schema.json#/$defs/Id",
+          "description": "The GitHub toolset instance whose connection reads and pushes the repository; the egress proxy injects its token (OWD-1). Absent: a public repository, cloned read-only and never pushed."
+        }
+      },
+      "description": "GIT-FLOW: the repository an engine run works on. Cloned in the setup phase under a fetch-only egress policy, worked on in the agent phase, pushed only to the session's own branch (pipeshub/session-<sessionId>); its pull request is opened by the control plane after approval."
+    },
+    "environment": {
+      "description": "C20.18 / G-17: the environment the agent's editor defined for its engine runs (agent builder: a setup script, non-secret variables, the folders outside the workspace the setup fills; or a repository's devcontainer.json imported into the agent), resolved from the agent definition at admission and never re-read. Pinned on an engine run and a code_task parent (whose engine child inherits it), only on a run that requires the worker feature environment_pin. The worker sets it up (or restores its post-setup snapshot, kept by organisation, definition digest and engine image digest) in each fresh sandbox before the person's workspace is materialised.",
+      "$ref": "#/$defs/Environment"
+    },
+    "deliverable": {
+      "description": "ADR-RUN-01 D1: what the run owes the person, resolved once from the request at admission (contracts/harness/vectors/deliverable.json) and never parsed again: the run's ledger, its outcome and the words the person reads are read against it. Pinned only on a run that requires the worker feature deliverable_pin, which admission requires only while a live worker advertises it; a run without it resolves it once when it loads.",
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "file",
+              "description": "The request asks for a file."
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 110,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*\\.[A-Za-z]+$",
+              "description": "The file name as the request spells it (report.md); absent when it asks for a file without naming one."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "answer",
+              "description": "The request asks for a reply in chat."
+            }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "SelectionIds": {
+      "description": "Ids a request selected below app level, sorted and unique (es_validators caps a request at 200).",
+      "type": "array",
+      "maxItems": 200,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "../../core/common.schema.json#/$defs/Id"
+      }
+    },
+    "WorkerFeature": {
+      "description": "Every worker feature Node knows (worker-capabilities features): the harness core's run shapes (approval_edits, child_runs, steering, steering_by, steering_references) and PipesHub's. A feature is added here once workers advertise it.",
+      "x-constant": "KNOWN_WORKER_FEATURES",
+      "enum": [
+        "agent_code",
+        "approval_edits",
+        "assistant_agent",
+        "caller",
+        "chat",
+        "child_asks",
+        "child_models",
+        "child_runs",
+        "code_task_tool",
+        "command_input",
+        "compact_request",
+        "deep_mode",
+        "deliverable_pin",
+        "descriptor_pins",
+        "engine_inputs",
+        "environment_pin",
+        "executor_engine",
+        "governed_memory",
+        "inherited_grants",
+        "inherited_labels",
+        "keyword_search_budget",
+        "knowledge_selection",
+        "mcp_carried_pins",
+        "mcp_first_use",
+        "model_fallback",
+        "output_locale",
+        "region_aware",
+        "release_pin",
+        "resolved_config",
+        "run_gates",
+        "run_surface",
+        "sandbox_command",
+        "session_roles",
+        "steering",
+        "steering_by",
+        "steering_references",
+        "trace_content",
+        "trigger_context",
+        "turn_labels",
+        "vendor_signin",
+        "workspace_forks"
+      ]
+    },
+    "WorkspaceMount": {
+      "description": "A path a run's workspace may mount.",
+      "x-constant": "WORKSPACE_MOUNTS",
+      "enum": [
+        "/workspace",
+        "/session",
+        "/inputs",
+        "/knowledge",
+        "/skills",
+        "/artifacts",
+        "/tool-results"
+      ]
+    },
+    "Environment": {
+      "description": "An environment definition (harness_core.engines.environments.EnvironmentDefinition): level agent sets setup, env and cachePaths; level repository carries the devcontainer.json document whose subset the worker reads (containerEnv, remoteEnv, onCreateCommand, updateContentCommand, postCreateCommand) and sets neither setup nor env. Variables are non-secret: a name reserved for PipesHub or one that looks like a secret is refused where it is written and again by the worker. An edition's overlay may add members; the worker hands them to its extension points unread.",
+      "type": "object",
+      "x-extensible": true,
+      "additionalProperties": false,
+      "required": [
+        "environmentId",
+        "level"
+      ],
+      "properties": {
+        "environmentId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$",
+          "description": "A plain name for the environment, shown in logs."
+        },
+        "level": {
+          "enum": [
+            "agent",
+            "repository"
+          ]
+        },
+        "setup": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536,
+          "description": "level agent: the setup script, run with sh in the fresh sandbox before the workspace exists."
+        },
+        "env": {
+          "type": "object",
+          "maxProperties": 64,
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "description": "level agent: non-secret variables the setup and the engine see; the harness's own always win."
+        },
+        "cachePaths": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "title": "EnvironmentCachePath",
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 256,
+            "pattern": "^/\\S+$"
+          },
+          "description": "Absolute folders outside the workspace the setup fills: what the post-setup snapshot keeps. Empty: no snapshot, the setup runs in every session."
+        },
+        "devcontainer": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 65536,
+          "description": "level repository: the repository's devcontainer.json (JSON, no comments) as the agent's editor imported it."
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "agent": {
+        "agentKey": "a1",
+        "definitionVersion": 7,
+        "mode": "react"
+      },
+      "knowledge": {
+        "apps": [
+          "app_drive"
+        ],
+        "kb": [
+          "kb_1"
+        ],
+        "strictScope": true
+      },
+      "mcp": [
+        {
+          "instanceId": "mcp_9",
+          "manifestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "skills": [
+        {
+          "name": "xlsx",
+          "bundleDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      ],
+      "mounts": [
+        "/workspace",
+        "/session",
+        "/inputs",
+        "/knowledge",
+        "/skills",
+        "/artifacts",
+        "/tool-results"
+      ],
+      "via": "session",
+      "model": {
+        "modelKey": "m_1",
+        "modelName": "claude-x"
+      }
+    },
+    {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [
+        "/workspace"
+      ],
+      "via": "pat"
+    },
+    {
+      "chat": {
+        "mode": "internal_search",
+        "internalSearch": true
+      },
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [],
+      "via": "session"
+    },
+    {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [
+        "/workspace"
+      ],
+      "via": "pat",
+      "subAgent": {
+        "role": "jira",
+        "domainAgent": "jira_agent",
+        "toolNames": [
+          "jira_agent"
+        ]
+      },
+      "workspace": {
+        "workspaceId": "ws:session-1:fork:3f2a8c1e-0b7d-4e2f-9a61-5c4d3b2a1f00",
+        "forkOf": {
+          "workspaceId": "ws:session-1",
+          "revision": 4
+        }
+      }
+    },
+    {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [
+        "/workspace"
+      ],
+      "via": "pat",
+      "audience": {
+        "sessionRole": "collaborator",
+        "ownerRef": "p_u42",
+        "ownRuns": [
+          "run_1",
+          "run_3"
+        ],
+        "visibleRuns": [
+          "run_2"
+        ]
+      },
+      "memory": {
+        "recalled": [
+          "mem_1",
+          "mem_2"
+        ],
+        "writeScopes": [
+          "session"
+        ]
+      }
+    },
+    {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [
+        "/workspace"
+      ],
+      "via": "pat",
+      "subAgent": {
+        "role": "jira",
+        "domainAgent": "jira_agent",
+        "toolNames": [
+          "jira_agent"
+        ]
+      },
+      "workspace": {
+        "workspaceId": "ws:session-1:fork:3f2a8c1e-0b7d-4e2f-9a61-5c4d3b2a1f00",
+        "forkOf": {
+          "workspaceId": "ws:session-1",
+          "revision": 4
+        }
+      },
+      "inheritedLabel": {
+        "complete": true,
+        "sources": [
+          {
+            "kind": "indexed",
+            "recordId": "r1"
+          }
+        ]
+      },
+      "inheritedGrants": [
+        {
+          "toolId": "web@duckduckgo/fetch_url",
+          "key": "sha256:3b4c1f0a9d2e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a"
+        }
+      ]
+    }
+  ]
+}

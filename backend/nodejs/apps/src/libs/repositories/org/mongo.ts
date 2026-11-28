@@ -8,6 +8,7 @@ import {
   OrgAuthConfig,
 } from '../../../modules/auth/schema/orgAuthConfiguration.schema';
 import { UserCredentials } from '../../../modules/auth/schema/userCredentials.schema';
+import { Logger } from '../../services/logger.service';
 import { sessionOf } from '../mongo';
 import { toPlain } from '../plain';
 import type { Tx } from '../uow';
@@ -20,12 +21,18 @@ import type {
   OrgRepository,
 } from './types';
 
-const dto = (row: unknown): OrgDto => toPlain<OrgDto>(row);
+// The admin-role lease is a lock, not organisation data.
+const dto = (row: unknown): OrgDto => {
+  const org = toPlain<OrgDto & { adminRoleLease?: unknown }>(row);
+  delete org.adminRoleLease;
+  return org;
+};
 const logoDto = (row: unknown): OrgLogoDto => toPlain<OrgLogoDto>(row);
 
 export class MongoOrgRepository implements OrgRepository {
+  /** Every organisation the install has had, removed ones too; never one whose create failed. */
   async count(): Promise<number> {
-    return Org.countDocuments();
+    return Org.countDocuments({ pendingCreate: { $ne: true } });
   }
 
   async getLive(orgId: string): Promise<OrgDto | null> {
@@ -132,7 +139,14 @@ export class MongoOrgRepository implements OrgRepository {
     adminUserId: string;
     adminEmail: string;
   }> {
-    const org = new Org({ ...input.org, _id: input.ids.orgId });
+    // Written hidden and made live by the last write (below), so no write of a failed create can leave a live
+    // organisation, even one the server applies after the cleanup ran.
+    const org = new Org({
+      ...input.org,
+      _id: input.ids.orgId,
+      isDeleted: true,
+      pendingCreate: true,
+    });
     const adminUser = new Users({
       _id: input.ids.adminUserId,
       fullName: input.admin.fullName,
@@ -171,12 +185,92 @@ export class MongoOrgRepository implements OrgRepository {
 
     const session = sessionOf(tx);
     const opts = session ? { session } : undefined;
-    await authConfig.save(opts);
-    await allUsersGroup.save(opts);
-    await standardUsersGroup.save(opts);
-    await adminUser.save(opts);
-    await credentials.save(opts);
-    await org.save(opts);
+    const docs = [
+      org,
+      authConfig,
+      allUsersGroup,
+      standardUsersGroup,
+      adminUser,
+      credentials,
+    ];
+    let started = 0;
+    try {
+      for (const doc of docs) {
+        // Counted before the save: an insert the server applied but whose reply was lost must be removed too.
+        started += 1;
+        await doc.save(opts);
+      }
+      // Matches only the hidden row as it was written: applied after the cleanup removed it or hid it again (which moves
+      // updatedAt on), it changes nothing.
+      await Org.updateOne(
+        {
+          _id: org._id,
+          pendingCreate: true,
+          updatedAt: org.get('updatedAt') as Date | undefined,
+        },
+        { $set: { isDeleted: false }, $unset: { pendingCreate: 1 } },
+        opts,
+      );
+      org.isDeleted = false;
+      org.pendingCreate = undefined;
+    } catch (error) {
+      // Without a transaction nothing undoes the rows already written, so remove them: the organisation is created whole or not at all.
+      if (!session) {
+        // Hide the organisation again before removing anything: the activation may have applied with its reply lost, and
+        // removing the administrator of a live organisation is worse than leaving the create whole.
+        try {
+          await Org.updateOne(
+            { _id: org._id },
+            {
+              $set: {
+                isDeleted: true,
+                pendingCreate: true,
+                updatedAt: new Date(
+                  Math.max(
+                    Date.now(),
+                    ((org.get('updatedAt') as Date | undefined)?.getTime() ??
+                      0) + 1,
+                  ),
+                ),
+              },
+            },
+            { timestamps: false },
+          );
+        } catch (hideError) {
+          Logger.getInstance().warn(
+            'Organisation create failed and the organisation could not be hidden again; its rows are left as they are',
+            {
+              id: String(org._id),
+              error:
+                hideError instanceof Error
+                  ? hideError.message
+                  : String(hideError),
+            },
+          );
+          throw error;
+        }
+        const tried = docs.slice(0, started);
+        const undone = await Promise.allSettled(
+          tried.map((doc) => doc.deleteOne()),
+        );
+        tried.forEach((doc, i) => {
+          const r = undone[i];
+          if (r?.status === 'rejected')
+            Logger.getInstance().warn(
+              'Organisation create failed and a row it wrote could not be removed',
+              {
+                collection: doc.collection.collectionName,
+                id: String(doc._id),
+                error:
+                  r.reason instanceof Error
+                    ? r.reason.message
+                    : String(r.reason),
+              },
+            );
+        });
+      }
+      throw error;
+    }
     return {
       org: dto(org),
       adminUserId: String(adminUser._id),

@@ -397,6 +397,26 @@ async def test_a_replace_swaps_the_origins_links_and_leaves_the_rest(w: World) -
             await w.p.replace_record_entity_relations(*args)
 
 
+async def test_a_replace_keeps_the_edge_types_it_is_told_to_keep(w: World) -> None:
+    await w.nodes("users", {"_key": "bob"}, {"_key": "ann"})
+    await w.nodes("records", rec("case"))
+
+    def edge(user: str, edge_type: str) -> dict:
+        return {"_from": "records/case", "_to": f"users/{user}", "edgeType": edge_type, "origin": "INFERRED", "createdAtTimestamp": 2}
+
+    async def stored() -> list[tuple[str, str]]:
+        return [(e[1], e[2]) for e in await edges(w, "entityRelations", frm=("records", "case"))]
+
+    await w.p.replace_record_entity_relations("case", ["users"], "INFERRED", [edge("ann", "OWNED_BY"), edge("bob", "SHARED_WITH")])
+    assert await stored() == [("users/ann", "OWNED_BY"), ("users/bob", "SHARED_WITH")]
+    await w.p.replace_record_entity_relations("case", ["users"], "INFERRED", [edge("ann", "AUTHORED_BY")], keep_edge_types=["SHARED_WITH"])
+    assert await stored() == [("users/ann", "AUTHORED_BY"), ("users/bob", "SHARED_WITH")]
+    await w.p.replace_record_entity_relations("case", ["users"], "INFERRED", [edge("ann", "AUTHORED_BY"), edge("ann", "SHARED_WITH")], keep_edge_types=["SHARED_WITH"])
+    assert await stored() == [("users/ann", "AUTHORED_BY"), ("users/ann", "SHARED_WITH"), ("users/bob", "SHARED_WITH")]
+    await w.p.replace_record_entity_relations("case", ["users"], "INFERRED", [])
+    assert await stored() == []
+
+
 async def test_a_replace_that_fails_keeps_the_old_links_without_a_transaction(w: World) -> None:
     await w.nodes("users", {"_key": "bob"}, {"_key": "ann"})
     await w.nodes("records", rec("case"))

@@ -1,13 +1,13 @@
 'use client';
 
 import React, { useRef, useCallback, useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import {
   Box,
   Flex,
   Text,
   Heading,
-  Switch,
   TextField,
   Avatar,
 } from '@radix-ui/themes';
@@ -21,11 +21,19 @@ import {
 import { useToastStore } from '@/lib/store/toast-store';
 import { useGeneralStore } from './store';
 import type { GeneralFormData } from './store';
-import { OrgApi, MetricsApi, type MetricsConfig, type OrgResponse } from './api';
-import { useOrg, useOrgLogo, useOrgMetrics } from './use-org';
+import { OrgApi, type OrgResponse } from './api';
+import { useOrg, useOrgLogo } from './use-org';
+import { useDataCollection, DataCollectionSection } from './data-collection';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
+import { orgConfirmationName } from '@/lib/org-deletion';
+import { DeleteOrgSection, GeneralSettingsExtras } from '@/config';
+import {
+  useFeatureFlagsStore,
+  selectAgentHarnessOn,
+} from '@/lib/store/feature-flags-store';
 import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
+import { WorkspaceEditionSection } from '@/config';
 
 // ========================================
 // Read-only view for non-admin users
@@ -51,7 +59,7 @@ function ReadOnlyGeneralPage({ form, logoUrl }: ReadOnlyGeneralPageProps) {
           <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {t('workspace.sidebar.nav.general')}
           </Heading>
-          <Text size="2" style={{ color: 'var(--gray-10)', marginTop: 'var(--space-1)', display: 'block' }}>
+          <Text size="2" style={{ color: 'var(--gray-11)', marginTop: 'var(--space-1)', display: 'block' }}>
             {t('workspace.general.subtitle')}
           </Text>
         </Box>
@@ -90,7 +98,7 @@ function ReadOnlyGeneralPage({ form, logoUrl }: ReadOnlyGeneralPageProps) {
   );
 }
 
-function toGeneralForm(org: OrgResponse, metrics: MetricsConfig | null): GeneralFormData {
+function toGeneralForm(org: OrgResponse, optIn: boolean): GeneralFormData {
   return {
     registeredName: org.registeredName || '',
     displayName: org.shortName || '',
@@ -100,7 +108,7 @@ function toGeneralForm(org: OrgResponse, metrics: MetricsConfig | null): General
     state: org.permanentAddress?.state || '',
     city: org.permanentAddress?.city || '',
     zipCode: org.permanentAddress?.postCode || '',
-    dataCollection: metrics?.enableMetricCollection === 'true',
+    optIn,
     logoFileName: null,
   };
 }
@@ -114,15 +122,18 @@ export default function GeneralPage() {
   const addToast = useToastStore((s) => s.addToast);
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
+  const harnessOn = useFeatureFlagsStore(selectAgentHarnessOn);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { data: org, error: orgError, isValidating: orgValidating, mutate: rereadOrg } = useOrg();
   const { data: savedLogoUrl, isLoading: logoLoading } = useOrgLogo();
   const {
-    data: metrics,
-    error: metricsError,
-    isValidating: metricsValidating,
-    mutate: rereadMetrics,
-  } = useOrgMetrics(isProfileInitialized && isAdmin === true);
+    loaded: optInLoaded,
+    error: optInError,
+    validating: optInValidating,
+    reread: rereadOptIn,
+    value: savedOptIn,
+    save: saveOptIn,
+  } = useDataCollection();
   // Local preview of a logo while it uploads; the saved logo comes from the cache.
   const [previewLogoUrl, setPreviewLogoUrl] = useState<string | null>(null);
   const [logoUploading, setLogoUploading] = useState(false);
@@ -131,6 +142,9 @@ export default function GeneralPage() {
   const hasServerLogo = Boolean(savedLogoUrl);
   // Until the form holds the server's values, Save stays hidden: it would send blanks over them.
   const [formSeeded, setFormSeeded] = useState(false);
+  const router = useRouter();
+  // Where a link in the form was headed when the discard dialog opened for it.
+  const leavingHrefRef = useRef<string | null>(null);
   const loadErrorShownRef = useRef(false);
   const cachedErrorRetriedRef = useRef(false);
 
@@ -159,25 +173,25 @@ export default function GeneralPage() {
 
   // ── Fill the form from the cached org ──────────────────────
 
-  // Seeded once per visit: later org/metrics refreshes (after Save) must not replace what is being edited.
+  // Seeded once per visit: later refreshes (after Save) must not replace what is being edited.
   useEffect(() => {
     // isAdmin is null until the profile is initialized, which would pick the wrong branch.
     if (!isProfileInitialized || formSeeded) return;
-    if (org && !logoLoading && (!isAdmin || metrics)) {
+    if (org && !logoLoading && (!isAdmin || optInLoaded)) {
       setFormSeeded(true);
-      setForm(toGeneralForm(org, isAdmin ? metrics : null));
+      setForm(toGeneralForm(org, Boolean(isAdmin) && savedOptIn));
       setLoading(false);
       return;
     }
     const orgFailed = orgError && !org && !orgValidating;
-    const metricsFailed = isAdmin && metricsError && !metrics && !metricsValidating;
-    if (!orgFailed && !metricsFailed) return;
+    const optInFailed = isAdmin && optInError && !optInLoaded && !optInValidating;
+    if (!orgFailed && !optInFailed) return;
     // An error left in the cache by an earlier read (the sidebar footer) is not this visit's answer:
     // ask once more before reporting it. So a real outage makes two reads before the toast.
     if (!cachedErrorRetriedRef.current) {
       cachedErrorRetriedRef.current = true;
       if (orgFailed) void rereadOrg();
-      if (metricsFailed) void rereadMetrics();
+      if (optInFailed) void rereadOptIn();
       return;
     }
     if (!loadErrorShownRef.current) {
@@ -189,8 +203,8 @@ export default function GeneralPage() {
       });
     }
     setLoading(false);
-  }, [isAdmin, isProfileInitialized, formSeeded, org, logoLoading, metrics, orgError, orgValidating,
-    metricsError, metricsValidating, rereadOrg, rereadMetrics, addToast, setForm, setLoading]);
+  }, [isAdmin, isProfileInitialized, formSeeded, org, logoLoading, optInLoaded, savedOptIn, orgError, orgValidating,
+    optInError, optInValidating, rereadOrg, rereadOptIn, addToast, setForm, setLoading]);
 
   // ── Handlers ───────────────────────────────────────────────
 
@@ -222,13 +236,10 @@ export default function GeneralPage() {
           city: form.city,
           postCode: form.zipCode,
         },
-        dataCollectionConsent: form.dataCollection,
       });
 
-      // 2. Toggle metrics collection if the value changed
-      if (form.dataCollection !== savedForm.dataCollection) {
-        await MetricsApi.toggleMetricsCollection(form.dataCollection);
-      }
+      // 2. Save the opt-in setting, where there is one
+      await saveOptIn(form.optIn, savedForm.optIn);
 
       markSaved();
       addToast({
@@ -243,7 +254,7 @@ export default function GeneralPage() {
         description: t('workspace.general.toasts.saveErrorDescription'),
       });
     }
-  }, [formSeeded, form, savedForm, validate, markSaved, addToast]);
+  }, [formSeeded, form, savedForm, validate, saveOptIn, markSaved, addToast]);
 
   const handleDiscard = useCallback(() => {
     setDiscardDialogOpen(true);
@@ -257,7 +268,30 @@ export default function GeneralPage() {
       title: t('workspace.general.toasts.discardSuccess'),
       description: t('workspace.general.toasts.discardSuccessDescription'),
     });
-  }, [discardChanges, addToast]);
+    const href = leavingHrefRef.current;
+    leavingHrefRef.current = null;
+    if (href) router.push(href);
+  }, [discardChanges, addToast, router]);
+
+  // A link inside the form (the Edition section) would drop unsaved edits, so it asks first.
+  const confirmLeavingWithEdits = useCallback(
+    (e: React.MouseEvent) => {
+      const link = (e.target as HTMLElement).closest('a');
+      if (!link || !isDirty() || link.target === '_blank' || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      e.preventDefault();
+      leavingHrefRef.current = link.getAttribute('href');
+      setDiscardDialogOpen(true);
+    },
+    [isDirty, setDiscardDialogOpen]
+  );
+
+  const handleDiscardDialogOpenChange = useCallback(
+    (open: boolean) => {
+      if (!open) leavingHrefRef.current = null;
+      setDiscardDialogOpen(open);
+    },
+    [setDiscardDialogOpen]
+  );
 
   const handleFileChange = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -351,7 +385,7 @@ export default function GeneralPage() {
           <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
             {t('workspace.sidebar.nav.general')}
           </Heading>
-          <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
+          <Text size="2" style={{ color: 'var(--slate-11)', marginTop: 'var(--space-1)', display: 'block' }}>
            {t('workspace.general.manageSubtitle')}
           </Text>
         </Box>
@@ -480,65 +514,40 @@ export default function GeneralPage() {
           </SettingsSection>
         </Box>
 
-        {/* ── Data Collection Settings Section ── */}
+        <Box onClickCapture={confirmLeavingWithEdits}>
+          <WorkspaceEditionSection />
+        </Box>
+
+        {/* The section spaces itself, so a build without it leaves no gap */}
+        <DataCollectionSection />
+
+        {/* ── An edition's cards, beside the org's deletion ── */}
+        {harnessOn && (
+          <Flex direction="column" gap="5" style={{ marginBottom: 'var(--space-5)' }}>
+            <GeneralSettingsExtras />
+          </Flex>
+        )}
+
+        {/* ── Delete organization ── */}
         {/* Extra bottom padding so save bar doesn't overlap last section */}
         <Box style={{ marginBottom: 80 }}>
-          <SettingsSection
-            title={t('workspace.general.dataCollection')}
-            rightAction={
-              <Flex align="center" gap="2">
-                <Switch
-                  checked={form.dataCollection}
-                  onCheckedChange={(checked) => setField('dataCollection', checked)}
-                  size="1"
-                />
-                <Text size="2" style={{ color: 'var(--slate-11)' }}>
-                  {t('workspace.general.enableDataCollection')}
-                </Text>
-              </Flex>
-            }
-          >
-            <Box style={{ padding: 'var(--space-4) var(--space-5)' }}>
-              <Text
-                size="2"
-                style={{ color: 'var(--slate-11)', display: 'block', marginBottom: 'var(--space-3)' }}
-              >
-                {t('workspace.general.dataCollectionDescription')}
-              </Text>
-              <Flex direction="column" gap="2" style={{ paddingLeft: 'var(--space-1)' }}>
-                {[
-                  t('workspace.general.dataCollectionReason1'),
-                  t('workspace.general.dataCollectionReason2'),
-                  t('workspace.general.dataCollectionReason3'),
-                  t('workspace.general.dataCollectionReason4'),
-                  t('workspace.general.dataCollectionReason5'),
-                ].map((item) => (
-                  <Flex key={item} align="start" gap="2">
-                    <Box
-                      style={{
-                        width: 'var(--space-1)',
-                        height: 'var(--space-1)',
-                        borderRadius: '50%',
-                        backgroundColor: 'var(--slate-9)',
-                        marginTop: 'var(--space-2)',
-                        flexShrink: 0,
-                      }}
-                    />
-                    <Text size="2" style={{ color: 'var(--slate-11)' }}>
-                      {item}
-                    </Text>
-                  </Flex>
-                ))}
-              </Flex>
-            </Box>
-          </SettingsSection>
+          {harnessOn && (
+            <DeleteOrgSection
+              orgName={savedForm.displayName || savedForm.registeredName}
+              confirmName={orgConfirmationName({
+                registeredName: savedForm.registeredName,
+                shortName: savedForm.displayName,
+                contactEmail: savedForm.contactEmail,
+              })}
+            />
+          )}
         </Box>
       </SettingsPageContainer>
 
       {/* ── Discard Confirmation Dialog ── */}
       <ConfirmationDialog
         open={discardDialogOpen}
-        onOpenChange={setDiscardDialogOpen}
+        onOpenChange={handleDiscardDialogOpenChange}
         title={t('workspace.general.discardDialog.title')}
         message={t('workspace.general.discardDialog.message')}
         confirmLabel={t('workspace.general.discardDialog.confirm')}

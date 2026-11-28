@@ -15,6 +15,8 @@ export interface IOrg extends Document {
   phoneNumber?: string;
   permanentAddress?: Address;
   isDeleted: boolean;
+  /** Set while createWithAdmin writes the organisation (it is also `isDeleted`); a row that keeps it is a create that failed. */
+  pendingCreate?: boolean;
   deletedByUser?: string;
   onBoardingStatus : string;
   /** Where the signup came from: a `ref` tag, or `direct`. */
@@ -23,6 +25,12 @@ export interface IOrg extends Document {
   signupReferrerDomain?: string;
   /** Written during admin demotion txns to serialize last-admin checks. */
   adminRoleGuardAt?: Date;
+  /** Held by one admin-role change at a time on a standalone MongoDB (no transactions to serialise them). */
+  adminRoleLease?: { holder: string; until: Date };
+  /** The default chat's coding engine for the org (ENGPICK); absent: none. */
+  defaultCodingEngine?: string;
+  /** DEEPROUTE: false when the org turned off handing long work to the coding engine on its own; absent: on. */
+  codingEngineAutoRoute?: boolean;
 }
 
 const orgSchema = new Schema<IOrg>(
@@ -74,8 +82,15 @@ const orgSchema = new Schema<IOrg>(
     signupChannel: { type: String },
     signupReferrerDomain: { type: String },
     isDeleted: { type: Boolean, default: false },
+    pendingCreate: { type: Boolean },
     deletedByUser: { type: String },
     adminRoleGuardAt: { type: Date },
+    adminRoleLease: {
+      type: { holder: { type: String }, until: { type: Date } },
+      default: undefined,
+    },
+    defaultCodingEngine: { type: String, maxlength: 64 },
+    codingEngineAutoRoute: { type: Boolean },
   },
   { timestamps: true },
 );

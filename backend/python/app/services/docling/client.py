@@ -16,6 +16,7 @@ from app.services.base_client import (
     ServiceUnavailableError,
 )
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
+from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
 from app.utils.env_config import env_int
 from app.utils.error_class import classify_error, mark_error
 
@@ -48,6 +49,27 @@ class DoclingUnavailableError(IndexingError):
     def __init__(self, message: str, *, status_code: int | None = None) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+class DoclingNotServing(DoclingUnavailableError, RequeueWithoutAttempt):
+    """Docling never received the file (a refused or timed-out connection, an open circuit, load shed before any work).
+
+    The record waits for Docling: the consumer hands it back every ``HANDBACK_DELAY_S`` without counting an attempt,
+    until the delivery backstop gives up on it. A failure after the file reached Docling stays a counted
+    ``DoclingUnavailableError``, since the file may have caused it (a PDF that brings Docling down).
+    """
+
+    counts_toward_backstop = True
+    pauses_consumer = False  # one record's wait; records that do not need Docling keep flowing
+    give_up_label = "Docling stayed unavailable"
+    HANDBACK_DELAY_S = 60.0
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message, status_code=status_code)
+        # Set after super(): through the MRO, IndexingError's init runs RequeueWithoutAttempt's, which resets both.
+        self.delay_s = self.HANDBACK_DELAY_S
+        # The outage is already reported by the client at WARNING; each waiting record's hand-back is routine.
+        self.log_level = logging.INFO
 
 
 class DoclingParseError(DocumentProcessingError):
@@ -125,6 +147,11 @@ def _docling_unavailable(exc: ServiceCallError) -> bool:
         or exc.status_code in TRANSIENT_STATUS_CODES
         or isinstance(exc.__cause__, (httpx.ReadError, httpx.RemoteProtocolError))
     )
+
+
+def _docling_never_saw_it(exc: ServiceCallError) -> bool:
+    """No attempt of the call reached Docling: it refused, timed out connecting, or shed the load from the first answer."""
+    return isinstance(exc, (ServiceUnavailableError, ServiceBackpressureError)) and not exc.delivered
 
 
 class DoclingClient(BaseServiceClient):
@@ -245,6 +272,8 @@ class DoclingClient(BaseServiceClient):
         try:
             response = await self._call_parse_pdf(record_name, pdf_binary, form_data)
         except ServiceCallError as exc:
+            if _docling_never_saw_it(exc):
+                raise DoclingNotServing("Docling is not serving", status_code=exc.status_code) from exc
             if _docling_unavailable(exc):
                 raise DoclingUnavailableError(
                     "Docling is not serving", status_code=exc.status_code,

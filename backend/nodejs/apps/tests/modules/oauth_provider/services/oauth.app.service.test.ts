@@ -1,4 +1,6 @@
 import 'reflect-metadata'
+import { readFileSync } from 'fs'
+import { join as pathJoin } from 'path'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import crypto from 'crypto'
@@ -14,9 +16,9 @@ import {
   InvalidRedirectUriError,
 } from '../../../../src/libs/errors/oauth.errors'
 import { NotFoundError, BadRequestError } from '../../../../src/libs/errors/http.errors'
-import { PAT_APP_CLIENT_ID_PREFIX, SERVICE_TOKEN_APP_CLIENT_ID_PREFIX, FIRST_PARTY_DEVICE_CLIENT_ID } from '../../../../src/modules/oauth_provider/constants/constants'
+import { ALLOWED_CUSTOM_REDIRECT_URIS, PAT_APP_CLIENT_ID_PREFIX, SERVICE_TOKEN_APP_CLIENT_ID_PREFIX, FIRST_PARTY_DEVICE_CLIENT_ID } from '../../../../src/modules/oauth_provider/constants/constants'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
-import { createMockLogger } from '../../../helpers/mock-logger'
+import { createMockLogger, createSnakeCaseLogKeyGuard } from '../../../helpers/mock-logger'
 
 describe('OAuthAppService', () => {
   let service: OAuthAppService
@@ -53,7 +55,11 @@ describe('OAuthAppService', () => {
     )
   })
 
-  afterEach(() => {
+  const snakeCaseKeys = createSnakeCaseLogKeyGuard()
+  after(() => snakeCaseKeys.report())
+
+  afterEach(function () {
+    snakeCaseKeys.check(this, mockLogger)
     sinon.restore()
   })
 
@@ -274,7 +280,7 @@ describe('OAuthAppService', () => {
         updatedAt: new Date(),
       }
 
-      sinon.stub(OAuthApp, 'create').resolves(mockApp as any)
+      const create = sinon.stub(OAuthApp, 'create').resolves(mockApp as any)
 
       const result = await service.createApp(fakeOrgId, fakeUserId, true, {
         name: 'Test App',
@@ -283,6 +289,16 @@ describe('OAuthAppService', () => {
         redirectUris: ['https://example.com/callback'],
       })
 
+      // The one line for the event (the controller writes none); the app's name is a label an admin chose.
+      expect(mockLogger.info.args.map(([message, meta]: [string, any]) => [message, { ...meta, app_id: String(meta.app_id) }]))
+        .to.deep.equal([
+          ['OAuth app created', {
+            app_id: String(mockApp._id),
+            client_id: (create.firstCall.args[0] as any).clientId,
+            org_id: fakeOrgId,
+            name: 'Test App',
+          }],
+        ])
       expect(result).to.have.property('clientSecret')
       expect(result).to.have.property('clientId')
       expect(result.name).to.equal('Test App')
@@ -634,7 +650,7 @@ describe('OAuthAppService', () => {
       const first = findOne.firstCall.args[0] as Record<string, unknown>
       expect(first).to.not.have.property('createdBy')
       expect(first.orgId).to.deep.equal(new Types.ObjectId(fakeOrgId))
-      const write = findOne.secondCall.args[0] as Record<string, unknown>
+      const write = findOne.secondCall.args[0] as unknown as Record<string, unknown>
       expect(write.createdBy).to.deep.equal(new Types.ObjectId(creatorId))
       expect(app.status).to.equal(OAuthAppStatus.SUSPENDED)
       expect(mockOAuthTokenService.revokeAllTokensForApp.calledOnceWith('member-app')).to.be.true
@@ -713,7 +729,7 @@ describe('OAuthAppService', () => {
       } catch (error) {
         expect(error).to.be.instanceOf(NotFoundError)
       }
-      const filter = findOne.firstCall.args[0] as Record<string, unknown>
+      const filter = findOne.firstCall.args[0] as unknown as Record<string, unknown>
       expect(filter.createdBy).to.deep.equal(new Types.ObjectId(fakeUserId))
     })
   })
@@ -848,8 +864,8 @@ describe('OAuthAppService', () => {
       await service.listApps(fakeOrgId, fakeUserId, {})
 
       const expectedCreatedBy = new Types.ObjectId(fakeUserId)
-      const findFilter = findStub.firstCall.args[0] as Record<string, unknown>
-      const countFilter = countStub.firstCall.args[0] as Record<string, unknown>
+      const findFilter = findStub.firstCall.args[0] as unknown as Record<string, unknown>
+      const countFilter = countStub.firstCall.args[0] as unknown as Record<string, unknown>
       expect(findFilter.createdBy).to.deep.equal(expectedCreatedBy)
       expect(countFilter.createdBy).to.deep.equal(expectedCreatedBy)
     })
@@ -866,7 +882,7 @@ describe('OAuthAppService', () => {
 
       await service.listApps(fakeOrgId, fakeUserId, {})
 
-      const findFilter = findStub.firstCall.args[0] as Record<string, unknown>
+      const findFilter = findStub.firstCall.args[0] as unknown as Record<string, unknown>
       expect(findFilter.createdBy).to.deep.equal(new Types.ObjectId(fakeUserId))
     })
   })
@@ -1065,7 +1081,7 @@ describe('OAuthAppService', () => {
 
       await service.updateApp(fakeAppId, fakeOrgId, fakeUserId, false, { name: 'X' })
 
-      const filter = findStub.firstCall.args[0] as Record<string, unknown>
+      const filter = findStub.firstCall.args[0] as unknown as Record<string, unknown>
       expect(filter.createdBy).to.deep.equal(new Types.ObjectId(fakeUserId))
     })
   })
@@ -1302,6 +1318,20 @@ describe('OAuthAppService', () => {
         expect(error).to.be.instanceOf(InvalidClientError)
       }
     })
+
+    // Without the guard, hashing an absent secret throws a TypeError, which the endpoints answer as their own failure.
+    for (const secret of [undefined, null, '', 42]) {
+      it(`should refuse a client_secret of ${JSON.stringify(secret)} as invalid_client, before any read`, async () => {
+        const findOne = sinon.stub(OAuthApp, 'findOne')
+        try {
+          await service.verifyClientCredentials('cid', secret as never)
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidClientError)
+        }
+        expect(findOne.called).to.equal(false)
+      })
+    }
   })
 
   describe('validateRedirectUriForApp', () => {
@@ -1317,6 +1347,139 @@ describe('OAuthAppService', () => {
         expect.fail('Should have thrown')
       } catch (error) {
         expect(error).to.be.instanceOf(InvalidRedirectUriError)
+      }
+    })
+  })
+
+  describe('redirect URI scheme rules', () => {
+    const bad = [
+      'javascript://localhost/x',
+      'java\tscript://localhost/x',
+      'javascript:alert(1)',
+      'data:text/html,hi',
+      'vbscript://127.0.0.1/x',
+      'file://localhost/x',
+      'http://example.com/cb',
+    ]
+    const notScriptCapable = ['http://example.com/cb', 'ftp://localhost/x', 'ws://localhost/x', 'wss://localhost/x']
+    const scriptCapable = bad.filter((uri) => !notScriptCapable.includes(uri))
+    const good = [
+      'https://a.test/cb',
+      'http://localhost:3000/cb',
+      'http://127.0.0.1/cb',
+      'http://[::1]/cb',
+      ...ALLOWED_CUSTOM_REDIRECT_URIS,
+    ]
+    const create = (redirectUris: string[]) =>
+      (service as any).validateRedirectUris(redirectUris)
+
+    it('refuses non web-safe URIs on create and update', () => {
+      for (const uri of bad) {
+        expect(() => create([uri]), uri).to.throw(InvalidRedirectUriError)
+      }
+    })
+
+    it('accepts an app scheme on a loopback host on create and update', () => {
+      for (const uri of ['myapp://localhost/cb', 'myapp://127.0.0.1:9000/cb', 'myapp://[::1]/cb']) {
+        expect(() => create([uri]), uri).to.not.throw()
+        expect(() => (service as any).validateRedirectUris([uri], ['https://a.test/cb']), uri).to.not.throw()
+      }
+    })
+
+    it('still refuses blocked schemes on a loopback host', () => {
+      for (const uri of ['javascript://localhost/cb', 'data://localhost/cb', 'file://localhost/etc/passwd', 'ftp://localhost/cb', 'ws://localhost/cb']) {
+        expect(() => create([uri]), uri).to.throw(InvalidRedirectUriError)
+      }
+    })
+
+    it('still refuses an app scheme on another host', () => {
+      expect(() => create(['myapp://evil.test/cb'])).to.throw(InvalidRedirectUriError)
+    })
+
+    it('accepts https, loopback http and the allow-listed custom URIs', () => {
+      for (const uri of good) {
+        expect(() => create([uri]), uri).to.not.throw()
+      }
+    })
+
+    it('keeps the OpenAPI redirect URI pattern in step with the service', () => {
+      const spec = readFileSync(
+        pathJoin(__dirname, '../../../../src/modules/api-docs/pipeshub-openapi.yaml'),
+        'utf8',
+      )
+      const patterns = [...spec.matchAll(/^\s+pattern: '(\^\(\?:cursor:\/\/anysphere.*)'$/gm)]
+        .map((m) => new RegExp(m[1]!.replace(/''/g, "'")))
+      expect(patterns).to.have.length(2)
+      const refused = [
+        'javascript://localhost/x',
+        'data://localhost/cb',
+        'file://localhost/x',
+        'ftp://localhost/cb',
+        'ws://localhost/cb',
+        'WSS://127.0.0.1/cb',
+        'vbscript://[::1]/cb',
+        'myapp://evil.test/cb',
+        'http://example.com/cb',
+      ]
+      const accepted = ['https://a.test/cb', 'http://localhost:3000/cb', 'http://[::1]/cb', 'myapp://[::1]/cb', 'myapp://127.0.0.1:9000/cb']
+      for (const pattern of patterns) {
+        for (const uri of refused) {
+          expect(pattern.test(uri), uri).to.equal(false)
+          expect(() => create([uri]), uri).to.throw(InvalidRedirectUriError)
+        }
+        for (const uri of accepted) {
+          expect(pattern.test(uri), uri).to.equal(true)
+          expect(() => create([uri]), uri).to.not.throw()
+        }
+      }
+    })
+
+    it('refuses a stored URI that does not parse at authorize time', () => {
+      for (const uri of ['not a uri', '//no-scheme/cb', 'http://[::1/cb']) {
+        expect(() => service.validateRedirectUriForApp({ redirectUris: [uri] } as any, uri), uri)
+          .to.throw(InvalidRedirectUriError)
+      }
+    })
+
+    it('does not keep a stored URI that does not parse on update', () => {
+      expect(() => (service as any).validateRedirectUris(['not a uri'], ['not a uri']))
+        .to.throw(InvalidRedirectUriError)
+    })
+
+    it('refuses a stored script-capable URI at authorize time', () => {
+      for (const uri of scriptCapable) {
+        expect(() => service.validateRedirectUriForApp({ redirectUris: [uri] } as any, uri), uri)
+          .to.throw(InvalidRedirectUriError)
+      }
+    })
+
+    it('keeps accepting a stored URI that is not script-capable at authorize time', () => {
+      for (const uri of notScriptCapable) {
+        expect(() => service.validateRedirectUriForApp({ redirectUris: [uri] } as any, uri), uri).to.not.throw()
+      }
+    })
+
+    it('keeps a stored URI on update even if creation would refuse it', () => {
+      for (const uri of notScriptCapable) {
+        expect(() => (service as any).validateRedirectUris([uri], [uri]), uri).to.not.throw()
+      }
+    })
+
+    it('refuses a stored script-capable URI on update', () => {
+      for (const uri of scriptCapable) {
+        expect(() => (service as any).validateRedirectUris([uri], [uri]), uri).to.throw(InvalidRedirectUriError)
+      }
+    })
+
+    it('refuses on update a URI that is not stored on that app', () => {
+      for (const uri of notScriptCapable) {
+        expect(() => (service as any).validateRedirectUris([uri], ['https://a.test/cb']), uri).to.throw(InvalidRedirectUriError)
+      }
+    })
+
+    it('still accepts an app-specific scheme registered through DCR', () => {
+      for (const uri of ['com.example.app:/cb', 'cursor://anysphere.cursor-mcp/oauth/callback', 'vscode://x.y/cb']) {
+        expect(() => service.validateRedirectUriForApp({ redirectUris: [uri] } as any, uri), uri).to.not.throw()
       }
     })
   })
@@ -1395,7 +1558,11 @@ describe('OAuthAppService - branch coverage', () => {
     )
   })
 
-  afterEach(() => {
+  const snakeCaseKeys = createSnakeCaseLogKeyGuard()
+  after(() => snakeCaseKeys.report())
+
+  afterEach(function () {
+    snakeCaseKeys.check(this, mockLogger)
     sinon.restore()
   })
 
@@ -1500,7 +1667,7 @@ describe('OAuthAppService - branch coverage', () => {
       await service.listApps(VALID_ORG_ID, VALID_USER_ID, { status: OAuthAppStatus.ACTIVE })
       // Check the filter contains status
       const filterArg = findStub.firstCall.args[0]
-      expect(filterArg.status).to.deep.equal({ $eq: OAuthAppStatus.ACTIVE })
+      expect(filterArg!.status).to.deep.equal({ $eq: OAuthAppStatus.ACTIVE })
     })
 
     it('should apply search filter with regex escaping when provided', async () => {
@@ -1514,8 +1681,8 @@ describe('OAuthAppService - branch coverage', () => {
       await service.listApps(VALID_ORG_ID, VALID_USER_ID, { search: 'test.app' })
       // Check the filter contains $or with regex
       const filterArg = findStub.firstCall.args[0]
-      expect(filterArg.$or).to.exist
-      expect(filterArg.$or).to.have.length(2)
+      expect(filterArg!.$or).to.exist
+      expect(filterArg!.$or).to.have.length(2)
     })
 
     it('should calculate totalPages correctly', async () => {
@@ -1899,7 +2066,7 @@ describe('OAuthAppService - branch coverage', () => {
         isConfidential: false,
       })
       expect(createStub.calledOnce).to.be.true
-      expect(createStub.firstCall.args[0].isDynamic).to.be.true
+      expect(createStub.firstCall.args[0]!.isDynamic).to.be.true
     })
   })
 

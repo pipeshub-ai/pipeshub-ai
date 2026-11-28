@@ -46,8 +46,10 @@ from app.modules.retrieval.selection_scope import (
 )
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.utils.attachment_utils import keep_accessible_attachments
+from tests.support.record_access import InMemoryRecordAccess
 
 ROUTER = "app.connectors.api.router"
+DEMO_CHECK = "app.modules.demo_data.access.is_hidden_demo_record"  # looked up there by refuse_hidden_demo_record
 
 #: Each node the fake graph knows, with the app it lives in.
 ROWS = {
@@ -171,7 +173,10 @@ class TestRecordsById:
     @staticmethod
     def _graph_with_access() -> AsyncMock:
         graph = _graph()
-        graph.check_record_access_with_details = AsyncMock(return_value={"hasAccess": True})
+        # The shared fake answers the record read; the limit's own check stays this file's stub (C-27 allows it).
+        check_access = graph.check_access
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-in", "rec-out").serve(graph)
+        graph.check_access = check_access
         graph.get_document = AsyncMock(return_value={"connectorId": "app-out", "_key": "org-1"})
         return graph
 
@@ -179,7 +184,7 @@ class TestRecordsById:
     async def test_record_metadata(self) -> None:
         request = _request()
         request.app.container.config_service.return_value = AsyncMock()
-        with patch(f"{ROUTER}.is_hidden_demo_record", AsyncMock(return_value=False)):
+        with patch(DEMO_CHECK, AsyncMock(return_value=False)):
             with pytest.raises(HTTPException) as exc:
                 await get_record_by_id("rec-out", request, graph_provider=self._graph_with_access())
             assert exc.value.status_code == 403
@@ -190,7 +195,7 @@ class TestRecordsById:
         request = _request()
         request.app.container.config_service.return_value = AsyncMock()
         fetch = AsyncMock(return_value={"ok": True, "records": []})
-        with patch(f"{ROUTER}.is_hidden_demo_record", AsyncMock(return_value=False)), \
+        with patch(DEMO_CHECK, AsyncMock(return_value=False)), \
              patch(f"{ROUTER}._fetch_multiple_records_impl", fetch):
             with pytest.raises(HTTPException) as exc:
                 await get_record_content("rec-out", request, graph_provider=self._graph_with_access())
@@ -203,7 +208,7 @@ class TestRecordsById:
         graph.get_record_by_id = AsyncMock(return_value=SimpleNamespace(
             id="rec-out", org_id="org-1", connector_id="app-out",
         ))
-        with patch(f"{ROUTER}.is_hidden_demo_record", AsyncMock(return_value=False)), \
+        with patch(DEMO_CHECK, AsyncMock(return_value=False)), \
              patch(f"{ROUTER}._resolve_record_content_response", AsyncMock()) as serve:
             with pytest.raises(HTTPException) as exc:
                 await stream_record(_request(), "rec-out", graph_provider=graph, config_service=AsyncMock())
@@ -221,7 +226,7 @@ class TestRecordsById:
     async def test_a_budgeted_read_outside_the_limit_is_refused_before_any_fetch(self) -> None:
         graph = self._graph_with_access()
         fetch = AsyncMock(return_value={"ok": True, "records": []})
-        with patch("app.api.routes.records.is_hidden_demo_record", AsyncMock(return_value=False)), \
+        with patch(DEMO_CHECK, AsyncMock(return_value=False)), \
              patch("app.api.routes.records._fetch_multiple_records_impl", fetch):
             with pytest.raises(HTTPException) as exc:
                 await read_record_content("rec-out", self._reader_request(graph), mode="record", query=None,
@@ -232,7 +237,7 @@ class TestRecordsById:
     @pytest.mark.asyncio
     async def test_a_switched_off_demo_record_outside_the_limit_is_still_a_404(self) -> None:
         graph = self._graph_with_access()
-        with patch("app.api.routes.records.is_hidden_demo_record", AsyncMock(return_value=True)):
+        with patch(DEMO_CHECK, AsyncMock(return_value=True)):
             with pytest.raises(HTTPException) as exc:
                 await read_record_content("rec-out", self._reader_request(graph), mode="record", query=None,
                                           start_block=None, start_record=0, max_chars=40_000, extract=False)
@@ -246,7 +251,7 @@ class TestRecordsById:
 
         graph = self._graph_with_access()
         fetch = AsyncMock(return_value={"ok": True, "records": []})
-        with patch("app.api.routes.records.is_hidden_demo_record", AsyncMock(return_value=False)), \
+        with patch(DEMO_CHECK, AsyncMock(return_value=False)), \
              patch("app.api.routes.records._resolve_thread_record_group", AsyncMock(return_value={"id": "t"})), \
              patch("app.api.routes.records._fetch_thread_records_impl", fetch), \
              patch("app.api.routes.records.read_thread", AsyncMock(return_value={"content": ""})):
@@ -607,6 +612,19 @@ def _file_doc() -> dict:
     }
 
 
+def _readable(
+    graph: AsyncMock, record: dict | None = None, *, knowledge_base: dict | None = None, folder: dict | None = None,
+) -> AsyncMock:
+    """user-1 owns ``rec-in`` (``record`` its stored document) in the shared fake, which answers the record's
+    access and details read; the limit's own check (``check_access``) stays this file's stub."""
+    check_access = graph.check_access
+    access = InMemoryRecordAccess().user("user-1", "org-1").record("rec-in", "org-1", **(record or {}))
+    access.grant("rec-in", user="user-1", role="OWNER").place("rec-in", knowledge_base=knowledge_base, folder=folder)
+    access.serve(graph)
+    graph.check_access = check_access
+    return graph
+
+
 class TestParentsOutsideTheLimit:
     """A file the limit names can sit in a folder the limit leaves out: the
     file is returned and that folder is not named."""
@@ -693,16 +711,15 @@ class TestParentsOutsideTheLimit:
 
     @staticmethod
     async def _details(limit: dict | None) -> dict:
-        graph = _graph_under(limit or FILE_LIMIT)
-        graph.check_record_access_with_details = AsyncMock(return_value={
-            "record": _file_doc(),
-            "knowledgeBase": {"id": "app-in", "name": "Finance", "orgId": "org-1"},
-            "folder": {"id": "folder-in", "name": "Q3"},
-        })
+        graph = _readable(
+            _graph_under(limit or FILE_LIMIT), _file_doc(),
+            knowledge_base={"id": "app-in", "name": "Finance", "orgId": "org-1"},
+            folder={"id": "folder-in", "name": "Q3"},
+        )
         graph.get_document = AsyncMock(return_value={"connectorId": "app-in", "_key": "rec-in"})
         request = _request(limit)
         request.app.container.config_service.return_value = AsyncMock()
-        with patch(f"{ROUTER}.is_hidden_demo_record", AsyncMock(return_value=False)), \
+        with patch(DEMO_CHECK, AsyncMock(return_value=False)), \
              patch(f"{ROUTER}._stage_states_of", AsyncMock(return_value=None)):
             return await get_record_by_id("rec-in", request, graph_provider=graph)
 
@@ -725,7 +742,7 @@ class TestParentsOutsideTheLimit:
         details = await self._details(None)
 
         assert details["folder"]["id"] == "folder-in" and details["knowledgeBase"]["id"] == "app-in"
-        assert details["record"] == _file_doc()
+        assert details["record"].items() >= _file_doc().items()
 
     @pytest.mark.asyncio
     async def test_a_restore_refusal_does_not_name_a_trashed_folder_outside_the_limit(self) -> None:
@@ -761,17 +778,16 @@ class TestSourcePathsUnderALimit:
 
     @staticmethod
     async def _details(limit: dict | None, record: dict | None = None) -> dict:
-        graph = _graph_under(limit if limit and limit.get("records") else FILE_LIMIT)
-        graph.check_record_access_with_details = AsyncMock(return_value={
-            "record": record or {**_file_doc(), "fileRecord": {
+        graph = _readable(
+            _graph_under(limit if limit and limit.get("records") else FILE_LIMIT),
+            record or {**_file_doc(), "fileRecord": {
                 "path": SOURCE_PATH, "webUrl": "https://files.example/budget.xlsx", "extension": "xlsx",
             }},
-            "knowledgeBase": None, "folder": None,
-        })
+        )
         graph.get_document = AsyncMock(return_value={"connectorId": "app-in", "_key": "rec-in"})
         request = _request(limit)
         request.app.container.config_service.return_value = AsyncMock()
-        with patch(f"{ROUTER}.is_hidden_demo_record", AsyncMock(return_value=False)), \
+        with patch(DEMO_CHECK, AsyncMock(return_value=False)), \
              patch(f"{ROUTER}._stage_states_of", AsyncMock(return_value=None)):
             return await get_record_by_id("rec-in", request, graph_provider=graph)
 
@@ -867,14 +883,13 @@ class TestCollectionFilesWithNoParentNode:
 
     @staticmethod
     async def _details(limit: dict | None, store: str) -> dict:
-        graph = _graph_under(limit if limit and limit.get("records") else FILE_LIMIT)
-        graph.check_record_access_with_details = AsyncMock(return_value={
-            "record": _collection_file(store), "knowledgeBase": None, "folder": None,
-        })
+        graph = _readable(
+            _graph_under(limit if limit and limit.get("records") else FILE_LIMIT), _collection_file(store),
+        )
         graph.get_document = AsyncMock(return_value={"connectorId": "app-in", "_key": "rec-in"})
         request = _request(limit)
         request.app.container.config_service.return_value = AsyncMock()
-        with patch(f"{ROUTER}.is_hidden_demo_record", AsyncMock(return_value=False)), \
+        with patch(DEMO_CHECK, AsyncMock(return_value=False)), \
              patch(f"{ROUTER}._stage_states_of", AsyncMock(return_value=None)):
             return await get_record_by_id("rec-in", request, graph_provider=graph)
 
@@ -912,8 +927,7 @@ class TestWhatAReadNamesBesideTheRecord:
 
     @staticmethod
     def _graph_with_access() -> AsyncMock:
-        graph = _graph()
-        graph.check_record_access_with_details = AsyncMock(return_value={"hasAccess": True})
+        graph = _readable(_graph())
         graph.get_document = AsyncMock(return_value={"connectorId": "app-in", "_key": "rec-in"})
         return graph
 
@@ -923,7 +937,7 @@ class TestWhatAReadNamesBesideTheRecord:
         request = _request(limit)
         request.app.container.config_service.return_value = AsyncMock()
         fetch = AsyncMock(return_value={"ok": True, "records": [{"id": "rec-in"}]})
-        with patch(f"{ROUTER}.is_hidden_demo_record", AsyncMock(return_value=False)), \
+        with patch(DEMO_CHECK, AsyncMock(return_value=False)), \
              patch(f"{ROUTER}._fetch_multiple_records_impl", fetch), \
              patch(f"{ROUTER}.record_to_text", return_value="text"):
             await get_record_content("rec-in", request, graph_provider=_graph_under(FILE_LIMIT) if limit else _graph())
@@ -932,14 +946,13 @@ class TestWhatAReadNamesBesideTheRecord:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("limit", [None, FILE_LIMIT])
     async def test_the_budgeted_read_route(self, limit) -> None:
-        graph = _graph_under(FILE_LIMIT)
-        graph.check_record_access_with_details = AsyncMock(return_value={"hasAccess": True})
+        graph = _readable(_graph_under(FILE_LIMIT))
         graph.get_document = AsyncMock(return_value={"connectorId": "app-in", "_key": "rec-in"})
         request = _request(limit, graph=graph)
         request.app.container.graph_provider = AsyncMock(return_value=graph)
         request.app.container.blob_store = AsyncMock(return_value=MagicMock())
         fetch = AsyncMock(return_value={"ok": True, "records": [{"id": "rec-in"}]})
-        with patch("app.api.routes.records.is_hidden_demo_record", AsyncMock(return_value=False)), \
+        with patch(DEMO_CHECK, AsyncMock(return_value=False)), \
              patch("app.api.routes.records._fetch_multiple_records_impl", fetch), \
              patch("app.api.routes.records.read_record", AsyncMock(return_value={"content": ""})):
             await read_record_content("rec-in", request, mode="record", query=None,
@@ -1116,3 +1129,294 @@ class TestReviewFindingsOnTheRelatedStack:
         response = await self._update(None, graph)
 
         assert response["updatedRecord"] == _file_doc()
+
+
+class TestKnowledgeSearchRoutes:
+    """The knowledge-search routes: a token limited to connection A
+    never gets a record of connection B, however the request names it."""
+
+    VRIDS = {"v-in": "rec-in", "v-out": "rec-out"}
+
+    @staticmethod
+    def _search_graph() -> AsyncMock:
+        """A graph that finds both records readable and applies the scopes it is given."""
+        from app.services.graph_db.interface.graph_db_provider import (
+            AccessibleContainers,
+        )
+
+        graph = _graph()
+        graph.get_org_apps = AsyncMock(return_value=[{"_key": "app-in"}, {"_key": "app-out"}])
+        graph.get_accessible_containers = AsyncMock(
+            return_value=AccessibleContainers(app_ids=frozenset({"app-in", "app-out"})),
+        )
+
+        async def readable(vrids, user_id, org_id, *, scopes=(), scope_connector_ids=None, **_: object) -> dict:
+            return {
+                v: TestKnowledgeSearchRoutes.VRIDS[v] for v in vrids
+                if v in TestKnowledgeSearchRoutes.VRIDS
+                and all(s.admits(ROWS[TestKnowledgeSearchRoutes.VRIDS[v]]) for s in scopes)
+                and (scope_connector_ids is None or ROWS[TestKnowledgeSearchRoutes.VRIDS[v]]["connectorId"] in scope_connector_ids)
+            }
+
+        graph.filter_accessible_virtual_record_ids = AsyncMock(side_effect=readable)
+        graph.get_records_by_record_ids = AsyncMock(side_effect=lambda record_ids, org_id: [
+            {"_key": r, "recordName": f"{r}.txt", "recordType": "FILE", "connectorName": "DRIVE",
+             "connectorId": ROWS[r]["connectorId"], "virtualRecordId": r.replace("rec", "v"),
+             "origin": "CONNECTOR", "indexingStatus": "COMPLETED", "version": 0}
+            for r in record_ids
+        ])
+        return graph
+
+    @staticmethod
+    async def _grep(limit: dict | None, **body: object) -> tuple[dict, list[dict]]:
+        """The grep answer, and the filters the scan was given. The scan finds
+        both records whatever it is told, so what the answer keeps is the
+        route's own bound."""
+        from app.api.routes import knowledge_search as ks
+        from app.core.org_context import OrgContext, bind
+
+        seen: list[dict] = []
+
+        async def scan(**kwargs: dict) -> list[dict]:
+            seen.append(kwargs["filters"])
+            if "app-out" in [*(kwargs["filters"].get("apps") or []), *(kwargs["filters"].get("kb") or [])]:
+                # Scanning the connection outside the limit is observable: it is big, or slow.
+                kwargs["coverage"].stop("some records were not read in time (app-out)")
+            for v in TestKnowledgeSearchRoutes.VRIDS:
+                kwargs["found"][v] = {"virtual_record_id": v, "match_count": "1", "match_preview": "m"}
+            return list(kwargs["found"].values())
+
+        retrieval = MagicMock()
+        retrieval.blob_store.get_record_from_storage = AsyncMock(return_value={"block_containers": {"blocks": [
+            {"index": 0, "data": "marker", "code_metadata": None}]}})
+        retrieval.blob_store.get_document_ids_by_virtual_record_ids = AsyncMock(return_value={})
+        body.setdefault("pattern", "marker")
+        with bind(OrgContext("org-1", "user-1", "user", "jwt", "req-1")), \
+             patch.object(ks, "run_pattern_match_with_llm_grep", scan), \
+             patch.object(ks, "check_pattern_match_eligible", AsyncMock(return_value=True)), \
+             patch.object(ks, "resolve_frontend_url", AsyncMock(return_value=None)):
+            response = await ks.grep(
+                _request(limit), ks.GrepQuery(**body), retrieval, TestKnowledgeSearchRoutes._search_graph(),
+            )
+        return json.loads(response.body), seen
+
+    @staticmethod
+    def _ids(answer: dict) -> set[str]:
+        return {r["recordId"] for r in answer["records"]}
+
+    @pytest.mark.asyncio
+    async def test_grep_with_a_limited_token_returns_only_records_inside_it(self) -> None:
+        answer, seen = await self._grep(LIMIT)
+        assert self._ids(answer) == {"rec-in"}
+        assert seen[0]["connectionApps"] == ["app-in"] and seen[0]["strictScope"] is True
+
+    @pytest.mark.asyncio
+    async def test_grep_naming_a_connection_outside_the_limit_returns_nothing(self) -> None:
+        answer, _ = await self._grep(LIMIT, filters={"apps": ["app-out"]})
+        assert answer["records"] == [] and answer["totalRecords"] == 0
+
+    @pytest.mark.asyncio
+    async def test_grep_naming_both_connections_still_stays_inside_the_limit(self) -> None:
+        answer, _ = await self._grep(LIMIT, filters={"apps": ["app-in", "app-out"]})
+        assert self._ids(answer) == {"rec-in"}
+
+    @pytest.mark.asyncio
+    async def test_grep_with_a_limit_that_resolves_to_nothing_reaches_nothing_not_everything(self) -> None:
+        answer, _ = await self._grep({"apps": [], "recordGroups": [], "records": []})
+        assert answer["records"] == []
+
+    @pytest.mark.asyncio
+    async def test_grep_cannot_be_widened_by_a_client_sent_bound(self) -> None:
+        answer, seen = await self._grep(LIMIT, filters={"connectionApps": ["app-out"]})
+        assert self._ids(answer) == {"rec-in"}
+        assert seen[0]["connectionApps"] == ["app-in"]
+
+    @pytest.mark.asyncio
+    async def test_grep_without_a_limit_is_unchanged(self) -> None:
+        answer, seen = await self._grep(None)
+        assert self._ids(answer) == {"rec-in", "rec-out"}
+        assert "connectionApps" not in seen[0] and "strictScope" not in seen[0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [LIMIT, None])
+    async def test_the_entity_routes_bind_the_limit_into_the_state_they_search_with(self, limit: dict | None) -> None:
+        from app.api.routes import knowledge_search as ks
+        from app.core.org_context import OrgContext, bind
+
+        with bind(OrgContext("org-1", "user-1", "user", "jwt", "req-1")), \
+             patch("app.api.routes.chatbot.load_entity_vector_store", AsyncMock(return_value=MagicMock())), \
+             patch.object(ks, "is_named_entity_extraction_enabled", AsyncMock(return_value=False)):
+            state = await ks._entity_state(_request(limit), _graph())
+        filters = state["filters"]
+        if limit is None:
+            assert "connectionApps" not in filters
+        else:
+            assert filters["connectionApps"] == ["app-in"] and filters["strictScope"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("key", ["apps", "kb"])
+    async def test_naming_a_connection_outside_the_limit_answers_as_a_name_that_does_not_exist(self, key: str) -> None:
+        """Out of the limit means out of the scan, so its existence and state show nowhere."""
+        outside, seen = await self._grep(LIMIT, filters={key: ["app-out"]})
+        unknown, _ = await self._grep(LIMIT, filters={key: ["app-nonexistent"]})
+        assert outside == unknown
+        assert all("app-out" not in [*(f.get("apps") or []), *(f.get("kb") or [])] for f in seen)
+
+    @pytest.mark.asyncio
+    async def test_naming_a_connection_the_limit_reaches_only_in_part_is_still_scanned(self) -> None:
+        """A limit naming a folder inside app-in reaches app-in, so naming app-in is not dropped."""
+        partial = {"apps": [], "recordGroups": ["g-in"], "records": []}
+        from app.modules.retrieval.selection_scope import SelectionScope
+
+        with patch("app.api.routes.knowledge_search.connection_apps",
+                   AsyncMock(return_value=(frozenset(), frozenset({"app-in"})))), \
+             patch("app.modules.retrieval.selection_scope.connection_bound_scope",
+                   AsyncMock(return_value=SelectionScope(groups={"g-in": "app-in"}))):
+            _, seen = await self._grep(partial, filters={"apps": ["app-in", "app-out"]})
+        assert seen and seen[0]["apps"] == ["app-in"]
+
+
+class TestGrepUnderALimitBelowAppLevel:
+    """A limit that names only a folder or a file reaches records of an app it
+    does not name whole. The scan must still run on that app, and what it finds
+    is cut to the folder or file: never its sibling files, never another app."""
+
+    ROWS = {
+        "app-in": {"id": "app-in"}, "app-out": {"id": "app-out"},
+        "g-in": {"id": "g-in", "connectorId": "app-in"},
+        "g-sib": {"id": "g-sib", "connectorId": "app-in"},
+        "g-out": {"id": "g-out", "connectorId": "app-out"},
+        "rec-in": {"id": "rec-in", "connectorId": "app-in", "groupIds": ["g-in"]},
+        "rec-sib": {"id": "rec-sib", "connectorId": "app-in", "groupIds": ["g-sib"]},
+        "rec-out": {"id": "rec-out", "connectorId": "app-out", "groupIds": ["g-out"]},
+    }
+    VRIDS = {"v-in": "rec-in", "v-sib": "rec-sib", "v-out": "rec-out"}
+    GROUP_APP = {"g-in": "app-in", "g-sib": "app-in", "g-out": "app-out"}
+    FOLDER = {"apps": [], "recordGroups": ["g-in"], "records": []}
+    FILE = {"apps": [], "recordGroups": [], "records": ["rec-in"]}
+
+    @classmethod
+    def _graph(cls) -> AsyncMock:
+        from app.services.graph_db.interface.graph_db_provider import (
+            AccessibleContainers,
+        )
+
+        graph = TestKnowledgeSearchRoutes._search_graph()
+        graph.get_org_apps = AsyncMock(return_value=[{"_key": "app-in"}, {"_key": "app-out"}])
+        graph.get_accessible_containers = AsyncMock(
+            return_value=AccessibleContainers(app_ids=frozenset({"app-in", "app-out"})),
+        )
+        graph.get_nodes_by_field_in = AsyncMock(return_value=[])
+
+        async def check_access(user_key, org_id, *, node_ids=(), scopes=(), **_) -> AccessCheck:
+            ids = frozenset(i for i in node_ids if i in cls.ROWS)
+            return AccessCheck(
+                node_ids=ids,
+                node_ids_in_scope=frozenset(i for i in ids if all(s.admits(cls.ROWS[i]) for s in scopes)),
+            )
+
+        async def selection_nodes(org_id, *, group_ids=(), record_ids=(), exact_record_ids=(), limit=0) -> dict:
+            return {
+                "groups": [{"id": g, "connectorId": cls.GROUP_APP[g]} for g in group_ids if g in cls.GROUP_APP],
+                "records": [{"id": r, "vrid": v, "connectorId": cls.ROWS[r]["connectorId"]}
+                            for v, r in cls.VRIDS.items() if r in record_ids],
+            }
+
+        async def readable(vrids, user_id, org_id, *, scopes=(), scope_connector_ids=None, **_) -> dict:
+            return {
+                v: cls.VRIDS[v] for v in vrids
+                if v in cls.VRIDS and all(s.admits(cls.ROWS[cls.VRIDS[v]]) for s in scopes)
+                and (scope_connector_ids is None or cls.ROWS[cls.VRIDS[v]]["connectorId"] in scope_connector_ids)
+            }
+
+        graph.check_access = AsyncMock(side_effect=check_access)
+        graph.get_selection_nodes = AsyncMock(side_effect=selection_nodes)
+        graph.filter_accessible_virtual_record_ids = AsyncMock(side_effect=readable)
+        graph.get_records_by_record_ids = AsyncMock(side_effect=lambda record_ids, org_id: [
+            {"_key": r, "recordName": f"{r}.txt", "recordType": "FILE", "connectorName": "DRIVE",
+             "connectorId": cls.ROWS[r]["connectorId"], "virtualRecordId": r.replace("rec", "v"),
+             "origin": "CONNECTOR", "indexingStatus": "COMPLETED", "version": 0}
+            for r in record_ids
+        ])
+        return graph
+
+    @classmethod
+    async def _grep(cls, limit: dict | None, **body: object) -> tuple[set[str], list[list[str]]]:
+        """The record ids the answer keeps, and the apps each scan ran on. The
+        scan resolves its apps as the real one does, and finds a record in
+        every app it runs on."""
+        from app.api.routes import knowledge_search as ks
+        from app.core.org_context import OrgContext, bind
+        from app.modules.retrieval import selection_scope
+        from app.utils.pattern_match import resolve_connector_ids_for_search
+
+        selection_scope._memo.clear()
+        graph = cls._graph()
+        ran: list[list[str]] = []
+
+        async def scan(**kwargs: dict) -> list[dict]:
+            apps = await resolve_connector_ids_for_search(graph, "org-1", kwargs["filters"])
+            ran.append(sorted(apps))
+            for v, r in cls.VRIDS.items():
+                if cls.ROWS[r]["connectorId"] in apps:
+                    kwargs["found"][v] = {"virtual_record_id": v, "match_count": "1", "match_preview": "m"}
+            return list(kwargs["found"].values())
+
+        retrieval = MagicMock()
+        retrieval.blob_store.get_record_from_storage = AsyncMock(return_value={"block_containers": {"blocks": [
+            {"index": 0, "data": "marker", "code_metadata": None}]}})
+        retrieval.blob_store.get_document_ids_by_virtual_record_ids = AsyncMock(return_value={})
+        body.setdefault("pattern", "marker")
+        with bind(OrgContext("org-1", "user-1", "user", "jwt", "req-1")), \
+             patch.object(ks, "run_pattern_match_with_llm_grep", scan), \
+             patch.object(ks, "check_pattern_match_eligible", AsyncMock(return_value=True)), \
+             patch.object(ks, "resolve_frontend_url", AsyncMock(return_value=None)):
+            response = await ks.grep(_request(limit), ks.GrepQuery(**body), retrieval, graph)
+        return {r["recordId"] for r in json.loads(response.body)["records"]}, ran
+
+    @pytest.mark.asyncio
+    async def test_a_folder_only_limit_finds_the_record_in_the_folder_and_not_its_sibling(self) -> None:
+        found, ran = await self._grep(self.FOLDER)
+        assert found == {"rec-in"}
+        assert ran == [["app-in"]]
+
+    @pytest.mark.asyncio
+    async def test_a_folder_only_limit_with_the_folder_named_in_the_request(self) -> None:
+        found, ran = await self._grep(self.FOLDER, filters={"recordGroups": ["g-in"]})
+        assert found == {"rec-in"}
+        assert ran == [["app-in"]]
+
+    @pytest.mark.asyncio
+    async def test_a_file_only_limit_finds_the_file_and_not_its_sibling(self) -> None:
+        found, ran = await self._grep(self.FILE)
+        assert found == {"rec-in"}
+        assert ran == [["app-in"]]
+
+    @pytest.mark.asyncio
+    async def test_a_file_only_limit_with_the_file_named_in_the_request(self) -> None:
+        found, ran = await self._grep(self.FILE, filters={"records": ["rec-in"]})
+        assert found == {"rec-in"}
+        assert ran == [["app-in"]]
+
+    @pytest.mark.asyncio
+    async def test_naming_a_sibling_folder_outside_the_limit_finds_nothing(self) -> None:
+        found, _ = await self._grep(self.FOLDER, filters={"recordGroups": ["g-sib"]})
+        assert found == set()
+
+    @pytest.mark.asyncio
+    async def test_naming_a_folder_of_another_app_neither_finds_nor_scans_it(self) -> None:
+        found, ran = await self._grep(self.FOLDER, filters={"recordGroups": ["g-out"]})
+        assert found == set()
+        assert all("app-out" not in apps for apps in ran)
+
+    @pytest.mark.asyncio
+    async def test_naming_the_other_app_beside_a_folder_limit_is_not_scanned(self) -> None:
+        found, ran = await self._grep(self.FOLDER, filters={"apps": ["app-out"]})
+        assert found == set()
+        assert all("app-out" not in apps for apps in ran)
+
+    @pytest.mark.asyncio
+    async def test_an_unlimited_token_is_unchanged(self) -> None:
+        found, ran = await self._grep(None)
+        assert found == {"rec-in", "rec-sib", "rec-out"}
+        assert ran == [["app-in", "app-out"]]

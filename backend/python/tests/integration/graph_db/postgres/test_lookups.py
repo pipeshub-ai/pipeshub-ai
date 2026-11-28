@@ -31,10 +31,11 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
 )
-from app.services.graph_db.postgres.lookups import LookupsMixin
+from app.services.graph_db.postgres.lookups import LINKING_PROFILE, LookupsMixin
 from tests.support import plan_gate
 
 from .pg_support import OrgBound, StandInProvider, new_org
+from .test_code_hop_paging import _admin
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -376,8 +377,8 @@ NO_ORG_CALLS = {
     "get_record_parent_adjacency": (["a"], "o"), "get_records_by_parent_record": ("a", "c", "o", 0), "get_records_by_record_group": ("g", "c", "o", 0),
     "link_record_to_group": ("a", "g"), "batch_upsert_people": ([],), "update_node_if_match": ("a", "records", {}, "f", 1),
     "remove_nodes_by_field": ("records", "f"), "get_file_record_by_id": ("a",), "get_record_owner_source_user_email": ("a",),
-    "get_message_id_header_by_key": ("a", "mails"), "get_related_mails_by_message_id_header": ("h", "a", "mails"),
-    "filter_linked_record_ids": (["a"],), "get_key_by_external_file_id": ("e",), "get_key_by_external_message_id": ("e",), "get_record_key_by_external_id": ("e", "c"),
+    "get_message_id_header_by_key": ("a", "mails"),
+    "filter_linked_record_ids": (["a"],), "get_record_key_by_external_id": ("e", "c"),
     "get_failed_records_by_org": ("o", "c"), "get_documents_by_status": ("records", "s"), "get_departments": (), "delete_sync_points_by_connector_id": ("c",),
     "delete_connector_sync_edges": ("c",), "reap_stale_external_app_relations": ("c",),
     "find_next_queued_duplicate": ("a",), "get_app_needing_vector_membership_backfill": (), "page_records_for_vector_membership_backfill": ("c", None, 1),
@@ -386,7 +387,7 @@ NO_ORG_CALLS = {
 }
 NO_ORG_KW = {"find_file_by_name_in_parent": {"kb_id": "kb", "file_name": "f", "mime_type": "m"}, "link_record_to_group": {"inherit": True},
              "remove_nodes_by_field": {"field_value": 1}}
-LOOKUP_METHODS = {n for n, f in vars(LookupsMixin).items() if not n.startswith("__") and callable(f)} - {"_lrows", "_at_addresses", "_permitted", "_records_page", "_page_ids", "_key_by_external"}
+LOOKUP_METHODS = {n for n, f in vars(LookupsMixin).items() if not n.startswith("__") and callable(f)} - {"_lrows", "_at_addresses", "_keyed_rows", "_permitted", "_records_page", "_page_ids", "_key_by_external"}
 
 
 def test_every_public_method_of_the_module_is_in_the_no_org_cases() -> None:
@@ -624,11 +625,15 @@ async def test_the_address_lookups_answer_what_the_plain_statements_answered(pg_
     assert await a.get_issue_sites(a.org, ["JIRA", "JIRA DATA CENTER"]) == sorted(["https://x.atlassian.net", "https://jira.corp.example/jira", "https://h.example/browse/x"])
 
 
-async def test_an_address_held_by_more_records_than_the_probe_returns_is_still_read_whole(pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
+# fresh: this org's rows are newer than the statistics; analysed: the statistics are taken now, when the org holds one relation edge (the edges' leaf it lives
+# in can hold almost nothing else, as a test database's leaves and a new install's do), so a scan of the leaf looks cheaper than a probe of its index per link.
+@pytest.mark.parametrize("stats", ["fresh", pytest.param("analysed", marks=pytest.mark.pg_table_lock)])      # analysed changes the planner statistics of shared tables
+async def test_an_address_held_by_more_records_than_the_probe_returns_is_still_read_whole(pg_db, monkeypatch: pytest.MonkeyPatch, stats: str) -> None:
     """graph.records_by_weburl returns at most 10,000 records per address, in no order. At an address that holds more (here 10,050 link records,
     some trashed or placeholders, inserted before the ones that matter), the eligible record and the link holder are still found, as the plain
     statements found them. The holders are read by key from each link: joined, on an org the statistics did not know yet, the planner crossed every
-    record of the org with every link record and the statement ran past its timeout."""
+    record of the org with every link record and the statement ran past its timeout; with statistics that say the edges' leaf is nearly empty, it
+    scanned the leaf once per link."""
     p = OrgBound(StandInProvider(logging.getLogger("x"), pg_db), new_org())
     sent: list[tuple[str, tuple]] = []
     real = Tx.fetch
@@ -638,6 +643,14 @@ async def test_an_address_held_by_more_records_than_the_probe_returns_is_still_r
             sent.append((sql, args))
         return await real(self, sql, *args)
     monkeypatch.setattr(Tx, "fetch", spy)
+    profiled: list[str] = []
+    real_row = Tx.fetchrow
+
+    async def spy_row(self: Tx, sql: str, *args: object) -> object:
+        if "pipeshub:graph.linking_profile" in sql:
+            profiled.append(sql)
+        return await real_row(self, sql, *args)
+    monkeypatch.setattr(Tx, "fetchrow", spy_row)
     u = "https://crowded.example/p"
     await p._lrows("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'records', 'crowd-' || lpad(i::text, 5, '0'), jsonb_build_object('orgId', $1::text,
         'webUrl', $2::text, 'recordType', 'LINK', 'connectorName', 'GITHUB', 'isDeleted', i % 7 = 0, 'isPlaceholder', i % 11 = 0) FROM generate_series(1, 10050) i""",
@@ -646,6 +659,8 @@ async def test_an_address_held_by_more_records_than_the_probe_returns_is_still_r
                                 raw(p.org, "zz-holder", recordType="MESSAGE")], "records")
     await p.batch_create_edges([{"from_id": "zz-holder", "from_collection": "records", "to_id": "zz-link", "to_collection": "records",
                                  "relationshipType": "PARENT_CHILD"}], "nodeRelations")
+    if stats == "analysed":
+        await _admin("ANALYZE graph.edges")
     assert (await p.get_record_by_weburl(u, p.org)).id == "zz-page"
     assert [r["id"] for r in await p.get_records_by_weburls([u], p.org, 50, include_deleted=True)] == ["zz-page"]
     assert await p.get_records_linking_to_weburls([u, "https://other.example/"], p.org, ["SLACK WORKSPACE"]) == ["zz-holder"]
@@ -653,12 +668,60 @@ async def test_an_address_held_by_more_records_than_the_probe_returns_is_still_r
     assert [dict(r) for r in old] == await p.get_records_by_weburls([u], p.org, 50, include_deleted=True)
     assert await p.get_records_linking_to_weburls([u], p.org, ["SLACK WORKSPACE", "GITHUB"]) == ["zz-holder"]      # the crowd's links have no holder
     assert len(sent) == 4, len(sent)        # each call: the probe's statement, then (capped) the plain one
+    assert len(profiled) == len(sent)        # each of them under the profile
     for sql, args in sent:
-        plan = plan_gate.root(await p._q(lambda tx, sql=sql, args=args: tx._con.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *args), None))
+        async def explain(tx, sql=sql, args=args) -> str:
+            await tx.fetchrow(LINKING_PROFILE)      # under the profile the statement runs with
+            return await tx._con.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *args)
+        plan = plan_gate.root(await p._q(explain, None))
         assert not (bad := plan_gate.unkeyed(plan, "edges", r"\b(to_id|from_id) = ")), (sql[:60], bad)
         # the link records are read once (the org's, by the plain statement); every other record by its id
         assert not (bad := [n.get("Index Cond") for n in plan_gate.scans(plan, "nodes") if n.get("Actual Loops", 1) > 1 and not plan_gate.keyed(n, r"\bid = ")]), \
             (sql[:60], bad)
+
+
+async def test_a_link_holder_read_in_a_callers_transaction_leaves_its_settings_as_they_were(pg_db) -> None:
+    """The link holders' statements run with sequential and bitmap scans off: in a caller's transaction the two are put back after the read, so what the
+    caller runs next plans as it would have."""
+    p = OrgBound(StandInProvider(logging.getLogger("x"), pg_db), new_org())
+    t = await p.begin_transaction([], [])
+    try:
+        assert await p.get_records_linking_to_weburls(["https://nowhere.example/"], p.org, ["SLACK WORKSPACE"], transaction=t) == []
+        got = await p._q(lambda tx: tx.fetchrow("SELECT current_setting('enable_seqscan') AS s, current_setting('enable_bitmapscan') AS b"), t)
+    finally:
+        await p.rollback_transaction(t)
+    assert (got["s"], got["b"]) == ("on", "on"), dict(got)
+
+
+async def test_a_link_holder_read_that_loses_its_connection_is_retried(pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A standalone read whose connection drops during the lookup (after the profile's statement) is read again in a new unit, as any read of one statement is:
+    the unit is a read, so the statement it had already run takes nothing from the retry."""
+    import asyncpg
+    p = OrgBound(StandInProvider(logging.getLogger("x"), pg_db), new_org())
+    u = "https://dropped.example/p"
+    await p.batch_upsert_nodes([raw(p.org, "dz-link", webUrl=u, recordType="LINK", connectorName="SLACK WORKSPACE"), raw(p.org, "dz-holder", recordType="MESSAGE")], "records")
+    await p.batch_create_edges([{"from_id": "dz-holder", "from_collection": "records", "to_id": "dz-link", "to_collection": "records",
+                                 "relationshipType": "PARENT_CHILD"}], "nodeRelations")
+    dropped: list[str] = []
+    real = Tx._run
+
+    async def drop(self: Tx, op: str, sql: str, *args: object, internal: bool = False) -> object:
+        if "pipeshub:graph.get_records_linking_to_weburls" in sql and not dropped:
+            dropped.append(sql)
+            kind = type(self._con)      # the pool's proxy: its methods are its class's
+            con_fetch = kind.fetch
+
+            async def lost(*a: object, **k: object) -> object:
+                raise asyncpg.exceptions.ConnectionDoesNotExistError("connection was closed in the middle of operation")
+            monkeypatch.setattr(kind, "fetch", lost)
+            try:
+                return await real(self, op, sql, *args, internal=internal)
+            finally:
+                monkeypatch.setattr(kind, "fetch", con_fetch)
+        return await real(self, op, sql, *args, internal=internal)
+    monkeypatch.setattr(Tx, "_run", drop)
+    assert await p.get_records_linking_to_weburls([u], p.org, ["SLACK WORKSPACE"]) == ["dz-holder"]
+    assert dropped
 
 
 async def test_more_addresses_than_one_probe_takes_are_read_in_one_statement(pg_db, monkeypatch: pytest.MonkeyPatch) -> None:

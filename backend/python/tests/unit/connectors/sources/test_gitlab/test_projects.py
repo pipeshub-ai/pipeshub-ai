@@ -14,15 +14,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.sources.gitlab.projects import (
+    PrincipalLookupError,
     ProjectsSync,
     _longest_matching_group_path,
     _namespace_full_path,
     _namespace_is_group,
     _namespace_under_any_prefix,
 )
+from app.models.entities import AppUserGroup
+from tests.unit.connectors.core.test_has_stored_permissions import processor_over
+from tests.unit.connectors.core.test_note_kept_user_group import CopiesStore
 
 from .conftest import make_mock_connector, paged_res, failed_res
+
+GROUPS = CollectionNames.GROUPS.value
 
 pytestmark = pytest.mark.anyio
 
@@ -320,8 +327,117 @@ class TestCreatePermissionFromPrincipal:
             create_pseudo_group_if_missing=True,
         )
         assert result is not None
+        c.data_entities_processor.note_kept_user_group.assert_not_awaited()
 
-    async def test_exception_returns_none(self) -> None:
+    async def test_reused_pseudo_group_is_noted_kept(self) -> None:
+        c = make_mock_connector()
+        projects_sync = ProjectsSync(c)
+
+        group = AppUserGroup(
+            id="g1",
+            app_name=Connectors.GITLAB,
+            connector_id=c.connector_id,
+            source_user_group_id="42",
+            name="pseudo_42",
+            org_id="org-1",
+        )
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=group)
+        projects_sync._create_pseudo_group = AsyncMock()
+
+        from app.models.permission import EntityType, PermissionType
+        result = await projects_sync._create_permission_from_principal(
+            EntityType.USER.value,
+            "42",
+            PermissionType.OWNER.value,
+            create_pseudo_group_if_missing=True,
+        )
+
+        assert result is not None
+        assert result.entity_type == EntityType.GROUP
+        assert result.external_id == "42"
+        c.data_entities_processor.note_kept_user_group.assert_awaited_once_with(c.connector_id, "42")
+        projects_sync._create_pseudo_group.assert_not_awaited()
+        c.note_sync_problem.assert_not_called()
+
+    async def test_every_stored_copy_of_a_reused_pseudo_group_is_kept_by_a_full_sync(self) -> None:
+        # Older syncs could store several copies with one external id; the lookup returns one.
+        copies = [{"_key": "n1", "externalGroupId": "42"}, {"_key": "n2", "externalGroupId": "42"}]
+        processor = processor_over(CopiesStore(copies))
+        processor.get_user_by_source_id = AsyncMock(return_value=None)
+        processor.get_user_group_by_external_id = AsyncMock(return_value=AppUserGroup(
+            id="n1",
+            app_name=Connectors.GITLAB,
+            connector_id="c1",
+            source_user_group_id="42",
+            name="pseudo_42",
+            org_id="org-1",
+        ))
+        c = make_mock_connector()
+        c.connector_id = "c1"
+        c.data_entities_processor = processor
+        run = processor.begin_full_sync_run("c1")
+
+        from app.models.permission import EntityType, PermissionType
+        result = await ProjectsSync(c)._create_permission_from_principal(
+            EntityType.USER.value,
+            "42",
+            PermissionType.OWNER.value,
+            create_pseudo_group_if_missing=True,
+        )
+
+        assert result is not None and result.external_id == "42"
+        assert run.has(GROUPS, "n1") and run.has(GROUPS, "n2")
+        c.note_sync_problem.assert_not_called()
+
+    async def test_a_pseudo_group_that_cannot_be_kept_makes_the_run_incomplete(self) -> None:
+        c = make_mock_connector()
+        group = AppUserGroup(
+            id="g1",
+            app_name=Connectors.GITLAB,
+            connector_id=c.connector_id,
+            source_user_group_id="42",
+            name="pseudo_42",
+            org_id="org-1",
+        )
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=group)
+        c.data_entities_processor.note_kept_user_group = AsyncMock(side_effect=RuntimeError("lookup failed"))
+
+        from app.models.permission import EntityType, PermissionType
+        result = await ProjectsSync(c)._create_permission_from_principal(
+            EntityType.USER.value,
+            "42",
+            PermissionType.OWNER.value,
+            create_pseudo_group_if_missing=True,
+        )
+
+        assert result is not None and result.external_id == "42"
+        c.note_sync_problem.assert_called_once()
+
+    async def test_user_found_does_not_note_a_group(self) -> None:
+        c = make_mock_connector()
+        projects_sync = ProjectsSync(c)
+
+        user = MagicMock()
+        user.email = "found@example.com"
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=user)
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock()
+
+        from app.models.permission import EntityType, PermissionType
+        result = await projects_sync._create_permission_from_principal(
+            EntityType.USER.value,
+            "user-123",
+            PermissionType.OWNER.value,
+            create_pseudo_group_if_missing=True,
+        )
+
+        assert result is not None
+        assert result.entity_type == EntityType.USER
+        c.data_entities_processor.get_user_group_by_external_id.assert_not_awaited()
+        c.data_entities_processor.note_kept_user_group.assert_not_awaited()
+
+    async def test_a_failed_lookup_raises_instead_of_dropping_the_grant(self) -> None:
         c = make_mock_connector()
         projects_sync = ProjectsSync(c)
 
@@ -330,10 +446,46 @@ class TestCreatePermissionFromPrincipal:
         )
 
         from app.models.permission import EntityType, PermissionType
-        result = await projects_sync._create_permission_from_principal(
-            EntityType.USER.value, "user-999", PermissionType.OWNER.value,
-        )
-        assert result is None
+        with pytest.raises(PrincipalLookupError):
+            await projects_sync._create_permission_from_principal(
+                EntityType.USER.value, "user-999", PermissionType.OWNER.value,
+            )
+
+    @pytest.mark.parametrize("failing", ["get_user_by_source_id", "get_user_group_by_external_id"])
+    async def test_a_lookup_the_store_could_not_read_is_not_not_found(self, failing: str) -> None:
+        """The store answers None for a failed read unless asked to raise."""
+        c = make_mock_connector()
+
+        async def lookup(*_args: object, raise_on_error: bool = False, **_kwargs: object) -> None:
+            if raise_on_error:
+                raise RuntimeError("store unavailable")
+
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
+        setattr(c.data_entities_processor, failing, AsyncMock(side_effect=lookup))
+        projects_sync = ProjectsSync(c)
+        projects_sync._create_pseudo_group = AsyncMock(return_value=MagicMock(source_user_group_id="42"))
+
+        from app.models.permission import EntityType, PermissionType
+        with pytest.raises(PrincipalLookupError):
+            await projects_sync._create_permission_from_principal(
+                EntityType.USER.value, "42", PermissionType.OWNER.value,
+                create_pseudo_group_if_missing=True,
+            )
+        projects_sync._create_pseudo_group.assert_not_awaited()
+
+    async def test_a_pseudo_group_that_cannot_be_written_raises(self) -> None:
+        c = make_mock_connector()
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
+        c.data_entities_processor.on_new_user_groups = AsyncMock(side_effect=RuntimeError("DB error"))
+
+        from app.models.permission import EntityType, PermissionType
+        with pytest.raises(PrincipalLookupError):
+            await ProjectsSync(c)._create_permission_from_principal(
+                EntityType.USER.value, "42", PermissionType.OWNER.value,
+                create_pseudo_group_if_missing=True,
+            )
 
 
 # ===========================================================================
@@ -595,6 +747,38 @@ class TestEnsureGitlabGroupRecordGroups:
         assert rg.external_group_id == "eng"
         assert perms is None
 
+    async def test_a_member_lookup_failure_keeps_the_stored_group_access(self) -> None:
+        """One member whose identity cannot be read must not be dropped from the group."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        group = MagicMock(full_path="eng", web_url="https://gitlab.com/eng")
+        group.name = "Engineering"
+        members = [_member(uid=1, access_level=30), _member(uid=2, access_level=30)]
+        for m in members:
+            m.state = "active"
+            m.membership_state = "active"
+
+        async def ds_call_side(fn, *args, **kwargs) -> MagicMock:
+            if "list_group_members" in str(fn):
+                return MagicMock(success=True, data=members, error=None)
+            return MagicMock(success=True, data=group, error=None)
+
+        async def lookup(source_user_id: str, **_kwargs: object) -> MagicMock:
+            if source_user_id == "2":
+                raise RuntimeError("store unavailable")
+            return MagicMock(email=f"user{source_user_id}@example.com")
+
+        c.runtime.ds_call = AsyncMock(side_effect=ds_call_side)
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(side_effect=lookup)
+        c.creator_user_permission = MagicMock(return_value=MagicMock(email="owner@example.com"))
+
+        await ProjectsSync(c)._ensure_gitlab_group_record_groups(["eng"])
+
+        rg, perms = c.data_entities_processor.on_new_record_groups.call_args[0][0][0]
+        assert rg.external_group_id == "eng"
+        assert perms is None, "a member list missing an unreadable member would replace the stored one"
+        c.note_sync_problem.assert_called_once()
+
 
 # ===========================================================================
 # _sync_project_members_as_pseudo
@@ -737,6 +921,97 @@ class TestSyncProjectMembersAsPseudo:
         call_args = c.data_entities_processor.on_new_record_groups.call_args[0][0]
         acl = {group.external_group_id: perms for group, perms in call_args}
         assert all(perms == [] for perms in acl.values())
+
+    async def test_a_member_lookup_failure_keeps_the_stored_project_access(self) -> None:
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        c._gitlab_included_group_paths = None
+        project = _project(1, "eng/proj")
+        project.name = "proj"
+        members = [_member(uid=1, access_level=30), _member(uid=2, access_level=30)]
+        for m in members:
+            m.state = "active"
+            m.membership_state = "active"
+        c.runtime.ds_call = AsyncMock(return_value=MagicMock(success=True, data=members, error=None))
+
+        async def lookup(source_user_id: str, **_kwargs: object) -> MagicMock:
+            if source_user_id == "2":
+                raise RuntimeError("store unavailable")
+            return MagicMock(email=f"user{source_user_id}@example.com")
+
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(side_effect=lookup)
+        c.users = MagicMock()
+        c.users._inject_creator_member_into = MagicMock()
+
+        await ProjectsSync(c)._sync_project_members_as_pseudo(project)
+
+        call_args = c.data_entities_processor.on_new_record_groups.call_args[0][0]
+        acl = {group.external_group_id: perms for group, perms in call_args}
+        assert len(acl) == 5
+        assert all(perms is None for perms in acl.values()), "None keeps the stored grants"
+        c.note_sync_problem.assert_called_once()
+
+    async def test_a_minimal_access_member_whose_lookup_fails_does_not_keep_the_stored_access(self) -> None:
+        """Minimal Access (5) gets no grant, so its identity is never read: a member downgraded
+        to it loses access even when the store cannot read who they are."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        c._gitlab_included_group_paths = None
+        project = _project(1, "eng/proj")
+        project.name = "proj"
+        members = [_member(uid=1, access_level=30), _member(uid=2, access_level=5)]
+        for m in members:
+            m.state = "active"
+            m.membership_state = "active"
+        c.runtime.ds_call = AsyncMock(return_value=MagicMock(success=True, data=members, error=None))
+
+        async def lookup(source_user_id: str, **_kwargs: object) -> MagicMock:
+            if source_user_id == "2":
+                raise RuntimeError("store unavailable")
+            return MagicMock(email=f"user{source_user_id}@example.com")
+
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(side_effect=lookup)
+        c.users = MagicMock()
+        c.users._inject_creator_member_into = MagicMock()
+
+        await ProjectsSync(c)._sync_project_members_as_pseudo(project)
+
+        looked_up = [call.args[0] if call.args else call.kwargs.get("source_user_id")
+                     for call in c.data_entities_processor.get_user_by_source_id.await_args_list]
+        assert "2" not in looked_up
+        call_args = c.data_entities_processor.on_new_record_groups.call_args[0][0]
+        acl = {group.external_group_id: perms for group, perms in call_args}
+        assert all(perms is not None for perms in acl.values()), "the rewrite is not held back"
+        assert all(len(perms) == 1 for perms in acl.values()), "only the Developer is granted"
+        c.note_sync_problem.assert_not_called()
+
+    @pytest.mark.parametrize("listing", [
+        MagicMock(success=True, data=[], error=None),
+        MagicMock(success=False, data=None, error="boom", status_code=500),
+    ])
+    async def test_unknown_members_with_nothing_stored_and_no_creator_still_write_the_groups(
+        self, listing: MagicMock,
+    ) -> None:
+        """/members/all lists inherited members too, so an empty list means unknown, not nobody:
+        the groups are written with no grants (hidden) instead of left for stub groups."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        c._gitlab_included_group_paths = None
+        project = _project(1, "eng/proj")
+        project.name = "proj"
+        c.runtime.ds_call = AsyncMock(return_value=listing)
+
+        await ProjectsSync(c)._sync_project_members_as_pseudo(project)
+
+        c.data_entities_processor.on_new_record_groups.assert_awaited_once()
+        call_args = c.data_entities_processor.on_new_record_groups.call_args[0][0]
+        acl = {group.external_group_id: perms for group, perms in call_args}
+        assert set(acl) == {
+            "1", "1-work-items", "1-confidential-work-items", "1-merge-requests", "1-code-repository",
+        }
+        assert all(perms is None for perms in acl.values())
+
+
 class TestBuildProjectRecordGroupsParentPath:
     def test_sets_parent_for_group_namespace(self) -> None:
         """Project under a group namespace gets parent_external_group_id set."""
@@ -769,14 +1044,12 @@ class TestCreatePseudoGroup:
         assert result.source_user_group_id == "user-99"
         c.data_entities_processor.on_new_user_groups.assert_called_once()
 
-    async def test_exception_returns_none(self) -> None:
-        """Exception during creation returns None."""
+    async def test_a_failed_write_raises(self) -> None:
         c = make_mock_connector()
         c.data_entities_processor.on_new_user_groups = AsyncMock(side_effect=Exception("DB error"))
 
-        projects_sync = ProjectsSync(c)
-        result = await projects_sync._create_pseudo_group("user-99")
-        assert result is None
+        with pytest.raises(Exception, match="DB error"):
+            await ProjectsSync(c)._create_pseudo_group("user-99")
 
 
 # ===========================================================================

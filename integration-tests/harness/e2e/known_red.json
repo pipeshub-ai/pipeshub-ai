@@ -1,0 +1,4 @@
+{
+ "description": "Rows that are red for a recorded finding. Each runs as a strict xfail: when the row turns green the lane fails until its entry is removed. A row the lane cannot set up yet is blocked in plan.py instead, not listed here.",
+ "rows": {}
+}

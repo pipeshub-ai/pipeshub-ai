@@ -1,0 +1,476 @@
+{
+ "_source": "A recorded conversation (GET /api/v1/conversations/:id), read-only; model keys removed. A trip-planning chat: the agent asks 3 questions, the person answers, the agent asks 3 more.",
+ "messages": [
+  {
+   "_id": "6ad769b8c09c1c16cde53079",
+   "messageType": "user_query",
+   "content": "hi",
+   "contentFormat": "MARKDOWN",
+   "modelInfo": {
+    "chatMode": "agent"
+   },
+   "appliedFilters": {
+    "apps": [],
+    "kb": [],
+    "recordGroups": [],
+    "records": [],
+    "recordsExact": []
+   },
+   "parts": [],
+   "createdAt": "2026-10-20T13:16:40.701Z",
+   "updatedAt": "2026-10-20T13:16:40.701Z",
+   "citations": [],
+   "followUpQuestions": [],
+   "feedback": [],
+   "attachments": [],
+   "referenceData": [],
+   "tools": [],
+   "reasoning": []
+  },
+  {
+   "_id": "6ad769bbc09c1c16cde5310a",
+   "messageType": "bot_response",
+   "content": "Hi! How can I help?",
+   "contentFormat": "MARKDOWN",
+   "runId": "3a61705b-4a79-4608-b1d5-29ae042f1973",
+   "citations": [],
+   "confidence": "Very High",
+   "followUpQuestions": [],
+   "modelInfo": {
+    "modelName": "gpt-6-luna",
+    "chatMode": "agent",
+    "modelFriendlyName": "gpt-6-luna"
+   },
+   "appliedFilters": {
+    "apps": [],
+    "kb": [],
+    "recordGroups": [],
+    "records": [],
+    "recordsExact": []
+   },
+   "parts": [
+    {
+     "type": "text",
+     "content": "Hi! How can I help?",
+     "runId": "3a61705b-4a79-4608-b1d5-29ae042f1973",
+     "durationMs": 2615,
+     "isFinal": true
+    }
+   ],
+   "createdAt": "2026-10-20T13:16:43.428Z",
+   "updatedAt": "2026-10-20T13:16:43.428Z",
+   "feedback": [],
+   "attachments": [],
+   "referenceData": [],
+   "tools": [],
+   "reasoning": []
+  },
+  {
+   "_id": "6ad769c3c09c1c16cde531da",
+   "messageType": "user_query",
+   "content": "Can you help me plan a trip?",
+   "contentFormat": "MARKDOWN",
+   "modelInfo": {
+    "chatMode": "agent"
+   },
+   "appliedFilters": {
+    "apps": [],
+    "kb": [],
+    "recordGroups": [],
+    "records": [],
+    "recordsExact": []
+   },
+   "parts": [],
+   "createdAt": "2026-10-20T13:16:51.817Z",
+   "updatedAt": "2026-10-20T13:16:51.817Z",
+   "citations": [],
+   "followUpQuestions": [],
+   "feedback": [],
+   "attachments": [],
+   "referenceData": [],
+   "tools": [],
+   "reasoning": []
+  },
+  {
+   "_id": "6ad769cec09c1c16cde5328a",
+   "messageType": "tool_call",
+   "content": "",
+   "contentFormat": "MARKDOWN",
+   "modelInfo": {
+    "chatMode": "quick"
+   },
+   "appliedFilters": {
+    "apps": [],
+    "kb": [],
+    "recordGroups": [],
+    "records": [],
+    "recordsExact": []
+   },
+   "tools": [
+    {
+     "toolName": "ask_user_question",
+     "toolResult": {
+      "name": "ask_user_question",
+      "userIntent": "The user wants help planning a trip, but destination, timing, and preferences are not yet known. I’m asking for the key details needed to make a tailored itinerary.",
+      "questions": [
+       {
+        "uuid": "c4ccf75c-f96a-467e-accc-c0c9e6010e59",
+        "question": "Where are you thinking of going?",
+        "options": [
+         {
+          "id": "opt_i_have_a_destination_in_mind",
+          "label": "I have a destination in mind",
+          "isUserInput": true
+         },
+         {
+          "id": "opt_recommend_somewhere_in_the_u.s.",
+          "label": "Recommend somewhere in the U.S.",
+          "isUserInput": false
+         },
+         {
+          "id": "opt_recommend_somewhere_international",
+          "label": "Recommend somewhere international",
+          "isUserInput": false
+         },
+         {
+          "id": "opt_i’m_open_to_anywhere",
+          "label": "I’m open to anywhere",
+          "isUserInput": false
+         }
+        ],
+        "multiSelect": false
+       },
+       {
+        "uuid": "fe84570b-25a8-4322-882b-c417ebff3770",
+        "question": "What are your timing and trip-length preferences?",
+        "options": [
+         {
+          "id": "opt_i_have_specific_dates",
+          "label": "I have specific dates",
+          "isUserInput": true
+         },
+         {
+          "id": "opt_flexible_dates;_about_a_long_weekend",
+          "label": "Flexible dates; about a long weekend",
+          "isUserInput": false
+         },
+         {
+          "id": "opt_flexible_dates;_about_a_week",
+          "label": "Flexible dates; about a week",
+          "isUserInput": false
+         },
+         {
+          "id": "opt_flexible_dates;_two_weeks_or_more",
+          "label": "Flexible dates; two weeks or more",
+          "isUserInput": false
+         },
+         {
+          "id": "opt_i_haven’t_decided_yet",
+          "label": "I haven’t decided yet",
+          "isUserInput": false
+         }
+        ],
+        "multiSelect": false
+       },
+       {
+        "uuid": "3ed1e943-a581-4eb5-96c8-bcc8ee9cbb1d",
+        "question": "What would you like the trip to focus on? Select any that sound good.",
+        "options": [
+         {
+          "id": "opt_food_and_local_culture",
+          "label": "Food and local culture",
+          "isUserInput": false
+         },
+         {
+          "id": "opt_outdoor_adventure",
+          "label": "Outdoor adventure",
+          "isUserInput": false
+         },
+         {
+          "id": "opt_relaxation_and_beaches",
+          "label": "Relaxation and beaches",
+          "isUserInput": false
+         },
+         {
+          "id": "opt_museums_and_history",
+          "label": "Museums and history",
+          "isUserInput": false
+         },
+         {
+          "id": "opt_nightlife_and_entertainment",
+          "label": "Nightlife and entertainment",
+          "isUserInput": false
+         },
+         {
+          "id": "opt_family-friendly_activities",
+          "label": "Family-friendly activities",
+          "isUserInput": false
+         }
+        ],
+        "multiSelect": true
+       }
+      ]
+     }
+    }
+   ],
+   "parts": [],
+   "createdAt": "2026-10-20T13:17:02.780Z",
+   "updatedAt": "2026-10-20T13:17:02.780Z",
+   "citations": [],
+   "followUpQuestions": [],
+   "feedback": [],
+   "attachments": [],
+   "referenceData": [],
+   "reasoning": []
+  },
+  {
+   "_id": "6ad769cec09c1c16cde5328b",
+   "messageType": "bot_response",
+   "content": "",
+   "contentFormat": "MARKDOWN",
+   "runId": "eed22555-a0e2-4925-bf93-05b837431874",
+   "citations": [],
+   "followUpQuestions": [],
+   "modelInfo": {
+    "modelName": "gpt-6-luna",
+    "chatMode": "agent",
+    "modelFriendlyName": "gpt-6-luna"
+   },
+   "appliedFilters": {
+    "apps": [],
+    "kb": [],
+    "recordGroups": [],
+    "records": [],
+    "recordsExact": []
+   },
+   "parts": [
+    {
+     "type": "text",
+     "content": "",
+     "runId": "eed22555-a0e2-4925-bf93-05b837431874",
+     "durationMs": 10838,
+     "isFinal": true
+    },
+    {
+     "type": "tool_call",
+     "toolCallId": "call_iaCPvmP9V3MNlpm7hds8ijIW",
+     "toolName": "internaltools__ask_user_question",
+     "args": "{\"user_intent\": \"The user wants help planning a trip, but destination, timing, and preferences are not yet known. I\\u2019m asking for the key details needed to make a tailored itinerary.\", \"questions\": [{\"question\": \"Where are you thinking of going?\", \"options\": [{\"label\": \"I have a destination in mind\", \"isUserInput\": true}, {\"label\": \"Recommend somewhere in the U.S.\"}, {\"label\": \"Recommend somewhere international\"}, {\"label\": \"I\\u2019m open to anywhere\"}], \"multiSelect\": false}, {\"question\": \"What are your timing and trip-length preferences?\", \"options\": [{\"label\": \"I have specific dates\", \"isUserInput\": true}, {\"label\": \"Flexible dates; about a long weekend\"}, {\"label\": \"Flexible dates; about a week\"}, {\"label\": \"Flexible dates; two weeks or more\"}, {\"label\": \"I haven\\u2019t decided yet\"}], \"multiSelect\": false}, {\"question\": \"What would you like the trip to focus on? Select any that sound good.\", \"options\": [{\"label\": \"Food and local culture\"}, {\"label\": \"Outdoor adventure\"}, {\"label\": \"Relaxation and beaches\"}, {\"label\": \"Museums and history\"}, {\"label\": \"Nightlife and entertainment\"}, {\"label\": \"Family-friendly activities\"}], \"multiSelect\": true}]}",
+     "status": "completed",
+     "runId": "eed22555-a0e2-4925-bf93-05b837431874",
+     "argsSummary": "Ask User Question — user_intent: \"The user wants help planning a trip, but destination, timing, and preferences a…\", questions: [3 items]",
+     "resultPreview": "{\"name\": \"ask_user_question\", \"userIntent\": \"The user wants help planning a trip, but destination, timing, and preferences are not yet known. I’m asking for the key details needed to make a tailored itinerary.\", \"questions\": [{\"uuid\": \"c4ccf75c-f96a-467e-accc-c0c9e6010e59\", \"question\": \"Where are you thinking of going?\", \"options\": [{\"id\": \"opt_i_have_a_destination_in_mind\", \"label\": \"I have a destination in mind\", \"isUserInput\": true}, {\"id\": \"opt_recommend_somewhere_in_the_u.s.\", \"label\": \"Recommend somewhere in the U.S.\", \"isUserInput\": false}, {\"id\": \"opt_recommend_somewhere_international\", \"label\": \"Recommend somewhere international\", \"isUserInput\": false}, {\"id\": \"opt_i’m_open_to_anywhere\", \"label\": \"I’m open to anywhere\", \"isUserInput\": false}], \"multiSelect\": false}, {\"uuid\": \"fe84570b-25a8-4322-882b-c417ebff3770\", \"question\": \"What are your timing and trip-length preferences?\", \"options\": [{\"id\": \"opt_i_have_specific_dates\", \"label\": \"I have specific dates\", \"isUserInput\": true}, {\"id\": \"opt_flexible_dates;_about_a_long_weekend\", \"label\": \"Flexible dates; about a long weekend\", \"isUserInput\": false}, {\"id\": \"opt_flexible_dates;_about_a_week\", \"label\": \"Flexible dates; about a week\", \"isUserInput\": false}, {\"id\": \"opt_flexible_dates;_two_weeks_or_more\", \"label\": \"Flexible dates; two weeks or more\", \"isUserInput\": false}, {\"id\": \"opt_i_haven’t_decided_yet\", \"label\": \"I haven’t decided yet\", \"isUserInput\": false}], \"multiSelect\": false}, {\"uuid\": \"3ed1e943-a581-4eb5-96c8-bcc8ee9cbb1d\", \"question\": \"What would you like the trip to focus on? Select any that sound good.\", \"options\": [{\"id\": \"opt_food_and_local_culture\", \"label\": \"Food and local culture\", \"isUserInput\": false}, {\"id\": \"opt_outdoor_adventure\", \"label\": \"Outdoor adventure\", \"isUserInput\": false}, {\"id\": \"opt_relaxation_and_beaches\", \"label\": \"Relaxation and beaches\", \"isUserInput\": false}, {\"id\": \"opt_museums_and_history\", \"label\": \"Museums and history\", \"isUserInput\":… [truncated: 2209 chars total]",
+     "resultSummary": "Completed successfully"
+    }
+   ],
+   "createdAt": "2026-10-20T13:17:02.780Z",
+   "updatedAt": "2026-10-20T13:17:02.780Z",
+   "feedback": [],
+   "attachments": [],
+   "referenceData": [],
+   "tools": [],
+   "reasoning": []
+  },
+  {
+   "_id": "6ad769f2c09c1c16cde533d5",
+   "messageType": "user_query",
+   "content": "User selections:\n1. \"Where are you thinking of going?\" → Anini\n2. \"What are your timing and trip-length preferences?\" → Jan 2027\n3. \"What would you like the trip to focus on? Select any that sound good.\" → Outdoor adventure, Nightlife and entertainment",
+   "contentFormat": "MARKDOWN",
+   "modelInfo": {
+    "chatMode": "agent"
+   },
+   "appliedFilters": {
+    "apps": [],
+    "kb": [],
+    "recordGroups": [],
+    "records": [],
+    "recordsExact": []
+   },
+   "parts": [],
+   "createdAt": "2026-10-20T13:17:38.961Z",
+   "updatedAt": "2026-10-20T13:17:38.961Z",
+   "citations": [],
+   "followUpQuestions": [],
+   "feedback": [],
+   "attachments": [],
+   "referenceData": [],
+   "tools": [],
+   "reasoning": []
+  },
+  {
+   "_id": "6ad769fcc09c1c16cde53473",
+   "messageType": "tool_call",
+   "content": "",
+   "contentFormat": "MARKDOWN",
+   "modelInfo": {
+    "chatMode": "quick"
+   },
+   "appliedFilters": {
+    "apps": [],
+    "kb": [],
+    "recordGroups": [],
+    "records": [],
+    "recordsExact": []
+   },
+   "tools": [
+    {
+     "toolName": "ask_user_question",
+     "toolResult": {
+      "name": "ask_user_question",
+      "userIntent": "You’re planning a January 2027 trip to Anini Beach/Kauaʻi focused on outdoor adventure and nightlife. I need the trip length, approximate budget, and departure city to make the itinerary and travel recommendations useful.",
+      "questions": [
+       {
+        "uuid": "15f46e4d-66fa-4915-990a-cf6224b6c72f",
+        "question": "How long do you want to stay?",
+        "options": [
+         {
+          "id": "opt_3–4_nights",
+          "label": "3–4 nights",
+          "isUserInput": false
+         },
+         {
+          "id": "opt_5–7_nights",
+          "label": "5–7 nights",
+          "isUserInput": false
+         },
+         {
+          "id": "opt_8–10_nights",
+          "label": "8–10 nights",
+          "isUserInput": false
+         },
+         {
+          "id": "opt_11_nights_or_longer",
+          "label": "11 nights or longer",
+          "isUserInput": false
+         },
+         {
+          "id": "opt_enter_exact_dates_or_trip_length",
+          "label": "Enter exact dates or trip length",
+          "isUserInput": true
+         }
+        ],
+        "multiSelect": false
+       },
+       {
+        "uuid": "6bed710e-f2c3-4c9e-bc2f-8ac33591a3b0",
+        "question": "What approximate budget should I plan around, excluding or including flights as you prefer?",
+        "options": [
+         {
+          "id": "opt_under_$2,000_per_person",
+          "label": "Under $2,000 per person",
+          "isUserInput": false
+         },
+         {
+          "id": "opt_$2,000–$4,000_per_person",
+          "label": "$2,000–$4,000 per person",
+          "isUserInput": false
+         },
+         {
+          "id": "opt_$4,000–$7,000_per_person",
+          "label": "$4,000–$7,000 per person",
+          "isUserInput": false
+         },
+         {
+          "id": "opt_over_$7,000_per_person",
+          "label": "Over $7,000 per person",
+          "isUserInput": false
+         },
+         {
+          "id": "opt_enter_a_total_budget_and_whether_flights_are_included",
+          "label": "Enter a total budget and whether flights are included",
+          "isUserInput": true
+         }
+        ],
+        "multiSelect": false
+       },
+       {
+        "uuid": "f27c308a-bdf9-4571-bc2f-2e1f7ac925d1",
+        "question": "Where will you be traveling from?",
+        "options": [
+         {
+          "id": "opt_u.s._west_coast",
+          "label": "U.S. West Coast",
+          "isUserInput": false
+         },
+         {
+          "id": "opt_u.s._east_coast",
+          "label": "U.S. East Coast",
+          "isUserInput": false
+         },
+         {
+          "id": "opt_another_u.s._city",
+          "label": "Another U.S. city",
+          "isUserInput": true
+         },
+         {
+          "id": "opt_outside_the_u.s.",
+          "label": "Outside the U.S.",
+          "isUserInput": true
+         }
+        ],
+        "multiSelect": false
+       }
+      ]
+     }
+    }
+   ],
+   "parts": [],
+   "createdAt": "2026-10-20T13:17:48.150Z",
+   "updatedAt": "2026-10-20T13:17:48.150Z",
+   "citations": [],
+   "followUpQuestions": [],
+   "feedback": [],
+   "attachments": [],
+   "referenceData": [],
+   "reasoning": []
+  },
+  {
+   "_id": "6ad769fcc09c1c16cde53474",
+   "messageType": "bot_response",
+   "content": "",
+   "contentFormat": "MARKDOWN",
+   "runId": "a47086d7-c964-45eb-9a3f-164b45ec23e2",
+   "citations": [],
+   "followUpQuestions": [],
+   "modelInfo": {
+    "modelName": "gpt-6-luna",
+    "chatMode": "agent",
+    "modelFriendlyName": "gpt-6-luna"
+   },
+   "appliedFilters": {
+    "apps": [],
+    "kb": [],
+    "recordGroups": [],
+    "records": [],
+    "recordsExact": []
+   },
+   "parts": [
+    {
+     "type": "text",
+     "content": "",
+     "runId": "a47086d7-c964-45eb-9a3f-164b45ec23e2",
+     "durationMs": 9065,
+     "isFinal": true
+    },
+    {
+     "type": "tool_call",
+     "toolCallId": "call_xtun8wpal7z5JNRRT40jVMWU",
+     "toolName": "internaltools__ask_user_question",
+     "args": "{\"user_intent\": \"You\\u2019re planning a January 2027 trip to Anini Beach/Kaua\\u02bbi focused on outdoor adventure and nightlife. I need the trip length, approximate budget, and departure city to make the itinerary and travel recommendations useful.\", \"questions\": [{\"question\": \"How long do you want to stay?\", \"options\": [{\"label\": \"3\\u20134 nights\"}, {\"label\": \"5\\u20137 nights\"}, {\"label\": \"8\\u201310 nights\"}, {\"label\": \"11 nights or longer\"}, {\"label\": \"Enter exact dates or trip length\", \"isUserInput\": true}], \"multiSelect\": false}, {\"question\": \"What approximate budget should I plan around, excluding or including flights as you prefer?\", \"options\": [{\"label\": \"Under $2,000 per person\"}, {\"label\": \"$2,000\\u2013$4,000 per person\"}, {\"label\": \"$4,000\\u2013$7,000 per person\"}, {\"label\": \"Over $7,000 per person\"}, {\"label\": \"Enter a total budget and whether flights are included\", \"isUserInput\": true}], \"multiSelect\": false}, {\"question\": \"Where will you be traveling from?\", \"options\": [{\"label\": \"U.S. West Coast\", \"isUserInput\": false}, {\"label\": \"U.S. East Coast\"}, {\"label\": \"Another U.S. city\", \"isUserInput\": true}, {\"label\": \"Outside the U.S.\", \"isUserInput\": true}], \"multiSelect\": false}]}",
+     "status": "completed",
+     "runId": "a47086d7-c964-45eb-9a3f-164b45ec23e2",
+     "argsSummary": "Ask User Question — user_intent: \"You’re planning a January 2027 trip to Anini Beach/Kauaʻi focused on outdoor ad…\", questions: [3 items]",
+     "resultPreview": "{\"name\": \"ask_user_question\", \"userIntent\": \"You’re planning a January 2027 trip to Anini Beach/Kauaʻi focused on outdoor adventure and nightlife. I need the trip length, approximate budget, and departure city to make the itinerary and travel recommendations useful.\", \"questions\": [{\"uuid\": \"15f46e4d-66fa-4915-990a-cf6224b6c72f\", \"question\": \"How long do you want to stay?\", \"options\": [{\"id\": \"opt_3–4_nights\", \"label\": \"3–4 nights\", \"isUserInput\": false}, {\"id\": \"opt_5–7_nights\", \"label\": \"5–7 nights\", \"isUserInput\": false}, {\"id\": \"opt_8–10_nights\", \"label\": \"8–10 nights\", \"isUserInput\": false}, {\"id\": \"opt_11_nights_or_longer\", \"label\": \"11 nights or longer\", \"isUserInput\": false}, {\"id\": \"opt_enter_exact_dates_or_trip_length\", \"label\": \"Enter exact dates or trip length\", \"isUserInput\": true}], \"multiSelect\": false}, {\"uuid\": \"6bed710e-f2c3-4c9e-bc2f-8ac33591a3b0\", \"question\": \"What approximate budget should I plan around, excluding or including flights as you prefer?\", \"options\": [{\"id\": \"opt_under_$2,000_per_person\", \"label\": \"Under $2,000 per person\", \"isUserInput\": false}, {\"id\": \"opt_$2,000–$4,000_per_person\", \"label\": \"$2,000–$4,000 per person\", \"isUserInput\": false}, {\"id\": \"opt_$4,000–$7,000_per_person\", \"label\": \"$4,000–$7,000 per person\", \"isUserInput\": false}, {\"id\": \"opt_over_$7,000_per_person\", \"label\": \"Over $7,000 per person\", \"isUserInput\": false}, {\"id\": \"opt_enter_a_total_budget_and_whether_flights_are_included\", \"label\": \"Enter a total budget and whether flights are included\", \"isUserInput\": true}], \"multiSelect\": false}, {\"uuid\": \"f27c308a-bdf9-4571-bc2f-2e1f7ac925d1\", \"question\": \"Where will you be traveling from?\", \"options\": [{\"id\": \"opt_u.s._west_coast\", \"label\": \"U.S. West Coast\", \"isUserInput\": false}, {\"id\": \"opt_u.s._east_coast\", \"label\": \"U.S. East Coast\", \"isUserInput\": false}, {\"id\": \"opt_another_u.s._city\", \"label\": \"Another U.S. city\", \"isUserInput\": true}, {\"id\": \"opt_outside_the_u.s.\", \"label\": \"Out… [truncated: 2031 chars total]",
+     "resultSummary": "Completed successfully"
+    }
+   ],
+   "createdAt": "2026-10-20T13:17:48.150Z",
+   "updatedAt": "2026-10-20T13:17:48.150Z",
+   "feedback": [],
+   "attachments": [],
+   "referenceData": [],
+   "tools": [],
+   "reasoning": []
+  }
+ ]
+}

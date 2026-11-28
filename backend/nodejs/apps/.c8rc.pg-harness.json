@@ -1,0 +1,23 @@
+{
+  "all": true,
+  "src": [
+    "src"
+  ],
+  "include": [
+    "src/libs/repositories/agent-harness/**/pg.ts",
+    "src/libs/repositories/control-plane/**/pg.ts"
+  ],
+  "exclude": [
+    "src/**/*.d.ts"
+  ],
+  "reporter": [
+    "text-summary"
+  ],
+  "report-dir": "coverage-pg-harness",
+  "temp-directory": ".c8_pg_harness",
+  "check-coverage": true,
+  "lines": 96.4,
+  "functions": 95.8,
+  "branches": 87.8,
+  "statements": 96.4
+}

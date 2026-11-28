@@ -9,7 +9,7 @@ import { useDemoDataStore } from '../store';
 import { useDemoDataActive, useDemoDataStatus } from '../use-demo-data';
 import { clearSessionCache } from '@/lib/api/session-cache';
 import { revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 
 vi.mock('../../api', () => ({ ConnectorsApi: { getActiveConnectors: vi.fn(), getConnectorStats: vi.fn() } }));
 vi.mock('../api', () => ({ DemoDataApi: { getStatus: vi.fn(), setInclude: vi.fn(), setEnabledForEveryone: vi.fn() } }));

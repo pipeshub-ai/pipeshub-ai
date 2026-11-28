@@ -12,9 +12,11 @@ import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from asyncpg.exceptions import InvalidPasswordError
 
 import app.modules.retrieval.retrieval_service as retrieval_mod
 from app.config.constants.arangodb import Connectors, OriginTypes
+from app.core.db.errors import ConnectionLost
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
@@ -43,7 +45,7 @@ def _provider(cls, *, user_error=None, rows_error=None, hint_error=None) -> IGra
     provider = cls.__new__(cls)
     provider.logger = MagicMock()
 
-    async def get_user_by_user_id(user_id, *, raise_on_error=False) -> dict:
+    async def get_user_by_user_id(user_id, *, raise_on_error=False, org_id=None) -> dict:
         if user_error:
             raise user_error
         return {"_key": "ukey", "id": "ukey"}
@@ -109,9 +111,82 @@ async def test_check_access_error_line_names_the_class_not_the_text(backend) -> 
     provider = _provider(backend, rows_error=DriverError(SENTINEL))
     with pytest.raises(PermissionVerificationUnavailableError):
         await provider.check_access("ukey", "org-1", node_ids=["n1"], virtual_record_ids=["v1", "v2"])
-    line = _rendered(provider.logger.error.call_args)
+    level, line = _logged_line(provider)
     assert SENTINEL not in line
     assert line == "check_access failed for 1 nodes and 2 vrids: DriverError"
+    assert level == logging.ERROR  # an unrecorded error of ours: internal
+
+
+def _logged_line(provider) -> tuple[int, str]:
+    """The one ``check_access`` line: ``logger.log(level, message, *args)``."""
+    (call,) = provider.logger.log.call_args_list
+    return call.args[0], call.args[1] % call.args[2:]
+
+
+def _client_recorded(cause: Exception) -> Exception:
+    """As a graph client leaves an error after writing db.query.failed: classed, text hidden."""
+    mark_error(cause, "unavailable", hide_text=True)
+    return cause
+
+
+def _raised_from(outer: Exception, cause: Exception, *, explicit: bool = True) -> Exception:
+    try:
+        try:
+            raise cause
+        except Exception as inner:
+            if explicit:
+                raise outer from inner
+            raise outer  # noqa: B904 - a new failure while handling the recorded one
+    except Exception as raised:
+        return raised
+
+
+def _recorded_busy() -> Exception:
+    from app.exceptions.graph_db_exceptions import KnowledgeHubListingBusy
+
+    return _raised_from(KnowledgeHubListingBusy(out_of_memory=True), _client_recorded(DriverError(SENTINEL)))
+
+
+def _self_caused() -> Exception:
+    loop = DriverError(SENTINEL)
+    loop.__cause__ = loop
+    return loop
+
+
+# rows_error -> whether check_access writes its line (only for a failure no client recorded)
+LINE_CASES = {
+    "client_recorded": (lambda: _client_recorded(DriverError(SENTINEL)), False),
+    "raised_from_recorded": (_recorded_busy, False),
+    "raised_while_handling_recorded": (
+        lambda: _raised_from(RuntimeError("fallback failed"), _client_recorded(DriverError(SENTINEL)), explicit=False), True),
+    "self_caused_unrecorded": (_self_caused, True),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", BACKENDS, ids=_name)
+@pytest.mark.parametrize("case", LINE_CASES)
+async def test_check_access_writes_its_line_only_for_a_failure_no_client_recorded(backend, case) -> None:
+    error, writes = LINE_CASES[case]
+    provider = _provider(backend, rows_error=error())
+    with pytest.raises(PermissionVerificationUnavailableError):
+        await provider.check_access("ukey", "org-1", node_ids=["n1"])
+    assert provider.logger.log.called is writes
+    assert not provider.logger.error.called and not provider.logger.warning.called
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", BACKENDS, ids=_name)
+@pytest.mark.parametrize(("error", "level"), [
+    (lambda: ConnectionLost("cannot connect", retry_safe=True), logging.WARNING),
+    (lambda: RuntimeError("our bug"), logging.ERROR),
+    (lambda: InvalidPasswordError("password authentication failed"), logging.ERROR),
+], ids=["connect_refused_unavailable", "our_bug_internal", "login_refused_internal"])
+async def test_check_access_line_is_at_the_class_level(backend, error, level) -> None:
+    provider = _provider(backend, rows_error=error())
+    with pytest.raises(PermissionVerificationUnavailableError):
+        await provider.check_access("ukey", "org-1", node_ids=["n1"])
+    assert _logged_line(provider)[0] == level
 
 
 @pytest.mark.asyncio

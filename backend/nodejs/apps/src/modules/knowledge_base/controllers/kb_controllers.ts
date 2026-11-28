@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { setUntrustedContentHeaders } from '../../../libs/utils/untrusted-content.utils';
 import * as crypto from 'crypto';
 import { AuthenticatedUserRequest } from './../../../libs/middlewares/types';
 import { injectRequestHeaders } from '../../../libs/context/request-context';
@@ -24,14 +25,17 @@ import {
   uploadNextVersionToStorage,
   createPlaceholderDocument,
   processUploadsInBackground,
+  logUploadBatchEnd,
   FileUploadMetadata,
   PlaceholderResultWithMetadata,
+  UploadBatchFailure,
   UploadStreamPublish,
   UPLOAD_STORAGE_CONCURRENCY,
 } from '../utils/utils';
 import { mapWithConcurrency } from '../../../libs/utils/concurrency.util';
 import { isUserOrgAdmin } from '../../user_management/services/user-admin.service';
 import { setSampleAccountsSignIn } from '../../user_management/services/demo-accounts.service';
+import type { PrincipalDeactivationPort } from '../../agent-harness/application/principal-deactivation';
 import axios from 'axios';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -43,7 +47,12 @@ import {
   handleConnectorResponse,
 } from '../../tokens_manager/utils/connector.utils';
 import { safeParsePagination } from '../../../utils/safe-integer';
-import { KB_BEING_DELETED_MESSAGE } from '../../../libs/errors/backend-error';
+import {
+  KB_BEING_DELETED_MESSAGE,
+  unansweredKind,
+} from '../../../libs/errors/backend-error';
+import { withCause } from '../../../libs/errors/base.error';
+import { classifyError } from '../../../libs/utils/error-class';
 
 /** Shape of the KB detail response used during pre-upload permission checks. */
 interface KbCheckData {
@@ -76,6 +85,8 @@ const logger = Logger.getInstance({
 
 const KNOWLEDGE_HUB_MIN_QUERY_LENGTH = 2;
 const KNOWLEDGE_HUB_MAX_QUERY_LENGTH = 500;
+/** Under the ~90 s a browser or proxy waits, so a slow listing fails with a 504 the page can show. */
+export const KNOWLEDGE_HUB_NODES_TIMEOUT_MS = 60_000;
 
 /**
  * The search text for a knowledge-hub listing, after trim.
@@ -142,12 +153,6 @@ export const getKnowledgeHubNodes =
         throw new UnauthorizedError('User not authenticated');
       }
 
-      logger.debug('Getting knowledge hub nodes', {
-        userId,
-        orgId,
-        query: req.query,
-      });
-
       // Build query string from request query params
       const queryParams = new URLSearchParams();
       const searchQuery = knowledgeHubSearchQuery(req.query.q);
@@ -210,6 +215,8 @@ export const getKnowledgeHubNodes =
         url,
         HttpMethod.GET,
         req.headers as Record<string, string>, // Forwards auth headers
+        undefined,
+        { timeoutMs: KNOWLEDGE_HUB_NODES_TIMEOUT_MS },
       );
 
       handleConnectorResponse(
@@ -219,10 +226,6 @@ export const getKnowledgeHubNodes =
         'Failed to get nodes',
       );
     } catch (error: any) {
-      logger.error('Error getting knowledge hub nodes', {
-        error: error.message,
-        stack: error.stack,
-      });
       const handleError = handleBackendError(error, 'get knowledge hub nodes');
       next(handleError);
     }
@@ -255,9 +258,6 @@ export const getDemoDataStatus =
         'Failed to get demo data status',
       );
     } catch (error: unknown) {
-      logger.error('Error getting demo data status', {
-        error: error instanceof Error ? error.message : String(error),
-      });
       next(handleBackendError(error, 'get demo data status'));
     }
   };
@@ -286,15 +286,15 @@ export const setDemoDataPreference =
         'Failed to save demo data preference',
       );
     } catch (error: unknown) {
-      logger.error('Error saving demo data preference', {
-        error: error instanceof Error ? error.message : String(error),
-      });
       next(handleBackendError(error, 'save demo data preference'));
     }
   };
 
 export const setDemoDataWorkspace =
-  (appConfig: AppConfig) =>
+  (
+    appConfig: AppConfig,
+    deactivation: () => PrincipalDeactivationPort | null = () => null,
+  ) =>
   async (
     req: AuthenticatedUserRequest,
     res: Response,
@@ -331,7 +331,9 @@ export const setDemoDataWorkspace =
       let response: Awaited<ReturnType<typeof executeConnectorCommand>>;
       if (!enabled) {
         // Off: stop the accounts first; if that fails, nothing is saved.
-        await setSampleAccountsSignIn(orgId, userId, false);
+        await setSampleAccountsSignIn(orgId, userId, false, {
+          deactivation: deactivation(),
+        });
         try {
           response = await executeConnectorCommand(
             `${url}/workspace`,
@@ -380,9 +382,6 @@ export const setDemoDataWorkspace =
         'Failed to save demo data for everyone',
       );
     } catch (error: unknown) {
-      logger.error('Error saving demo data for everyone', {
-        error: error instanceof Error ? error.message : String(error),
-      });
       next(handleBackendError(error, 'save demo data for everyone'));
     }
   };
@@ -407,8 +406,6 @@ export const createKnowledgeBase =
         validateNoFormatSpecifiers(kbName, 'Knowledge base name');
       }
 
-      logger.info(`Creating knowledge base '${kbName}' for user ${userId}`);
-
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/kb/`,
         HttpMethod.POST,
@@ -424,9 +421,7 @@ export const createKnowledgeBase =
         'Creating knowledge base',
         'Knowledge base creation failed',
       );
-      logger.info(`Knowledge base '${kbName}' created successfully`);
     } catch (error: any) {
-      logger.error('Error creating knowledge base', { error: error.message });
       const handleError = handleBackendError(error, 'create knowledge base');
       next(handleError);
     }
@@ -446,8 +441,6 @@ export const getKnowledgeBase =
       if (!userId) {
         throw new UnauthorizedError('User authentication required');
       }
-
-      logger.info(`Getting knowledge base ${kbId} for user ${userId}`);
 
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}`,
@@ -474,13 +467,6 @@ export const getKnowledgeBase =
         'Knowledge base not found',
       );
     } catch (error: any) {
-      logger.error('Error getting knowledge base', {
-        error: error.message,
-        kbId: req.params.kbId,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handleError = handleBackendError(error, 'get knowledge base');
       next(handleError);
     }
@@ -585,18 +571,6 @@ export const listKnowledgeBases =
         }
       }
 
-      logger.info(
-        `Listing knowledge bases for user ${userId} with pagination`,
-        {
-          page,
-          limit,
-          search,
-          permissions,
-          sortBy,
-          sortOrder,
-        },
-      );
-
       const queryParams = new URLSearchParams();
       if (page) queryParams.set('page', String(page));
       if (limit) queryParams.set('limit', String(limit));
@@ -639,11 +613,6 @@ export const listKnowledgeBases =
       // Log successful retrieval
       logger.debug('Knowledge bases retrieved successfully');
     } catch (error: any) {
-      logger.error('Error listing knowledge bases', {
-        error: error.message,
-        userId: req.user?.userId,
-        orgId: req.user?.orgId,
-      });
       const handleError = handleBackendError(error, 'list knowledge bases');
       next(handleError);
     }
@@ -671,8 +640,6 @@ export const updateKnowledgeBase =
         validateNoFormatSpecifiers(kbName, 'Knowledge base name');
       }
 
-      logger.info(`Updating knowledge base ${kbId}`);
-
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}`,
         HttpMethod.PUT,
@@ -689,7 +656,6 @@ export const updateKnowledgeBase =
         'Knowledge base not found',
       );
     } catch (error: any) {
-      logger.error('Error updating knowledge base', { error: error.message });
       const handleError = handleBackendError(error, 'update knowledge base');
       next(handleError);
     }
@@ -709,7 +675,6 @@ export const deleteKnowledgeBase =
       if (!userId) {
         throw new UnauthorizedError('User authentication required');
       }
-      logger.info(`Deleting knowledge base ${kbId}`);
 
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}`,
@@ -724,7 +689,6 @@ export const deleteKnowledgeBase =
         'Knowledge base not found',
       );
     } catch (error: any) {
-      logger.error('Error deleting knowledge base', { error: error.message });
       const handleError = handleBackendError(error, 'delete knowledge base');
       next(handleError);
     }
@@ -763,12 +727,6 @@ export const createFolder =
         validateNoFormatSpecifiers(folderName, 'Folder name');
       }
 
-      if (folderId) {
-        logger.info(`Creating folder '${folderName}' in folder ${folderId}`);
-      } else {
-        logger.info(`Creating folder '${folderName}' in KB ${kbId}`);
-      }
-
       const connectorUrl = folderId
         ? `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}/folder/${encodeURIComponent(folderId)}/subfolder`
         : `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}/folder`;
@@ -793,13 +751,6 @@ export const createFolder =
         'Folder not found',
       );
     } catch (error: any) {
-      logger.error('Error creating folder for knowledge base', {
-        error: error.message,
-        kbId: req.params.kbId,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handleError = handleBackendError(error, 'create folder');
       next(handleError);
     }
@@ -829,8 +780,6 @@ export const updateFolder =
         validateNoFormatSpecifiers(folderName, 'Folder name');
       }
 
-      logger.info(`Updating folder ${folderId} in KB ${kbId}`);
-
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}/folder/${encodeURIComponent(folderId)}`,
         HttpMethod.PUT,
@@ -845,14 +794,6 @@ export const updateFolder =
         'Folder not found',
       );
     } catch (error: any) {
-      logger.error('Error updating folder for knowledge base', {
-        error: error.message,
-        kbId: req.params.kbId,
-        folderId: req.params.folderId,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handleError = handleBackendError(error, 'update folder');
       next(handleError);
     }
@@ -875,8 +816,6 @@ export const deleteFolder =
         throw new UnauthorizedError('User authentication required');
       }
 
-      logger.info(`Deleting folder ${folderId} in KB ${kbId}`);
-
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}/folder/${encodeURIComponent(folderId)}`,
         HttpMethod.DELETE,
@@ -890,14 +829,6 @@ export const deleteFolder =
         'Folder not found',
       );
     } catch (error: any) {
-      logger.error('Error deleting folder for knowledge base', {
-        error: error.message,
-        kbId: req.params.kbId,
-        folderId: req.params.folderId,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handleError = handleBackendError(error, 'delete folder');
       next(handleError);
     }
@@ -974,6 +905,8 @@ const streamKbUpload = async (opts: {
   keyValueStoreService: KeyValueStoreService;
   appConfig: AppConfig;
   pythonServiceUrl: string;
+  /** The destination folder, when the upload targets one; bound into the upload grant. */
+  folderId?: string;
 }): Promise<void> => {
   const {
     req,
@@ -986,6 +919,7 @@ const streamKbUpload = async (opts: {
     keyValueStoreService,
     appConfig,
     pythonServiceUrl,
+    folderId,
   } = opts;
 
   const userId = req.user?.userId;
@@ -1015,9 +949,11 @@ const streamKbUpload = async (opts: {
   const publish: UploadStreamPublish = (event, data) =>
     writeUploadEvent(res, event, data);
 
+  const startedAt = Date.now();
   const total = fileBuffers.length + rejectedFiles.length;
   let succeeded = 0;
   let failed = 0;
+  let failure: UploadBatchFailure | undefined;
 
   try {
     // One scoped storage-service token for this upload request (valid 1h, reused
@@ -1107,10 +1043,8 @@ const streamKbUpload = async (opts: {
             stage: 'upload',
           });
           failed += 1;
-          logger.error('Failed to create placeholder document for file', {
-            fileName,
-            filePath,
-            error: errorMessage,
+          logger.debug('Failed to create placeholder document for file', {
+            error_class: classifyError(placeholderError),
           });
           return null;
         }
@@ -1133,14 +1067,26 @@ const streamKbUpload = async (opts: {
         req.headers as Record<string, string>,
         logger,
         publish,
+        {
+          secret: appConfig.scopedJwtSecret,
+          userId: String(userId ?? ''),
+          folderId,
+        },
       );
       succeeded += counts.succeeded;
       failed += counts.failed;
+      failure = counts.failure;
     }
 
     writeUploadEvent(res, 'done', { summary: { total, succeeded, failed } });
+    logUploadBatchEnd(
+      logger,
+      { files: total, succeeded, failed },
+      startedAt,
+      failure,
+    );
   } catch (error: any) {
-    logger.error('Streaming upload failed', { error: error?.message });
+    logger.error('Streaming upload failed', { error });
     try {
       writeUploadEvent(res, 'error', {
         message: error?.message || 'Upload failed',
@@ -1175,7 +1121,7 @@ const assertKbWritePermission = async (
     headers,
   );
   if (kbCheckResponse.statusCode === 404) {
-    throw new NotFoundError(`Knowledge base ${kbId} not found`);
+    throw new NotFoundError('Knowledge base not found');
   }
   if (kbCheckResponse.statusCode === 403) {
     throw new ForbiddenError(
@@ -1265,15 +1211,11 @@ export const uploadRecords =
         }
       }
 
-      logger.info(
-        folderId ? 'Processing file upload to folder' : 'Processing file upload to KB',
-        {
-          totalFiles: fileBuffers.length,
-          kbId,
-          ...(folderId ? { folderId } : {}),
-          userId,
-          samplePaths: fileBuffers.slice(0, 3).map((f) => f.filePath),
-        },
+      logger.debug(
+        folderId
+          ? 'Processing file upload to folder'
+          : 'Processing file upload to KB',
+        { files: fileBuffers.length },
       );
 
       const pythonServiceUrl = folderId
@@ -1294,6 +1236,7 @@ export const uploadRecords =
         keyValueStoreService,
         appConfig,
         pythonServiceUrl,
+        folderId,
       });
     } catch (error: any) {
       // streamKbUpload handles its own errors after headers are sent, so this
@@ -1301,12 +1244,6 @@ export const uploadRecords =
       if (res.headersSent) {
         return;
       }
-      logger.error('Record upload failed', {
-        error: error.message,
-        userId: req.user?.userId,
-        kbId: req.params.kbId,
-        folderId: req.query.folderId,
-      });
       const backendError = handleBackendError(error, 'Record upload api');
       next(backendError);
     }
@@ -1344,7 +1281,6 @@ export const updateRecord =
 
       if (!recordName) {
         recordName = originalname;
-        logger.info('No custom name provided');
       }
 
       // Validate recordName for XSS and format specifiers
@@ -1384,10 +1320,6 @@ export const updateRecord =
             validateNoXSS(fileNameWithoutExt, 'Record name');
             validateNoFormatSpecifiers(fileNameWithoutExt, 'Record name');
             updatedData.recordName = fileNameWithoutExt;
-            logger.info('Setting record name from file', {
-              recordName: updatedData.recordName,
-              originalFileName: originalname,
-            });
           }
         }
       }
@@ -1438,17 +1370,13 @@ export const updateRecord =
         storageDocumentId = recordDetail?.record?.externalRecordId;
 
         if (!storageDocumentId) {
-          logger.error('No external record ID found on existing record', {
-            recordId,
-          });
+          logger.error('No external record ID found on existing record');
           throw new BadRequestError(
             'Cannot update file: No external record ID found for this record',
           );
         }
 
-        logger.info('Uploading new version of file to storage', {
-          recordId,
-          fileName: originalname,
+        logger.debug('Uploading new version of file to storage', {
           fileSize: size,
           mimeType: mimetype,
           extension,
@@ -1471,24 +1399,13 @@ export const updateRecord =
             storageToken,
           );
 
-          logger.info('File uploaded to storage successfully', {
-            recordId,
+          logger.debug('File uploaded to storage successfully', {
             storageDocumentId,
           });
 
           fileUploaded = true;
         } catch (storageError: any) {
           const is404 = storageError?.response?.status === 404;
-
-          logger.error(
-            'Failed to upload file to storage',
-            {
-              recordId,
-              storageDocumentId: storageDocumentId,
-              error: storageError.message,
-              is404,
-            },
-          );
 
           if (is404) {
             throw new InternalServerError(
@@ -1497,22 +1414,17 @@ export const updateRecord =
             );
           }
 
-          logger.error('Uploading the file to storage failed', {
-            error: storageError,
-          });
-          throw markClientSafe(
-            new InternalServerError(serverFailureMessage('save this file')),
+          throw withCause(
+            markClientSafe(
+              new InternalServerError(serverFailureMessage('save this file')),
+            ),
+            storageError,
           );
         }
       }
 
       // STEP 2: Update the record in the database (triggers reindex event via Kafka)
       // Blob is already uploaded at this point, so indexing service will find new content.
-      logger.info('Updating record in database via Python service', {
-        recordId,
-        hasFileUpload: hasFileBuffer,
-        updatedFields: Object.keys(updatedData),
-      });
 
       // Call the Python service to update the record
       const response = await executeConnectorCommand(
@@ -1539,18 +1451,6 @@ export const updateRecord =
 
       const updateResult = updateRecordResponse.updatedRecord;
 
-      // Log the successful update
-      logger.info('Record updated successfully', {
-        recordId,
-        userId,
-        orgId,
-        fileUploaded,
-        newFileName: fileUploaded ? originalname : undefined,
-        updatedFields: Object.keys(updatedData),
-        version: updateResult?.version,
-        requestId: req.context?.requestId,
-      });
-
       // Return the updated record
       res.status(200).json({
         message: fileUploaded
@@ -1564,16 +1464,6 @@ export const updateRecord =
         },
       });
     } catch (error: any) {
-      // Log the error for debugging
-      logger.error('Error updating folder record', {
-        recordId: req.params.recordId,
-        kbId: req.params.kbId,
-        error: error.message,
-        stack: error.stack,
-        userId: req.user?.userId,
-        orgId: req.user?.orgId,
-        requestId: req.context?.requestId,
-      });
       const handleError = handleBackendError(error, 'update record');
       next(handleError);
     }
@@ -1611,7 +1501,7 @@ export const getRecordById =
         throw new NotFoundError(
           typeof detail === 'string' && /connector/i.test(detail)
             ? detail
-            : `Record ${recordId} not found`,
+            : 'Record not found',
         );
       }
 
@@ -1637,13 +1527,7 @@ export const getRecordById =
         'Record not found',
       );
 
-      // Log successful retrieval
-      logger.debug('Record retrieved successfully');
     } catch (error: any) {
-      logger.error('Error getting record by id', {
-        recordId: req.params.recordId,
-        error,
-      });
       const handleError = handleBackendError(error, 'get record by id');
       next(handleError);
       return; // Added return statement
@@ -1688,13 +1572,7 @@ export const reindexRecord =
         'Record not reindexed',
       );
 
-      // Log successful reindex
-      logger.info('Record reindexed successfully', { force });
     } catch (error: any) {
-      logger.error('Error reindexing record', {
-        recordId: req.params.recordId,
-        error,
-      });
       const handleError = handleBackendError(error, 'reindex record');
       next(handleError);
       return;
@@ -1739,17 +1617,7 @@ export const reindexRecordGroup =
         'Record group not reindexed',
       );
 
-      // Log successful reindex
-      logger.info('Record group reindexed successfully', {
-        recordGroupId,
-        depth,
-        force,
-      });
     } catch (error: any) {
-      logger.error('Error reindexing record group', {
-        recordGroupId: req.params.recordGroupId,
-        error,
-      });
       const handleError = handleBackendError(error, 'reindex record group');
       next(handleError);
       return;
@@ -1784,13 +1652,7 @@ export const deleteRecord =
         'Record not deleted',
       );
 
-      // Log successful retrieval
-      logger.info('Record deleted successfully');
     } catch (error: any) {
-      logger.error('Error deleting record', {
-        recordId: req.params.recordId,
-        error,
-      });
       next(error);
       return; // Added return statement
     }
@@ -1825,11 +1687,6 @@ export const restoreRecord =
         'Record not restored',
       );
     } catch (error: any) {
-      logger.error('Error restoring record', {
-        recordId: req.params.recordId,
-        error: error.message,
-        status: error.response?.status,
-      });
       next(handleBackendError(error, 'restore record'));
     }
   };
@@ -1863,10 +1720,6 @@ export const restoreRecords =
         'Records not restored',
       );
     } catch (error: any) {
-      logger.error('Error restoring records', {
-        error: error.message,
-        status: error.response?.status,
-      });
       next(handleBackendError(error, 'restore records'));
     }
   };
@@ -1920,11 +1773,6 @@ export const listTrash =
         'Deleted items not found',
       );
     } catch (error: any) {
-      logger.error('Error listing deleted items', {
-        kbId: req.params.kbId,
-        error: error.message,
-        status: error.response?.status,
-      });
       next(handleBackendError(error, 'load the recently deleted items'));
     }
   };
@@ -1976,10 +1824,6 @@ export const createKBPermission =
         }
       }
 
-      logger.info(
-        `Creating ${role || 'team'} permissions for ${userIds.length} users and ${teamIds.length} teams on KB ${kbId}`,
-      );
-
       const payload: { userIds: string[]; teamIds: string[]; role?: string } = {
         userIds: userIds,
         teamIds: teamIds,
@@ -2010,10 +1854,6 @@ export const createKBPermission =
         permissionResult,
       });
     } catch (error: any) {
-      logger.error('Error creating KB permissions', {
-        error: error.message,
-        kbId: req.params.kbId,
-      });
       const handleError = handleBackendError(error, 'create permissions');
       next(handleError);
     }
@@ -2062,10 +1902,6 @@ export const updateKBPermission =
         );
       }
 
-      logger.info(
-        `Updating permission for ${userIds.length} users and ${teamIds.length} teams on KB ${kbId} to ${role}`,
-      );
-
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}/permissions`,
         HttpMethod.PUT,
@@ -2090,10 +1926,6 @@ export const updateKBPermission =
         newRole: updateResult.newRole,
       });
     } catch (error: any) {
-      logger.error('Error updating KB permission', {
-        error: error.message,
-        kbId: req.params.kbId,
-      });
       const handleError = handleBackendError(error, 'update permissions');
       next(handleError);
     }
@@ -2122,10 +1954,6 @@ export const removeKBPermission =
         throw new BadRequestError('User IDs or team IDs are required');
       }
 
-      logger.info(
-        `Removing permission for ${userIds.length} users and ${teamIds.length} teams from KB ${kbId}`,
-      );
-
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}/permissions`,
         HttpMethod.DELETE,
@@ -2148,10 +1976,6 @@ export const removeKBPermission =
         teamIds: removeResult.teamIds,
       });
     } catch (error: any) {
-      logger.error('Error removing KB permission', {
-        error: error.message,
-        kbId: req.params.kbId,
-      });
       const handleError = handleBackendError(error, 'removing KB permissions');
       next(handleError);
     }
@@ -2169,8 +1993,6 @@ export const listKBPermissions =
   ): Promise<void> => {
     try {
       const { kbId } = req.params as { kbId: string };
-
-      logger.info(`Listing permissions for KB ${kbId}`);
 
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}/permissions`,
@@ -2190,10 +2012,6 @@ export const listKBPermissions =
         totalCount: listResult.totalCount,
       });
     } catch (error: any) {
-      logger.error('Error listing KB permissions', {
-        error: error.message,
-        kbId: req.params.kbId,
-      });
       const handleError = handleBackendError(error, 'list permissions');
       next(handleError);
     }
@@ -2222,7 +2040,7 @@ const RECORD_STREAM_RELAYED_HEADERS = [
 function refuseRecordStream(
   res: Response,
   status: number,
-  error: string,
+  error: string | { reasonCode?: string; message?: string },
 ): void {
   res.status(status);
   res.setHeader('Cache-Control', 'no-store');
@@ -2250,7 +2068,6 @@ export const getRecordBuffer =
 
       const queryParams = new URLSearchParams();
       if (convertTo) {
-        logger.info('Converting file to ', { convertTo });
         queryParams.append('convertTo', convertTo);
       }
       if (version !== undefined) {
@@ -2309,15 +2126,14 @@ export const getRecordBuffer =
         res.set('Content-Length', contentLength);
       }
 
-      // Set appropriate headers from the FastAPI response
+      // A record is someone's file or an agent's artifact: never a page at this origin (SEC-FS-04).
       const contentType = response.headers['content-type'];
-      if (contentType) {
-        res.set('Content-Type', String(contentType));
-      }
       const contentDisposition = response.headers['content-disposition'];
-      if (contentDisposition) {
-        res.set('Content-Disposition', String(contentDisposition));
-      }
+      setUntrustedContentHeaders(
+        (name, value) => res.set(name, value),
+        contentType ? String(contentType) : undefined,
+        contentDisposition ? String(contentDisposition) : undefined,
+      );
 
       // Pipe the streaming response directly to the client
       response.data.pipe(res);
@@ -2328,20 +2144,16 @@ export const getRecordBuffer =
       response.data.on('error', (error: any) => {
         if (axios.isCancel(error) || res.destroyed) {
           // The client left on purpose and the abort signal tore the upstream stream down: not a failure.
-          logger.debug('Client left while proxying record buffer', {
-            recordId,
-          });
+          logger.debug('Client left while proxying record buffer');
           return;
         }
-        logger.error('Stream error while proxying record buffer', {
-          error: error?.message,
-          recordId,
-        });
+        // The connector's stream broke: not our failure, and with headers out this is the request's only line.
+        logger.warn('Stream error while proxying record buffer', { error });
         if (!res.headersSent) {
           try {
             res.status(500).end('Error streaming data');
           } catch (e) {
-            logger.error('Failed to send stream error response to client', {
+            logger.debug('Failed to send stream error response to client', {
               error: e,
             });
           }
@@ -2357,15 +2169,6 @@ export const getRecordBuffer =
         // The client left before the upstream answered; there is nobody to answer.
         return;
       }
-      // A range past the end is a normal answer of the range contract, not a failure.
-      const log =
-        error?.response?.status === 416
-          ? logger.info.bind(logger)
-          : logger.error.bind(logger);
-      log('Error fetching record buffer', {
-        error: error?.message,
-        recordId: req.params.recordId,
-      });
       if (!res.headersSent) {
         const upstream = error.response as
           | {
@@ -2375,7 +2178,10 @@ export const getRecordBuffer =
             }
           | undefined;
         if (upstream) {
-          let errorMessage = 'Error from AI backend';
+          // A string, or the connector's `{reasonCode, message}` (e.g. converter_unavailable), relayed as is so the
+          // web app can offer the original file instead of a broken preview.
+          let errorMessage: string | { reasonCode?: string; message?: string } =
+            'Error from AI backend';
           try {
             const chunks: Buffer[] = [];
             await new Promise<void>((resolve, reject) => {
@@ -2386,34 +2192,43 @@ export const getRecordBuffer =
             const body = Buffer.concat(chunks).toString('utf8');
             const parsed = JSON.parse(body);
             errorMessage = parsed.detail || parsed.error || body;
-          } catch (parseError) {
-            logger.error('Failed to parse error response from AI backend', {
-              error: parseError,
-            });
+          } catch {
+            // The parse error's message quotes the body.
+            logger.debug('Failed to parse error response from AI backend');
           }
+          // Relayed as the connector service answered it, with no line of its own (#6348).
+          const upstreamStatus = upstream.status;
           // A 429 is only actionable with the source's own backoff hint, which
           // the connector service put on the response for us to relay.
           const retryAfter = upstream.headers?.['retry-after'];
           if (typeof retryAfter === 'string' && retryAfter.length > 0) {
             res.set('Retry-After', retryAfter);
           }
-          const upstreamStatus = upstream.status;
           const contentRange: unknown = upstream.headers?.['content-range'];
           if (upstreamStatus === 416 && typeof contentRange === 'string') {
             res.set('Content-Range', contentRange);
           }
           refuseRecordStream(res, upstreamStatus, errorMessage);
           return;
-        } else {
-          // Don't throw here to avoid uncaughtException shutdown during streams
-          refuseRecordStream(res, 500, 'Failed to retrieve record data');
-          return;
         }
+        // No answer: a timeout or an unreachable connector service is answered as the error middleware answers it.
+        const unanswered = unansweredKind(error);
+        if (unanswered === null) {
+          logger.error('Error fetching record buffer', { error });
+        }
+        // Don't throw here to avoid uncaughtException shutdown during streams
+        refuseRecordStream(
+          res,
+          unanswered === 'timeout'
+            ? 504
+            : unanswered === 'unavailable'
+              ? 503
+              : 500,
+          'Failed to retrieve record data',
+        );
+        return;
       }
       const handleError = handleBackendError(error, 'get record buffer');
-      logger.error('Error fetching record buffer', {
-        error: error.message,
-      });
       next(handleError);
     }
   };
@@ -2440,10 +2255,6 @@ export const moveRecord =
         throw new UnauthorizedError('User authentication required');
       }
 
-      logger.info(
-        `Moving record ${recordId} to ${newParentId ? `folder ${newParentId}` : 'KB root'} in KB ${kbId}`,
-      );
-
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}/record/${encodeURIComponent(recordId)}/move`,
         HttpMethod.PUT,
@@ -2458,14 +2269,6 @@ export const moveRecord =
         'Record not found',
       );
     } catch (error: any) {
-      logger.error('Error moving record', {
-        error: error.message,
-        kbId: req.params.kbId,
-        recordId: req.params.recordId,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handleError = handleBackendError(error, 'move record');
       next(handleError);
     }

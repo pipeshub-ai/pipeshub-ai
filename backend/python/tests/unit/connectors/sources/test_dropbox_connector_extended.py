@@ -445,6 +445,67 @@ class TestReindexRecords:
         c.data_entities_processor.reindex_existing_records.assert_called_once()
 
 
+class TestReindexExternalMembership:
+    """A reindex writes grants outside a sync, so it records their external membership itself."""
+
+    @staticmethod
+    def _connector(memberships: set[str]) -> DropboxConnector:
+        c = _make_connector()
+        c._team_emails = {"member@team.com"}
+
+        async def ensure(emails, _connector_id) -> None:
+            memberships.update(emails)
+
+        c.data_entities_processor.on_external_app_users = AsyncMock(side_effect=ensure)
+        grants = [
+            Permission(email="Partner@Other.org", type=PermissionType.READ, entity_type=EntityType.USER),
+            Permission(email="member@team.com", type=PermissionType.WRITE, entity_type=EntityType.USER),
+        ]
+        update = MagicMock(record=MagicMock(), new_permissions=grants, is_new=False, content_changed=False)
+        c._check_and_fetch_updated_record = AsyncMock(return_value=update)
+        return c
+
+    @pytest.mark.asyncio
+    async def test_a_reindex_grant_written_while_the_reaper_runs_keeps_the_membership(self) -> None:
+        memberships = {"partner@other.org"}
+        c = self._connector(memberships)
+
+        async def grant_while_reaping(_batch) -> None:
+            # A sync's reaper judged the membership before this grant committed, and dropped it.
+            memberships.discard("partner@other.org")
+
+        c.data_entities_processor.on_new_records = AsyncMock(side_effect=grant_while_reaping)
+
+        await c.reindex_records([MagicMock(id="r1")])
+
+        assert memberships == {"partner@other.org"}
+        c.data_entities_processor.on_external_app_users.assert_awaited_once_with(["partner@other.org"], c.connector_id)
+
+    @pytest.mark.asyncio
+    async def test_a_first_share_made_only_by_a_reindex_gets_a_membership_right_away(self) -> None:
+        memberships: set[str] = set()
+        c = self._connector(memberships)
+        calls = MagicMock()
+        calls.attach_mock(c.data_entities_processor.on_new_records, "grant")
+        calls.attach_mock(c.data_entities_processor.on_external_app_users, "member")
+
+        await c.reindex_records([MagicMock(id="r1")])
+
+        assert memberships == {"partner@other.org"}
+        # Membership resolves the principal the grant created, so it comes second.
+        assert [call[0] for call in calls.mock_calls] == ["grant", "member"]
+
+    @pytest.mark.asyncio
+    async def test_a_reindex_before_any_team_listing_writes_no_membership(self) -> None:
+        c = self._connector(set())
+        c._team_emails = set()
+
+        await c.reindex_records([MagicMock(id="r1")])
+
+        # Every grant would look external: the team members among them must not be flagged as outsiders.
+        c.data_entities_processor.on_external_app_users.assert_not_awaited()
+
+
 # ===========================================================================
 # _convert_dropbox_permissions_to_permissions
 # ===========================================================================

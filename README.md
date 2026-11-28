@@ -68,6 +68,35 @@ Connect Slack, Google Drive, GitHub, Microsoft 365, Notion and 50+ other systems
 
 PipesHub builds a **unified context layer** across documents, conversations, structured data, wikis, tickets and code. Connectors sync each source along with its permissions. The indexing pipeline parses, chunks and embeds the content, and links records, people and entities in a knowledge graph.
 
+```mermaid
+flowchart LR
+  subgraph Sources["50+ connectors"]
+    S1["Drive · SharePoint · Box · S3"]
+    S2["Slack · Gmail · Outlook"]
+    S3["Jira · Confluence · Notion · GitHub"]
+    S4["Postgres · Snowflake · Salesforce"]
+  end
+  subgraph Layer["PipesHub context layer"]
+    B["Blocks: one representation for documents, tables, threads, code and SQL"]
+    H["Hierarchy: app, space, folder, record, block"]
+    G["Knowledge graph: entities and typed relations"]
+    T["Agent tools: hybrid search, grep, graph navigation, document reading"]
+    P{{"Permission check on every call"}}
+  end
+  subgraph Consumers["Agents"]
+    A1["Built-in agent loop: chat, deep research, no-code agents"]
+    A2["Claude Code, Cursor, Codex via MCP"]
+    A3["Your apps via SDKs"]
+  end
+  Sources --> B
+  B --> H
+  B --> G
+  H --> T
+  G --> T
+  T --> P
+  P --> Consumers
+```
+
 Questions are answered by an **agent loop**, not a single retrieve-then-generate pass. The agent plans, calls tools, reads the results and keeps going until it has the evidence:
 
 - **Hybrid search** — semantic and keyword retrieval, so it matches both meaning and exact terms.
@@ -76,6 +105,14 @@ Questions are answered by an **agent loop**, not a single retrieve-then-generate
 - **Document reading** — opens the full source instead of trusting a single matched chunk.
 
 Every tool call is filtered by the asking user's permissions, and every answer cites the blocks it came from.
+
+| | Top-k chunk RAG | PipesHub |
+| --- | --- | --- |
+| **What the agent sees first** | A few text chunks | Each record's name, location, metadata and summary, plus the blocks that matched |
+| **How it digs further** | It can't: one retrieval per question | Hybrid search, `grep`/`find` over records, folder navigation and knowledge-graph lookups, in a loop |
+| **Structure** | Lost at chunking | Every source becomes Blocks: sections, tables with rows and cells, threads, code, SQL tables with their schema |
+| **Permissions** | Often approximated at index time | Checked against the source system's permissions for the requesting user, on every tool call |
+| **Citations** | Per chunk, if any | Per block: the page, table cell, row, slide or line, with invented citations removed |
 
 ## Benchmarks
 
@@ -139,6 +176,21 @@ Want the same retrieval inside your own code, or behind a search box for your te
 Prefer a fully managed PipesHub without running your own infrastructure? Sign up for **[PipesHub Cloud](https://app.pipeshub.com)**: the same connectors, permission-aware search, and APIs, with nothing to install.
 
 Coding agents connect to `https://app.pipeshub.com/mcp` with a personal access token. See [For coding agents](https://docs.pipeshub.com/for-agents).
+
+## Enterprise Edition
+
+PipesHub is open source and complete on its own. Enterprise Edition adds what larger organizations need:
+
+- **Multi-tenancy:** a separate organization for each team, region or customer, on one deployment. You choose which settings each tenant inherits.
+- **Single sign-on (SSO):** sign in through Okta, OneLogin or any SAML 2.0 or OpenID Connect (OIDC) provider.
+- **SCIM provisioning:** automate user provisioning and deprovisioning from Okta or Microsoft Entra ID over SCIM 2.0.
+- **Collaborative chat:** chat together in one conversation, and share it with teams and groups.
+- **Group permissions:** group-based access control, so you grant access to a whole group at once.
+- **Audit logs:** track every action by actor, time, IP address, target and outcome. Filter, alert and export.
+- **Usage & billing:** see and control AI spend. Track it by user, agent, connector and model, set how much each user can spend, and manage credits, invoices and spending alerts.
+- **Agent and app governance:** tool approval policies for agents, service accounts that act on behalf of a user with every attempt logged, and review of the apps and MCP servers users connect.
+
+Want to see it? [Talk with us](https://calendly.com/rishabh-pipeshub/30min?utm_source=github&utm_medium=readme&utm_campaign=enterprise-edition).
 
 ## Connectors
 
@@ -374,6 +426,10 @@ PipesHub supports image, diagram, and scanned-file understanding, plus voice-bas
 2. Check Docker compose logs: `docker compose logs`
 3. Verify environment variables in env.template
 4. Consult [docs.pipeshub.com](https://docs.pipeshub.com/) for detailed guides
+
+### Is there an Enterprise Edition?
+
+Yes. It adds multi-tenancy, single sign-on (SSO), SCIM provisioning, collaborative chat, group permissions, audit logs, usage & billing, and agent and app governance. See [Enterprise Edition](#enterprise-edition).
 
 ### Where can I get help?
 

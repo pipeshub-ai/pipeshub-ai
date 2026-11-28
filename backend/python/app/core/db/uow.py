@@ -47,7 +47,7 @@ from app.core.db.errors import (
     UnsupportedIsolation,
     UowUsageError,
 )
-from app.core.db.pool import create_pool
+from app.core.db.pool import connect_failure, create_pool, lost_state
 from app.telemetry.backend import METRICS_BACKEND
 from app.utils import db_query_log, error_class
 
@@ -80,6 +80,12 @@ _COMMENTS = re.compile(r"/\*.*?\*/|--[^\n]*", re.S)
 # Transaction control belongs to the runtime (and to tx.savepoint); a statement that ends or splits the unit is refused.
 # A statement that writes the graph's documents or edges: the guard of the projection into kg (app.services.graph_db.postgres.kg) looks at these before they run. What the unit
 # wrote is not decided by this text but by the capture trigger, which marks the transaction (kg.wrote), so a form this misses is still projected.
+# A unit that queued a NOTIFY takes the database-wide notification-queue lock at COMMIT, held by every other notifying unit until its commit is
+# durable. The unit's lock_timeout would then cancel the COMMIT itself (55P03) whenever another commit is slow: for its COMMIT it waits as long
+# as its statement_timeout instead. Never unbounded: the server turns statement_timeout off before it commits (finish_xact_command), so the
+# lock_timeout is the COMMIT's only bound.
+COMMIT_LOCK_WAIT = "/* pipeshub:kernel.commit_lock_wait */ SELECT set_config('lock_timeout', $1, true)"
+NOTIFY = "/* pipeshub:kernel.notify */ SELECT pg_notify($1, $2)"
 _GRAPH_DML = re.compile(r'\b(?:insert\s+into|update(?:\s+only)?|delete\s+from(?:\s+only)?|merge\s+into(?:\s+only)?)\s+"?graph"?\s*\.\s*"?(?:nodes|edges)"?\b', re.I)
 _TXN_CONTROL = re.compile(r"(begin|commit|rollback|end|abort|savepoint|release|start\s+transaction|prepare\s+transaction)\b")
 # Comments, dollar-quoted bodies (DO blocks, function bodies) and string literals are blanked before looking at statements.
@@ -87,7 +93,6 @@ _SQL_NOISE = re.compile(r"/\*.*?\*/|--[^\n]*|(\$[A-Za-z_]*\$).*?\1|'(?:[^']|'')*
 COMMIT_PROBE = True  # ask the server before COMMIT whether the transaction is still alive (write units)
 _current_tx: contextvars.ContextVar[Tx | None] = contextvars.ContextVar("pg_current_tx", default=None)
 _COLTYPE = re.compile(r"[a-z][a-z0-9_ ]{0,40}(\(\d{1,4}(,\d{1,4})?\))?(\[\])?")
-_LOST_STATES = {"57P01", "57P02", "57P03", "25P03"}
 _ISOLATION = ("read_committed", "repeatable_read", "serializable")
 RETRIES_MAX = 3
 BACKOFF_BASE_S = 0.01
@@ -98,18 +103,22 @@ ABORT_TIMEOUT_S = 5.0
 # A role other than 'none' here is a session-level SET ROLE left behind by an earlier client.
 # The statement is parsed as the LOGIN, which holds no privileges until the switch, so only write UoWs (which call the
 # fence function) reference ``kernel``; the login needs USAGE on that schema and EXECUTE on the fence for them.
+# JIT is off in every unit: its statements read rows by key, and the planner's estimate for a list of keys (or a plan with nodes disabled) passes
+# jit_above_cost at a few thousand keys, where compiling costs 100-400 ms for a read of a few ms. Set here, it holds on any server (a managed one's configuration and roles are not ours to change).
 _PROLOGUE = """
-WITH pre AS MATERIALIZED (SELECT current_setting('role') AS r)
+WITH pre AS MATERIALIZED (SELECT current_setting('role') AS r, set_config('app.org_id', $2, true) AS org)
 SELECT pre.r, now() AS started{fence_out} FROM pre, LATERAL (
-  SELECT set_config('role', $1, true), set_config('app.org_id', $2, true), set_config('app.request_id', $3, true),
+  SELECT set_config('role', $1, true), set_config('app.request_id', $3, true),
          set_config('statement_timeout', $4, true), set_config('lock_timeout', $5, true),
-         set_config('plan_cache_mode', $6, true),
+         set_config('plan_cache_mode', $6, true), set_config('jit', 'off', true),
          CASE WHEN $7 <> '' THEN set_config('work_mem', $7, true) END{fence}
-  WHERE pre.r IS NOT NULL) s
+  WHERE pre.r IS NOT NULL AND pre.org IS NOT NULL) s
 """
 PROLOGUE_READ = _PROLOGUE.format(fence="", fence_out="")
 # The fence is VOLATILE (a STABLE one with an unused result would be dropped by the planner) and asserts READ COMMITTED; its
-# output column is also referenced by the outer SELECT, so the call stays whatever the planner does with an unused column.
+# output column is also referenced by the outer SELECT, so the call stays whatever the planner does with an unused column. It reads
+# the unit's org from app.org_id, which ``pre`` sets: ``s`` reads pre.org, so it runs after the materialized ``pre`` (an order given
+# by that dependency, not by the order of the expressions in one select list, which PostgreSQL does not define).
 PROLOGUE_WRITE = _PROLOGUE.format(fence=",\n         kernel.assert_profile_epoch($8) AS fence", fence_out=", s.fence")
 
 
@@ -147,7 +156,9 @@ class Tx:
         self.failed = False  # a statement failed and no savepoint rollback has undone it since
         self.org_id = ""  # the org the unit is bound to
         self.role = ""  # the database role the unit runs as
+        self.notified = False  # the unit queued a NOTIFY through notify() (COMMIT_LOCK_WAIT)
         self.kg_dirty = False  # a statement of this unit that the guard recognised writes graph.nodes or graph.edges (the capture trigger's mark is the authority)
+        self.before_commit: list[Callable[[Tx], Awaitable[None]]] = []  # run last, right before COMMIT (after the pre-commit hook)
         self._open = True
 
     @staticmethod
@@ -256,6 +267,7 @@ class Tx:
         if not _IDENT.fullmatch(name):
             raise ValueError(f"invalid savepoint name {name!r}")
         await self._run("execute", f"/* pipeshub:kernel.savepoint */ SAVEPOINT {name}", internal=True)
+        mark = len(self.before_commit)
         try:
             yield
         except Exception:
@@ -268,6 +280,7 @@ class Tx:
                 mapped = self._db.map_error(e, self)
                 self._record("rollback_to", "kernel.savepoint", t0, mapped, getattr(e, "sqlstate", None))
                 raise mapped from e
+            del self.before_commit[mark:]  # what the rolled-back block registered (an event of its write) is rolled back with it
             self.failed = False
             raise
         else:
@@ -291,6 +304,13 @@ class Tx:
 
     def _close(self) -> None:
         self._open = False
+
+
+async def notify(tx: Tx, channel: str, payload: str = "") -> None:
+    """Queue a NOTIFY on ``channel``, sent at the unit's COMMIT. The only way app code notifies (a source guard holds it to that): it marks the
+    unit, whose COMMIT then waits for the notification-queue lock up to its statement timeout (COMMIT_LOCK_WAIT)."""
+    tx.notified = True
+    await tx.execute(NOTIFY, channel, payload)
 
 
 def _site(sql: str) -> str:
@@ -323,7 +343,6 @@ class KernelDB:
         # set by app.services.graph_db.postgres.kg.flush.install: asked before a statement that writes the graph, and awaited before COMMIT of every write unit
         self.graph_write_hook: Callable[[Tx, str], None] | None = None
         self.pre_commit_hook: Callable[[Tx], Awaitable[None]] | None = None
-        self.post_commit_hook: Callable[[Tx], None] | None = None  # called, without waiting, once a write unit has committed
 
     # ---- lifecycle ---------------------------------------------------------------------------------------------
     async def start(self) -> None:
@@ -378,10 +397,11 @@ class KernelDB:
         return self._open_org(write=write, timeout_ms=timeout_ms, isolation=isolation, lineage=lineage,
                             custom_plan=custom_plan, idempotent=idempotent, jobs=False)
 
-    def runtime_uow(self, *, write: bool = False, timeout_ms: int | None = None) -> AbstractAsyncContextManager[Tx]:
+    def runtime_uow(self, *, write: bool = False, timeout_ms: int | None = None, org: bool = False) -> AbstractAsyncContextManager[Tx]:
         """One transaction for the platform's own tables (key-value entries, the work queue): no org is bound, so no org row is visible.
-        The service role's grants on those internal tables are the only access."""
-        return self._open_runtime(write=write, timeout_ms=timeout_ms)
+        The service role's grants on those internal tables are the only access. ``org`` binds the ambient org (``app.org_id``) instead,
+        for an entry that belongs to it; with no org context it raises, as :meth:`uow` does."""
+        return self._open_runtime(write=write, timeout_ms=timeout_ms, org=org)
 
     def jobs_uow(self, *, write: bool = False, timeout_ms: int | None = None, isolation: Isolation = "read_committed",
                  lineage: bool = False, custom_plan: bool = False, idempotent: bool = False) -> AbstractAsyncContextManager[Tx]:
@@ -438,12 +458,13 @@ class KernelDB:
                     _current_tx.reset(token)
 
     @asynccontextmanager
-    async def _open_runtime(self, *, write: bool, timeout_ms: int | None) -> AsyncIterator[Tx]:
+    async def _open_runtime(self, *, write: bool, timeout_ms: int | None, org: bool) -> AsyncIterator[Tx]:
         # Not tracked as the current unit: a key-value read may happen while an org unit is open (config lookups), on its own connection.
+        org_id = (org_context.current().org_id or "") if org else ""
         pool = await self._pool_here(jobs=False)
         if pool is None:
             raise DbConfigError("KernelDB is not started")
-        async with self._open(pool, role=self.cfg.role, org_id="", request_id="runtime", klass=self.cfg.timeout_class,
+        async with self._open(pool, role=self.cfg.role, org_id=org_id, request_id="runtime", klass=self.cfg.timeout_class,
                               write=write, timeout_ms=timeout_ms) as tx:
             yield tx
 
@@ -520,8 +541,11 @@ class KernelDB:
             con = await pool.acquire(timeout=statement_ms / 1000)
         except TimeoutError as e:
             raise PoolTimeout("no pooled connection became free in time") from e
-        except OSError as e:  # connection refused and similar while opening a new connection
-            raise ConnectionLost(f"cannot connect: {e}", retry_safe=True) from e
+        except (OSError, asyncpg.PostgresError) as e:  # the OS or the server refused a new connection
+            lost = connect_failure(e)
+            if lost is None:
+                raise
+            raise lost from e
         waited = time.perf_counter() - t_start
         POOL_WAIT.observe(self.cfg.service, value=waited)
         if timeout_ms and statement_ms <= timeout_ms:      # the caller's budget covers the wait for a connection and the statement together
@@ -545,6 +569,10 @@ class KernelDB:
             yield tx
             if write and self.pre_commit_hook is not None and not tx.failed:
                 await self.pre_commit_hook(tx)
+            for step in tx.before_commit:
+                await step(tx)
+            if tx.notified and not tx.failed:      # a failed unit's COMMIT reports the failure, as before
+                await tx._run("execute", COMMIT_LOCK_WAIT, f"{max(statement_ms, tc.lock_ms)}ms", internal=True)
             await self._check_alive(con, tx, write=write)
             tx.commit_sent = True
             t_commit = time.perf_counter()
@@ -556,12 +584,10 @@ class KernelDB:
                 tx._record("commit", None, t_commit, failure, getattr(e, "sqlstate", None))
                 raise failure from e
             outcome = "commit"
-            if write and self.post_commit_hook is not None:
-                try:
-                    self.post_commit_hook(tx)  # the unit is committed: a hook that fails must not fail it
-                except Exception:
-                    logger.exception("post-commit hook failed")
-        except BaseException:
+        except BaseException as e:
+            if not tx.commit_sent:
+                with suppress(Exception):
+                    e.commit_not_sent = True  # type: ignore[attr-defined]  # a known rollback: nothing of the unit was applied
             await self._abort(con, txn, tx)
             raise
         finally:
@@ -651,15 +677,26 @@ class KernelDB:
             return LockTimeout(str(e))
         if prologue and state == "55000":
             return ProfileEpochMismatch(str(e))
-        lost = isinstance(e, asyncpg.InterfaceError) or (
+        lost = isinstance(e, asyncpg.InterfaceError) or _broken_protocol(e, tx._con) or (
             not isinstance(e, TimeoutError) and isinstance(e, (OSError, asyncio.IncompleteReadError))
-        ) or (state is not None and (state in _LOST_STATES or state.startswith("08")))
+        ) or lost_state(state)
         if lost:
             safe = not tx.commit_sent and (tx.idempotent or tx.completed == 0)
             return ConnectionLost(str(e) or type(e).__name__, retry_safe=safe)
         if prologue:
             return PrologueFailed(f"{type(e).__name__}: {e}")
         return e
+
+
+def _broken_protocol(e: Exception, con: asyncpg.Connection | None) -> bool:
+    """An asyncpg InternalClientError that means the connection is gone: its protocol state is broken ("failed", another operation in
+    progress, not connected), as a connection the server or the pooler dropped mid-operation leaves it, or the connection is already
+    closed (a backend the server ended as a statement started). asyncpg raises the same type for a missing codec on a live connection,
+    which is a bug and not a lost connection, so either the messages of its protocol state checks (protocol/coreproto.pyx
+    ``_set_state``, ``_ensure_connected``) or a closed connection is required."""
+    if not isinstance(e, asyncpg.InternalClientError):
+        return False
+    return str(e).startswith(("cannot switch to state", "not connected")) or (con is not None and connection_closed(con))
 
 
 def _class_of_state(state: str) -> str:

@@ -1,0 +1,17 @@
+[
+  {
+    "description": "an ask in the changed list",
+    "instance": {
+      "changed": [
+        "a:r1:i1"
+      ],
+      "counts": {
+        "unread": 0,
+        "waiting": 0,
+        "badge": 0,
+        "paused": false,
+        "pausedUntil": null
+      }
+    }
+  }
+]

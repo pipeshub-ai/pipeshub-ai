@@ -299,6 +299,7 @@ class FakeEntitiesProcessor:
         self.app_users: dict[str, Any] = {}
         self.user_groups: dict[str, tuple[Any, list[Any]]] = {}
         self.kept_user_groups: list[str] = []
+        self.kept_record_groups: list[str] = []
         self.external_app_users: set[str] = set()
         self.active_users: list[Any] = []
         self.deleted: list[str] = []
@@ -465,7 +466,7 @@ class FakeEntitiesProcessor:
     async def get_all_active_users(self) -> list[Any]:
         return list(self.active_users)
 
-    async def get_user_by_user_id(self, user_id: str) -> object | None:
+    async def get_user_by_user_id(self, user_id: str, **_: object) -> object | None:
         return next((u for u in self.active_users if getattr(u, "id", None) == user_id), None)
 
     async def get_users_with_permission_to_node(
@@ -687,6 +688,9 @@ class FakeEntitiesProcessor:
 
     def note_kept_user_groups(self, connector_id: str, groups: list[Any]) -> None:
         self.kept_user_groups.extend(g.source_user_group_id for g in groups)
+
+    async def note_kept_record_group(self, connector_id: str, external_group_id: str) -> None:
+        self.kept_record_groups.append(external_group_id)
 
     async def on_new_user_groups(self, groups: list[tuple[Any, list[Any]]], *, replace_members: bool = True) -> None:
         for group, members in groups:

@@ -1,10 +1,10 @@
 'use client';
 
-import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useMemo, useRef, useCallback, useEffect, useId } from 'react';
 import { Box, Button, Callout, Flex, Text } from '@radix-ui/themes';
 import { SelectedCollections } from '../selected-collections';
 import { AppliedFilters } from '../applied-filters';
-import { ResponseTabs } from './response-tabs';
+import { ResponseTabs, responseTabIds } from './response-tabs';
 import { ConfidenceIndicator } from './confidence-indicator';
 import { SearchDegradedNote } from './search-degraded-note';
 import { AccessNotices, type AccessNotice } from '@/app/components/feedback/access-notice';
@@ -15,16 +15,52 @@ import { MessageActions } from './message-actions';
 import { SourcesTab } from './response-tabs/citations/sources-tab';
 import { CitationsTab } from './response-tabs/citations/citations-tab';
 import { ArtifactsPanel, isArtifactGone } from './artifacts-panel';
+import { ApprovalInteraction, InteractionReceipt, QueuedInteraction, type InteractionState } from './interaction-card';
+import { connectWaitingLine } from './connect-card';
+import { VerificationPanel } from './run-gate-cards';
+import { FilesChanged } from './files-changed';
+import { RunSummary } from './run-summary';
+import { NotFoundNotice } from './not-found-notice';
+import { CouldNotDoNotice } from './could-not-do-notice';
+import { cardWords, type CardWords } from './grounding-card';
+import { notFoundOf, withoutNotFoundLine } from '../../subject-not-found';
+import { couldNotDoOf, withoutLeadLine } from '../../could-not-do';
+import { CloneUnavailableCards, OutsideAccess } from './outside-access';
+import { changedFilesFromArtifacts, changedFilesFromEngine, type ChangedFile } from '../../engine-steps';
+import { MemoryChip } from './memory-chip';
+import { AttachmentChip } from './attachment-chip';
+import { decideApproval, decideApprovals, decidedRuns } from '../../approvals';
+import { streamMessageForSlot } from '../../streaming';
+import { buildStreamChatRequestForSlot } from '../../runtime';
 import {
   AskUserQuestionCard,
+  answerSummary,
   askUserQuestionOwnsRow,
   showsStoppedMarker,
   buildResumeMessage,
   isAskUserQuestionExpired,
 } from './ask-user-question-card';
+import {
+  activeInteractionKey,
+  approvalAnchor,
+  groupApprovals,
+  isOpenGroup,
+  mergeApprovals,
+  openCalls,
+  orderInteractions,
+  partAnchors,
+  questionAnchor,
+  savedApprovals,
+  waitingSince,
+  type ApprovalGroup,
+  type PlacedInteraction,
+} from '../../interactions';
+import { ErrorNextStep } from './error-next-step';
 import { McpConnectRequiredCard } from './mcp-connect-required-card';
 import { McpSignInCard } from './mcp-sign-in-card';
 import { ToolApprovalCard, ToolApprovalReceipts } from './tool-approval-card';
+import { FloatedAskPointer } from '../job-ask/floated-ask-pointer';
+import { floatsGroup, pointerKey, useFloatedAsks } from '../job-ask/job-asks';
 import {
   answeredToolApproval,
   findToolApproval,
@@ -34,32 +70,51 @@ import {
 } from '../../tool-approval';
 import { mcpSignInServers } from '../../mcp-sign-in';
 import { mcpConfigMissingDetails, type ChatStreamErrorInfo } from '../../stream-error';
-import { AgentActivityTimeline, CollapsibleActivitySection, getVisibleRootParts, hasMultiStepActivity } from './agent-activity';
+import { TurnJobs } from './job-card/turn-jobs';
+import { useIsJobPart } from './job-card/job-parts';
+import { AgentActivityTimeline, CollapsibleActivitySection, getVisibleRootParts, hasMultiStepActivity, planFromParts, RunNotices, SteeringMessage } from './agent-activity';
 import { ExpandableUserQuery } from './expandable-user-query';
-import { streamMessageForSlot } from '../../streaming';
-import { buildStreamChatRequestForSlot } from '../../runtime';
+import { answerQuestionCard } from '../../question-answer';
+import { questionSendKey, useCardSend } from '../../card-send';
+import { admissionRefusalText } from '../../harness-errors';
+import { CardSendNotice } from './card-send-notice';
 import { useCommandStore } from '@/lib/store/command-store';
 import { useChatStore } from '../../store';
 import { useRenderSlotId } from './render-slot';
 import { debugLog } from '../../debug-logger';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { buildAssistantApiFilters, type ConversationMessage, type AskUserQuestionAnswer, type AskUserQuestionPayload, type AttachmentRef, type ConfidenceLevel, type ModelInfo, type StatusMessage, type ResponseTab, type ChatArtifact, type AppliedFilters as AppliedFiltersData, type AppliedFilterNode, type MessagePart } from '../../types';
+import type { SentCommand } from '../../commands';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
+import type { CutShortReason } from '@/lib/contracts/harness/generated/core/enums';
+import { budgetScopeOf, cutShortOf } from '../../cut-short';
+import type { BudgetScope } from '../../types';
+import { CutShortNotice } from './cut-short-notice';
+import { OutcomeNotice } from './outcome-notice';
+import { useLiveRunCost } from './use-live-run-cost';
+import { hasLegacyOutcomeWords, runOutcomeOf } from '../../run-outcome';
 import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
 import { emptyCitationMaps } from './response-tabs/citations';
 import { repairStreamingMarkdown } from '../../utils/repair-streaming-markdown';
-import { processMarkdownContent } from '../../utils/process-markdown-content';
+import { citedAnswer, type CitedAnswer } from '../../utils/cited-answer';
 import { extractAnswerMarkers, isSignedUrl, isTrustedApiUrl } from '../../utils/parse-download-markers';
-import { isAskUserQuestionTool, splitPartsAtQuestion } from '../../utils/tool-display';
+import { isAskUserQuestionTool } from '../../utils/tool-display';
 import { BELOW_APP_KEYS, hasAnyFilter } from '../../utils/tree-selection';
 import { DownloadTasks } from './download-tasks';
+import { useDecisionAuthority } from '../../hooks/use-decision-authority';
+import { approvalAskRules } from '@/config';
+import { ViewActivityButton } from '../activity-panel/activity-panel-host';
+import { RunCommandActions } from './run-command-actions';
+import { sentRunLine } from '../../sandbox-commands';
+import { ContextCompactedRow } from './context-compacted-row';
+import { useMessageRun } from '../activity-panel/use-activity-run';
+import { useRunAgentVersion } from '../../hooks/use-run-agent-version';
+import { RunVersionLabel } from './run-version-label';
 import {
-  isPresentationFile,
   isDocxFile,
-  isLegacyWordDocFile,
   resolvePreviewMimeAfterStream,
+  streamRecordForPreview,
 } from '@/app/components/file-preview/utils';
 import { KnowledgeBaseApi } from '@/knowledge-base/api';
 import { TextPreviewDialog } from '../text-preview-dialog';
@@ -89,12 +144,12 @@ function formatMessageTime(isoString: string): string {
   });
 }
 
-function buildQuestionCardReadAloudText(payload: AskUserQuestionPayload): string {
+function buildQuestionCardReadAloudText(payload: AskUserQuestionPayload, words: CardWords): string {
   const parts: string[] = [];
-  if (payload.userIntent) parts.push(payload.userIntent);
+  if (payload.userIntent) parts.push(words.intent(payload.userIntent));
   payload.questions.forEach((q, i) => {
-    parts.push(`Question ${i + 1}: ${q.question}`);
-    q.options.forEach((opt) => parts.push(`Option: ${opt.label}`));
+    parts.push(`Question ${i + 1}: ${words.question(q.question)}`);
+    q.options.forEach((opt) => parts.push(`Option: ${words.label(opt.label)}`));
   });
   return parts.join('. ');
 }
@@ -146,6 +201,8 @@ interface ChatResponseProps {
   createdAt?: string;
   /** Attachments uploaded with this user query (PDF / JPEG / PNG). */
   attachments?: AttachmentRef[];
+  /** The /command the question was sent as (SLASH1). */
+  command?: SentCommand;
   /** Persisted ask_user_question payload from a historical tool_call — renders read-only question card */
   persistedAskUserQuestion?: AskUserQuestionPayload;
   persistedAskUserQuestionAnswers?: Record<string, AskUserQuestionAnswer>;
@@ -153,6 +210,14 @@ interface ChatResponseProps {
   feedbackInfo?: { value?: 'like' | 'dislike' };
   /** Set when this response was cut short by a user-initiated Stop (see `IMessage.status`, Node). */
   status?: 'stopped';
+  /** The limit that cut the run's work short (BUDGETEND): the answer is what it gathered, with a notice. */
+  truncatedBy?: CutShortReason;
+  /** With `truncatedBy` `budget`: which budget beyond the run's own ran out (C9.06, WP-51); `budgetStopLines` words it. */
+  budgetScope?: BudgetScope;
+  /** ANSWER-CONTRACT-FU-2: the saved message's not-found fact, read when its final part is a live one. */
+  notFound?: unknown;
+  /** R32REPO-FU-1: the saved message's "could not do" fact, read the same way. */
+  limits?: unknown;
   /** The server's error code and details when this reply is a failed run. */
   streamError?: ChatStreamErrorInfo;
   /**
@@ -161,6 +226,8 @@ interface ChatResponseProps {
    * would all be empty controls over a reply that was never produced.
    */
   unanswered?: boolean;
+  /** The durable run that wrote this answer, when the saved message names it (CTL-3: its activity and plan). */
+  runId?: string;
   /** The answer is withheld: show why, and a way to ask again. */
   answerHidden?: ConversationMessage['answerHidden'];
   /**
@@ -195,6 +262,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   collections,
   appliedFilters,
   attachments,
+  command,
   messageId,
   isLastMessage = false,
   rowId,
@@ -211,8 +279,13 @@ export const ChatResponse = React.memo(function ChatResponse({
   persistedAskUserQuestionAnswers,
   feedbackInfo,
   status,
+  truncatedBy,
+  budgetScope,
+  notFound: savedNotFound,
+  limits: savedLimits,
   streamError,
   unanswered = false,
+  runId,
   answerHidden,
   columnMode = false,
 }: ChatResponseProps) {
@@ -294,6 +367,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   );
   const updateSlot = useChatStore((s) => s.updateSlot);
   const setPreviewFile = useChatStore((s) => s.setPreviewFile);
+  const clearPreview = useChatStore((s) => s.clearPreview);
   const setPreviewMode = useChatStore((s) => s.setPreviewMode);
   // Someone a chat was shared with reads it; the server only lets its owner edit or quote.
   const isChatOwner = useChatStore((st) =>
@@ -317,16 +391,16 @@ export const ChatResponse = React.memo(function ChatResponse({
       setPreviewMode('sidebar');
 
       try {
-        const streamAsPdf =
-          isPresentationFile(att.mimeType, att.recordName) ||
-          isLegacyWordDocFile(att.mimeType, att.recordName);
-        const streamOptions = streamAsPdf ? { convertTo: 'application/pdf' } : undefined;
-        const blob = await KnowledgeBaseApi.streamRecord(att.recordId, streamOptions);
+        const { blob, asPdf } = await streamRecordForPreview(
+          (options) => KnowledgeBaseApi.streamRecord(att.recordId, options),
+          att.mimeType,
+          att.recordName,
+        );
         const resolvedType = resolvePreviewMimeAfterStream(
           att.mimeType,
           att.recordName,
           blob,
-          !!streamOptions,
+          asPdf,
         );
         const isDocx = isDocxFile(att.mimeType, att.recordName, att.recordName, att.extension, att.extension);
         const url = isDocx ? '' : URL.createObjectURL(blob);
@@ -390,20 +464,21 @@ export const ChatResponse = React.memo(function ChatResponse({
         }
         try {
           const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
-          const streamAsPdf =
-            isPresentationFile(artifact.mimeType, artifact.fileName) ||
-            isLegacyWordDocFile(artifact.mimeType, artifact.fileName);
-          const blob = await KnowledgeBaseApi.streamRecord(recordId, {
-            ...(streamAsPdf ? { convertTo: 'application/pdf' } : {}),
-            ...(version !== undefined ? { version } : {}),
-            // The card shows a deleted artifact itself; a version switch has no card to tell.
-            ...(isSwitch ? {} : { suppressErrorToast: isArtifactGone }),
-          });
+          const { blob, asPdf } = await streamRecordForPreview(
+            (options) => KnowledgeBaseApi.streamRecord(recordId, options),
+            artifact.mimeType,
+            artifact.fileName,
+            {
+              ...(version !== undefined ? { version } : {}),
+              // The card shows a deleted artifact itself; a version switch has no card to tell.
+              ...(isSwitch ? {} : { suppressErrorToast: isArtifactGone }),
+            },
+          );
           const resolvedType = resolvePreviewMimeAfterStream(
             artifact.mimeType,
             artifact.fileName,
             blob,
-            streamAsPdf,
+            asPdf,
           );
           const isDocx = isDocxFile(artifact.mimeType, artifact.fileName);
           const objectUrl = isDocx ? '' : URL.createObjectURL(blob);
@@ -419,6 +494,7 @@ export const ChatResponse = React.memo(function ChatResponse({
             blob: isDocx ? blob : undefined,
             name: artifact.fileName,
             type: resolvedType,
+            sourceType: artifact.mimeType,
             size: artifact.sizeBytes,
             hideFileDetails: true,
             showDownload: true,
@@ -466,13 +542,37 @@ export const ChatResponse = React.memo(function ChatResponse({
     activeSlotId ? s.slots[activeSlotId]?.pendingAskUserQuestion ?? null : null
   );
 
+  const pendingApprovals = useChatStore((s) =>
+    activeSlotId ? s.slots[activeSlotId]?.pendingApprovals : undefined
+  );
+  const durableRun = useChatStore((s) =>
+    activeSlotId ? s.slots[activeSlotId]?.durableRun ?? null : null
+  );
+  const approvalAuthority = useDecisionAuthority(
+    durableRun,
+    isStreaming && (pendingApprovals?.some((approval) => approval.status === 'pending') ?? false),
+    pendingApprovals?.some((approval) => approval.status === 'pending' && approvalAskRules.holds(approval.reason)) ?? false,
+  );
+
   const askQuestionMatchesRow = askUserQuestionOwnsRow(
     pendingAskUserQuestion,
     citationMessageRowKey,
     messageId,
   );
+  // CARDFAIL: an answer that could not be sent yet: the card keeps the person's choice and says why.
+  const questionSendKeyOfRow =
+    askQuestionMatchesRow && pendingAskUserQuestion ? questionSendKey(pendingAskUserQuestion.assistantMessageId) : null;
+  const questionSend = useCardSend(questionSendKeyOfRow);
+  const questionRetrying = questionSend?.phase === 'retrying' && pendingAskUserQuestion?.status === 'submitted';
+  // A question the person moved past by sending a new message is skipped, not waiting (UXINT-5 D6).
   const questionPending =
-    askQuestionMatchesRow && pendingAskUserQuestion?.status === 'pending';
+    askQuestionMatchesRow && (pendingAskUserQuestion?.status === 'pending' || questionRetrying) && isLastMessage;
+  const interactionWaiting = useChatStore((s) =>
+    activeSlotId ? s.slots[activeSlotId]?.interactionWaiting ?? null : null
+  );
+  const paused = isStreaming && interactionWaiting?.paused === true;
+  const queuedSteers = useChatStore((s) => (activeSlotId ? s.slots[activeSlotId]?.queuedSteers : undefined));
+  const isOwner = useChatStore((s) => (activeSlotId ? s.slots[activeSlotId]?.isOwner : undefined));
 
   // If another message was expanded (or expansion was cleared), reset to 'answer'.
   // We only react when our localTab is non-answer — avoids unnecessary effects.
@@ -488,6 +588,7 @@ export const ChatResponse = React.memo(function ChatResponse({
     prevExpandedRef.current = activeExpandedMessageId;
   }, [activeExpandedMessageId, localTab, messageId]);
 
+  const tabIdBase = useId();
   // Also ensure we reset if the slot switches to a different conversation
   // (activeExpandedMessageId becomes null on slot evict/init).
   const activeTab = (activeExpandedMessageId === messageId || !messageId)
@@ -515,29 +616,38 @@ export const ChatResponse = React.memo(function ChatResponse({
   }, [localTab, setInlineCitationKey]);
 
   // Merge streaming citations when streaming, fall back to metadata citations
-  const effectiveCitationMaps = isStreaming && streamingCitationMaps
+  const storedCitationMaps = isStreaming && streamingCitationMaps
     ? streamingCitationMaps
     : citationMaps;
+  // Use streaming content when streaming, otherwise use the final answer.
+  // Apply structural repair to in-progress content only — the final message
+  // from the server is always complete and must not be patched.
+  // The answer's one citation rule (`citedAnswer`, the job reply's too) turns its
+  // links into `[N]` chips with a source behind each: a page it links that no stored
+  // citation covers (an engine's, repeated here) becomes a source of its own, and the
+  // tabs, popover and copy read the same maps as the chips.
+  // Memoized: these are whole-string regex passes, and `ChatResponse` can
+  // re-render for reasons unrelated to content (tab switch, citation
+  // arrival) — recomputing on every such render defeats the point of
+  // memoizing further down the tree in `AnswerContent`.
+  const lastCitedRef = useRef<CitedAnswer | undefined>(undefined);
+  const cited = useMemo(() => {
+    const streamingNow = Boolean(isStreaming && streamingContent);
+    const next = citedAnswer(
+      streamingNow ? repairStreamingMarkdown(streamingContent) : answer,
+      storedCitationMaps,
+      { streaming: streamingNow, previous: lastCitedRef.current },
+    );
+    lastCitedRef.current = next;
+    return next;
+  }, [isStreaming, streamingContent, answer, storedCitationMaps]);
+  const processedContent = cited.text;
+  const effectiveCitationMaps = cited.citationMaps;
   // Read via ref (not a `useMemo` dep) by `wrappedCallbacks` below, so that
   // object stays referentially stable across citation-only updates.
   const effectiveCitationMapsRef = useRef(effectiveCitationMaps);
   effectiveCitationMapsRef.current = effectiveCitationMaps;
 
-  // Use streaming content when streaming, otherwise use the final answer.
-  // Apply structural repair to in-progress content only — the final message
-  // from the server is always complete and must not be patched.
-  // Always strip backend citation links → `[N]` so `AnswerContent` can render chips.
-  // Memoized: these are whole-string regex passes, and `ChatResponse` can
-  // re-render for reasons unrelated to content (tab switch, citation
-  // arrival) — recomputing on every such render defeats the point of
-  // memoizing further down the tree in `AnswerContent`.
-  const processedContent = useMemo(
-    () =>
-      processMarkdownContent(
-        isStreaming && streamingContent ? repairStreamingMarkdown(streamingContent) : answer,
-      ),
-    [isStreaming, streamingContent, answer],
-  );
   // Markers are always stripped from the markdown; they become cards only in
   // a saved answer (see `MarkerSource`). While streaming, live cards come
   // solely from the backend's typed artifact events (`streamingArtifacts`),
@@ -573,6 +683,10 @@ export const ChatResponse = React.memo(function ChatResponse({
   // same components render either (see AgentActivityTimeline's docstring).
   // Falls back to nothing for messages saved before this feature shipped.
   const effectiveParts = isStreaming ? streamingParts : persistedParts;
+  const cutShort = cutShortOf(truncatedBy, persistedParts);
+  const sharedBudget = budgetScopeOf(cutShort, budgetScope, persistedParts);
+  // WP-89: the run's settled outcome, worded here; an answer saved before it carries its own English words.
+  const settledOutcome = runOutcomeOf(undefined, persistedParts);
 
   // A multi-step (ReAct) response has at least one tool call, reasoning
   // block, or sub-agent delegation. The trailing (unsettled) text streams
@@ -597,7 +711,14 @@ export const ChatResponse = React.memo(function ChatResponse({
     () => findToolApproval(effectiveParts) !== null || approvalReceipts.length > 0,
     [effectiveParts, approvalReceipts],
   );
-  const answerShown = hasApprovalCard ? withoutWaitingLine(visibleAnswer) : visibleAnswer;
+  // ANSWER-CONTRACT-FU-2: the subject was not found; the chat words that above the answer, which then starts after
+  // the English line saved for surfaces with no UI.
+  const notFound = isStreaming ? null : notFoundOf(persistedParts, savedNotFound);
+  const answerOwn = hasApprovalCard ? withoutWaitingLine(visibleAnswer) : visibleAnswer;
+  // R32REPO-FU-1: what the run could not do is worded the same way, after the not-found line.
+  const couldNotDo = isStreaming ? null : couldNotDoOf(persistedParts, savedLimits);
+  const afterNotFound = notFound !== null ? withoutNotFoundLine(answerOwn, notFound) : answerOwn;
+  const answerShown = couldNotDo !== null ? withoutLeadLine(afterNotFound, couldNotDo.line) : afterNotFound;
   // Regenerating could run an approved call again, or answer a card twice: the server refuses both.
   const ranApprovedCall = useMemo(
     () => hasApprovedCall(effectiveParts) || answeredToolApproval(effectiveParts),
@@ -683,42 +804,120 @@ export const ChatResponse = React.memo(function ChatResponse({
     () => (effectiveParts ? getVisibleRootParts(effectiveParts, isStreaming) : []),
     [effectiveParts, isStreaming],
   );
-  // Collapse control is offered once narration/answer has started (or for
-  // completed messages). While only thinking/tools are streaming, keep the
-  // timeline always-visible with no collapse chrome.
-  const canCollapseActivity =
-    !isStreaming ||
-    !!displayContent ||
-    visibleActivityParts.some((p) => p.type === 'text' && !!p.settled && !p.isFinal);
+  const hasVisibleActivity = visibleActivityParts.length > 0;
+  // BGUI-2: the turn's jobs are drawn once, after its steps (`TurnJobs`); the steps leave them out.
+  const isJob = useIsJobPart();
+  const jobParts = useMemo(() => visibleActivityParts.filter(isJob), [visibleActivityParts, isJob]);
+  const jobAnchors = useMemo(() => new Set(jobParts.flatMap(partAnchors)), [jobParts]);
+  const hasTrail = visibleActivityParts.length > jobParts.length;
+  // BGUI-6: a job's file the answer's own file cards show is drawn once, there.
+  const shownFiles = useMemo(
+    () => new Set(effectiveArtifacts.flatMap((a) => [a.fileName, ...(a.recordId ? [a.recordId] : [])])),
+    [effectiveArtifacts],
+  );
 
-  // With a question card on the row, the work done after it was answered renders
-  // under the card instead of above it.
-  const showPersistedCard = Boolean(persistedAskUserQuestion) && !askQuestionMatchesRow;
-  const showPendingCard = askQuestionMatchesRow && Boolean(pendingAskUserQuestion);
-  const questionSplit = useMemo(() => {
-    if (!rerunAnswers && !showPersistedCard && !showPendingCard) return null;
-    const split = splitPartsAtQuestion(effectiveParts);
-    // A re-run with changed answers streams only the reply to them, so all of it comes after the card.
-    if (!split && rerunAnswers && effectiveParts) return { before: [], after: effectiveParts };
-    return split;
-  }, [effectiveParts, rerunAnswers, showPersistedCard, showPendingCard]);
-  const partsAboveCard = questionSplit ? questionSplit.before : effectiveParts;
-  const partsBelowCard = questionSplit?.after ?? [];
-  // Once the card is answered the run carries on below it, so the live status goes there too.
-  const activityContinuesBelowCard = Boolean(questionSplit) && !questionPending;
-  const visiblePartsAboveCard = useMemo(
-    () => (questionSplit ? getVisibleRootParts(questionSplit.before, isStreaming) : visibleActivityParts),
-    [questionSplit, isStreaming, visibleActivityParts],
+  // UXINT-1/2: what the reply asks of the person, saved and live through one list, each at the row that raised
+  // it, in the order the run asked; the first open one is the call to action, the rest wait their turn.
+  const liveApprovals = isStreaming ? pendingApprovals : undefined;
+  const approvalGroups = useMemo(
+    () => groupApprovals(mergeApprovals(savedApprovals(effectiveParts), liveApprovals ?? [])),
+    [effectiveParts, liveApprovals],
   );
-  const visiblePartsBelowCard = useMemo(
-    () => (questionSplit ? getVisibleRootParts(questionSplit.after, isStreaming) : []),
-    [questionSplit, isStreaming],
+  const rowOfAnchor = useMemo(() => {
+    const rows = new Map<string, number>();
+    visibleActivityParts.forEach((part, index) => {
+      for (const id of partAnchors(part)) if (!rows.has(id)) rows.set(id, index);
+    });
+    return rows;
+  }, [visibleActivityParts]);
+  // A re-run with changed answers streams only the reply to them: its card shows the answers it runs with.
+  const questionPayload =
+    (askQuestionMatchesRow ? pendingAskUserQuestion?.payload : persistedAskUserQuestion) ?? rerunAnswers?.payload;
+  const questionAnswers = useMemo(
+    () => (askQuestionMatchesRow ? pendingAskUserQuestion?.answers : persistedAskUserQuestionAnswers) ?? {},
+    [askQuestionMatchesRow, pendingAskUserQuestion?.answers, persistedAskUserQuestionAnswers],
   );
-  const hasVisibleActivityBelowCard = visiblePartsBelowCard.length > 0;
-  const canCollapseActivityBelowCard =
-    !isStreaming ||
-    !!displayContent ||
-    visiblePartsBelowCard.some((p) => p.type === 'text' && !!p.settled && !p.isFinal);
+  const questionState: 'pending' | 'answered' | 'skipped' | null = !questionPayload
+    ? null
+    : rerunAnswers
+      ? 'answered'
+      : questionPending
+      ? 'pending'
+      : Object.keys(questionAnswers).length > 0 && pendingAskUserQuestion?.status !== 'skipped'
+        ? 'answered'
+        : 'skipped';
+  // ANSWER-CONTRACT-FU-5: a question is not an answer. A row whose turn ended on its card (still open, skipped by a
+  // new message, or replied to in the chat) shows no confidence; an answered card's row shows its answer's.
+  const endedOnQuestion =
+    questionState === 'pending' || questionState === 'skipped' || (questionState !== null && Boolean(questionPayload?.repliedInChat));
+  const interactions = useMemo(() => {
+    type Placed = PlacedInteraction & ({ kind: 'approval'; group: ApprovalGroup } | { kind: 'question' });
+    const placed: Placed[] = approvalGroups.map((group) => ({
+      kind: 'approval' as const,
+      group,
+      key: group.key,
+      anchor: approvalAnchor(group.items[0]),
+      open: isOpenGroup(group),
+      seq: group.items[0].seq ?? Number.MAX_SAFE_INTEGER,
+    }));
+    if (questionState) {
+      placed.push({ kind: 'question', key: 'question', anchor: questionAnchor(effectiveParts), open: questionState === 'pending', seq: -1 });
+    }
+    return orderInteractions(placed, (anchor) => rowOfAnchor.get(anchor));
+  }, [approvalGroups, questionState, effectiveParts, rowOfAnchor]);
+  // BGUI-4: a job's ask the card over the message box holds is answered there; the transcript keeps a pointer to it,
+  // so it is not this reply's call to action and the root run's own ask stays answerable at its row.
+  const floated = useFloatedAsks();
+  const isFloated = (item: (typeof interactions)[number]): boolean => item.kind === 'approval' && floatsGroup(item.group, floated);
+  const activeKey = activeInteractionKey(interactions.filter((item) => !isFloated(item)));
+  const waitingCount = interactions.reduce(
+    (sum, item) => sum + (!item.open ? 0 : item.kind === 'approval' ? openCalls(item.group) : 1),
+    0,
+  );
+  // WP-64: one step waiting on a connect reads as a plain line in the steps' header, naming the service.
+  const openConnects = interactions.flatMap((item) =>
+    item.open && item.kind === 'approval' ? item.group.items.filter((card) => card.connect && card.status === 'pending') : [],
+  );
+  // WP-97: how long the oldest open card has waited, so a run held for hours says so.
+  const waitingFrom = waitingSince(
+    interactions.flatMap((item) => (item.open && item.kind === 'approval' ? item.group.items : [])),
+  );
+  const waitingLine =
+    waitingCount === 1 && openConnects.length === 1 && openConnects[0].connect
+      ? connectWaitingLine(t, openConnects[0].connect, isOwner !== false)
+      : undefined;
+  const waitingAnchors = useMemo(
+    () => new Set(interactions.flatMap((item) => (item.open && item.anchor !== null ? [item.anchor] : []))),
+    [interactions],
+  );
+  // One "Files changed" block for an engine's workspace diffs and a loop run's run_code outputs alike (CTL-4).
+  const changedFiles = useMemo(() => {
+    const fromEngine = changedFilesFromEngine((effectiveParts ?? []).flatMap((part) => (part.type === 'engine_task' ? (part.frames ?? []) : [])));
+    const covered = new Set(fromEngine.map((file) => file.artifactId));
+    return [...fromEngine, ...changedFilesFromArtifacts(effectiveArtifacts).filter((file) => !covered.has(file.artifactId))];
+  }, [effectiveParts, effectiveArtifacts]);
+  const openChangedFile = useCallback(
+    (file: ChangedFile) => {
+      const artifact = effectiveArtifacts.find((candidate) => candidate.recordId === file.artifactId);
+      if (artifact) void loadArtifactPreview(artifact);
+    },
+    [effectiveArtifacts, loadArtifactPreview],
+  );
+  const messageRun = useMessageRun(runId, isLastMessage);
+  // C10.05: the live cost beside the elapsed time in the steps' header, while the run works.
+  const liveCost = useLiveRunCost(messageRun, isStreaming);
+  const plan = useChatStore((s) => (activeSlotId ? (s.slots[activeSlotId]?.plan ?? null) : null));
+  // The slot holds the plan of the run it streamed last; it belongs to this answer only if that run wrote it.
+  const savedPlan = useMemo(() => planFromParts(effectiveParts), [effectiveParts]);
+  const messagePlan = (plan && messageRun && plan.runId === messageRun.runId ? plan : null) ?? savedPlan;
+  const agentDisplayName = useChatStore((s) => s.agentContextDisplayName);
+  const agentVersion = useRunAgentVersion(messageRun, !isStreaming);
+  const viewActivity = messageRun && !unanswered ? (
+    <Flex as="span" display="inline-flex" align="center" gap="2" wrap="wrap">
+      <RunVersionLabel agentName={agentDisplayName} version={agentVersion} />
+      <ViewActivityButton run={messageRun} isMobile={isMobile} onClosePreview={clearPreview} />
+    </Flex>
+  ) : null;
 
   // Wrap citation callbacks so that onPreview always receives this message's
   // citationMaps — the panel needs all citations for the previewed record.
@@ -743,36 +942,151 @@ export const ChatResponse = React.memo(function ChatResponse({
   const sourcesCount = effectiveCitationMaps.sourcesOrder.length;
   const citationCount = Object.keys(effectiveCitationMaps.citationsOrder).length;
 
-  const renderActivity = (
-    parts: MessagePart[],
-    collapsible: boolean,
-    currentStatus: StatusMessage | null,
-  ) => {
-    const timeline = (
-      <AgentActivityTimeline
-        parts={parts}
-        isStreaming={isStreaming}
-        currentStatus={currentStatus}
-        citationMaps={effectiveCitationMaps}
-        citationCallbacks={wrappedCallbacks}
+  const decide = useCallback(
+    (
+      item: Parameters<typeof decideApproval>[1],
+      decision: Parameters<typeof decideApproval>[2],
+      scope?: Parameters<typeof decideApproval>[3],
+      reason?: string,
+    ) => {
+      const sid = activeSlotId;
+      if (sid) void decideApproval(sid, item, decision, scope ?? 'once', reason);
+    },
+    [activeSlotId],
+  );
+  const decideEdited = useCallback(
+    (item: Parameters<typeof decideApproval>[1], edits: Record<string, unknown>) => {
+      const sid = activeSlotId;
+      if (sid) void decideApproval(sid, item, 'approved', 'once', undefined, edits);
+    },
+    [activeSlotId],
+  );
+  const decideAll = useCallback(
+    (
+      items: Parameters<typeof decideApprovals>[1],
+      decision: Parameters<typeof decideApprovals>[2],
+      scope?: Parameters<typeof decideApprovals>[3],
+      reason?: string,
+    ) => {
+      const sid = activeSlotId;
+      if (sid) void decideApprovals(sid, items, decision, scope ?? 'once', reason);
+    },
+    [activeSlotId],
+  );
+
+  const renderQuestion = (state: InteractionState) => {
+    if (!questionPayload) return null;
+    if (rerunCard) return rerunCard;
+    if (changingAnswers) return changeAnswersEditor;
+    if (questionState !== 'pending' && questionPayload.repliedInChat) {
+      return <InteractionReceipt tone="muted" status="replied" text={t('askUserQuestion.repliedInChat')} />;
+    }
+    if (questionState === 'skipped') {
+      return <InteractionReceipt tone="muted" status="skipped" text={t('interaction.receipt.skipped')} />;
+    }
+    if (questionState === 'answered') {
+      const answer = answerSummary(
+        questionPayload, questionAnswers, t('askUserQuestion.somethingElse'), t('askUserQuestion.noPreference'),
+        cardWords(questionPayload, t).label,
+      );
+      return <InteractionReceipt tone="ok" status="answered" text={t('interaction.receipt.answered', { answer })} />;
+    }
+    if (state === 'queued') {
+      const first = questionPayload.questions[0]?.question;
+      return <QueuedInteraction title={first !== undefined ? cardWords(questionPayload, t).question(first) : t('askUserQuestion.quickQuestionSingular')} />;
+    }
+    return (
+      <Flex direction="column" gap="2">
+      <AskUserQuestionCard
+        payload={questionPayload}
+        initialAnswers={questionAnswers}
+        status="pending"
+        sending={questionRetrying}
+        active={state === 'active' && !questionRetrying}
+        sentAnswers={pendingAskUserQuestion?.sentAnswers}
+        onAnswersChange={(nextAnswers) => {
+          const sid = activeSlotId;
+          const p = sid ? useChatStore.getState().slots[sid]?.pendingAskUserQuestion : null;
+          if (!sid || !p) return;
+          useChatStore.getState().updateSlot(sid, {
+            pendingAskUserQuestion: { ...p, answers: nextAnswers },
+          });
+        }}
+        onSubmit={(message, nextAnswers) => {
+          if (activeSlotId) void answerQuestionCard(activeSlotId, message, nextAnswers);
+        }}
       />
-    );
-    return collapsible ? (
-      <CollapsibleActivitySection parts={parts} isStreaming={isStreaming}>
-        {timeline}
-      </CollapsibleActivitySection>
-    ) : (
-      timeline
+      <CardSendNotice sendKey={questionSendKeyOfRow} refusalText={(code) => admissionRefusalText(code ?? 'FAILED')} />
+      </Flex>
     );
   };
 
+  const anchoredInteractions = new Map<string, React.ReactNode[]>();
+  const looseInteractions: React.ReactNode[] = [];
+  const leadingInteractions: React.ReactNode[] = [];
+  for (const item of interactions) {
+    const state: InteractionState = !item.open ? 'done' : item.key === activeKey ? 'active' : 'queued';
+    const node = (
+      <Box key={item.key} data-testid="interaction" data-interaction-key={item.key} data-state={state}>
+        {item.kind === 'question' ? (
+          renderQuestion(state)
+        ) : isFloated(item) ? (
+          <FloatedAskPointer askKey={pointerKey(item.group) ?? item.key} />
+        ) : (
+          <ApprovalInteraction
+            group={item.group}
+            state={state}
+            onDecide={decide}
+            onDecideAll={decideAll}
+            onApproveEdited={decideEdited}
+            authority={approvalAuthority}
+            conversationChoice
+            subAgent={item.group.items[0].childRunId !== undefined}
+            paused={paused}
+            isOwner={isOwner !== false}
+          />
+        )}
+      </Box>
+    );
+    if (item.anchor !== null && rowOfAnchor.has(item.anchor)) {
+      anchoredInteractions.set(item.anchor, [...(anchoredInteractions.get(item.anchor) ?? []), node]);
+    } else if (item.kind === 'question' && rerunAnswers) {
+      // A re-run with changed answers streams only the work after them, so its card leads that work.
+      leadingInteractions.push(node);
+    } else looseInteractions.push(node);
+  }
+  // UXINT-5: someone the conversation is shared with sees that the run waits on its owner, never what for.
+  if (isStreaming && isOwner === false && waitingCount === 0 && (interactionWaiting?.count ?? 0) > 0) {
+    looseInteractions.push(
+      <Box key="waiting-owner" data-testid="interaction-waiting-owner">
+        <InteractionReceipt tone="muted" status="waiting" text={t('interaction.waitingForOwner', { count: interactionWaiting?.count ?? 0 })} />
+      </Box>,
+    );
+  }
+  // UXINT-5: a message sent to the running task shows at once, queued, until the run reads it (`user_input`).
+  const read = new Set((effectiveParts ?? []).filter((part) => part.type === 'user_input').map((part) => part.messageSeq));
+  for (const steer of (isStreaming ? queuedSteers : undefined) ?? []) {
+    if (read.has(steer.messageSeq)) continue;
+    looseInteractions.push(
+      <SteeringMessage
+        key={`steer-${steer.messageSeq}`}
+        part={{ type: 'user_input', content: steer.text }}
+        queuedNote={t(waitingCount > 0 ? 'interaction.steerQueuedWaiting' : 'interaction.steerQueued')}
+      />,
+    );
+  }
+  // A job's asks are drawn on its card, after the steps: only the others keep the steps open for themselves.
+  const trailInteractions = interactions.filter((item) => item.anchor === null || !jobAnchors.has(item.anchor));
+  const showTimeline =
+    effectiveParts !== undefined &&
+    (hasTrail || (isStreaming && multiStep) || (messagePlan?.steps.length ?? 0) >= 2 || trailInteractions.length > 0);
   const renderTabContent = () => {
     switch (activeTab) {
       case 'answer':
         return (
           <Box style={{ padding: 'var(--space-4) 0' }}>
-            {/* Show confidence only when not streaming and has answer */}
-            {!isStreaming && confidence && <ConfidenceIndicator confidence={confidence} />}
+            {/* Confidence only with a finished answer, never on a question */}
+            {!isStreaming && confidence && !endedOnQuestion && <ConfidenceIndicator confidence={confidence} />}
 
             {/* Agent activity timeline — thinking / tool calls / sub-agents,
                 streamed live or rendered from the persisted transcript.
@@ -790,23 +1104,62 @@ export const ChatResponse = React.memo(function ChatResponse({
                 reachable while a multi-step run is active but hasn't
                 produced a visible part yet. Shown on ask_user_question
                 rows too — the card is the question UI, not a reason to
-                hide the tools that ran before it. Only the work up to the
-                question renders here; what ran after it was answered renders
-                under the card. */}
-            {partsAboveCard && (visiblePartsAboveCard.length > 0 || (isStreaming && multiStep && !activityContinuesBelowCard)) &&
-              renderActivity(
-                partsAboveCard,
-                canCollapseActivity || activityContinuesBelowCard,
-                // non-multiStep: null prevents duplicate status with StatusMessageComponent below
-                multiStep && !activityContinuesBelowCard ? streamingStatusToShow : null,
-              )}
+                hide the tools that ran before it. */}
+            <ContextCompactedRow parts={effectiveParts} run={messageRun} />
+            <RunNotices parts={effectiveParts} />
+            {leadingInteractions.length > 0 ? <Box mb="3">{leadingInteractions}</Box> : null}
+            {showTimeline && effectiveParts && (
+              <CollapsibleActivitySection
+                parts={effectiveParts}
+                isStreaming={isStreaming}
+                plan={messagePlan}
+                trailing={viewActivity}
+                startedAt={createdAt}
+                files={changedFiles}
+                waiting={waitingCount}
+                waitingLine={waitingLine}
+                waitingSince={waitingFrom}
+                paused={paused}
+                defaultOpen={approvalGroups.some((group) => decidedRuns.has(group.items[0].runId ?? ''))}
+                cost={liveCost}
+              >
+                <AgentActivityTimeline
+                  parts={effectiveParts}
+                  liftJobs
+                  isStreaming={isStreaming}
+                  // non-multiStep: null prevents duplicate status with StatusMessageComponent below
+                  currentStatus={multiStep && !paused ? streamingStatusToShow : null}
+                  citationMaps={effectiveCitationMaps}
+                  citationCallbacks={wrappedCallbacks}
+                  plan={messagePlan}
+                  anchored={anchoredInteractions}
+                  waiting={waitingAnchors}
+                  unanchored={looseInteractions.length > 0 ? looseInteractions : null}
+                />
+                <FilesChanged files={changedFiles} onOpen={openChangedFile} />
+                {!isStreaming ? <RunSummary run={messageRun} /> : null}
+                {!isStreaming ? <OutsideAccess run={messageRun} /> : null}
+              </CollapsibleActivitySection>
+            )}
+            <TurnJobs
+              jobs={jobParts}
+              anchored={anchoredInteractions}
+              waiting={waitingAnchors}
+              citationMaps={effectiveCitationMaps}
+              citationCallbacks={wrappedCallbacks}
+              shownFiles={shownFiles}
+            />
+            {/* An answer with no steps to fold still offers its run's detail (an engine run's commands). */}
+            {!isStreaming && !showTimeline && viewActivity}
+            {!isStreaming && messageRun ? <RunCommandActions question={question} answer={answer} run={messageRun} /> : null}
+            {!isStreaming && isLastMessage && messageRun ? <CloneUnavailableCards run={messageRun} /> : null}
 
             {/* Separator marking the handoff from "here's the work" to
                 "here's the answer" — only when there's activity actually
                 visible above (not just a lone isFinal part that the
                 timeline itself filtered out) and content to show below
                 (answer text or the ask_user_question card). */}
-            {visiblePartsAboveCard.length > 0 && (questionSplit || answerShown || questionPending || persistedAskUserQuestion || toolApproval || approvalReceipts.length > 0) && (
+            {hasVisibleActivity && (answerShown || toolApproval || approvalReceipts.length > 0) && (
               <Box
                 className="agent-activity-enter"
                 style={{
@@ -817,75 +1170,12 @@ export const ChatResponse = React.memo(function ChatResponse({
               />
             )}
 
-            {/* Persisted ask_user_question from historical tool_call — read-only display */}
-            {rerunCard ? (
-              rerunCard
-            ) : persistedAskUserQuestion && !askQuestionMatchesRow ? (
-              changingAnswers ? (
-                changeAnswersEditor
-              ) : (
-                <AskUserQuestionCard
-                  payload={persistedAskUserQuestion}
-                  initialAnswers={persistedAskUserQuestionAnswers ?? {}}
-                  status="persisted"
-                />
-              )
-            ) : null}
-
-            {/* Active (streaming/pending) ask_user_question card */}
-            {rerunCard ? null : askQuestionMatchesRow && pendingAskUserQuestion && changingAnswers ? (
-              changeAnswersEditor
-            ) : askQuestionMatchesRow && pendingAskUserQuestion ? (
-              <AskUserQuestionCard
-                payload={pendingAskUserQuestion.payload}
-                initialAnswers={pendingAskUserQuestion.answers}
-                status={pendingAskUserQuestion.status}
-                sentAnswers={pendingAskUserQuestion.sentAnswers}
-                onAnswersChange={(nextAnswers) => {
-                  const sid = activeSlotId;
-                  const p = sid ? useChatStore.getState().slots[sid]?.pendingAskUserQuestion : null;
-                  if (!sid || !p) return;
-                  useChatStore.getState().updateSlot(sid, {
-                    pendingAskUserQuestion: { ...p, answers: nextAnswers },
-                  });
-                }}
-                onSubmit={(message, nextAnswers) => {
-                  const sid = activeSlotId;
-                  const p = sid ? useChatStore.getState().slots[sid]?.pendingAskUserQuestion : null;
-                  if (!sid || !p) return;
-                  useChatStore.getState().updateSlot(sid, {
-                    pendingAskUserQuestion: { ...p, answers: nextAnswers, status: 'submitted' },
-                  });
-                  const request = buildStreamChatRequestForSlot(sid, message);
-                  if (request) {
-                    void streamMessageForSlot(sid, message, request, {
-                      resumeAskUserQuestion: true,
-                    });
-                  }
-                }}
-              />
-            ) : null}
-
-            {/* Work done after the question was answered — under the card, Claude-style. */}
-            {questionSplit && (hasVisibleActivityBelowCard || (isStreaming && multiStep && activityContinuesBelowCard)) && (
-              <Box data-testid="activity-below-question-card" style={{ marginTop: 'var(--space-4)' }}>
-                {renderActivity(
-                  partsBelowCard,
-                  canCollapseActivityBelowCard && hasVisibleActivityBelowCard,
-                  multiStep ? streamingStatusToShow : null,
-                )}
+            {/* No timeline to anchor on (a message saved before parts were kept): the interactions in order. */}
+            {!showTimeline && interactions.length > 0 ? (
+              <Box mb="3">
+                {[...anchoredInteractions.entries()].flatMap(([anchor, nodes]) => (jobAnchors.has(anchor) ? [] : nodes)).concat(looseInteractions)}
               </Box>
-            )}
-            {hasVisibleActivityBelowCard && (answerShown || toolApproval || approvalReceipts.length > 0) && (
-              <Box
-                className="agent-activity-enter"
-                style={{
-                  borderTop: '1px solid var(--slate-4)',
-                  marginTop: 'var(--space-1)',
-                  marginBottom: 'var(--space-3)',
-                }}
-              />
-            )}
+            ) : null}
 
             {/* A reply that failed because an MCP server isn't set up shows how to set it up instead. */}
             {mcpConnectDetails && (
@@ -901,11 +1191,24 @@ export const ChatResponse = React.memo(function ChatResponse({
               </Box>
             )}
 
+            {notFound !== null && !questionPending && !mcpConnectDetails && (
+              <Box mt={persistedAskUserQuestion || askQuestionMatchesRow ? '4' : undefined}>
+                <NotFoundNotice fact={notFound} />
+              </Box>
+            )}
+
+            {couldNotDo !== null && !questionPending && !mcpConnectDetails && (
+              <Box mt={notFound === null && (persistedAskUserQuestion || askQuestionMatchesRow) ? '4' : undefined}>
+                <CouldNotDoNotice fact={couldNotDo} />
+              </Box>
+            )}
+
             {answerShown && !questionPending && !mcpConnectDetails && (
               <Box
+                data-testid="chat-answer"
                 style={{
                   marginTop:
-                    (persistedAskUserQuestion || askQuestionMatchesRow) && !hasVisibleActivityBelowCard
+                    persistedAskUserQuestion || askQuestionMatchesRow
                       ? 'var(--space-4)'
                       : undefined,
                 }}
@@ -932,8 +1235,16 @@ export const ChatResponse = React.memo(function ChatResponse({
               </Box>
             )}
 
+            {/* G-05: whether the answer's checks passed, under it; it opens to every check. */}
+            {!isStreaming && answerShown ? <VerificationPanel parts={effectiveParts} /> : null}
+
             {!isStreaming && searchDegraded && <SearchDegradedNote />}
             {!isStreaming && <AccessNotices notices={accessNotices} />}
+
+            {/* UX-06: a typed error's one-click next step, under its words; only the newest reply offers it. */}
+            {!isStreaming && isLastMessage && !mcpConnectDetails && (
+              <ErrorNextStep error={streamError} question={question} />
+            )}
 
             {/* After an answered question the reply carries on in this row and can stop on an
                 approval: its card shows under the question. Only an unanswered question comes first. */}
@@ -954,6 +1265,16 @@ export const ChatResponse = React.memo(function ChatResponse({
               </Box>
             )}
 
+            {/* WP-89: the run's outcome in the reader's language, with the action that fits; it may be the whole
+                answer (a file the run did not write). */}
+            {!isStreaming && settledOutcome !== null && !questionPending && (
+              <OutcomeNotice outcome={settledOutcome} budgetScope={sharedBudget} actionable={isLastMessage} />
+            )}
+            {/* BUDGETEND: a limit cut the run's work short; the answer is what it gathered. An answer saved with the
+                outcome's English words already says so. */}
+            {!isStreaming && settledOutcome === null && cutShort !== null && answerShown && !questionPending &&
+              !hasLegacyOutcomeWords(answerShown) && <CutShortNotice reason={cutShort} budgetScope={sharedBudget} />}
+
             {/* Subtle marker for a response cut short by Stop. Only shown once
                 settled (never while still streaming/regenerating) — regenerate
                 remains available via MessageActions below, same as any other
@@ -971,8 +1292,8 @@ export const ChatResponse = React.memo(function ChatResponse({
                 data-testid="chat-stopped-marker"
                 style={{ marginTop: 'var(--space-2)' }}
               >
-                <MaterialIcon name="stop_circle" size={14} color="var(--slate-9)" />
-                <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                <MaterialIcon name="stop_circle" size={14} color="var(--slate-11)" />
+                <Text size="1" style={{ color: 'var(--slate-11)' }}>
                   {t('chat.stoppedMarker', { defaultValue: 'Stopped' })}
                 </Text>
               </Flex>
@@ -991,6 +1312,8 @@ export const ChatResponse = React.memo(function ChatResponse({
             {downloadTasks.length > 0 && !questionPending && (
               <DownloadTasks tasks={downloadTasks} />
             )}
+
+            <MemoryChip parts={effectiveParts} />
 
             {/* Artifacts generated by sandbox tools */}
             {effectiveArtifacts.length > 0 && !questionPending && (
@@ -1073,7 +1396,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   // While this row's question card waits for an answer, read aloud and copy the
   // question and its options. Once answered, the reply written after it is the content.
   const speakContent = questionPending && pendingAskUserQuestion
-    ? buildQuestionCardReadAloudText(pendingAskUserQuestion?.payload)
+    ? buildQuestionCardReadAloudText(pendingAskUserQuestion?.payload, cardWords(pendingAskUserQuestion?.payload, t))
     : visibleAnswer;
 
   const appliedNodes = mentionedNodes(appliedFilters);
@@ -1096,13 +1419,14 @@ export const ChatResponse = React.memo(function ChatResponse({
           messageId={messageId}
           isStreaming={isStreaming}
           onEdit={canEditQuestion ? handleEditQuery : undefined}
+          command={command}
           mentions={appliedNodes}
         />
         {createdAt && (
           <Text
             size="1"
             style={{
-              color: 'var(--slate-9)',
+              color: 'var(--slate-11)',
               marginTop: 'var(--space-1)',
               display: 'block',
             }}
@@ -1131,73 +1455,15 @@ export const ChatResponse = React.memo(function ChatResponse({
           }}
           className="no-scrollbar"
         >
-          {attachments.map((att) => {
-            const isPastedText = isPastedTextAttachment(att);
-            const openAttachment = () =>
-              isPastedText ? setTextPreviewAttachment(att) : handleAttachmentPreview(att);
-            return (
-              <Flex
-                key={att.virtualRecordId || att.recordId}
-                align="center"
-                gap="1"
-                role="button"
-                tabIndex={0}
-                title={isPastedText ? t('chat.attachments.pastedText', { defaultValue: 'Pasted text' }) : att.recordName}
-                onClick={openAttachment}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    // Space would otherwise scroll the transcript.
-                    e.preventDefault();
-                    openAttachment();
-                  }
-                }}
-                style={{
-                  flexShrink: 0,
-                  padding: 'var(--space-1) var(--space-2)',
-                  backgroundColor: isPastedText ? 'var(--accent-a2)' : 'var(--olive-a2)',
-                  border: isPastedText ? '1px dashed var(--accent-a7)' : '1px solid var(--olive-3)',
-                  borderRadius: 'var(--radius-1)',
-                  maxWidth: '200px',
-                  cursor: 'pointer',
-                  transition: 'background-color 0.15s',
-                }}
-                onMouseEnter={(e) => {
-                  (e.currentTarget as HTMLElement).style.backgroundColor = isPastedText
-                    ? 'var(--accent-a4)'
-                    : 'var(--olive-a4)';
-                }}
-                onMouseLeave={(e) => {
-                  (e.currentTarget as HTMLElement).style.backgroundColor = isPastedText
-                    ? 'var(--accent-a2)'
-                    : 'var(--olive-a2)';
-                }}
-              >
-                {isPastedText ? (
-                  <MaterialIcon name="content_paste" size={14} color="var(--accent-9)" />
-                ) : (
-                  <FileIcon
-                    extension={getMimeTypeExtension(att.mimeType) || att.extension || undefined}
-                    filename={att.recordName}
-                    size={14}
-                    fallbackIcon="insert_drive_file"
-                  />
-                )}
-                <Text
-                  size="1"
-                  style={{
-                    color: 'var(--slate-11)',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {isPastedText
-                    ? t('chat.attachments.pastedText', { defaultValue: 'Pasted text' })
-                    : att.recordName}
-                </Text>
-              </Flex>
-            );
-          })}
+          {attachments.map((att) => (
+            <AttachmentChip
+              key={att.virtualRecordId || att.recordId}
+              attachment={att}
+              onOpen={(opened) =>
+                isPastedTextAttachment(opened) ? setTextPreviewAttachment(opened) : handleAttachmentPreview(opened)
+              }
+            />
+          ))}
         </Flex>
       )}
       </>)}
@@ -1210,13 +1476,18 @@ export const ChatResponse = React.memo(function ChatResponse({
         <ResponseTabs
           activeTab={activeTab}
           onTabChange={setActiveTab}
+          idBase={tabIdBase}
           sourcesCount={(askQuestionMatchesRow || persistedAskUserQuestion) ? 0 : sourcesCount}
           citationCount={(askQuestionMatchesRow || persistedAskUserQuestion) ? 0 : citationCount}
         />
       )}
 
       {/* Tab Content */}
-      {!unanswered && !answerHidden && renderTabContent()}
+      {!unanswered && !answerHidden && (
+        <div role="tabpanel" id={responseTabIds(tabIdBase, activeTab).panel} aria-labelledby={responseTabIds(tabIdBase, activeTab).tab}>
+          {renderTabContent()}
+        </div>
+      )}
 
       {/* The answer is withheld (see `answerHidden`): say why, and offer to ask again with today's access. */}
       {!unanswered && answerHidden && (
@@ -1251,7 +1522,8 @@ export const ChatResponse = React.memo(function ChatResponse({
         <MessageActions
           content={speakContent}
           citationMaps={effectiveCitationMaps}
-          modelInfo={modelInfo}
+          // A /run answer is the command's exit status: no model ran, so none is named.
+          modelInfo={sentRunLine(question) === null ? modelInfo : undefined}
           isStreaming={isStreaming}
           messageId={messageId}
           question={question}
@@ -1259,6 +1531,7 @@ export const ChatResponse = React.memo(function ChatResponse({
           appliedFilters={appliedFilters}
           feedbackInfo={feedbackInfo}
           canRegenerate={!ranApprovedCall}
+          runLinked={runId !== undefined}
           parts={effectiveParts}
         />
       )}

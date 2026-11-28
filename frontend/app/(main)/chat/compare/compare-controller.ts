@@ -21,7 +21,6 @@ let nextTurnId = 1;
 export function isCompareAvailable(): boolean {
   if (!selectChatCompareEnabled(useFeatureFlagsStore.getState())) return false;
   const chat = useChatStore.getState();
-  if (chat.settings.queryMode === 'image') return false;
   return (chat.settings.availableModels[ASSISTANT_CTX]?.models.length ?? 0) >= MAX_COMPARE_MODELS;
 }
 
@@ -118,7 +117,7 @@ function watchSlots(): void {
  * left exactly as built.
  */
 export function applyCompareToRequest(slotId: string, request: StreamChatRequest, displayQuery: string): boolean {
-  if (request.agentId || request.chatMode === 'image') return false;
+  if (request.agentId) return false;
   const models = getActiveCompareModels();
   if (!models) return false;
   const [primary, second] = models;
@@ -379,6 +378,8 @@ export async function restoreCompare(slotId: string): Promise<void> {
   const slot = useChatStore.getState().slots[slotId];
   const convId = slot?.convId;
   if (!slot || !convId || slot.isTemp || !slot.isInitialized || slot.isStreaming || turnOf(slotId)) return;
+  // Compare is for plain chats only; the server answers 400 for an agent chat.
+  if (slot.threadAgentId) return;
   if (!selectChatCompareEnabled(useFeatureFlagsStore.getState()) || restoring.has(convId)) return;
   restoring.add(convId);
   try {

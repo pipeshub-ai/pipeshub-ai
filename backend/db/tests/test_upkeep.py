@@ -710,6 +710,84 @@ def test_group_gc_skips_a_group_a_writer_holds_uncommitted_and_collects_it_after
         assert a.execute("SELECT count(*) FROM retrieval.point_groups WHERE group_key = 'g'").fetchone()[0] == 0
 
 
+def hold_body(cluster, name, body: str) -> None:
+    """Replace the body of kernel.org_writes_held, as an extra migration location's run does."""
+    with cluster.admin(name) as c:
+        c.execute("GRANT CREATE ON SCHEMA kernel TO pipeshub_vetted_kernel")
+        c.execute("SET ROLE pipeshub_vetted_kernel")
+        c.execute("CREATE OR REPLACE FUNCTION kernel.org_writes_held(p_org text) RETURNS boolean LANGUAGE plpgsql STABLE SECURITY DEFINER "
+                  f"SET search_path = pg_catalog, kernel, pg_temp SET standard_conforming_strings = on AS $fn$ BEGIN {body} END $fn$")
+        c.execute("RESET ROLE")
+        c.execute("REVOKE CREATE ON SCHEMA kernel FROM pipeshub_vetted_kernel")
+
+
+def test_the_jobs_write_nothing_for_an_org_whose_writes_are_held_and_catch_up_once_released(rdb, monkeypatch):
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    adopt(cluster, name, ORG_B)
+    placement_env(monkeypatch, cluster, name)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c:
+        for org, d in ((ORG_A, 2), (ORG_B, 7)):
+            with uow(c, "pipeshub_indexing", org):
+                delta(c, org, d)
+    hold_body(cluster, name, f"RETURN p_org = '{ORG_A}';")
+    try:
+        assert maintain.main(["fold"]) == maintain.EXIT_PARTIAL       # the held org is reported, the others are folded
+        assert maintain.main(["recount", ORG_A]) == maintain.EXIT_PARTIAL
+        assert n_of(cluster, name, ORG_A) == [] and n_of(cluster, name, ORG_B) == [7]
+        assert maintain.main(["recount"]) == maintain.EXIT_PARTIAL                  # the held org is reported, the others recounted
+        assert n_of(cluster, name, ORG_A) == [] and n_of(cluster, name, ORG_B) == [0]
+        with cluster.admin(name) as c:
+            assert c.execute("SELECT count(*) FROM retrieval.lexical_df_delta WHERE org_id = %s", (ORG_A,)).fetchone()[0] == 1
+        with psycopg.connect(jobs_url(cluster, name)) as jobs, pytest.raises(pg.ReadOnlySqlTransaction, match="writes are held"):
+            fold.fold_org(jobs, ORG_A)
+    finally:
+        hold_body(cluster, name, "RETURN false;")
+    assert maintain.main(["fold"]) == 0
+    assert n_of(cluster, name, ORG_A) == [2]
+
+
+def test_a_recount_never_writes_an_org_whose_hold_committed_before_its_fence(rdb, monkeypatch):
+    """The recount reads at REPEATABLE READ: a hold that commits after its snapshot but before its fence would be invisible to the
+    fence. The recount takes the write barrier for its session before the snapshot, so such a hold waits for the recount instead."""
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    placement_env(monkeypatch, cluster, name)
+    with cluster.admin(name) as c:                                   # a hold body that reads committed state, as a deployment's does
+        c.execute("CREATE TABLE public.t_holds (org text)")
+        c.execute("GRANT USAGE ON SCHEMA public TO pipeshub_vetted_kernel")
+        c.execute("GRANT SELECT ON public.t_holds TO pipeshub_vetted_kernel")
+    hold_body(cluster, name, "RETURN EXISTS (SELECT 1 FROM public.t_holds h WHERE h.org = p_org);")
+    recorded, seen = threading.Event(), {}
+
+    def record() -> None:                                            # how a hold is recorded: behind the barrier, then the row
+        with cluster.admin(name) as c:
+            c.execute("BEGIN")
+            c.execute("SET LOCAL lock_timeout = '30s'")
+            c.execute("SELECT pg_advisory_xact_lock(7341, 1)")
+            c.execute("INSERT INTO public.t_holds VALUES (%s)", (ORG_A,))
+            c.execute("COMMIT")
+        recorded.set()
+
+    recorder = threading.Thread(target=record)
+
+    def org_lock(jobs, org, lock_class=fold.LOCK_CLASS):             # the job's lock fixes the snapshot; a hold is recorded right after
+        taken = jobs.execute("SELECT pg_try_advisory_xact_lock(%s, hashtext(%s))", (lock_class, org)).fetchone()[0]
+        recorder.start()
+        seen["before_fence"] = recorded.wait(2)
+        return taken and jobs.execute("SELECT kernel.assert_org_writable(%s)", (org,)).fetchone()[0]
+
+    monkeypatch.setattr(fold, "org_lock", org_lock)
+    with psycopg.connect(jobs_url(cluster, name), autocommit=True) as jobs:
+        try:
+            wrote = fold.recount_org(jobs, ORG_A) is not None
+        except pg.ReadOnlySqlTransaction:
+            wrote = False
+    recorder.join(30)
+    assert recorded.is_set()
+    assert not (seen["before_fence"] and wrote), "the recount wrote an org whose hold committed before its fence"
+
+
 def test_a_one_shot_fold_exits_6_when_an_org_failed_and_a_failing_org_does_not_hold_up_the_ones_behind_it(monkeypatch):
     seen = []
 
@@ -724,6 +802,7 @@ def test_a_one_shot_fold_exits_6_when_an_org_failed_and_a_failing_org_does_not_h
     monkeypatch.setattr(fold, "fold_org", step)
     assert fold.run(None) == ({}, {"a": "deadlock detected"}) and seen == ["a", "b", "c"]
     monkeypatch.setattr(fold, "run", lambda jobs: ({}, {"a": "x"}))
+    monkeypatch.setattr(fold, "fill_bounds", lambda jobs: ({}, {}, 0))
     monkeypatch.setattr(maintain.psycopg, "connect", lambda *a, **k: type("C", (), {"__enter__": lambda s: None, "__exit__": lambda s, *e: None})())
     monkeypatch.setenv("PG_JOBS_URL", "postgresql://x@127.0.0.1:1/x")
     assert maintain.main(["fold"]) == maintain.EXIT_PARTIAL

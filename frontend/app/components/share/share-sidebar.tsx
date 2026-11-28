@@ -513,6 +513,7 @@ export function ShareSidebar({
                 {adapter.sidebarTitle}
               </Text>
               <IconButton
+                aria-label={t('common.close')}
                 variant="ghost"
                 // Radix ghost buttons pull out by their padding; keep the header's own inset
                 style={{ margin: 0 }}
@@ -542,6 +543,23 @@ export function ShareSidebar({
                 }
                 onEmailSubmit={handleEmailSubmit}
               />
+              {adapter.notice && (
+                <Flex
+                  align="start"
+                  gap="2"
+                  style={{
+                    marginTop: 8,
+                    padding: '8px 10px',
+                    borderRadius: 'var(--radius-2)',
+                    background: 'var(--amber-a3)',
+                  }}
+                >
+                  <MaterialIcon name="info" size={16} color="var(--amber-11)" />
+                  <Text size="1" style={{ color: 'var(--slate-12)' }}>
+                    {adapter.notice}
+                  </Text>
+                </Flex>
+              )}
             </Box>
 
             {/* Scrollable body */}
@@ -698,7 +716,7 @@ export function ShareSidebar({
 
                   {/* Loading more indicator */}
                   {paginated.isLoadingMore && (
-                    <Text size="1" style={{ color: 'var(--slate-9)', textAlign: 'center', padding: 8, display: 'block' }}>
+                    <Text size="1" style={{ color: 'var(--slate-11)', textAlign: 'center', padding: 8, display: 'block' }}>
                       {t('shareSidebar.loadingMoreUsers')}
                     </Text>
                   )}
@@ -712,7 +730,7 @@ export function ShareSidebar({
                         justify="center"
                         style={{ padding: '40px 0' }}
                       >
-                        <Text size="2" style={{ color: 'var(--slate-9)' }}>
+                        <Text size="2" style={{ color: 'var(--slate-11)' }}>
                           {t('shareSidebar.noResults')}
                         </Text>
                       </Flex>

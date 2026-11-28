@@ -5,12 +5,16 @@ import jwt from 'jsonwebtoken'
 import { Types } from 'mongoose'
 import * as controller from '../../../../src/modules/enterprise_search/controller/es_controller'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
-import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import { EncryptionService } from '../../../../src/libs/encryptor/encryptor'
 import { loadConfigurationManagerConfig } from '../../../../src/modules/configuration_manager/config/config'
 import { TokenScopes } from '../../../../src/libs/enums/token-scopes.enum'
+import { setSlackUserLinkRepository } from '../../../../src/libs/repositories/slack-user-link'
+import { SLACK_LINK_REQUIRED_MESSAGE } from '../../../../src/modules/enterprise_search/utils/scoped-request'
+import { InMemorySlackUserLinks } from '../../../support/slack/in-memory-slack-links'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 const appConfig = {
   aiBackend: 'http://ai.test',
@@ -57,6 +61,9 @@ function fresh(): { store: InMemoryChatStore; ai: FakeAIBackend } {
 }
 
 describe('es_controller listing and paging', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
+
   afterEach(() => {
     sinon.restore()
   })
@@ -233,23 +240,43 @@ describe('es_controller listing and paging', () => {
   })
 
   describe('agent usage lookups', () => {
-    it('getWebSearchProviderUsage: passes the AI service answer through, and an empty list when it has none', async () => {
+    it('getWebSearchProviderUsage: passes the AI service answer through, and a failed check on as an error, never as no agents', async () => {
       const { ai } = fresh()
       ai.reply(/web-search-usage\/tavily/, 200, { success: true, agents: [{ name: 'Research bot' }] })
       ai.reply(/web-search-usage\/serper/, 500, { detail: 'boom' })
       const handler = controller.getWebSearchProviderUsage(appConfig) as JsonHandler
 
       const used = await call(handler, { params: { provider: 'tavily' } })
-      const unknown = await call(handler, { params: { provider: 'serper' } })
+      const failed = await call(handler, { params: { provider: 'serper' } })
       const missing = await call(handler, { params: {} })
 
       expect(used.body).to.deep.equal({ success: true, agents: [{ name: 'Research bot' }] })
-      expect(unknown.body).to.deep.equal({ success: true, agents: [] })
+      expect(failed.body).to.be.undefined
+      expect(failed.error?.statusCode).to.equal(502)
+      expect(failed.error?.message).to.not.include('boom')
       expect(missing.error?.statusCode).to.equal(400)
       expect(ai.calls.map((c) => c.url)).to.deep.equal([
         'http://ai.test/api/v1/agent/web-search-usage/tavily',
         'http://ai.test/api/v1/agent/web-search-usage/serper',
       ])
+    })
+
+    it('getModelUsage: passes the AI service answer through, and a failed check on as an error, never as no agents', async () => {
+      const { ai } = fresh()
+      ai.reply(/model-usage\/used/, 200, { success: true, agents: [{ name: 'Research bot' }] })
+      ai.reply(/model-usage\/down/, 503, { detail: 'graph down' })
+      ai.reply(/model-usage\/refused/, 400, { detail: "We couldn't check where this model is used." })
+      const handler = controller.getModelUsage(appConfig) as JsonHandler
+
+      const used = await call(handler, { params: { model_key: 'used' } })
+      const down = await call(handler, { params: { model_key: 'down' } })
+      const refused = await call(handler, { params: { model_key: 'refused' } })
+
+      expect(used.body).to.deep.equal({ success: true, agents: [{ name: 'Research bot' }] })
+      expect(down.body).to.be.undefined
+      expect(down.error?.statusCode).to.equal(503)
+      expect(refused.error?.statusCode).to.equal(400)
+      expect(refused.error?.message).to.equal("We couldn't check where this model is used.")
     })
   })
 
@@ -297,13 +324,14 @@ describe('es_controller listing and paging', () => {
     const serviceRequest = (): Record<string, unknown> & { headers: Record<string, string>; user?: Record<string, unknown> } => ({
       headers: { authorization: 'Bearer scoped' },
       params: { agentKey: AGENT_KEY },
-      tokenPayload: { email: 'Guest@Example.com' },
+      // The bot's token names its configuration and the Slack person, who has linked no PipesHub account.
+      tokenPayload: { email: 'Guest@Example.com', configId: 'cfg-1', slackTeamId: 'T0HOME', slackUserId: 'U0GUEST' },
       context: {},
     })
 
     const previousSecret = process.env.SECRET_KEY
     before(() => {
-      process.env.SECRET_KEY = previousSecret ?? 'slack-bot-test-secret'
+      process.env.SECRET_KEY = previousSecret ?? 'd7a922daee89530615487f64bbffc35f659e9b41be9a88a9881faa08c78be76c'
     })
     after(() => {
       if (previousSecret === undefined) delete process.env.SECRET_KEY
@@ -311,14 +339,15 @@ describe('es_controller listing and paging', () => {
     })
 
     beforeEach(() => {
-      sinon.stub(Users, 'findOne').resolves(null)
       sinon.stub(Org, 'find').returns({
         limit: () => ({ lean: () => ({ exec: async () => [{ _id: ORG }] }) }),
       } as never)
       sinon.stub(Org, 'findOne').resolves({ _id: ORG } as never)
+      setSlackUserLinkRepository(new InMemorySlackUserLinks())
     })
+    afterEach(() => setSlackUserLinkRepository())
 
-    it('lets an email without an account in only for an agent set up for Slack that is a service account', async () => {
+    it('lets a Slack person without an account in only for an agent set up for Slack that is a service account', async () => {
       const { ai } = fresh()
       ai.reply(/internal\/service-account/, 200, { isServiceAccount: true })
       const req = serviceRequest()
@@ -326,11 +355,13 @@ describe('es_controller listing and paging', () => {
       await controller.hydrateScopedRequestAsUser(req as never, appConfig, kv([AGENT_KEY]))
 
       expect(ai.calls[0]?.url).to.equal(`http://ai.test/api/v1/agent/${AGENT_KEY}/internal/service-account`)
-      expect(String(req.user?.userId)).to.equal(controller.stableObjectIdHexForExternalEmail('guest@example.com'))
+      // Who they are is their Slack identity, never the profile email the token carries.
+      const subject = 'slack-t0home-u0guest@slack.invalid'
+      expect(String(req.user?.userId)).to.equal(controller.stableObjectIdHexForExternalEmail(subject))
       expect(req.user).to.include({ isServiceAccount: true })
       expect(req.user?.scopes).to.deep.equal([TokenScopes.CONVERSATION_CREATE])
       const token = jwt.verify((req.headers.authorization ?? '').replace('Bearer ', ''), 'test-scoped-secret') as Record<string, unknown>
-      expect(token).to.include({ isServiceAccount: true, email: 'Guest@Example.com' })
+      expect(token).to.include({ isServiceAccount: true, email: subject })
     })
 
     const refusals: Array<{ name: string; agents: string[]; reply?: [number, unknown] }> = [
@@ -339,7 +370,7 @@ describe('es_controller listing and paging', () => {
       { name: 'the AI service cannot confirm it', agents: [AGENT_KEY], reply: [500, { detail: 'boom' }] },
     ]
     for (const r of refusals) {
-      it(`refuses an email without an account when ${r.name}`, async () => {
+      it(`refuses a Slack person without an account when ${r.name}`, async () => {
         const { ai } = fresh()
         if (r.reply) ai.reply(/internal\/service-account/, r.reply[0], r.reply[1])
         const req = serviceRequest()
@@ -351,8 +382,8 @@ describe('es_controller listing and paging', () => {
           error = e as Error & { statusCode?: number }
         }
 
-        expect(error?.statusCode).to.equal(404)
-        expect(error?.message).to.equal('User not found, create an account on the Pipeshub platform first.')
+        expect(error?.statusCode).to.equal(401)
+        expect(error?.message).to.equal(SLACK_LINK_REQUIRED_MESSAGE)
         expect(req.user).to.equal(undefined)
         expect(req.headers.authorization).to.equal('Bearer scoped')
       })

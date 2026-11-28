@@ -276,6 +276,14 @@ describe('KafkaAdminService', () => {
     });
   });
 
+  describe('removeIdleGroups', () => {
+    it('OPS1-4-8: removes nothing and asks the broker nothing (Kafka expires an empty group itself)', async () => {
+      const service = new KafkaAdminService({ brokers: ['localhost:9092'] } as never, mockLogger);
+      expect(await service.removeIdleGroups()).to.deep.equal({ removed: [], left: [] });
+      expect(mockAdmin.connect.called).to.be.false;
+    });
+  });
+
   describe('describeTopics', () => {
     it('should return topic metadata', async () => {
       const mockMetadata = { topics: [{ name: 'test', partitions: [] }] };

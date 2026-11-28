@@ -12,7 +12,7 @@ export class PgError extends DatabaseError {
     message: string,
     statusCode: number,
     public readonly sqlstate?: string,
-    public readonly cause?: unknown,
+    public override readonly cause?: unknown,
     metadata?: ErrorMetadata,
   ) {
     super(code, message, statusCode, metadata);

@@ -27,6 +27,7 @@ import {
   setPlatformSettings,
   getPlatformSettings,
   getAvailablePlatformFeatureFlags,
+  AGENT_HARNESS_OFF_MESSAGE,
   getEffectivePlatformFeatureFlags,
   getMicrosoftAuthConfig,
   setMicrosoftAuthConfig,
@@ -84,10 +85,16 @@ import {
   getModelRoles,
   updateModelRoles,
 } from '../../../../src/modules/configuration_manager/controller/cm_controller'
+import { AGENT_HARNESS_LABS_FLAGS } from '../../../../src/modules/configuration_manager/constants/constants'
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
+import { testControlPlane } from '../../control-plane/support/in-memory'
 import { startFakeSmtpServer, FakeSmtpServer } from '../../../helpers/fake-smtp-server'
 import * as smtpTransportModule from '../../../../src/modules/mail/utils/smtp-transport'
 import { Logger } from '../../../../src/libs/services/logger.service'
+import { inRequestOrg } from '../../../helpers/request-org-context'
+
+/** The opt-out (ADR-OPS-06 as amended 2026-11-20): the switch is on by default, so off is said. */
+const HARNESS_OFF = { AGENT_HARNESS_WORKER_ENABLED: 'false' }
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -174,15 +181,20 @@ const fakeConfigManagerConfig = {
 describe('ConfigurationManager Controller', () => {
   let mockEncService: any
   let loadConfigStub: sinon.SinonStub
+  const hideSecretConfig = process.env.HIDE_SECRET_CONFIG
 
   beforeEach(() => {
     mockEncService = createMockEncryptionService()
     loadConfigStub = sinon.stub(cmConfig, 'loadConfigurationManagerConfig').returns(fakeConfigManagerConfig as any)
     sinon.stub(encryptorModule.EncryptionService, 'getInstance').returns(mockEncService)
+    // These cases read stored values back; masking is the default and has its own tests.
+    process.env.HIDE_SECRET_CONFIG = 'false'
   })
 
   afterEach(() => {
     sinon.restore()
+    if (hideSecretConfig === undefined) delete process.env.HIDE_SECRET_CONFIG
+    else process.env.HIDE_SECRET_CONFIG = hideSecretConfig
   })
 
   // -----------------------------------------------------------------------
@@ -732,7 +744,7 @@ describe('ConfigurationManager Controller', () => {
   describe('setPlatformSettings', () => {
     it('should save platform settings successfully', async () => {
       const kvs = createMockKeyValueStore()
-      const handler = setPlatformSettings(kvs)
+      const handler = inRequestOrg(setPlatformSettings(kvs, testControlPlane()))
       const req = createMockRequest({
         body: { fileUploadMaxSizeBytes: 10485760, featureFlags: { ENABLE_BETA_CONNECTORS: true } },
       })
@@ -741,16 +753,91 @@ describe('ConfigurationManager Controller', () => {
 
       await handler(req, res, next)
 
-      expect(kvs.set.calledOnce).to.be.true
+      // UX2: a compare-and-set against what was read (nothing stored yet), never a blind set.
+      expect(kvs.compareAndSet.calledOnce).to.be.true
+      expect(kvs.compareAndSet.firstCall.args[1]).to.equal(null)
+      expect(kvs.set.called).to.be.false
       expect(res.status.calledWith(200)).to.be.true
       expect(res.json.firstCall.args[0].message).to.equal('Platform settings saved')
     })
 
+    it('keeps stored harness rollout settings the Labs page does not send', async () => {
+      mockEncService.decrypt.returns(
+        JSON.stringify({ agentHarness: { modelFamilies: ['anthropic'] } }),
+      )
+      const kvs = createMockKeyValueStore({ get: sinon.stub().resolves('encrypted:data') })
+      const handler = inRequestOrg(setPlatformSettings(kvs, testControlPlane()))
+      const req = createMockRequest({
+        body: { fileUploadMaxSizeBytes: 10485760, featureFlags: { ENABLE_BETA_CONNECTORS: true } },
+      })
+
+      await handler(req, createMockResponse(), createMockNext())
+
+      const saved = JSON.parse(mockEncService.encrypt.firstCall.args[0])
+      expect(saved.agentHarness).to.deep.equal({ modelFamilies: ['anthropic'] })
+      expect(saved.featureFlags).to.deep.equal({ ENABLE_BETA_CONNECTORS: true })
+    })
+
+    it('replaces harness rollout settings when the request sends them', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = inRequestOrg(setPlatformSettings(kvs, testControlPlane()))
+      const req = createMockRequest({
+        body: {
+          fileUploadMaxSizeBytes: 10485760,
+          featureFlags: {},
+          agentHarness: { modelFamilies: null },
+        },
+      })
+
+      await handler(req, createMockResponse(), createMockNext())
+
+      const saved = JSON.parse(mockEncService.encrypt.firstCall.args[0])
+      expect(saved.agentHarness).to.deep.equal({ modelFamilies: null })
+    })
+
+    // R50-OFF (ADR-OPS-06): a harness Labs setting cannot be saved while the harness is switched off.
+    for (const [label, body] of [
+      ['a harness Labs flag', { featureFlags: { enable_agent_harness: true } }],
+      ['scheduled runs', { featureFlags: { ENABLE_SCHEDULED_RUNS: true } }],
+      ['knowledge publications', { featureFlags: { ENABLE_KNOWLEDGE_PUBLICATIONS: false } }],
+      ['the harness rollout settings', { featureFlags: {}, agentHarness: { modelFamilies: null } }],
+    ] as const) {
+      it(`refuses ${label} with a plain message while the harness is switched off`, async () => {
+        const kvs = createMockKeyValueStore()
+        const handler = inRequestOrg(setPlatformSettings(kvs, testControlPlane(), HARNESS_OFF))
+        const next = createMockNext()
+
+        await handler(createMockRequest({ body }), createMockResponse(), next)
+
+        const error = next.firstCall.args[0]
+        expect(error.statusCode).to.equal(400)
+        expect(error.message).to.equal(AGENT_HARNESS_OFF_MESSAGE)
+        expect(mockEncService.encrypt.called).to.equal(false)
+      })
+    }
+
+    it('saves the other flags as before while the harness is switched off', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = inRequestOrg(setPlatformSettings(kvs, testControlPlane(), HARNESS_OFF))
+      const next = createMockNext()
+
+      await handler(
+        createMockRequest({ body: { featureFlags: { ENABLE_PROJECTS: true } } }),
+        createMockResponse(),
+        next,
+      )
+
+      expect(next.called).to.equal(false)
+      expect(JSON.parse(mockEncService.encrypt.firstCall.args[0]).featureFlags).to.deep.equal({
+        ENABLE_PROJECTS: true,
+      })
+    })
+
     it('should call next on error', async () => {
       const kvs = createMockKeyValueStore({
-        set: sinon.stub().rejects(new Error('store failed')),
+        compareAndSet: sinon.stub().rejects(new Error('store failed')),
       })
-      const handler = setPlatformSettings(kvs)
+      const handler = inRequestOrg(setPlatformSettings(kvs, testControlPlane()))
       const req = createMockRequest({ body: { fileUploadMaxSizeBytes: 100, featureFlags: {} } })
       const res = createMockResponse()
       const next = createMockNext()
@@ -780,6 +867,203 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(200)).to.be.true
       expect(res.json.firstCall.args[0]).to.have.property('flags')
+      const harness = res.json.firstCall.args[0].flags.find((f: any) => f.key === 'ENABLE_AGENT_HARNESS')
+      // BETA (2026-11-20): off by default; an admin turns it on in Labs.
+      expect(harness).to.include({ label: 'Agent harness', defaultEnabled: false })
+      // CTL-5: no Labs toggle can silently override "Agent harness".
+      expect(res.json.firstCall.args[0].flags.map((f: any) => f.key)).to.not.include('AGENT_HARNESS_KILL_SWITCH')
+    })
+
+    it('lists no harness flag while the harness is switched off (R50-OFF, ADR-OPS-06)', async () => {
+      const res = createMockResponse()
+
+      await getAvailablePlatformFeatureFlags(HARNESS_OFF)(createMockRequest(), res, createMockNext())
+
+      const keys = res.json.firstCall.args[0].flags.map((f: any) => f.key)
+      expect(keys).to.include('ENABLE_MCP')
+      for (const key of ['ENABLE_AGENT_HARNESS', 'ENABLE_SCHEDULED_RUNS', 'ENABLE_KNOWLEDGE_PUBLICATIONS']) {
+        expect(keys).to.not.include(key)
+      }
+    })
+
+    it('marks each harness flag for the Labs Beta badge, and every one defaults off (BETA)', async () => {
+      const res = createMockResponse()
+
+      // Unset: the server setting's default (on since 2026-11-20) lists them.
+      await getAvailablePlatformFeatureFlags({})(createMockRequest(), res, createMockNext())
+
+      const flags: any[] = res.json.firstCall.args[0].flags
+      const harness = flags.filter((f) => f.requiresAgentHarness === true)
+      expect(harness.map((f) => f.key)).to.have.members([...AGENT_HARNESS_LABS_FLAGS])
+      for (const flag of harness) {
+        expect(flag.defaultEnabled, flag.key).to.equal(false)
+      }
+      expect(flags.find((f) => f.key === 'ENABLE_MCP')).to.not.have.property('requiresAgentHarness')
+    })
+
+    it('reports the agent harness through the rollout policy for the caller org', async () => {
+      const decision = {
+        useHarness: false,
+        harnessMajor: 1,
+        reason: 'kill_switch',
+        resumeInFlightRuns: true,
+      }
+      const rollout = {
+        decide: sinon.stub(),
+        decideForOrg: sinon.stub().resolves(decision),
+      }
+      const stored = `encrypted:${JSON.stringify({
+        featureFlags: { ENABLE_AGENT_HARNESS: true },
+      })}`
+      const handler = getEffectivePlatformFeatureFlags(
+        createMockKeyValueStore({ get: sinon.stub().resolves(stored) }),
+        rollout as never,
+      )
+      const res = createMockResponse()
+
+      await handler(createMockRequest(), res, createMockNext())
+
+      expect(rollout.decideForOrg.calledOnceWithExactly('org-1')).to.equal(true)
+      const body = res.json.firstCall.args[0]
+      expect(body.featureFlags.ENABLE_AGENT_HARNESS).to.equal(false)
+      expect(body.agentHarness).to.deep.equal(decision)
+    })
+
+    // The org's harness on (ADR-OPS-08): each harness surface below is reported only for such an org.
+    const ORG_ON = { useHarness: true, harnessMajor: 2, reason: 'enabled', harnessOn: true, resumeInFlightRuns: true }
+    const ORG_OFF = { useHarness: false, harnessMajor: 2, reason: 'org_disabled', harnessOn: false, resumeInFlightRuns: false }
+
+    // H3 BE-4: HARNESS_RECONCILE, a deployment flag, for the unknown-effects entry.
+    for (const [value, expected] of [['true', true], ['0', false], [undefined, false]] as const) {
+      it(`reports harnessReconcile=${String(expected)} for HARNESS_RECONCILE=${String(value)}`, async () => {
+        const rollout = { decide: sinon.stub(), decideForOrg: sinon.stub().resolves(ORG_ON) }
+        const handler = getEffectivePlatformFeatureFlags(
+          createMockKeyValueStore(),
+          rollout as never,
+          { HARNESS_RECONCILE: value, AGENT_HARNESS_WORKER_ENABLED: 'true' },
+        )
+        const res = createMockResponse()
+
+        await handler(createMockRequest(), res, createMockNext())
+
+        expect(res.json.firstCall.args[0].harnessReconcile).to.equal(expected)
+      })
+    }
+
+    // UX3 SE-4: personal AI accounts are offered only while a worker runs engine runs.
+    for (const [label, probe, expected] of [
+      ['an engine worker was seen', async () => true, true],
+      ['none was', async () => false, false],
+      ['the probe failed', async () => { throw new Error('mongo down') }, false],
+    ] as const) {
+      it(`reports engineRuns=${String(expected)} when ${label}`, async () => {
+        const rollout = { decide: sinon.stub(), decideForOrg: sinon.stub().resolves(ORG_ON) }
+        const handler = getEffectivePlatformFeatureFlags(
+          createMockKeyValueStore(),
+          rollout as never,
+          { AGENT_HARNESS_WORKER_ENABLED: 'true' },
+          probe,
+        )
+        const res = createMockResponse()
+
+        await handler(createMockRequest(), res, createMockNext())
+
+        expect(res.json.firstCall.args[0].engineRuns).to.equal(expected)
+      })
+    }
+
+    // PR1-DK-1: "Continue privately" (SS3) is offered exactly when the fork route can serve it.
+    const readyEnv = {
+      REPLICA_SET_AVAILABLE: 'true',
+      AGENT_HARNESS_RELAY_ENABLED: 'true',
+      AGENT_HARNESS_WORKER_ENABLED: 'true',
+    }
+    for (const [label, env, expected] of [
+      ['with every flag at its default', {}, false],
+      ['without the worker', { ...readyEnv, AGENT_HARNESS_WORKER_ENABLED: 'false' }, false],
+      ['with the durable infrastructure ready', readyEnv, true],
+    ] as const) {
+      it(`reports continuePrivately=${String(expected)} ${label}`, async () => {
+        const rollout = { decide: sinon.stub(), decideForOrg: sinon.stub().resolves(ORG_ON) }
+        const handler = getEffectivePlatformFeatureFlags(
+          createMockKeyValueStore(),
+          rollout as never,
+          env,
+        )
+        const res = createMockResponse()
+
+        await handler(createMockRequest(), res, createMockNext())
+
+        expect(res.json.firstCall.args[0].continuePrivately).to.equal(expected)
+      })
+    }
+
+    // ADR-OPS-08: with the switch on and the org's Labs off, every harness surface reads as with the switch off; only
+    // the rollout decision stays, for the admin notice that links to Labs.
+    it('with the switch on and the org\'s Labs off answers every harness surface as the switch off does', async () => {
+      const rollout = { decide: sinon.stub(), decideForOrg: sinon.stub().resolves(ORG_OFF) }
+      const env = { ...readyEnv, HARNESS_RECONCILE: 'true' }
+      const handler = getEffectivePlatformFeatureFlags(createMockKeyValueStore(), rollout as never, env, async () => true)
+      const offHandler = getEffectivePlatformFeatureFlags(
+        createMockKeyValueStore(),
+        rollout as never,
+        { ...env, AGENT_HARNESS_WORKER_ENABLED: 'false' },
+        async () => true,
+      )
+      const res = createMockResponse()
+      const offRes = createMockResponse()
+
+      await handler(createMockRequest(), res, createMockNext())
+      await offHandler(createMockRequest(), offRes, createMockNext())
+
+      const body = res.json.firstCall.args[0]
+      const off = offRes.json.firstCall.args[0]
+      for (const key of ['harnessReconcile', 'continuePrivately', 'engineRuns'] as const) {
+        expect(body[key], key).to.equal(off[key])
+        expect(body[key], key).to.equal(false)
+      }
+      expect(body.featureFlags.ENABLE_AGENT_HARNESS).to.equal(false)
+      expect(body.agentHarness).to.deep.equal(ORG_OFF)
+    })
+
+    // R50-OFF (ADR-OPS-06): with the harness switched off the browser is told nothing of it.
+    it('with the harness switched off (the opt-out) answers no harness flag, rollout or surface', async () => {
+      const decideForOrg = sinon.stub().resolves({ useHarness: true, reason: 'enabled', resumeInFlightRuns: true })
+      const handler = getEffectivePlatformFeatureFlags(
+        createMockKeyValueStore(),
+        { decide: sinon.stub(), decideForOrg } as never,
+        { ...HARNESS_OFF, REPLICA_SET_AVAILABLE: 'true', HARNESS_RECONCILE: 'true' },
+        async () => true,
+      )
+      const res = createMockResponse()
+
+      await handler(createMockRequest(), res, createMockNext())
+
+      const body = res.json.firstCall.args[0]
+      expect(body.agentHarness).to.equal(null)
+      expect(body.harnessReconcile).to.equal(false)
+      expect(body.continuePrivately).to.equal(false)
+      expect(body.engineRuns).to.equal(false)
+      for (const key of ['ENABLE_AGENT_HARNESS', 'ENABLE_SCHEDULED_RUNS', 'ENABLE_KNOWLEDGE_PUBLICATIONS']) {
+        expect(body.featureFlags).to.not.have.property(key)
+      }
+      expect(body.featureFlags).to.have.property('ENABLE_MCP')
+      expect(decideForOrg.called).to.equal(false)
+    })
+
+    it('does not advertise the harness without an org identity', async () => {
+      const rollout = { decide: sinon.stub(), decideForOrg: sinon.stub() }
+      const handler = getEffectivePlatformFeatureFlags(
+        createMockKeyValueStore(),
+        rollout as never,
+      )
+      const res = createMockResponse()
+
+      await handler(createMockRequest({ user: undefined }), res, createMockNext())
+
+      expect(rollout.decideForOrg.called).to.equal(false)
+      expect(res.json.firstCall.args[0].featureFlags.ENABLE_AGENT_HARNESS).to.equal(false)
+      expect(res.json.firstCall.args[0].agentHarness).to.equal(null)
     })
 
     it('should include ENABLE_MCP, defaulting to enabled', async () => {
@@ -3423,6 +3707,35 @@ describe('ConfigurationManager Controller', () => {
       expect(response.models[0]).to.have.property('modelFriendlyName', 'GPT-4')
     })
 
+    it('P2.2 DN-3: names each model of a stored multi-model entry by its display name, never a deployment or key', async () => {
+      const aiModels = {
+        llm: [{
+          provider: 'azureOpenAI',
+          modelKey: 'k2',
+          modelFriendlyName: 'Team GPT',
+          configuration: { model: 'gpt-4o, gpt-4o-mini', deploymentName: 'prod-eastus-7', apiKey: 'secret' },
+        }, {
+          provider: 'openai',
+          modelKey: 'k3',
+          configuration: { model: 'gpt-4.1' },
+        }],
+      }
+      mockEncService.decrypt.returns(JSON.stringify(aiModels))
+      const kvs = createMockKeyValueStore({ get: sinon.stub().resolves('encrypted:data') })
+      const res = createMockResponse()
+      await getAvailableModelsByType(kvs)(createMockRequest({ params: { modelType: 'llm' } }), res, createMockNext())
+
+      const models = res.json.firstCall.args[0].models
+      expect(models.map((m: any) => m.modelFriendlyName)).to.deep.equal([
+        'Team GPT (gpt-4o)',
+        'Team GPT (gpt-4o-mini)',
+        undefined,
+      ])
+      const body = JSON.stringify(models)
+      expect(body).to.not.include('prod-eastus-7')
+      expect(body).to.not.include('secret')
+    })
+
     describe('defaultReasoningEffort', () => {
       async function availableLlms(entries: Record<string, unknown>[]): Promise<any[]> {
         mockEncService.decrypt.returns(JSON.stringify({ llm: entries }))
@@ -4149,7 +4462,7 @@ describe('ConfigurationManager Controller', () => {
       expect(err.message).to.include('and 2 more')
     })
 
-    it('should throw InternalServerError (fail-closed) when usage check throws', async () => {
+    it('refuses with 503 (fail-closed) when usage check throws', async () => {
       const aiModels = {
         llm: [
           { modelKey: 'k1', isDefault: false, provider: 'openai', configuration: { model: 'gpt-4' } },
@@ -4169,12 +4482,12 @@ describe('ConfigurationManager Controller', () => {
 
       expect(next.calledOnce).to.be.true
       const err = next.firstCall.args[0]
-      expect(err.statusCode).to.equal(500)
-      expect(err.code).to.equal('HTTP_INTERNAL_SERVER_ERROR')
+      expect(err.statusCode).to.equal(503)
+      expect(err.code).to.equal('HTTP_SERVICE_UNAVAILABLE')
       expect(kvs.set.called).to.be.false
     })
 
-    it('should throw InternalServerError (fail-closed) when usage check returns non-200', async () => {
+    it('refuses with 503 (fail-closed) when usage check returns non-200', async () => {
       const aiModels = {
         llm: [
           { modelKey: 'k1', isDefault: false, provider: 'openai', configuration: { model: 'gpt-4' } },
@@ -4197,8 +4510,8 @@ describe('ConfigurationManager Controller', () => {
 
       expect(next.calledOnce).to.be.true
       const err = next.firstCall.args[0]
-      expect(err.statusCode).to.equal(500)
-      expect(err.code).to.equal('HTTP_INTERNAL_SERVER_ERROR')
+      expect(err.statusCode).to.equal(503)
+      expect(err.code).to.equal('HTTP_SERVICE_UNAVAILABLE')
       expect(kvs.set.called).to.be.false
     })
   })
@@ -4445,6 +4758,24 @@ describe('ConfigurationManager Controller', () => {
       expect(parsed.authority).to.include('ms-tid')
     })
 
+    it('restores the placeholders a read served from the Azure AD settings from those settings', async () => {
+      const azureAd = `encrypted:${JSON.stringify({ clientId: 'az-cid', tenantId: 'az-tid' })}`
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().callsFake(async (path: string) => (path === '/services/auth/azureAd' ? azureAd : null)),
+      })
+      const next = createMockNext()
+
+      await setMicrosoftAuthConfig(kvs)(
+        createMockRequest({ body: { clientId: CONFIG_SECRET_PLACEHOLDER, tenantId: CONFIG_SECRET_PLACEHOLDER } }),
+        createMockResponse(),
+        next,
+      )
+
+      expect(next.called).to.be.false
+      const saved = JSON.parse(mockEncService.encrypt.lastCall.args[0])
+      expect(saved).to.include({ clientId: 'az-cid', tenantId: 'az-tid' })
+    })
+
     it('should call next on error', async () => {
       const kvs = createMockKeyValueStore({
         set: sinon.stub().rejects(new Error('store failed')),
@@ -4590,10 +4921,10 @@ describe('ConfigurationManager Controller', () => {
   // -----------------------------------------------------------------------
   // setPlatformSettings - additional tests
   // -----------------------------------------------------------------------
-  describe('setPlatformSettings (additional)', () => {
+  describe('inRequestOrg(setPlatformSettings (additional))', () => {
     it('should include updatedAt in the encrypted payload', async () => {
       const kvs = createMockKeyValueStore()
-      const handler = setPlatformSettings(kvs)
+      const handler = inRequestOrg(setPlatformSettings(kvs, testControlPlane()))
       const req = createMockRequest({
         body: { fileUploadMaxSizeBytes: 100, featureFlags: {} },
       })
@@ -6028,6 +6359,351 @@ describe('ConfigurationManager Controller', () => {
   // -----------------------------------------------------------------------
   // DB Config tests - happy paths
   // -----------------------------------------------------------------------
+  describe('updateAIModelProvider credential binding', () => {
+    const savedLlm = {
+      provider: 'openai',
+      configuration: { model: 'gpt-4', apiKey: 'saved-key', endpoint: 'https://a.test/v1', region: 'us-east-1' },
+      modelKey: 'key-1',
+      isDefault: true,
+    }
+    const saved = {
+      llm: [savedLlm],
+      embedding: [],
+    }
+    const withForwarding = {
+      ...saved,
+      llm: [{ ...savedLlm, configuration: { ...savedLlm.configuration, identityForwardingServiceApiKey: 'svc-saved' } }],
+    }
+    async function update(body: Record<string, unknown>, stored: unknown = saved) {
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(mockEncService.encrypt(JSON.stringify(stored))),
+      })
+      const check = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { status: 'healthy' },
+      } as any)
+      const res = createMockResponse()
+      await updateAIModelProvider(kvs, createMockEventService(), { aiBackend: 'http://ai', cmBackend: 'http://cm' } as any)(
+        createMockRequest({ params: { modelType: 'llm', modelKey: 'key-1' }, body: { provider: 'openai', isDefault: true, ...body } }),
+        res,
+        createMockNext(),
+      )
+      const checked = check.called
+        ? JSON.parse((check.firstCall.thisValue as { body: string }).body).configuration
+        : undefined
+      return { res, kvs, checked }
+    }
+
+    it('writes nothing when another save moved the model during the health check', async () => {
+      const moved = {
+        ...saved,
+        llm: [{
+          ...savedLlm,
+          configuration: {
+            ...savedLlm.configuration,
+            apiKey: 'moved-key',
+            endpoint: 'https://b.test/v1',
+            identityForwardingServiceApiKey: 'svc-moved',
+          },
+        }],
+      }
+      const get = sinon.stub()
+      get.onFirstCall().resolves(mockEncService.encrypt(JSON.stringify(saved)))
+      get.resolves(mockEncService.encrypt(JSON.stringify(moved)))
+      const kvs = createMockKeyValueStore({ get })
+      const check = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { status: 'healthy' },
+      } as any)
+      const res = createMockResponse()
+      await updateAIModelProvider(kvs, createMockEventService(), { aiBackend: 'http://ai', cmBackend: 'http://cm' } as any)(
+        createMockRequest({
+          params: { modelType: 'llm', modelKey: 'key-1' },
+          body: { provider: 'openai', isDefault: true, configuration: { model: 'gpt-4', endpoint: 'https://a.test/v1' } },
+        }),
+        res,
+        createMockNext(),
+      )
+      expect(res.status.calledWith(409)).to.be.true
+      expect(kvs.compareAndSet.called).to.be.false
+      expect(get.callCount).to.be.greaterThan(1)
+      for (const call of check.getCalls()) {
+        const sent = (call.thisValue as { body: string }).body
+        expect(sent).to.not.include('moved-key')
+        expect(sent).to.not.include('svc-moved')
+      }
+    })
+
+    it('writes nothing when the model moved during the health check and the request omits the endpoint', async () => {
+      const moved = {
+        ...saved,
+        llm: [{ ...savedLlm, configuration: { ...savedLlm.configuration, endpoint: 'https://b.test/v1' } }],
+      }
+      const get = sinon.stub()
+      get.onFirstCall().resolves(mockEncService.encrypt(JSON.stringify(saved)))
+      get.resolves(mockEncService.encrypt(JSON.stringify(moved)))
+      const kvs = createMockKeyValueStore({ get })
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { status: 'healthy' },
+      } as any)
+      const res = createMockResponse()
+      await updateAIModelProvider(kvs, createMockEventService(), { aiBackend: 'http://ai', cmBackend: 'http://cm' } as any)(
+        createMockRequest({
+          params: { modelType: 'llm', modelKey: 'key-1' },
+          body: { provider: 'openai', isDefault: true, configuration: { model: 'gpt-4', apiKey: 'retyped-key' } },
+        }),
+        res,
+        createMockNext(),
+      )
+      expect(res.status.calledWith(409)).to.be.true
+      expect(kvs.compareAndSet.called).to.be.false
+    })
+
+    it('keeps a key rotated during the health check when the endpoint did not move', async () => {
+      const rotated = {
+        ...saved,
+        llm: [{ ...savedLlm, configuration: { ...savedLlm.configuration, apiKey: 'rotated-key' } }],
+      }
+      const get = sinon.stub()
+      get.onFirstCall().resolves(mockEncService.encrypt(JSON.stringify(saved)))
+      get.resolves(mockEncService.encrypt(JSON.stringify(rotated)))
+      const kvs = createMockKeyValueStore({ get })
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { status: 'healthy' },
+      } as any)
+      const res = createMockResponse()
+      await updateAIModelProvider(kvs, createMockEventService(), { aiBackend: 'http://ai', cmBackend: 'http://cm' } as any)(
+        createMockRequest({
+          params: { modelType: 'llm', modelKey: 'key-1' },
+          body: { provider: 'openai', isDefault: true, configuration: { model: 'gpt-4', endpoint: 'https://a.test/v1' } },
+        }),
+        res,
+        createMockNext(),
+      )
+      expect(res.status.calledWith(200)).to.be.true
+      const written = JSON.parse(mockEncService.decrypt(kvs.compareAndSet.firstCall.args[2]))
+      expect(written.llm[0].configuration.apiKey).to.equal('rotated-key')
+    })
+
+    it('refuses a new endpoint without retyped credentials', async () => {
+      const { res, kvs, checked } = await update({ configuration: { model: 'gpt-4', endpoint: 'https://evil.test/v1' } })
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].error_code).to.equal('credential_reentry_required')
+      expect(checked).to.equal(undefined)
+      expect(kvs.compareAndSet.called).to.be.false
+    })
+
+    it('refuses the provider default over a blank saved endpoint without the key', async () => {
+      const blank = {
+        llm: [{ provider: 'ollama', configuration: { model: 'llama3', apiKey: 'saved-key' }, modelKey: 'key-1', isDefault: true }],
+        embedding: [],
+      }
+      const { res, checked, kvs } = await update(
+        { provider: 'ollama', configuration: { model: 'llama3', endpoint: 'http://host.docker.internal:11434' } },
+        blank,
+      )
+      expect(res.json.firstCall.args[0].error_code).to.equal('credential_reentry_required')
+      expect(checked).to.equal(undefined)
+      expect(kvs.compareAndSet.called).to.be.false
+    })
+
+    for (const provider of ['ollama', 'litellmProxy']) {
+      it(`refuses clearing a saved ${provider} endpoint without the key`, async () => {
+        const saved = {
+          llm: [{
+            provider,
+            configuration: { model: 'm', endpoint: 'http://host.docker.internal:11434', apiKey: 'saved-key' },
+            modelKey: 'key-1',
+            isDefault: true,
+          }],
+          embedding: [],
+        }
+        const { res, checked, kvs } = await update({ provider, configuration: { model: 'm', endpoint: '' } }, saved)
+        expect(res.json.firstCall.args[0].error_code).to.equal('credential_reentry_required')
+        expect(checked).to.equal(undefined)
+        expect(kvs.compareAndSet.called).to.be.false
+      })
+    }
+
+    it('still refuses another endpoint over a blank saved endpoint', async () => {
+      const blank = {
+        llm: [{ provider: 'ollama', configuration: { model: 'llama3', apiKey: 'saved-key' }, modelKey: 'key-1', isDefault: true }],
+        embedding: [],
+      }
+      const { res } = await update(
+        { provider: 'ollama', configuration: { model: 'llama3', endpoint: 'https://evil.test' } },
+        blank,
+      )
+      expect(res.json.firstCall.args[0].error_code).to.equal('credential_reentry_required')
+    })
+
+    it('refuses a different provider when saved credentials would be reused', async () => {
+      const { res, kvs, checked } = await update({ provider: 'anthropic', configuration: { model: 'gpt-4' } })
+      expect(res.status.calledWith(400)).to.be.true
+      expect(checked).to.equal(undefined)
+      expect(kvs.compareAndSet.called).to.be.false
+    })
+
+    it('refuses a different provider even when the saved key is typed again', async () => {
+      const { res, kvs, checked } = await update({ provider: 'anthropic', configuration: { model: 'gpt-4', apiKey: 'x' } })
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].message).to.equal('Provider does not match saved model')
+      expect(checked).to.equal(undefined)
+      expect(kvs.compareAndSet.called).to.be.false
+    })
+
+    it('accepts a provider that differs only by case and keeps the saved key', async () => {
+      const { res, checked } = await update({ provider: 'OpenAI', configuration: { model: 'gpt-4' } })
+      expect(res.status.calledWith(200)).to.be.true
+      expect(checked.apiKey).to.equal('saved-key')
+    })
+
+    it('refuses a different provider when the saved key is explicitly cleared', async () => {
+      const { res, checked } = await update({ provider: 'anthropic', configuration: { model: 'gpt-4', apiKey: '' } })
+      expect(res.status.calledWith(400)).to.be.true
+      expect(checked).to.equal(undefined)
+    })
+
+    it('accepts a new endpoint when the saved key is explicitly cleared', async () => {
+      const { res, checked } = await update({ configuration: { model: 'gpt-4', endpoint: 'https://b.test/v1', apiKey: '' } })
+      expect(res.status.calledWith(200)).to.be.true
+      expect(checked.apiKey).to.equal('')
+    })
+
+    it('refuses a different provider when a saved forwarding key would be reused', async () => {
+      const { res, checked } = await update({ provider: 'anthropic', configuration: { model: 'gpt-4', apiKey: 'x' } }, withForwarding)
+      expect(res.status.calledWith(400)).to.be.true
+      expect(checked).to.equal(undefined)
+    })
+
+    it('refuses a different provider on a new endpoint', async () => {
+      const { res, checked } = await update({ provider: 'anthropic', configuration: { model: 'gpt-4', endpoint: 'https://b.test/v1', apiKey: 'x' } }, withForwarding)
+      expect(res.status.calledWith(400)).to.be.true
+      expect(checked).to.equal(undefined)
+    })
+
+    it('says so when a new endpoint clears saved forwarding credentials', async () => {
+      const { res } = await update({ configuration: { model: 'gpt-4', endpoint: 'https://b.test/v1', apiKey: 'new' } }, withForwarding)
+      expect(res.json.firstCall.args[0].details.forwardingCredentialsCleared).to.equal(true)
+    })
+
+    it('leaves the field out when the moved model had no forwarding credential', async () => {
+      const { res } = await update({ configuration: { model: 'gpt-4', endpoint: 'https://b.test/v1', apiKey: 'new' } })
+      expect(res.json.firstCall.args[0].details).to.not.have.property('forwardingCredentialsCleared')
+    })
+
+    it('leaves the field out when the endpoint is unchanged', async () => {
+      const { res } = await update({ configuration: { model: 'gpt-4', region: 'eu-west-1' } }, withForwarding)
+      expect(res.json.firstCall.args[0].details).to.not.have.property('forwardingCredentialsCleared')
+    })
+
+    const forwarding = {
+      ...saved,
+      llm: [{
+        ...savedLlm,
+        configuration: {
+          ...savedLlm.configuration,
+          identityForwardingServiceApiKey: 'svc-saved',
+          identityForwardingHeaderTemplates: { 'x-api-key': 'hdr-saved', 'x-user': '{{email}}' },
+        },
+      }],
+    }
+
+    it('does not send the saved forwarding credentials to a new endpoint', async () => {
+      const { res, checked } = await update({ configuration: { model: 'gpt-4', endpoint: 'https://b.test/v1', apiKey: 'new' } }, forwarding)
+      expect(res.status.calledWith(200)).to.be.true
+      expect(checked.identityForwardingServiceApiKey).to.equal(undefined)
+      expect(checked.identityForwardingHeaderTemplates).to.deep.equal({ 'x-user': '{{email}}' })
+    })
+
+    it('keeps nested forwarding credentials out of the health check and the saved config for a new endpoint', async () => {
+      const nestedSaved = {
+        ...saved,
+        llm: [{
+          ...savedLlm,
+          configuration: {
+            ...savedLlm.configuration,
+            identityForwarding: {
+              enabled: true,
+              serviceApiKey: 'svc-nested',
+              headerTemplates: { 'x-api-key': 'hdr-nested', 'x-user': '{{EMAIL}}' },
+            },
+          },
+        }],
+      }
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(mockEncService.encrypt(JSON.stringify(nestedSaved))),
+      })
+      const check = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { status: 'healthy' } } as any)
+      const res = createMockResponse()
+      await updateAIModelProvider(kvs, createMockEventService(), { aiBackend: 'http://ai', cmBackend: 'http://cm' } as any)(
+        createMockRequest({
+          params: { modelType: 'llm', modelKey: 'key-1' },
+          body: { provider: 'openai', isDefault: true, configuration: { model: 'gpt-4', endpoint: 'https://b.test/v1', apiKey: 'new' } },
+        }),
+        res,
+        createMockNext(),
+      )
+      expect(res.status.calledWith(200)).to.be.true
+      const expected = { enabled: true, headerTemplates: { 'x-user': '{{EMAIL}}' } }
+      const checked = JSON.parse((check.firstCall.thisValue as { body: string }).body).configuration
+      expect(checked.identityForwarding).to.deep.equal(expected)
+      const written = kvs.compareAndSet.firstCall.args[2] as string
+      const savedConfig = JSON.parse(mockEncService.decrypt(written)).llm[0].configuration
+      expect(savedConfig.identityForwarding).to.deep.equal(expected)
+    })
+
+    it('keeps the saved forwarding credentials when the endpoint is unchanged', async () => {
+      const { res, checked } = await update({ configuration: { model: 'gpt-4', region: 'eu-west-1' } }, forwarding)
+      expect(res.status.calledWith(200)).to.be.true
+      expect(checked.identityForwardingServiceApiKey).to.equal('svc-saved')
+      expect(checked.identityForwardingHeaderTemplates).to.deep.equal({ 'x-api-key': 'hdr-saved', 'x-user': '{{email}}' })
+    })
+
+    it('still refuses a new endpoint when the api key is not retyped and a forwarding key is saved', async () => {
+      const refused = await update({ configuration: { model: 'gpt-4', endpoint: 'https://evil.test/v1' } }, withForwarding)
+      expect(refused.res.status.calledWith(400)).to.be.true
+      expect(refused.res.json.firstCall.args[0].error_code).to.equal('credential_reentry_required')
+    })
+
+    it('logs only the host of the changed endpoint when it refuses', async () => {
+      const warn = sinon.stub(Logger.prototype, 'warn')
+      await update({ configuration: { model: 'gpt-4', endpoint: 'https://evil.test:8443/v1?token=abc' } })
+      const entry = warn.getCalls().map((c) => c.args[1] as Record<string, unknown>).find((m) => m?.securityEvent === 'model_destination_change_refused')
+      expect(entry?.host).to.equal('evil.test:8443')
+      const text = JSON.stringify(entry)
+      expect(text).to.not.include('token=abc')
+      expect(text).to.not.include('saved-key')
+    })
+
+    it('logs the host of a changed baseUrl when the request leaves the endpoint out', async () => {
+      const warn = sinon.stub(Logger.prototype, 'warn')
+      await update({ configuration: { model: 'gpt-4', baseUrl: 'https://c.test/v1' } })
+      const entry = warn.getCalls().map((c) => c.args[1] as Record<string, unknown>).find((m) => m?.securityEvent === 'model_destination_change_refused')
+      expect(entry?.host).to.equal('c.test')
+    })
+
+    it('accepts a new endpoint with a retyped key', async () => {
+      const { res, checked } = await update({ configuration: { model: 'gpt-4', endpoint: 'https://b.test/v1', apiKey: 'new-key' } })
+      expect(res.status.calledWith(200)).to.be.true
+      expect(checked.apiKey).to.equal('new-key')
+    })
+
+    it('accepts a region change without a retyped key', async () => {
+      const { res, checked } = await update({ configuration: { model: 'gpt-4', region: 'eu-west-1' } })
+      expect(res.status.calledWith(200)).to.be.true
+      expect(checked.apiKey).to.equal('saved-key')
+    })
+
+    it('accepts an edit that omits the endpoint', async () => {
+      const { res, checked } = await update({ configuration: { model: 'gpt-4-turbo' } })
+      expect(res.status.calledWith(200)).to.be.true
+      expect(checked.endpoint).to.equal('https://a.test/v1')
+    })
+  })
+
   describe('createArangoDbConfig (happy path)', () => {
     it('should create ArangoDB config successfully', async () => {
       const kvs = createMockKeyValueStore()
@@ -6380,6 +7056,34 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
+      orgStub.restore()
+    })
+
+    it('keeps the stored tokens when the client sends back the placeholders it read', async () => {
+      const orgStub = sinon.stub(Org, 'findOne').resolves({ accountType: 'individual', _id: 'org-1' } as any)
+      const stored = { access_token: 'at-stored', refresh_token: 'rt-stored', access_token_expiry_time: 1, refresh_token_expiry_time: 1 }
+      const kvs = createMockKeyValueStore({ get: sinon.stub().resolves(`encrypted:${JSON.stringify(stored)}`) })
+      const handler = createGoogleWorkspaceCredentials(kvs, 'user-1', '507f1f77bcf86cd799439011', createMockEventService())
+      const req = createMockRequest({
+        body: {
+          access_token: CONFIG_SECRET_PLACEHOLDER,
+          refresh_token: 'rt-new',
+          // The read merges the OAuth config's client fields in and masks them; this record does not store them.
+          clientId: CONFIG_SECRET_PLACEHOLDER,
+          clientSecret: CONFIG_SECRET_PLACEHOLDER,
+          access_token_expiry_time: 9999,
+          refresh_token_expiry_time: 9999,
+          enableRealTimeUpdates: false,
+        },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      const saved = JSON.parse(String(kvs.set.firstCall.args[1]).replace(/^encrypted:/, ''))
+      expect(saved).to.include({ access_token: 'at-stored', refresh_token: 'rt-new' })
       orgStub.restore()
     })
 

@@ -3,7 +3,7 @@
 import asyncio
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
@@ -407,11 +407,19 @@ class TestLifespan:
             mock_container.retrieval_service = AsyncMock(return_value=mock_retrieval)
             mock_container.config_service.return_value = mock_config_service
 
-            async with lifespan(mock_app):
-                # Inside lifespan — app should have container set
-                assert mock_app.container is mock_container
-                # Chat attachment PDFs parse in killable worker processes.
-                assert parse_pool.parse_pool_workers() > 0
+            with (
+                patch("app.sandbox.artifact_cleanup.start_cleanup_task") as start_cleanup,
+                patch("app.sandbox.artifact_cleanup.stop_cleanup_task") as stop_cleanup,
+            ):
+                async with lifespan(mock_app):
+                    # Inside lifespan — app should have container set
+                    assert mock_app.container is mock_container
+                    # Chat attachment PDFs parse in killable worker processes.
+                    assert parse_pool.parse_pool_workers() > 0
+                    # CLEANUP-2: the sandbox temp-folder sweeper runs while the service does.
+                    start_cleanup.assert_called_once_with()
+                    stop_cleanup.assert_not_called()
+                stop_cleanup.assert_called_once_with()
 
             # After shutdown, config_service.close should be called
             mock_config_service.close.assert_awaited_once()
@@ -482,8 +490,9 @@ class TestLifespan:
             async with lifespan(MagicMock()):
                 assert org_context.peek() is None
 
-        assert len(seen) == 1 and seen[0] is not None
-        assert (seen[0].kind, seen[0].source) == ("system", "system:query_startup")
+        assert all(ctx is not None and ctx.kind == "system" for ctx in seen)
+        # The view sweep lists the orgs too, in the background.
+        assert {"system:query_startup"} <= {ctx.source for ctx in seen} <= {"system:query_startup", "system:orphan_view_sweep"}
 
     async def test_startup_seed_task_starts_with_no_org_context(self) -> None:
         """With orgs present the seeding task is started after the list; it must not inherit the list's cross-org scope."""
@@ -521,6 +530,54 @@ class TestLifespan:
                 await app.state.skills_seed_task
 
         assert seen == [None]
+
+    async def test_sandbox_alert_loop_starts_and_is_cancelled_on_shutdown(self) -> None:
+        from types import SimpleNamespace
+
+        from app.query_main import lifespan
+
+        mock_container = _make_container()
+        mock_container._graph_provider = _make_graph_provider(orgs=[])
+        mock_container.retrieval_service = AsyncMock(return_value=AsyncMock())
+        mock_registry = MagicMock()
+        mock_registry.list_toolsets.return_value = []
+        mock_config_service = MagicMock()
+        mock_config_service.close = AsyncMock()
+        mock_container.config_service.return_value = mock_config_service
+        started = asyncio.Event()
+        cancelled: list[bool] = []
+
+        org_lists: list[list[str]] = []
+
+        async def _loop(config_service: object, _logger: object, *, org_ids: Callable[[], Awaitable[list[str]]]) -> None:
+            assert config_service is mock_config_service
+            org_lists.append(await org_ids())       # the recipients of a signed alert: the graph's orgs
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
+
+        app = MagicMock()
+        app.state = SimpleNamespace()
+        with (
+            patch("app.query_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.query_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
+            patch("app.query_main.stop_kafka_consumers", new_callable=AsyncMock),
+            patch("app.query_main.container", mock_container),
+            patch("app.services.sandbox_alerts.loop.run_sandbox_alert_loop", _loop),
+            # The attribute the lifespan reads, not a module swapped in sys.modules: the lifespan imports modules of its own while
+            # it runs, and replacing sys.modules around that drops them again (the guard fails a test that does).
+            patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=mock_registry),
+        ):
+            async with lifespan(app):
+                await asyncio.wait_for(started.wait(), 5)
+                task = app.state.sandbox_alert_task
+
+        assert task.done()
+        assert cancelled == [True]
+        assert org_lists == [[]]
 
     async def test_startup_graph_provider_fallback(self):
         """When _graph_provider is not set, lifespan falls back to await graph_provider()."""

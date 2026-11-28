@@ -4,6 +4,7 @@ import re
 import uuid
 
 # from datetime import datetime
+from collections.abc import Container
 from datetime import datetime, timezone
 from logging import Logger
 from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple, Union
@@ -138,6 +139,7 @@ _MAX_MEMBERS_TO_ASK = 5
 _MAX_STREAM_CANDIDATES = 25
 # Sync point holding the nested shared folders the last complete run planned.
 _NESTED_FOLDERS_KEY = generate_record_sync_point_key(RecordType.DRIVE.value, "nested_shared_folders", "team")
+_KEPT_RECORDS_PAGE = 1000
 
 # Team-log sharing events after which an item's members are read again.
 SHARING_CHANGE_EVENTS = frozenset({
@@ -389,6 +391,14 @@ class DropboxConnector(BaseConnector):
         self._moved_folders: list[tuple[str, str, str]] = []
         # Shared and team folders with no live record stored: listed from the start, not from a cursor.
         self._fresh_folders: set[str] = set()
+        # Members whose status on the team list is suspended: Dropbox answers nothing as them. Invited members
+        # are not among them; they have joined nothing, so they hold nothing.
+        self._suspended_ids: set[str] = set()
+        self._suspended_emails: set[str] = set()
+        # Stored shared folders left as they are, because a suspended member holds them.
+        self._kept_folders: set[str] = set()
+        # Whether the last team list read was whole; True until one is read, so nothing is held back before it.
+        self._team_list_complete = True
 
     async def init(self) -> bool:
         """Initializes the Dropbox client using credentials from the config service."""
@@ -625,10 +635,12 @@ class DropboxConnector(BaseConnector):
             self._health.skipped("a delete", "could not be written; it is tried again on the next run")
 
     def _note_grant_emails(self, permissions: list[Permission]) -> None:
-        for permission in permissions:
-            email = (permission.email or "").lower()
-            if permission.entity_type == EntityType.USER and email and email not in self._team_emails:
-                self._external_emails.add(email)
+        self._external_emails |= self._external_grant_emails(permissions)
+
+    def _external_grant_emails(self, permissions: list[Permission]) -> set[str]:
+        """Emails of the user grants held by people outside the team."""
+        emails = {(p.email or "").lower() for p in permissions if p.entity_type == EntityType.USER}
+        return {e for e in emails if e and e not in self._team_emails}
 
     def _links(self) -> WebLinks:
         if self._web_links is None or self._web_links.data_source is not self.data_source:
@@ -1117,6 +1129,8 @@ class DropboxConnector(BaseConnector):
 
             self.logger.info(f"Processing {len(users_to_sync)} active users out of {len(users)} total users")
 
+            suspended = [user for user in users if getattr(user, "source_user_id", None) in self._suspended_ids]
+            self._suspended_emails = {user.email.lower() for user in suspended if user.email}
             plan = await self._plan_shared_folders(users_to_sync)
             self._shared_folder_plan = plan
             await self._sync_shared_folder_groups(plan)
@@ -1149,6 +1163,12 @@ class DropboxConnector(BaseConnector):
                 # Small delay between batches to prevent overwhelming the API
                 await asyncio.sleep(1)
 
+            for user in suspended:
+                try:
+                    await self._keep_stored_group(user.source_user_id)
+                except Exception as e:
+                    self.logger.warning(f"Could not keep the stored files of suspended member {user.source_user_id}: {e}")
+                    self._health.skipped(f"stored files of suspended member {user.source_user_id}", e)
             await self._drop_vanished_shared_folders(plan)
             if self._health.complete:
                 await self.dropbox_cursor_sync_point.update_sync_point(
@@ -1161,6 +1181,94 @@ class DropboxConnector(BaseConnector):
             raise
 
 
+
+    async def _keep_stored_group(self, external_group_id: str) -> None:
+        """Note a record group and its stored records as seen by a full sync in progress, so the unlink after it
+        leaves them and their links alone.
+
+        Dropbox refuses every call made as a suspended member, so their home cannot be listed, yet what they
+        shared stays shared (Dropbox Help: "sharing relationships remain intact"). It stays as stored. A read
+        that fails raises.
+        """
+        if self.data_entities_processor.full_sync_running(self.connector_id) is not True:
+            return
+        await self.data_entities_processor.note_kept_record_group(self.connector_id, external_group_id)
+        after_key: str | None = None
+        while True:
+            page = await self.data_entities_processor.get_records_in_record_group(
+                self.connector_id, external_group_id, _KEPT_RECORDS_PAGE, after_key,
+            )
+            self.data_entities_processor.note_kept_records(self.connector_id, [record.id for record in page])
+            if len(page) < _KEPT_RECORDS_PAGE:
+                return
+            after_key = page[-1].id
+
+    async def _held_by_suspended_member(self, external_group_id: str, live: Container[str]) -> bool:
+        """Whether the stored grants of a record group, or of a stored group it inherits from, name a suspended
+        member, directly or as a member of a stored group they are given to.
+
+        A nested folder's stored grants leave out the members it inherits, so the folders above it are read too,
+        up to the first one in ``live`` (this run's plan): an active member lists that one, and would list a
+        child that inherits from it too, so a child missing from every list is gone. A read that fails raises.
+        """
+        if not self._suspended_emails:
+            return False
+        seen: set[str] = set()
+        while external_group_id and external_group_id not in seen:
+            if external_group_id in self._kept_folders:
+                return True
+            seen.add(external_group_id)
+            group = await self.data_entities_processor.get_record_group_by_external_id(
+                self.connector_id, external_group_id
+            )
+            if group is None:
+                return False
+            users = await self.data_entities_processor.get_users_with_permission_to_node(
+                group.id, CollectionNames.RECORD_GROUPS.value, raise_on_error=True,
+            )
+            if any(user.email and user.email.lower() in self._suspended_emails for user in users):
+                return True
+            if await self._granted_to_group_with_suspended_member(group.id):
+                return True
+            parent = group.parent_external_group_id
+            if not parent or parent in live or not await self.data_entities_processor.inheritance_when_unreadable(
+                CollectionNames.RECORD_GROUPS.value, group.id,
+            ):
+                return False
+            external_group_id = parent
+        return False
+
+    async def _granted_to_group_with_suspended_member(self, record_group_id: str) -> bool:
+        """Whether a stored group granted the record group has a suspended member: one who holds the folder
+        through a Dropbox group grant has no grant of their own. A read that fails raises."""
+        for user_group in await self.data_entities_processor.get_groups_with_permission_to_node(
+            record_group_id, CollectionNames.RECORD_GROUPS.value, raise_on_error=True,
+        ):
+            members = await self.data_entities_processor.get_users_with_permission_to_node(
+                user_group.id, CollectionNames.GROUPS.value, raise_on_error=True,
+            )
+            if any(user.email and user.email.lower() in self._suspended_emails for user in members):
+                return True
+        return False
+
+    async def _keep_shared_folder(self, folder_id: str, name: str, live: Container[str]) -> bool:
+        """Whether a stored shared folder the plan would delete stays as stored; if so, it is noted kept.
+
+        A suspended member may be the one who lists or has mounted it, and nothing can be read as them, so a
+        folder they hold cannot be checked. When the grants cannot be read the folder is kept and the run is
+        incomplete.
+        """
+        try:
+            if not await self._held_by_suspended_member(folder_id, live):
+                return False
+            self.logger.info(f"Shared folder '{name}' ({folder_id}) is held by a suspended member; keeping it as stored")
+            self._kept_folders.add(folder_id)
+            await self._keep_stored_group(folder_id)
+        except Exception as e:
+            self.logger.warning(f"Could not check whether a suspended member holds shared folder '{name}' ({folder_id}): {e}")
+            self._health.skipped(f"whether a suspended member holds shared folder {name}", e)
+            self._kept_folders.add(folder_id)
+        return True
 
     async def _relist_parents_of_new_nested_folders(self, plan: dict[str, SharedFolder]) -> set[str]:
         """List from the start the parent of every nested folder no earlier run planned; return the nested ids.
@@ -1186,8 +1294,9 @@ class DropboxConnector(BaseConnector):
             else:
                 self._health.skipped(f"shared folders of {user.email}", "could not be listed")
         plan = plan_shared_folders(listings)
-        # A member whose list could not be read may be the one who has a folder in their Dropbox.
-        self._plan_complete = len(listings) == len(users)
+        # A member whose list could not be read, or who is on a page of the team list that could not be read,
+        # may be the one who has a folder in their Dropbox.
+        self._plan_complete = len(listings) == len(users) and self._team_list_complete
         self._folder_metadata: dict[str, DropboxResponse] = {}
         if self._plan_complete:
             await self._drop_unmounted_shared_folders(plan)
@@ -1217,7 +1326,8 @@ class DropboxConnector(BaseConnector):
 
         A folder that was unshared, archived (team folders), deleted, or left by every synced member is in no
         member's ``sharing/list_folders``. Only a complete answer counts: every synced member's list read, and
-        the team's member list read whole; otherwise nothing is removed.
+        the team's member list read whole; otherwise nothing is removed. A suspended member's list cannot be
+        read, and what they shared stays shared, so a folder they hold stays as stored.
         """
         if not getattr(self, "_plan_complete", False) or not self._health.complete:
             return
@@ -1229,6 +1339,8 @@ class DropboxConnector(BaseConnector):
             external_id = group.get("externalGroupId")
             if group.get("description") not in ("Shared Folder", "Team Folder") or not external_id or external_id in plan:
                 continue
+            if external_id in self._kept_folders or await self._keep_shared_folder(external_id, group.get("groupName"), plan):
+                continue
             self.logger.info(f"Shared folder '{group.get('groupName')}' ({external_id}) is gone for every synced member; deleting it")
             await self.data_entities_processor.on_record_group_deleted(
                 external_group_id=external_id, connector_id=self.connector_id, trash_live_records=True,
@@ -1239,7 +1351,8 @@ class DropboxConnector(BaseConnector):
 
         A deleted shared folder stays in ``sharing/list_folders``, with no path for
         anyone, and its namespace still lists its files as live; Dropbox has no
-        deleted flag for it. Team folders are synced from the team folder list.
+        deleted flag for it. Team folders are synced from the team folder list. A suspended member's Dropbox
+        cannot be read, and what they shared stays shared, so a folder they hold is left out but stays as stored.
         """
         gone = []
         for folder in plan.values():
@@ -1252,6 +1365,10 @@ class DropboxConnector(BaseConnector):
             gone.append(folder)
         for folder in gone:
             del plan[folder.folder_id]
+        for folder in gone:
+            # Inside a team folder, Dropbox itself said the folder was deleted.
+            if not folder.inside_team_folder and await self._keep_shared_folder(folder.folder_id, folder.name, plan):
+                continue
             try:
                 stored = await self.data_entities_processor.get_record_group_by_external_id(
                     self.connector_id, folder.folder_id
@@ -1637,6 +1754,10 @@ class DropboxConnector(BaseConnector):
             return []
         if not members.raw:
             raise RuntimeError(f"Could not list the Dropbox team's members: {members.error}")
+        self._team_list_complete = members.complete
+        self._suspended_ids = {
+            m.profile.team_member_id for m in members.raw if m.profile.status._tag == "suspended"
+        }
         if not members.complete:
             self._health.skipped("team member list", members.error)
         app_users = self.get_app_users(members.raw)
@@ -1677,6 +1798,7 @@ class DropboxConnector(BaseConnector):
         # it fresh, and a move a stopped run did not finish is listed again, its cursor not having passed it.
         self._fresh_folders = set()
         self._moved_folders = []
+        self._kept_folders = set()
         try:
             await self._sync_steps()
         except Exception as ex:
@@ -3155,6 +3277,7 @@ class DropboxConnector(BaseConnector):
             # Write records that changed at source; their content events re-index them.
             if updated:
                 await self._write_updates(updated, "reindex")
+                await self._grant_external_membership([p for u in updated for p in (u.new_permissions or [])])
                 # A folder that moved is stored at its new path now, so no later listing sees the move: the
                 # paths below it are rewritten here.
                 await self._repath_moved_folders()
@@ -3168,6 +3291,23 @@ class DropboxConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error during Dropbox reindex: {e}", exc_info=True)
             raise
+
+    async def _grant_external_membership(self, permissions: list[Permission]) -> None:
+        """App membership for the people outside the team that a reindex just granted, as a sync gives it.
+
+        Without it a first share made by a reindex is unreachable until the next sync, and a sync's reaper that
+        runs while the grant is written may drop the membership it already had. Non-fatal, like the sync's.
+        """
+        if not self._team_emails:
+            # A connector that has not listed the team since it started cannot tell outsiders apart.
+            return
+        emails = self._external_grant_emails(permissions)
+        if not emails:
+            return
+        try:
+            await self.data_entities_processor.on_external_app_users(sorted(emails), self.connector_id)
+        except Exception as e:
+            self.logger.error(f"Could not give app membership to people outside the team: {e}", exc_info=True)
 
     async def _check_and_fetch_updated_record(
         self, org_id: str, record: Record

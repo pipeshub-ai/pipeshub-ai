@@ -33,6 +33,7 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
+from app.connectors.core.base.connector.failure_notices import note_token_accepted
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -93,6 +94,13 @@ def _excludes(project_keys_operator: FilterOperatorType | None) -> bool:
     )
     .with_categories(["IT Service Management", "Storage"])
     .with_scopes([ConnectorScope.PERSONAL.value])
+    .with_resilience_config(
+        # The vendor's quota is the org's shared budget (app.services.rate_budget.families), which this policy
+        # takes from; the rate is this process's own cap when that budget is unreachable. Retries stay the
+        # connector's own (max_retries 0), as before.
+        rate_limit=10,
+        max_retries=0,
+    )
     .with_permission_model(PermissionModel.APP_LEVEL)
     .with_auth(
         [
@@ -280,6 +288,8 @@ class JiraCloudPersonalConnector(JiraConnector):
                 init_error._notification_sent = True
                 raise init_error
 
+            await self._stop_if_signed_out()
+
             # Force a fresh ConnectorGroup upsert each run so re-runs after the
             # creator email is rotated pick up the new identity instead of
             # reusing a stale cached permission.
@@ -379,6 +389,7 @@ class JiraCloudPersonalConnector(JiraConnector):
                     "⚠️ Jira Cloud Personal sync: %s/%s project(s) failed to sync issues: %s",
                     len(failed_keys), len(projects), preview,
                 )
+                await self._stop_if_signed_out()
                 await self.notify(
                     type=NotificationType.CONNECTOR_SYNC_ERROR,
                     severity=NotificationSeverity.ERROR,
@@ -402,7 +413,9 @@ class JiraCloudPersonalConnector(JiraConnector):
                 "Error during Jira Cloud Personal sync: %s", e, exc_info=True
             )
             # Skip if init/multi-site already notified for this failure.
-            if not isinstance(e, ConnectorInitError) and not getattr(e, "_notification_sent", False):
+            if await self._notify_if_signed_out(e):
+                pass
+            elif not isinstance(e, ConnectorInitError) and not getattr(e, "_notification_sent", False):
                 await self.notify(
                     type=NotificationType.CONNECTOR_SYNC_ERROR,
                     severity=NotificationSeverity.ERROR,
@@ -414,6 +427,8 @@ class JiraCloudPersonalConnector(JiraConnector):
                     ),
                 )
             raise
+        else:
+            note_token_accepted(self)
         finally:
             self._synced_project_keys = None
 

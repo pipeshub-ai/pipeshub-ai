@@ -3,6 +3,7 @@ import json
 import logging
 import re
 from collections.abc import AsyncGenerator, Callable, Mapping
+from functools import cache
 from typing import (
     Any,
     TypeVar,
@@ -15,6 +16,7 @@ from langchain_aws import ChatBedrock, ChatBedrockConverse
 from langchain_core.exceptions import OutputParserException
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_mistralai import ChatMistralAI
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
@@ -23,6 +25,7 @@ from pydantic import BaseModel, ValidationError
 from app.agent_loop_lib.transport.provider_conflicts import (
     refused_cache_params,
 )
+from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.prompt_cache import (
     CacheStrategy,
     NoCacheStrategy,
@@ -36,8 +39,24 @@ from app.connectors.core.base.error.stream_errors import (
 )
 from app.exceptions.non_retryable import NonRetryableError
 from app.modules.retrieval import degraded_notice
+from app.services.ai_models.discovery.catalog import lookup_catalog
 from app.services.llm_gateway.gateway import Invocable, get_llm_gateway, provider_key
+from app.services.llm_gateway.wire import forget_last_request
 from app.utils.aimodels import coerce_message_content_to_text
+
+# The sanitizer lives in app.utils.answer_links (imports only ``re``); its names stay importable from here.
+from app.utils.answer_links import (
+    _flatten_unusable_markdown_links as _flatten_unusable_markdown_links,
+)
+from app.utils.answer_links import (
+    _strip_llm_authored_markers as _strip_llm_authored_markers,
+)
+from app.utils.answer_links import (
+    link_workspace_files as link_workspace_files,
+)
+from app.utils.answer_links import (
+    strip_llm_authored_markers_in_parts as strip_llm_authored_markers_in_parts,
+)
 from app.utils.citations import (
     detect_hallucinated_citation_urls,
     normalize_citations_and_chunks,
@@ -45,6 +64,7 @@ from app.utils.citations import (
 )
 from app.utils.error_class import log_failure
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
+from app.utils.is_truncated import TruncatedReplyError, is_truncated
 from app.utils.llm import LLMUnavailableError
 from app.utils.logger import create_logger
 from app.utils.message_chunks import merge_message_chunks_off_loop
@@ -698,101 +718,6 @@ async def handle_simple_mode(
             yield event
 
 
-# Markers the frontend interprets as artifact / download cards. These are
-# authored ONLY by the backend (this function) — if an answer from the LLM
-# happens to contain the same syntax (directly or via prompt injection from
-# RAG content), the frontend would render attacker-controlled download cards
-# pointing at arbitrary URLs. Strip any pre-existing matches before we append
-# our own, trusted markers.
-_LLM_ARTIFACT_MARKER_RE = re.compile(
-    r"::artifact\[[^\]]+\]\([^)]+\)\{[^}]*\}",
-)
-# Mid-form: `::artifact[name]{meta}` — has the `{meta}` block but no `(url)`.
-_LLM_ARTIFACT_NO_URL_MARKER_RE = re.compile(
-    r"::artifact\[[^\]]+\]\{[^}]*\}",
-)
-# Short-form variant LLMs sometimes hallucinate (no `(url){meta}` block).
-_LLM_ARTIFACT_SHORT_MARKER_RE = re.compile(
-    r"::artifact\[[^\]]+\](?:\([^)]*\))?(?!\{)",
-)
-_LLM_DOWNLOAD_MARKER_RE = re.compile(
-    r"::download_conversation_task\[[^\]]+\]\([^)]+\)",
-)
-
-# A real, clickable download is ALWAYS delivered via the `::artifact`
-# marker this module appends below — never authored by the model itself.
-# When a generation step doesn't actually deliver a file (e.g. `run_code`
-# wrote outside `$OUTPUT_DIR`, or failed silently) a model can still hand-
-# write an ordinary markdown link like "[Download the report]
-# (sandbox://report.pdf)" claiming success anyway. The frontend's
-# `rehype-sanitize` schema only allows `http`/`https`/`mailto` hrefs
-# (`answer-content.tsx`) and drops anything else outright, so such a link
-# renders styled (colored, underlined) but is inert — worse than plain
-# text since it visually promises something that doesn't work. Flatten
-# markdown links to plain text (dropping the link, keeping the words) only
-# when the URL has an EXPLICIT non-allowed scheme — a genuine citation or
-# search-result link the model quotes always carries a real absolute
-# http(s) URL, and a same-origin relative link (no scheme at all) is left
-# untouched since the sanitizer renders those as-is.
-_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]*)\)")
-_URL_SCHEME_RE = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.\-]*):")
-_ALLOWED_LINK_SCHEMES = frozenset({"http", "https", "mailto"})
-
-
-def _flatten_unusable_markdown_links(answer: str) -> str:
-    if not answer or "](" not in answer:
-        return answer
-
-    def _flatten_if_unusable(match: "re.Match[str]") -> str:
-        text, url = match.group(1), match.group(2).strip()
-        scheme_match = _URL_SCHEME_RE.match(url)
-        if scheme_match is None or scheme_match.group(1).lower() in _ALLOWED_LINK_SCHEMES:
-            return match.group(0)
-        return text
-
-    return _MARKDOWN_LINK_RE.sub(_flatten_if_unusable, answer)
-
-
-def _strip_llm_authored_markers(answer: str) -> str:
-    """Remove any LLM-authored artifact / download markers from *answer*,
-    and flatten any hand-written markdown link the model composed with a
-    URL scheme the frontend would render as dead (see
-    `_flatten_unusable_markdown_links`).
-
-    The frontend's marker parser runs against the full saved message, so a
-    marker anywhere in the stream is a URL-spoofing primitive. We drop them
-    before the backend appends its own known-good markers.
-    """
-    if not answer:
-        return answer
-    stripped = _LLM_ARTIFACT_MARKER_RE.sub("", answer)
-    stripped = _LLM_ARTIFACT_NO_URL_MARKER_RE.sub("", stripped)
-    stripped = _LLM_ARTIFACT_SHORT_MARKER_RE.sub("", stripped)
-    stripped = _LLM_DOWNLOAD_MARKER_RE.sub("", stripped)
-    return _flatten_unusable_markdown_links(stripped)
-
-
-def strip_llm_authored_markers_in_parts(parts: list | None) -> None:
-    """Sanitize every `text` part of a transcript in place, recursing into
-    `sub_agent` children.
-
-    :func:`_append_task_markers` only sanitizes the answer string, but the
-    activity timeline renders every OTHER text part as raw markdown with no
-    marker parsing (`agent-activity.tsx`). A marker the model copied out of
-    an earlier turn — they are persisted in message content, so they are in
-    its context — therefore surfaces there verbatim: literal
-    ``::artifact[...]`` text plus an anchor whose ``record:`` href no
-    browser can follow.
-    """
-    for part in parts or []:
-        if not isinstance(part, dict):
-            continue
-        if part.get("type") == "sub_agent":
-            strip_llm_authored_markers_in_parts(part.get("parts"))
-        elif part.get("type") == "text" and part.get("content"):
-            part["content"] = _strip_llm_authored_markers(part["content"])
-
-
 def _append_task_markers(answer: str, conversation_tasks: list | None) -> str:
     """Append ::download_conversation_task and ::artifact markers to the answer string.
 
@@ -1040,10 +965,170 @@ async def call_aiter_llm_stream_simple(
         }
     except Exception as exc:
         log_failure(logger, "llm_stream.failed", exc, include_error_text=False)
-        yield {"event": "error", "data": {"error": f"Error in LLM streaming: {exc}"}}
+        yield {"event": "error", "data": {"error": classify_exception(exc)[1]}}
         return
 
+_NUMBER_BOUNDS = ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf")
+
+
+#: Keys whose value maps names to schemas: a name there is a field, never a keyword.
+_SCHEMA_NAME_MAPS = ("properties", "$defs", "definitions", "patternProperties")
+
+
+def _drop_number_bounds(node: Any) -> None:  # noqa: ANN401 - any JSON schema node
+    """Removes number-bound keywords from every schema object in *node*, keeping field names."""
+    if isinstance(node, list):
+        for value in node:
+            _drop_number_bounds(value)
+        return
+    if not isinstance(node, dict):
+        return
+    for key in _NUMBER_BOUNDS:
+        if isinstance(node.get(key), (int, float)) and not isinstance(node.get(key), bool):
+            del node[key]
+    for key, value in node.items():
+        if key in _SCHEMA_NAME_MAPS and isinstance(value, dict):
+            for schema in value.values():
+                _drop_number_bounds(schema)
+        else:
+            _drop_number_bounds(value)
+
+
+@cache
+def _without_number_bounds(schema: type[BaseModel]) -> type[BaseModel]:
+    """*schema* as sent without numeric bounds; *schema* itself when it has none.
+
+    OpenAI refuses ``minimum``/``maximum`` in a strict schema for a fine-tuned model with a 400,
+    and neither an Azure deployment name nor an OpenAI-compatible server says which model is
+    behind it. The subclass validates exactly as *schema* does, so bounds the schema's own
+    validators enforce still hold on the reply.
+    """
+    sent = schema.model_json_schema()
+    _drop_number_bounds(sent)
+    if sent == schema.model_json_schema():
+        return schema
+
+    class _Unbounded(schema):  # type: ignore[valid-type, misc]
+        @classmethod
+        def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:  # noqa: ANN401
+            result = super().model_json_schema(*args, **kwargs)
+            _drop_number_bounds(result)
+            return result
+
+    _Unbounded.__name__ = _Unbounded.__qualname__ = schema.__name__
+    _Unbounded.__doc__ = schema.__doc__
+    return _Unbounded
+
+
+# langchain-aws forces the tool for every Bedrock model id with "claude" in it, and newer Claude models refuse that:
+# 'tool_choice: type "tool" and "any" are not supported for this model'.
+_FORCED_TOOL_REFUSED = re.compile(r'tool_choice\W+type\W+tool\W+and\W+any\W+are not supported', re.IGNORECASE)
+# Bedrock models (id and thinking setting) that refused, so later calls skip the request that cannot work.
+_models_refusing_forced_tool: set[tuple[str, str]] = set()
+
+
+def _refuses_forced_tool(error: BaseException) -> bool:
+    response = getattr(error, "response", None)
+    code = (response.get("Error") or {}).get("Code") if isinstance(response, dict) else None
+    return code == "ValidationException" and bool(_FORCED_TOOL_REFUSED.search(str(error)))
+
+
+def _forced_tool_key(llm: ChatBedrockConverse) -> tuple[str, str]:
+    # Whether a model accepts forced tool use can depend on thinking, which is set per configuration.
+    thinking = ((getattr(llm, "additional_model_request_fields", None) or {}).get("thinking") or {})
+    return str(getattr(llm, "model_id", "") or ""), str(thinking.get("type", "") if isinstance(thinking, dict) else "")
+
+
+def _unforced_structured_output(
+    llm: ChatBedrockConverse, schema: type[BaseModel], *, include_raw: bool = False,
+) -> Runnable[Any, Any]:
+    """The schema offered as a tool, not forced. A reply that calls it is parsed as forced output is; a reply that
+    does not comes back as the message itself, whose text the caller reads as JSON or asks again for. (langchain-aws's
+    own unforced path raises for some model ids instead, and drops an answer sent as text.)"""
+    from langchain_core.output_parsers.openai_tools import PydanticToolsParser
+    from langchain_core.runnables import RunnableLambda
+
+    parser = PydanticToolsParser(tools=[schema], first_tool_only=True)
+
+    def parse(message: AIMessage) -> Any:  # noqa: ANN401
+        if not include_raw:
+            return parser.invoke(message) if message.tool_calls else message
+        if not message.tool_calls:
+            return {"raw": message, "parsed": None, "parsing_error": None}
+        try:
+            return {"raw": message, "parsed": parser.invoke(message), "parsing_error": None}
+        except Exception as e:
+            return {"raw": message, "parsed": None, "parsing_error": e}
+
+    return llm.bind_tools([schema]) | RunnableLambda(parse)
+
+
+class _UnforcedToolFallback(Runnable[Any, Any]):
+    """A Bedrock structured-output call that is sent again without forcing the tool when the model refuses forced
+    tool use."""
+
+    def __init__(self, llm: ChatBedrockConverse, schema: type[BaseModel], *, include_raw: bool) -> None:
+        self._llm = llm
+        self._schema = schema
+        self._include_raw = include_raw
+        self._key = _forced_tool_key(llm)
+        kwargs = {"include_raw": True} if include_raw else {}
+        self._forced = llm.with_structured_output(schema, **kwargs)
+        self._unforced: Runnable[Any, Any] | None = None
+
+    def _fallback(self) -> Runnable[Any, Any]:
+        if self._unforced is None:
+            self._unforced = _unforced_structured_output(self._llm, self._schema, include_raw=self._include_raw)
+        return self._unforced
+
+    def _refused(self, error: BaseException) -> bool:
+        if not _refuses_forced_tool(error):
+            return False
+        # The provider refused the request's shape, and it is sent again changed: not a failed send of this call.
+        forget_last_request()
+        if self._key not in _models_refusing_forced_tool:
+            _models_refusing_forced_tool.add(self._key)
+            logger.warning(
+                "Bedrock model %s refuses forced tool use; structured answers are asked for without forcing it",
+                self._key[0],
+            )
+        return True
+
+    def invoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:  # noqa: A002, ANN401
+        if self._key not in _models_refusing_forced_tool:
+            try:
+                return self._forced.invoke(input, config, **kwargs)
+            except Exception as e:
+                if not self._refused(e):
+                    raise
+        return self._fallback().invoke(input, config, **kwargs)
+
+    async def ainvoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:  # noqa: A002, ANN401
+        if self._key not in _models_refusing_forced_tool:
+            try:
+                return await self._forced.ainvoke(input, config, **kwargs)
+            except Exception as e:
+                if not self._refused(e):
+                    raise
+        return await self._fallback().ainvoke(input, config, **kwargs)
+
+
+def _bedrock_structured_output(llm: ChatBedrockConverse, schema: type[BaseModel], **kwargs: Any) -> Runnable[Any, Any]:  # noqa: ANN401
+    forced = {"tool", "any"} & set(getattr(llm, "supports_tool_choice_values", None) or ())
+    if not forced or not (isinstance(schema, type) and issubclass(schema, BaseModel)) or set(kwargs) - {"include_raw"}:
+        return llm.with_structured_output(schema, **kwargs)
+    include_raw = bool(kwargs.get("include_raw"))
+    if _forced_tool_key(llm) in _models_refusing_forced_tool:
+        return _unforced_structured_output(llm, schema, include_raw=include_raw)
+    return _UnforcedToolFallback(llm, schema, include_raw=include_raw)
+
+
 def _apply_structured_output(llm: BaseChatModel, schema: type[BaseModel], *, include_raw: bool = False) -> BaseChatModel:
+    if getattr(llm, "native_structured_output", False) is True:
+        # A harness run's model: its own transport chooses how the provider is asked.
+        return llm.with_structured_output(schema, include_raw=include_raw)
+    if isinstance(llm, (ChatOpenAI, AzureChatOpenAI)) and isinstance(schema, type) and issubclass(schema, BaseModel):
+        schema = _without_number_bounds(schema)
     if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI,ChatBedrock,ChatBedrockConverse)):
 
         additional_kwargs = {}
@@ -1065,10 +1150,13 @@ def _apply_structured_output(llm: BaseChatModel, schema: type[BaseModel], *, inc
             additional_kwargs["include_raw"] = True
 
         try:
-            model_with_structure = llm.with_structured_output(
-                schema,
-                **additional_kwargs
-            )
+            if isinstance(llm, ChatBedrockConverse):
+                model_with_structure = _bedrock_structured_output(llm, schema, **additional_kwargs)
+            else:
+                model_with_structure = llm.with_structured_output(
+                    schema,
+                    **additional_kwargs
+                )
             logger.debug("Using structured output")
             return model_with_structure
         except Exception as e:
@@ -1100,13 +1188,197 @@ def cleanup_content(response_text: str) -> str:
     return response_text.strip()
 
 
+class _NoStructuredAnswerError(ValueError):
+    """The model replied without the structured answer: a tool-calling parser yields None for a reply with no tool call."""
+
+
 # An answer that does not fit the schema is the model's doing, not a bug of ours: a WARNING, as before.
-_ANSWER_PARSE_ERRORS = (ValidationError, OutputParserException)
+_ANSWER_PARSE_ERRORS = (ValidationError, OutputParserException, _NoStructuredAnswerError)
+
+
+def _require_answer(reply: Any) -> None:  # noqa: ANN401 - whatever the structured model returns
+    if reply is None:
+        raise _NoStructuredAnswerError("the reply did not contain the requested JSON answer")
+
+
+def _is_oversized_number(exc: BaseException) -> bool:
+    """A reply holding a number longer than Python converts (``sys.get_int_max_str_digits()``).
+
+    A model can run an integer field on until its output limit. The JSON parser behind
+    ``with_structured_output`` lets the resulting ``ValueError`` out as is, so without this
+    check the reply reads as a failed call. Pydantic's own JSON parser, which reads a plain
+    model's reply, reports the same number as ``json_invalid``: "number out of range".
+    """
+    if isinstance(exc, ValidationError):
+        try:
+            errors = exc.errors(include_input=False)
+        except Exception:  # an error list that cannot be read is not this reply
+            return False
+        return any(e.get("type") == "json_invalid" and "number out of range" in str(e.get("msg")) for e in errors)
+    return isinstance(exc, ValueError) and "integer string conversion" in str(exc)
+
+
+def _oversized_detail(exc: BaseException) -> str:
+    """What a log line may say of an oversized number: the digit count, never the reply."""
+    return "a JSON number out of range" if isinstance(exc, ValidationError) else str(exc)
+
+
+class OversizedNumberError(OutputParserException):
+    """A reply holding a number too long to read: a reply that ran away, not a failed call."""
+
+
+#: Output tokens added to a per-call cap for a model that may reason: its reasoning counts
+#: against the same limit, and many models reason without being asked (Gemini 2.5 and later,
+#: OpenAI's reasoning families), so without it the visible reply could be cut off early.
+REASONING_OUTPUT_RESERVE = 8192
+
+# Model families known not to reason: ``-chat`` variants (gpt-5.x-chat-latest, deepseek-chat)
+# and these prefixes. A name that says it reasons always gets the reserve; any other model
+# may reason, and gets it too.
+_NON_REASONING_PREFIXES = ("gpt-3.5", "gpt-4", "chatgpt-4o", "gemini-1.", "gemini-2.0")
+_REASONING_WORDS = ("thinking", "reasoning", "reasoner")
+
+# Our provider ids for the model catalog, by model class.
+_CATALOG_PROVIDER = (
+    (ChatGoogleGenerativeAI, "gemini"),
+    (AzureChatOpenAI, "azureOpenAI"),
+    (ChatOpenAI, "openAI"),
+    (ChatAnthropic, "anthropic"),
+    (ChatMistralAI, "mistral"),
+)
+
+
+def _model_name(llm: BaseChatModel) -> str:
+    name = getattr(llm, "model_name", None) or getattr(llm, "model", None) or ""
+    return str(name).lower().rsplit("/", 1)[-1]
+
+
+def _reasoning_reserve(llm: BaseChatModel) -> int:
+    """Output tokens to leave for reasoning on top of a cap; 0 only for a model known not to reason."""
+    thinking = getattr(llm, "thinking", None)
+    if isinstance(llm, ChatAnthropic):
+        # Claude reasons only when asked to. Anthropic requires max_tokens above the thinking budget.
+        if isinstance(thinking, Mapping) and thinking.get("type") not in (None, "disabled"):
+            budget = thinking.get("budget_tokens")
+            return budget if isinstance(budget, int) and budget > 0 else REASONING_OUTPUT_RESERVE
+        return REASONING_OUTPUT_RESERVE if getattr(llm, "reasoning_effort", None) else 0
+    if getattr(llm, "thinking_budget", None) == 0 or getattr(llm, "reasoning_effort", None) == "none":
+        return 0
+    name = _model_name(llm)
+    if any(word in name for word in _REASONING_WORDS):
+        return REASONING_OUTPUT_RESERVE
+    if "-chat" in name or name.startswith(_NON_REASONING_PREFIXES):
+        return 0
+    if isinstance(llm, ChatMistralAI) and "magistral" not in name:
+        return 0
+    return REASONING_OUTPUT_RESERVE
+
+
+def _known_output_limit(llm: BaseChatModel) -> int | None:
+    """The most output tokens the model accepts, when its profile or the model catalog says;
+    None when unknown, as for any model behind an OpenAI-compatible endpoint of its own."""
+    if isinstance(llm, ChatOpenAI) and not isinstance(llm, AzureChatOpenAI):
+        base = getattr(llm, "openai_api_base", None)
+        if base and "api.openai.com" not in str(base):
+            return None
+    profile = getattr(llm, "profile", None)
+    limit = profile.get("max_output_tokens") if isinstance(profile, Mapping) else None
+    if not (isinstance(limit, int) and limit > 0):
+        name = str(getattr(llm, "model_name", None) or getattr(llm, "model", None) or "").rsplit("/", 1)[-1]
+        provider = next((pid for cls, pid in _CATALOG_PROVIDER if isinstance(llm, cls)), None)
+        entry = lookup_catalog(provider, name) if provider and name else None
+        limit = entry.get("max_output_tokens") if entry else None
+    return limit if isinstance(limit, int) and limit > 0 else None
+
+
+def with_output_cap(llm: BaseChatModel, max_output_tokens: int | None) -> BaseChatModel | None:
+    """``llm`` with its replies capped at ``max_output_tokens`` plus a reasoning reserve, never
+    above the most the model accepts; or None for a model this does not know how to cap.
+
+    ``llm`` itself comes back, uncapped, when the model's own limit is already lower or when
+    the most it accepts is unknown (a cap above it is refused with a 400 on every call): the
+    caller still reads the raw reply and can tell a cut-off one. Bedrock is left alone: its
+    thinking budget lives in request fields that a cap here could fall below.
+    """
+    if not max_output_tokens or max_output_tokens <= 0:
+        return None
+    if isinstance(llm, ChatGoogleGenerativeAI):
+        field = "max_output_tokens"
+    elif isinstance(llm, (ChatOpenAI, AzureChatOpenAI, ChatAnthropic, ChatMistralAI)):
+        field = "max_tokens"
+    else:
+        return None
+    reserve = _reasoning_reserve(llm)
+    cap = max_output_tokens + reserve
+    current = getattr(llm, field, None)
+    if isinstance(current, int) and 0 < current <= cap:
+        return llm
+    limit = _known_output_limit(llm)
+    if limit is None:
+        return llm
+    cap = min(cap, limit)
+    if isinstance(llm, ChatAnthropic) and cap <= reserve:
+        # Anthropic refuses max_tokens at or below the thinking budget.
+        return llm
+    try:
+        return llm.model_copy(update={field: cap})
+    except Exception as exc:
+        logger.debug("Output cap not applied to %s: %s", type(llm).__name__, type(exc).__name__)
+        return llm
+
+
+_OUTPUT_LIMIT_REFUSAL = re.compile(
+    r"max_tokens|max_completion_tokens|max_output_tokens|maxoutputtokens|output tokens|completion tokens"
+    r"|context length|context window|maximum context",
+    re.IGNORECASE,
+)
+
+
+def _is_output_limit_refusal(exc: BaseException) -> bool:
+    """A 400 refusing the output-token limit the request carried."""
+    status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    text = str(exc)
+    is_400 = status == 400 or (status is None and "400" in text)
+    return is_400 and bool(_OUTPUT_LIMIT_REFUSAL.search(text))
+
+
+def _capped_reply(result: Any, *, check_message: bool) -> Any:  # noqa: ANN401 - whatever the structured model returns
+    """Unwraps an ``include_raw`` result, raising for a cut-off reply or one that did not parse.
+
+    With ``check_message`` a plain message is checked too: a model the structured wrapper could
+    not be built for returns its message as is.
+    """
+    if not (isinstance(result, dict) and "raw" in result and "parsed" in result):
+        if check_message and isinstance(result, BaseMessage) and is_truncated(result):
+            _raise_oversized_number(result)
+            raise TruncatedReplyError("the reply reached its output-token limit")
+        return result
+    error = result.get("parsing_error")
+    # A runaway number often runs on until the cap: it is a runaway, not an ordinary cut-off.
+    if error is not None and _is_oversized_number(error):
+        raise error
+    if is_truncated(result.get("raw")):
+        raise TruncatedReplyError("the reply reached its output-token limit")
+    if error is not None:
+        raise error
+    parsed = result.get("parsed")
+    return parsed if parsed is not None else result.get("raw")
+
+
+def _raise_oversized_number(message: BaseMessage) -> None:
+    """Raises the parser's ``ValueError`` when a cut-off message's JSON stops inside a number too long to read."""
+    try:
+        json.loads(cleanup_content(coerce_message_content_to_text(message.content)))
+    except ValueError as exc:
+        if _is_oversized_number(exc):
+            raise
+    except Exception:  # any other failure is an ordinary cut-off reply
+        pass
 
 
 def answer_error_class(exc: BaseException) -> str | None:
     """``bad_request`` for a model answer that did not fit the schema; None lets ``classify_error`` decide."""
-    return "bad_request" if isinstance(exc, _ANSWER_PARSE_ERRORS) else None
+    return "bad_request" if isinstance(exc, _ANSWER_PARSE_ERRORS) or _is_oversized_number(exc) else None
 
 
 def _recover_structured_json_from_exception(
@@ -1152,12 +1424,24 @@ async def invoke_with_structured_output_and_reflection(
     prompt_cache: CacheStrategy | None = None,
     on_cache_rejected: Callable[[frozenset[str]], None] | None = None,
     raise_unavailable: bool = False,
+    max_output_tokens: int | None = None,
+    raise_truncated: bool = False,
+    raise_oversized_number: bool = False,
 ) -> SchemaT | None:
     """
     Invoke LLM with structured output and automatic reflection on parse failure.
 
     With ``raise_unavailable`` a provider outage raises ``LLMUnavailableError`` instead of
     returning None, for callers that must tell an outage from output they cannot use.
+
+    With ``max_output_tokens`` each reply is capped (``with_output_cap``) and its stop reason
+    read. A reply cut off at its limit is not usable and is not asked for again (the same
+    request would stop at the same limit): the call returns None after one warning, or with
+    ``raise_truncated`` raises ``TruncatedReplyError`` for the caller to report.
+
+    A reply holding a number too long to read is not asked for again either: the call returns
+    None, or with ``raise_oversized_number`` raises ``OversizedNumberError``, for a caller that
+    would otherwise read None as "ask again".
 
     Args:
         llm: The LangChain chat model to use
@@ -1187,7 +1471,14 @@ async def invoke_with_structured_output_and_reflection(
     Returns:
         Validated Pydantic model instance, or None if parsing fails after all retries
     """
-    llm_with_structured_output = _apply_structured_output(llm, schema=schema)
+    capped = with_output_cap(llm, max_output_tokens)
+    # The raw reply carries the stop reason, which tells a cut-off reply from a whole one.
+    llm_with_structured_output = (
+        _apply_structured_output(capped, schema=schema, include_raw=True)
+        if capped is not None
+        else _apply_structured_output(llm, schema=schema)
+    )
+    cap_sent = capped is not None and capped is not llm
     provider = provider_key(llm)
     # Use the base llm: structured-output wrappers drop constructor callbacks;
     # get_llm_invoke_config reattaches them with Opik.
@@ -1198,17 +1489,27 @@ async def invoke_with_structured_output_and_reflection(
     dropped: frozenset[str] = frozenset()
 
     async def _call(request: list) -> Any:  # noqa: ANN401 - whatever the structured model returns
-        nonlocal cache, dropped
+        nonlocal cache, dropped, llm_with_structured_output, cap_sent
         # Each refusal names a parameter this request still carries, and the
         # resend drops it, so the loop ends.
         while True:
             try:
-                return await _ainvoke_throttled(
+                return _capped_reply(await _ainvoke_throttled(
                     llm_with_structured_output, without_cache_markers(request, dropped) if dropped else request,
                     config=invoke_config, provider=provider, call_timeout=call_timeout,
                     call_kwargs={name: value for name, value in kwargs.items() if name not in dropped},
-                )
+                ), check_message=capped is not None)
             except Exception as exc:
+                if cap_sent and _is_output_limit_refusal(exc):
+                    # The model's real limit is below the one on record. Sent once more without
+                    # the cap, and every later call of this one too, so this happens once.
+                    logger.warning(
+                        "The %s request's output cap was refused; resending without it", schema.__name__,
+                        extra={"error_type": type(exc).__name__},
+                    )
+                    cap_sent = False
+                    llm_with_structured_output = _apply_structured_output(llm, schema=schema, include_raw=True)
+                    continue
                 refused = refused_cache_params(exc, sent - dropped)
                 if not refused:
                     raise
@@ -1235,6 +1536,22 @@ async def invoke_with_structured_output_and_reflection(
         if recovered is not None:
             logger.info("Recovered schema-valid structured output from invocation error")
             return recovered
+        if _is_oversized_number(e):
+            # A reply that does not fit the schema, not a failed call. It is not asked for
+            # again: there is no reply text to show the model, and a second runaway reply
+            # costs a full output limit again. The message names only the digit count.
+            logger.warning(
+                "The %s reply holds a number too long to read (%s); the reply is discarded",
+                schema.__name__, _oversized_detail(e),
+            )
+            if raise_oversized_number:
+                raise OversizedNumberError(f"the {schema.__name__} reply holds a number too long to read") from e
+            return None
+        if isinstance(e, TruncatedReplyError):
+            if raise_truncated:
+                raise
+            logger.warning("The %s reply was cut off at its output cap; the reply is discarded", schema.__name__)
+            return None
         if raise_call_errors:
             raise
         log_failure(
@@ -1245,7 +1562,10 @@ async def invoke_with_structured_output_and_reflection(
 
     # Try to parse the response
     parsed_response = None
+    # Unset when there is no reply text to show the model in the reflection turn.
+    response_content = None
     try:
+        _require_answer(response)
 
         if isinstance(response, dict):
             if 'content' in response:
@@ -1286,13 +1606,23 @@ async def invoke_with_structured_output_and_reflection(
         return parsed_response
 
     except Exception as parse_error:
+        if _is_oversized_number(parse_error):
+            # Not reflected: the reflection would resend the runaway digits and ask for them again.
+            logger.warning(
+                "The %s reply holds a number too long to read (%s); the reply is discarded",
+                schema.__name__, _oversized_detail(parse_error),
+            )
+            if raise_oversized_number:
+                raise OversizedNumberError(f"the {schema.__name__} reply holds a number too long to read") from parse_error
+            return None
         # Attempt reflection: ask LLM to correct its response
         logger.warning(f"Initial parse failed: {parse_error}. Attempting reflection...")
 
         reflection_messages = list(messages)  # Copy the original messages
 
         # Add the failed response to context
-        reflection_messages.append(AIMessage(content=response_content))
+        if response_content is not None:
+            reflection_messages.append(AIMessage(content=response_content))
 
         reflection_prompt = f"""Your previous response could not be parsed correctly.
 Error: {str(parse_error)}
@@ -1308,6 +1638,7 @@ Respond only with valid JSON that matches the schema."""
             reflection_content = None
             try:
                 reflection_response = await _call(reflection_messages)
+                _require_answer(reflection_response)
                 if isinstance(reflection_response, dict):
                     if 'content' in reflection_response:
                         # Response is a dict with 'content' key (e.g., Bedrock non-structured response)
@@ -1342,6 +1673,19 @@ Respond only with valid JSON that matches the schema."""
             except Exception as reflection_error:
                 if raise_unavailable and isinstance(reflection_error, LLMUnavailableError):
                     raise
+                if raise_truncated and isinstance(reflection_error, TruncatedReplyError):
+                    raise
+                if isinstance(reflection_error, TruncatedReplyError) or _is_oversized_number(reflection_error):
+                    # Asking again would stop at the same cap, or run away again.
+                    logger.warning(
+                        "The %s reflection reply was cut off or holds a number too long to read; giving up",
+                        schema.__name__,
+                    )
+                    if raise_oversized_number and _is_oversized_number(reflection_error):
+                        raise OversizedNumberError(
+                            f"the {schema.__name__} reflection reply holds a number too long to read"
+                        ) from reflection_error
+                    return None
                 recovered = _recover_structured_json_from_exception(reflection_error, schema)
                 if recovered is not None:
                     logger.info(

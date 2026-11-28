@@ -1818,7 +1818,7 @@ class TestDownstreamBrakeScope:
     def test_the_docling_key_is_the_name_the_client_reports_under(self) -> None:
         source = (Path(__file__).resolve().parents[4] / "app/services/docling/client.py").read_text()
         assert 'service_name="DoclingService"' in source
-        assert policy_mod._SERVICE_POOL["DoclingService"] is Pool.INDEX_HEAVY
+        assert policy_mod.SERVICE_POOL["DoclingService"] is Pool.INDEX_HEAVY
 
 
 class TestBrakesNeverRaiseALimit:

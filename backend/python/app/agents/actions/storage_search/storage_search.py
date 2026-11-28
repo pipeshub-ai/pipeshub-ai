@@ -35,7 +35,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import orjson
 import regex
@@ -45,9 +45,17 @@ from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
 from app.config.constants.service import config_node_constants
 from app.connectors.core.registry.auth_builder import AuthBuilder
-from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
+from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
+    ToolsetBuilder,
+    ToolsetCategory,
+)
+from app.core.org_jobs import for_each_org
 from app.modules.agents.qna.chat_state import ChatState, remember_record_ids
 from app.utils.bounded_cache import SizeBoundedCache
+
+if TYPE_CHECKING:
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 logger = logging.getLogger(__name__)
 
@@ -2127,12 +2135,24 @@ def _populate_view(connector_dir: str, view_dir: str, files: list[tuple[str, str
             continue
 
 
-async def sweep_orphan_views_at_startup(config_service: Any) -> None:  # noqa: ANN401
-    """Best effort: a view left by a process that died holds hard links to records."""
-    try:
+async def sweep_orphan_views_at_startup(config_service: Any, graph_provider: IGraphDBProvider) -> None:  # noqa: ANN401
+    """Best effort: a view left by a process that died holds hard links to records.
+
+    The storage settings are read in each org's own context; one mount can serve many orgs and is swept once."""
+    roots: set[str] = set()
+
+    async def find_root(_org_id: str) -> None:
         storage_cfg = await config_service.get_config(config_node_constants.STORAGE.value)
         if is_local_storage(storage_cfg):
-            mount_root = _resolve_mount_root((storage_cfg or {}).get("mountName", "PipesHub"))
+            mount = str((storage_cfg or {}).get("mountName") or "PipesHub")
+            if mount in (".", "..") or re.search(r"[/\\:]", mount):  # ":" is a Windows drive
+                logger.warning("[storage_pattern_match] record views not swept: the mount name is not a directory name")
+                return
+            roots.add(_resolve_mount_root(mount))
+
+    try:
+        await for_each_org(graph_provider, "orphan_view_sweep", find_root, logger)
+        for mount_root in roots:
             await asyncio.to_thread(sweep_orphan_views, mount_root)
     except Exception:
         logger.warning("[storage_pattern_match] could not sweep old record views", exc_info=True)
@@ -2183,7 +2203,7 @@ def _sweep_stale_views(views_root: str, max_age_secs: float = _STALE_VIEW_SECS) 
 # Toolset registration
 # ──────────────────────────────────────────────────────────────────────────────
 
-@ToolsetBuilder("Storage Pattern Match")\
+@ToolsetBuilder("Storage Pattern Match", provider=ToolProvider.PLATFORM)\
     .in_group("Internal Tools")\
     .with_description(
         "Run read-only Linux pattern matching commands on indexed record storage. "
@@ -2291,7 +2311,12 @@ class StoragePatternMatch:
         everything: the empty set, which every check reads as "deny".
         """
         from app.agents.actions.knowledge_graph.ops.scope import derive_scope
+        from app.modules.retrieval.selection_scope import (
+            connection_sources_of,
+            names_below_apps,
+        )
         from app.services.graph_db.interface.graph_db_provider import (
+            SELECTION_APPS_FILTER_KEY,
             STRICT_SCOPE_FILTER_KEY,
             requested_scope_ids,
         )
@@ -2300,7 +2325,19 @@ class StoragePatternMatch:
         if filters.get(STRICT_SCOPE_FILTER_KEY):
             # Only what the request names, read as retrieval reads it: the
             # agent's own knowledge is no fallback here.
-            return frozenset(requested_scope_ids(filters) or ())
+            named = frozenset(requested_scope_ids(filters) or ())
+            limit = connection_sources_of(filters)
+            if limit is not None and not names_below_apps(limit):
+                # A connected app's limit names whole apps: one it does not
+                # name is never scanned, whatever the request names.
+                return named & frozenset(limit.get("apps") or ())
+            if limit is not None:
+                # A limit that names folders or files reaches only the apps
+                # recorded at the start of the turn, inside the limit; filters
+                # that did not record them reach nothing. The record check
+                # holds each record to the folder or file.
+                return frozenset(filters.get(SELECTION_APPS_FILTER_KEY) or ())
+            return named
         scope = derive_scope(self.state)
         if scope.is_empty():
             return None
@@ -2353,6 +2390,7 @@ class StoragePatternMatch:
         namespace = (
             "storage_vrid_access", self.state.get("user_id", ""), self._org_id(),
             self._scope_connector_ids(),
+            self._row_limit_key(),
         )
         try:
             by_vrid = await memo_each(namespace, vrids, fetch)
@@ -2362,6 +2400,14 @@ class StoragePatternMatch:
 
     def _org_id(self) -> str:
         return self.state.get("org_id", "")
+
+    def _row_limit_key(self) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        """What limits this turn's rows (its selection and every server-set
+        bound), as a key: two turns of one user under different limits must not
+        share a permission answer."""
+        from app.modules.retrieval.selection_scope import row_limit_key
+
+        return row_limit_key(self.state.get("filters") or {})
 
     async def _fetch_accessible_vrids(self, vrids: list[str]) -> dict[str, str] | None:
         user_id = self.state.get("user_id", "")
@@ -2381,9 +2427,16 @@ class StoragePatternMatch:
         try:
             # The same adjudicator semantic search uses, with no container trusted
             # and the agent's knowledge scope bounding which record may be cited.
+            # The turn's selection and every bound (a saved agent's sources, a
+            # project's, a connected app's limit) also bound which record may
+            # be cited, as in the pattern-match merge.
+            scopes = await self._turn_scopes(graph_provider, user_id, org_id)
+            if scopes is None:
+                return None
             accessible = await graph_provider.filter_accessible_virtual_record_ids(
                 list(dict.fromkeys(vrids)), user_id, org_id,
                 scope_connector_ids=self._scope_connector_ids(),
+                **({"scopes": scopes} if scopes else {}),
             )
         except Exception as exc:
             logger.warning(
@@ -2397,6 +2450,27 @@ class StoragePatternMatch:
         )
         logger.debug("[_check_accessible_vrids] map=%s", accessible)
         return accessible or {}
+
+    async def _turn_scopes(
+        self, graph_provider: Any, user_id: str, org_id: str,  # noqa: ANN401
+    ) -> list[Any] | None:
+        """The scopes a cited record must lie in (empty when the turn has
+        none), resolved as the pattern-match merge resolves them, or None when
+        they cannot be: callers fail closed."""
+        from app.modules.retrieval.selection_scope import (
+            allowed_filters,
+            has_selection,
+            resolve_request_scopes,
+            resolve_user_key,
+        )
+
+        filters = self.state.get("filters") or {}
+        if not (has_selection(filters) or allowed_filters(filters)):
+            return []
+        user_key = await resolve_user_key(graph_provider, user_id)
+        if not user_key:
+            return None
+        return (await resolve_request_scopes(graph_provider, user_key, org_id, filters))[1]
 
     async def _build_accessible_view(
         self, connector_dir: str, allowed_vrids: frozenset[str] | None = None,
@@ -2515,7 +2589,7 @@ class StoragePatternMatch:
             ToolParameter(name="command", type=ParameterType.STRING, description="A read-only Linux command to run inside the connector's record directory. Allowed binaries: grep, egrep, fgrep, rg, find, ls, wc, head, tail, cat, sort, uniq, xargs, file, echo. All paths must be relative (no leading /). Pipe (|) is supported; other shell operators (;, &&, ||, >, <, $()) are not.", required=True),
             ToolParameter(name="record_date", type=ParameterType.STRING, description="Optional ISO date (YYYY-MM-DD) to restrict the search to records whose stored file was written (indexed) within +/-1 day of that date; this is indexing time, not source modification time. Only supported when the first stage is grep/egrep/fgrep/rg searching '.'.", required=False),
         ],
-        tags=[Tag(key="category", value="search"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="search"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         display_name="Searched local storage",
         description=(
             "Execute a read-only Linux command on the indexed JSON record files for a specific "
@@ -2888,7 +2962,7 @@ class StoragePatternMatch:
             ToolParameter(name="command", type=ParameterType.STRING, description="A read-only Linux command that outputs file paths (one per line). Use grep with -l (list files) or find to discover files. The same allowed binaries and security rules as run_command apply.", required=True),
             ToolParameter(name="max_results", type=ParameterType.INTEGER, description="Maximum number of records to return (1-20). Default 10.", required=False, default=10),
         ],
-        tags=[Tag(key="category", value="search"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="search"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         display_name="Found records in local storage",
         description=(
             "Run a read-only Linux command on the connector's record directory and "

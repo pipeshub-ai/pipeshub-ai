@@ -12,14 +12,20 @@ values Neo4j cannot hold as a node property.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock
 from urllib.parse import urlparse
 
+from app.config.constants.arangodb import CollectionNames
+from app.connectors.core.sync import sync_runner
+from app.connectors.core.sync.full_sync_coverage import FullSyncSeen
+from app.connectors.sources.zammad.connector import ZammadSyncIncompleteError
 from app.models.entities import Record, RecordType
 from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
@@ -226,12 +232,18 @@ class FakeZammad:
 
 
 class FakeRecordsDb:
-    """In-memory stand-in for ``DataSourceEntitiesProcessor`` and the graph behind it."""
+    """In-memory stand-in for ``DataSourceEntitiesProcessor`` and the graph behind it.
+
+    While ``full_sync_seen`` is set, every node written or noted kept is noted in it,
+    as the processor notes them for the full sync in progress, under external ids.
+    """
 
     def __init__(self, org_id: str = "org-1") -> None:
         self.org_id = org_id
         self.records: dict[str, Any] = {}  # external id -> record as written
         self.record_groups: dict[str, Any] = {}
+        self.user_groups: set[str] = set()  # source group ids
+        self.full_sync_seen: FullSyncSeen | None = None
         self.deleted: list[str] = []  # external ids, in delete order
         self.deleted_groups: list[str] = []  # external group ids, in delete order
         self.fail_delete_for: set[str] = set()
@@ -244,7 +256,9 @@ class FakeRecordsDb:
     def _plain(record: Record) -> Record:
         return Record.model_validate(record.model_dump(include=set(Record.model_fields)))
 
-    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
+    async def get_record_by_external_id(
+        self, connector_id: str, external_record_id: str, *, raise_on_error: bool = False,
+    ) -> Record | None:
         found = self.records.get(external_record_id)
         return None if found is None else self._plain(found)
 
@@ -267,12 +281,42 @@ class FakeRecordsDb:
             members = [r for r in members if r.id > after_key]
         return [self._plain(r) for r in members[:limit]]
 
+    def _note_seen(self, collection: str, external_id: str) -> None:
+        if self.full_sync_seen is not None:
+            self.full_sync_seen.add(collection, external_id)
+
     async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
         for record, _ in records_with_permissions:
             existing = self.records.get(record.external_record_id)
             if existing is not None:
                 record.id = existing.id
             self.records[record.external_record_id] = record.model_copy(deep=True)
+            self._note_seen(CollectionNames.RECORDS.value, record.external_record_id)
+
+    def note_kept_records(self, connector_id: str, record_ids: list[str]) -> None:
+        for record in self.records.values():
+            if record.id in record_ids:
+                self._note_seen(CollectionNames.RECORDS.value, record.external_record_id)
+
+    def note_kept_user_groups(self, connector_id: str, groups: list[Any]) -> None:
+        for group in groups:
+            self._note_seen(CollectionNames.GROUPS.value, group.source_user_group_id)
+
+    async def note_kept_user_group(self, connector_id: str, external_group_id: str) -> None:
+        if external_group_id in self.user_groups:
+            self._note_seen(CollectionNames.GROUPS.value, external_group_id)
+
+    async def note_kept_record_group(self, connector_id: str, external_group_id: str) -> None:
+        if external_group_id in self.record_groups:
+            self._note_seen(CollectionNames.RECORD_GROUPS.value, external_group_id)
+
+    def stored_nodes(self) -> dict[str, dict[str, str]]:
+        """collection -> {node id as noted: name in tests} for every node held now."""
+        return {
+            CollectionNames.RECORDS.value: {ext: f"record:{ext}" for ext in self.records},
+            CollectionNames.RECORD_GROUPS.value: {ext: f"recordGroup:{ext}" for ext in self.record_groups},
+            CollectionNames.GROUPS.value: {gid: f"userGroup:{gid}" for gid in self.user_groups},
+        }
 
     async def on_record_deleted(self, record_id: str) -> None:
         record = next((r for r in self.records.values() if r.id == record_id), None)
@@ -300,6 +344,7 @@ class FakeRecordsDb:
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         for group, _ in groups:
             self.record_groups.setdefault(group.external_group_id, group)
+            self._note_seen(CollectionNames.RECORD_GROUPS.value, group.external_group_id)
 
     async def on_record_group_deleted(
         self, external_group_id: str, connector_id: str, *, trash_live_records: bool = False,
@@ -314,13 +359,50 @@ class FakeRecordsDb:
         return True
 
     async def on_new_user_groups(self, user_groups: list[Any]) -> None:
-        return None
+        for group, _ in user_groups:
+            self.user_groups.add(group.source_user_group_id)
+            self._note_seen(CollectionNames.GROUPS.value, group.source_user_group_id)
 
     async def on_new_app_users(self, users: list[Any]) -> None:
         return None
 
     async def on_new_app_roles(self, roles: list[Any]) -> None:
         return None
+
+
+async def run_full_sync(
+    connector: Any, db: FakeRecordsDb, clear_sync_points: Callable[[], None],  # noqa: ANN401
+) -> tuple[bool, set[str]]:
+    """A full sync as ``run_sync_task`` runs one, from the sync points' deletion to the unlink.
+
+    The run fails when ``run_sync`` raises ``ZammadSyncIncompleteError``, and then nothing is unlinked. After a
+    run that returned, the runner unlinks every node held that the run did not
+    note (``_unlink_what_full_sync_missed``). Returns whether no further full sync
+    is owed, and the names of the nodes unlinked.
+    """
+    clear_sync_points()
+    sync_runner._INCOMPLETE_FULL_SYNC_RETRYING.discard(connector.connector_id)
+    db.full_sync_seen = seen = FullSyncSeen()
+    try:
+        await connector.run_sync()
+    except ZammadSyncIncompleteError:
+        return False, set()
+    finally:
+        db.full_sync_seen = None
+    unlinked: set[str] = set()
+
+    async def unlink(_connector_id: str, seen_by_collection: dict[str, set[str]], **_: object) -> tuple[int, bool]:
+        for collection, names in db.stored_nodes().items():
+            noted = seen_by_collection.get(collection) or set()
+            unlinked.update(name for node_id, name in names.items() if node_id not in noted)
+        return len(unlinked), True
+
+    graph = AsyncMock()
+    graph.unlink_nodes_missed_by_full_sync = AsyncMock(side_effect=unlink)
+    done = await sync_runner._unlink_what_full_sync_missed(
+        connector, connector.connector_id, graph, logging.getLogger("test.zammad.full_sync"), seen,
+    )
+    return done, unlinked
 
 
 def _neo4j_property(value: object) -> bool:

@@ -10,6 +10,7 @@ import {
   guidCheck,
   integerCheck,
   urlCheck,
+  webUrlCheck,
 } from '../../../libs/utils/zod-formats';
 
 // OAuth Provider Validators
@@ -118,6 +119,15 @@ export const authorizeConsentSchema = z.object({
   }),
 });
 
+// A client id, secret, code or token never holds a control character, and PostgreSQL cannot store a NUL: refused here as
+// the client's 400, before a store read turns it into our own failure.
+// eslint-disable-next-line no-control-regex
+export const NO_CONTROL_CHARACTERS = /^[^\u0000-\u001f\u007f]*$/;
+const credential = (): z.ZodString =>
+  z
+    .string()
+    .regex(NO_CONTROL_CHARACTERS, 'Must not contain control characters');
+
 export const tokenSchema = z.object({
   body: z.object({
     grant_type: z.enum([
@@ -129,19 +139,19 @@ export const tokenSchema = z.object({
       AGENT_CLAIM_GRANT,
       JWT_BEARER_GRANT,
     ]),
-    code: z.string().optional(),
+    code: credential().optional(),
     redirect_uri: z.string().check(urlCheck()).optional(),
     // RFC 6749: client_id is required but can also come from Authorization header
-    client_id: z.string().min(1).optional(),
-    client_secret: z.string().optional(),
-    refresh_token: z.string().optional(),
+    client_id: credential().min(1).optional(),
+    client_secret: credential().optional(),
+    refresh_token: credential().optional(),
     scope: z.string().optional(),
     // RFC 7636: code_verifier must match the pattern [A-Za-z0-9-._~]{43,128}
     code_verifier: z
       .string()
       .regex(codeVerifierPattern, 'Invalid code_verifier format')
       .optional(),
-    device_code: z.string().min(1).optional(),
+    device_code: credential().min(1).optional(),
     // RFC 8707: the resource the token is for; repeatable in a form body.
     resource: resourceParam,
     // auth.md agent registration
@@ -165,12 +175,12 @@ export const dcrRequestSchema = z.object({
     grant_types: z.array(z.string()).optional(),
     response_types: z.array(z.string()).optional(),
     client_name: z.string().min(1).max(100).optional(),
-    client_uri: z.string().check(urlCheck()).optional(),
-    logo_uri: z.string().check(urlCheck()).optional(),
+    client_uri: z.string().check(webUrlCheck()).optional(),
+    logo_uri: z.string().check(webUrlCheck()).optional(),
     scope: z.string().optional(),
     contacts: z.array(z.string()).optional(),
-    tos_uri: z.string().check(urlCheck()).optional(),
-    policy_uri: z.string().check(urlCheck()).optional(),
+    tos_uri: z.string().check(webUrlCheck()).optional(),
+    policy_uri: z.string().check(webUrlCheck()).optional(),
     software_id: z.string().optional(),
     software_version: z.string().optional(),
   }),
@@ -221,25 +231,27 @@ export const agentClaimCompleteSchema = z.object({
     claim_attempt_token: z.string().min(1).max(256),
     user_code: z.string().max(32).optional(),
     action: z.enum(['approve', 'deny']),
+    // The scope names the claim page showed; an approval records exactly these.
+    scopes: z.array(z.string().max(64)).max(64).optional(),
   }),
 });
 
 export const revokeSchema = z.object({
   body: z.object({
-    token: z.string().min(1),
+    token: credential().min(1),
     token_type_hint: z.enum(['access_token', 'refresh_token']).optional(),
     // Absent for the agent flow, whose tokens are their own credential.
-    client_id: z.string().min(1).optional(),
-    client_secret: z.string().optional(),
+    client_id: credential().min(1).optional(),
+    client_secret: credential().optional(),
   }),
 });
 
 export const introspectSchema = z.object({
   body: z.object({
-    token: z.string().min(1),
+    token: credential().min(1),
     token_type_hint: z.enum(['access_token', 'refresh_token']).optional(),
-    client_id: z.string().min(1),
-    client_secret: z.string().optional(),
+    client_id: credential().min(1),
+    client_secret: credential().optional(),
   }),
 });
 
@@ -288,9 +300,9 @@ export const createAppSchema = z.object({
       // Checked for real in the service, which can look the account up.
       // Shape only here.
       tokenIdentityUserId: z.string().min(1).optional(),
-      homepageUrl: z.string().check(urlCheck()).optional(),
-      privacyPolicyUrl: z.string().check(urlCheck()).optional(),
-      termsOfServiceUrl: z.string().check(urlCheck()).optional(),
+      homepageUrl: z.string().check(webUrlCheck()).optional(),
+      privacyPolicyUrl: z.string().check(webUrlCheck()).optional(),
+      termsOfServiceUrl: z.string().check(webUrlCheck()).optional(),
       isConfidential: z.boolean().optional(),
       accessTokenLifetime: z
         .number()
@@ -344,9 +356,9 @@ export const updateAppSchema = z.object({
         )
         .optional(),
       allowedScopes: z.array(z.string()).min(1).optional(),
-      homepageUrl: z.string().check(urlCheck()).optional().nullable(),
-      privacyPolicyUrl: z.string().check(urlCheck()).optional().nullable(),
-      termsOfServiceUrl: z.string().check(urlCheck()).optional().nullable(),
+      homepageUrl: z.string().check(webUrlCheck()).optional().nullable(),
+      privacyPolicyUrl: z.string().check(webUrlCheck()).optional().nullable(),
+      termsOfServiceUrl: z.string().check(webUrlCheck()).optional().nullable(),
       accessTokenLifetime: z
         .number()
         .check(integerCheck())

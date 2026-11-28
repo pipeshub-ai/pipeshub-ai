@@ -1,12 +1,12 @@
 'use client'
 
+import { IconFontScript } from '@/app/components/ui/icon-font-script';
 import React, { Suspense, useEffect, useState } from "react"
 import { Flex, Box, Text } from "@radix-ui/themes"
 import { MaterialIcon } from "../components/ui/MaterialIcon"
 import { ThemeProvider, ThemeScript } from "../components/theme-provider"
 import { SWRConfig } from "swr"
 import { axiosFetcher } from "@/lib/api"
-import { logoutAndRedirect } from "@/config"
 import { UploadProgressTracker } from "../components/upload-progress-tracker"
 import { ToastContainer } from "../components/feedback"
 import { I18nextProvider, useTranslation } from 'react-i18next'
@@ -33,6 +33,7 @@ import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-but
 import { useNavHidden } from '@/app/components/sidebar/use-nav-hidden'
 import { SIDEBAR_WIDTH } from "@/app/components/sidebar/constants"
 import { MobileMenuButton } from './components/mobile-menu-button'
+import { useInboxLive } from '@/lib/harness-jobs/use-inbox-live'
 
 // Extra pixels beyond sidebarWidth needed to accommodate the "More Chats"
 // secondary panel that SidebarBase adds when open (it widens the cluster).
@@ -76,14 +77,7 @@ export default function RootLayout({
     <html lang={currentLang} suppressHydrationWarning>
       <head>
         <ThemeScript />
-        <link
-          href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined|Material+Icons"
-          rel="stylesheet"
-        />
-        <link
-          href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=block"
-          rel="stylesheet"
-        />
+        <IconFontScript />
       </head>
       <body style={{ backgroundColor: 'var(--olive-1, #f8f8f5)' }}>
         <I18nextProvider i18n={i18n}>
@@ -146,16 +140,15 @@ function AppLayout({
   // ──────────────────────────────────────────────────────────────────────────
 
   useOnboardingRedirect()
+  // The Needs you count for the badge, the menu dot and the Jobs page; after NotificationProvider opens its socket.
+  useInboxLive()
 
   return (
     <SWRConfig
       value={{
         fetcher: axiosFetcher,
-        onError: (error) => {
-          if (error?.type === 'AUTHENTICATION_ERROR') {
-            logoutAndRedirect()
-          }
-        },
+        // apiClient owns sign-out. A 401 that reaches a hook came back after a successful refresh: a retry cannot fix it and costs a refresh.
+        shouldRetryOnError: (error) => error?.statusCode !== 401,
       }}
     >
       <NotificationProvider />

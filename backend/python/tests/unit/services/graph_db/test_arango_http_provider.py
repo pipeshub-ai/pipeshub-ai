@@ -22,6 +22,7 @@ Tests cover:
 - get_records_by_record_ids: success, empty, exception
 """
 
+import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -36,6 +37,7 @@ from app.services.graph_db.arango.arango_http_provider import (
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.common.team_grant_role import aql_team_grant_role
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
+from tests.support.log_capture import failure_line
 
 
 def _grant_asked(user_key, org_id, *, node_ids=(), **_kwargs):
@@ -791,7 +793,7 @@ class TestGetGraphUserKeysByMongoUserIds:
         ]
 
         result = await connected_provider.get_graph_user_keys_by_mongo_user_ids(
-            ids, chunk_size=500
+            ids, org_id="org-1", chunk_size=500
         )
 
         assert len(result) == 501
@@ -802,7 +804,7 @@ class TestGetGraphUserKeysByMongoUserIds:
         connected_provider.http_client.execute_aql.return_value = []
         with pytest.raises(ValueError, match="Users not found in graph"):
             await connected_provider.get_graph_user_keys_by_mongo_user_ids(
-                ["507f1f77bcf86cd799439011"], chunk_size=500
+                ["507f1f77bcf86cd799439011"], org_id="org-1", chunk_size=500
             )
 
     @pytest.mark.asyncio
@@ -810,8 +812,26 @@ class TestGetGraphUserKeysByMongoUserIds:
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
         with pytest.raises(Exception, match="fail"):
             await connected_provider.get_graph_user_keys_by_mongo_user_ids(
-                ["507f1f77bcf86cd799439011"], chunk_size=500
+                ["507f1f77bcf86cd799439011"], org_id="org-1", chunk_size=500
             )
+
+    @pytest.mark.asyncio
+    async def test_missing_org_is_refused_not_unscoped(self, connected_provider):
+        """A lookup with no org must not match users of every organisation."""
+        for org in (None, ""):
+            with pytest.raises(ValueError, match="org_id is required"):
+                await connected_provider.get_graph_user_keys_by_mongo_user_ids(
+                    ["m1"], org_id=org, chunk_size=100,
+                )
+        connected_provider.http_client.execute_aql.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_query_always_filters_on_the_org(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = [{"userId": "m1", "_key": "k1"}]
+        await connected_provider.get_graph_user_keys_by_mongo_user_ids(["m1"], org_id="org-1", chunk_size=100)
+        call = connected_provider.http_client.execute_aql.call_args
+        assert "@org_id == null" not in call[0][0]
+        assert call[1]["bind_vars"]["org_id"] == "org-1"
 
 
 # ---------------------------------------------------------------------------
@@ -1330,10 +1350,34 @@ class TestEnsureSchema:
         assert result is False
 
     @pytest.mark.asyncio
+    async def test_ensure_schema_creates_the_extra_node_collections_and_their_indexes(self, connected_provider, monkeypatch) -> None:
+        """A build may add document collections through ``app.edition.extra_node_collections``; they are created with
+        the shared ones, as document collections, and get their persistent indexes."""
+        import app.services.graph_db.arango.arango_http_provider as module
+
+        monkeypatch.setattr(module, "extra_node_collections", lambda: {"extraDocs": (("orgId", "kind"), ("orgId",))})
+        client = connected_provider.http_client
+        client.has_collection = AsyncMock(side_effect=lambda name: name != "extraDocs")
+        client.create_collection = AsyncMock(return_value=True)
+        client.has_graph = AsyncMock(return_value=True)
+        client.ensure_persistent_index = AsyncMock(return_value=True)
+        connected_provider._apply_schema = AsyncMock(return_value=True)
+        connected_provider._ensure_edge_definitions_up_to_date = AsyncMock()
+        connected_provider._ensure_departments_seed = AsyncMock()
+        connected_provider.start_record_schema_poll = MagicMock()
+
+        await connected_provider.ensure_schema()
+
+        client.create_collection.assert_any_call("extraDocs", edge=False, schema=None)
+        client.ensure_persistent_index.assert_any_call("extraDocs", ["orgId", "kind"])
+        client.ensure_persistent_index.assert_any_call("extraDocs", ["orgId"])
+
+    @pytest.mark.asyncio
     async def test_an_apps_schema_not_applied_fails_the_ensure(self, connected_provider) -> None:
         """Every write to an app document is checked against the live schema; a sync whose start is refused does not run."""
         from app.config.constants.arangodb import CollectionNames
 
+        connected_provider.http_client.apps_guard = None  # a client with no apps-schema guard writes the schema itself
         connected_provider.http_client.has_collection = AsyncMock(return_value=True)
         connected_provider.http_client.has_graph = AsyncMock(return_value=True)
         connected_provider.http_client.update_collection_schema = AsyncMock(
@@ -1347,6 +1391,7 @@ class TestEnsureSchema:
     async def test_an_apps_collection_not_created_fails_the_ensure(self, connected_provider) -> None:
         from app.config.constants.arangodb import CollectionNames
 
+        connected_provider.http_client.apps_guard = None  # a client with no apps-schema guard writes the schema itself
         connected_provider.http_client.has_collection = AsyncMock(return_value=False)
         connected_provider.http_client.create_collection = AsyncMock(
             side_effect=lambda name, **_: name != CollectionNames.APPS.value
@@ -1362,6 +1407,7 @@ class TestEnsureSchema:
         the schema is applied as to an existing collection, and the ensure fails while it cannot be."""
         from app.config.constants.arangodb import CollectionNames
 
+        connected_provider.http_client.apps_guard = None  # a client with no apps-schema guard writes the schema itself
         connected_provider.http_client.has_collection = AsyncMock(return_value=False)
         connected_provider.http_client.create_collection = AsyncMock(return_value=True)      # the 409 answer
         connected_provider.http_client.has_graph = AsyncMock(return_value=True)
@@ -2543,46 +2589,6 @@ class TestDeleteRecordByExternalId:
 
 
 # ---------------------------------------------------------------------------
-# get_key_by_external_file_id
-# ---------------------------------------------------------------------------
-
-
-class TestGetKeyByExternalFileIdNotFoundAndError:
-    @pytest.mark.asyncio
-    @pytest.mark.asyncio
-    async def test_not_found(self, connected_provider):
-        connected_provider.http_client.execute_aql.return_value = []
-        result = await connected_provider.get_key_by_external_file_id("missing")
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        connected_provider.http_client.execute_aql.side_effect = Exception("fail")
-        result = await connected_provider.get_key_by_external_file_id("ext_f1")
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
-# get_key_by_external_message_id
-# ---------------------------------------------------------------------------
-
-
-class TestGetKeyByExternalMessageIdNotFoundAndError:
-    @pytest.mark.asyncio
-    @pytest.mark.asyncio
-    async def test_not_found(self, connected_provider):
-        connected_provider.http_client.execute_aql.return_value = []
-        result = await connected_provider.get_key_by_external_message_id("missing")
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        connected_provider.http_client.execute_aql.side_effect = Exception("fail")
-        result = await connected_provider.get_key_by_external_message_id("ext_m1")
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
 # get_message_id_header_by_key
 # ---------------------------------------------------------------------------
 
@@ -2606,30 +2612,6 @@ class TestGetMessageIdHeaderByKeyNotFoundAndError:
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
         result = await connected_provider.get_message_id_header_by_key("r1", "mails")
         assert result is None
-
-
-# ---------------------------------------------------------------------------
-# get_related_mails_by_message_id_header
-# ---------------------------------------------------------------------------
-
-
-class TestGetRelatedMailsByMessageIdHeaderNotFoundAndError:
-    @pytest.mark.asyncio
-    @pytest.mark.asyncio
-    async def test_not_found(self, connected_provider):
-        connected_provider.http_client.execute_aql.return_value = []
-        result = await connected_provider.get_related_mails_by_message_id_header(
-            "<msg@test.com>", "r1", "mails"
-        )
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        connected_provider.http_client.execute_aql.side_effect = Exception("fail")
-        result = await connected_provider.get_related_mails_by_message_id_header(
-            "<msg@test.com>", "r1", "mails"
-        )
-        assert result == []
 
 
 # ---------------------------------------------------------------------------
@@ -3517,6 +3499,8 @@ class TestUpdateQueuedDuplicatesStatus:
         with patch.object(
             connected_provider, "batch_update_nodes",
             new_callable=AsyncMock, return_value=True
+        ), patch.object(
+            connected_provider, "_promote_queued_copies", new=AsyncMock(side_effect=lambda updates, txn=None: len(updates)),
         ):
             result = await connected_provider.update_queued_duplicates_status(
                 "r1", "COMPLETED", virtual_record_id="vr1"
@@ -3532,16 +3516,19 @@ class TestUpdateQueuedDuplicatesStatus:
         with patch.object(
             connected_provider, "batch_update_nodes",
             new_callable=AsyncMock, return_value=True
-        ) as mock_update:
+        ) as mock_update, patch.object(
+            connected_provider, "_promote_queued_copies", new=AsyncMock(side_effect=lambda updates, txn=None: len(updates)),
+        ) as promote:
             await connected_provider.update_queued_duplicates_status("r1", "EMPTY")
             # Verify extraction status is EMPTY
-            call_args = mock_update.call_args[0][0]
-            assert call_args[0]["extractionStatus"] == "EMPTY"
-            # The primary's reconcile flag rides in the same write as the promotion.
-            assert call_args[-1]["id"] == "r1"
-            assert call_args[-1]["duplicateReconcilePending"] is True
-            assert call_args[-1]["duplicateReconcileAttempts"] == 0
-            assert call_args[-1]["duplicateReconcileDueAt"] > 0
+            assert promote.call_args[0][0][0]["extractionStatus"] == "EMPTY"
+            # The primary's reconcile flag is written first, in a batch of its own: a crash between the two writes leaves a marker
+            # that finds no copies, never copies promoted with nothing to trigger their taxonomy.
+            flag = mock_update.call_args[0][0][0]
+            assert flag["id"] == "r1"
+            assert flag["duplicateReconcilePending"] is True
+            assert flag["duplicateReconcileAttempts"] == 0
+            assert flag["duplicateReconcileDueAt"] > 0
 
     @pytest.mark.asyncio
     async def test_failed_promotion_sets_no_reconcile_flag(self, connected_provider) -> None:
@@ -3554,9 +3541,12 @@ class TestUpdateQueuedDuplicatesStatus:
         with patch.object(
             connected_provider, "batch_update_nodes",
             new_callable=AsyncMock, return_value=True
-        ) as mock_update:
+        ) as mock_update, patch.object(
+            connected_provider, "_promote_queued_copies", new=AsyncMock(side_effect=lambda updates, txn=None: len(updates)),
+        ) as promote:
             await connected_provider.update_queued_duplicates_status("r1", "FAILED")
-            payload = mock_update.call_args[0][0]
+            mock_update.assert_not_awaited()
+            payload = promote.call_args[0][0]
             assert all("duplicateReconcilePending" not in row for row in payload)
             assert [row["id"] for row in payload] == ["r2"]
 
@@ -3569,13 +3559,15 @@ class TestUpdateQueuedDuplicatesStatus:
         with patch.object(
             connected_provider, "batch_update_nodes",
             new_callable=AsyncMock, return_value=True
-        ) as mock_update:
+        ), patch.object(
+            connected_provider, "_promote_queued_copies", new=AsyncMock(side_effect=lambda updates, txn=None: len(updates)),
+        ) as promote:
             await connected_provider.update_queued_duplicates_status(
                 "r1",
                 "FAILED",
                 reason="Primary duplicate indexing failed: timeout",
             )
-            call_args = mock_update.call_args[0][0]
+            call_args = promote.call_args[0][0]
             assert call_args[0]["reason"] == "Primary duplicate indexing failed: timeout"
 
     @pytest.mark.asyncio
@@ -8190,14 +8182,13 @@ class TestGetAgentsByModelKey:
             assert result[0]["name"] == "Agent A"
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty_list(self, connected_provider):
-        # get_agents_by_model_key swallows errors and returns [] (mirrors web-search).
+    async def test_exception_raises(self, connected_provider):
+        # A model delete is refused on this answer, so a failed read raises instead of reading as no agents.
         with patch.object(
             connected_provider, "execute_query",
             new_callable=AsyncMock, side_effect=Exception("db down")
-        ):
-            result = await connected_provider.get_agents_by_model_key("org1", "model_key_1")
-            assert result == []
+        ), pytest.raises(Exception, match="db down"):
+            await connected_provider.get_agents_by_model_key("org1", "model_key_1")
 
 
 # ---------------------------------------------------------------------------
@@ -10127,24 +10118,6 @@ class TestValidateFolderExistsInKb:
 # ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
-# list_kb_records
-# ---------------------------------------------------------------------------
-
-
-class TestListKbRecords:
-    @pytest.mark.asyncio
-    async def test_no_permission(self, connected_provider):
-        with patch.object(
-            connected_provider, "get_user_kb_permission",
-            new_callable=AsyncMock, return_value=None
-        ):
-            records, total, filters = await connected_provider.list_kb_records(
-                "kb1", "u1", "org1", 0, 10, None, None, None, None, None, None, None, "recordName", "asc"
-            )
-            assert records == []
-            assert total == 0
-
 class TestCheckRecordAccessWithDetails:
     @pytest.mark.asyncio
     async def test_user_not_found(self, connected_provider):
@@ -11454,7 +11427,7 @@ class TestValidateFolderCreation:
         result = await connected_provider._validate_folder_creation("kb1", "u1")
         assert result["valid"] is False
         assert result["code"] == 404
-        assert "kb1" in result["reason"]
+        assert result["reason"] == "Knowledge base not found"
 
     @pytest.mark.asyncio
     async def test_permission_check_falls_back_to_id_when_kb_name_unavailable(self, connected_provider):
@@ -11828,86 +11801,6 @@ class TestListKbPermissionsExtended:
 
 
 # ---------------------------------------------------------------------------
-# list_kb_records
-# ---------------------------------------------------------------------------
-
-
-class TestListKbRecordsExtended:
-    @pytest.mark.asyncio
-    async def test_success(self, connected_provider):
-        connected_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
-        connected_provider.execute_query = AsyncMock(
-            side_effect=[
-                [{"records": [{"id": "r1", "recordName": "Rec1"}], "total": 1}],
-                [[{"id": "f1", "name": "Folder"}]],
-            ]
-        )
-        records, total, filters = await connected_provider.list_kb_records(
-            "kb1", "u1", "org1", skip=0, limit=10,
-            search=None, record_types=None, origins=None,
-            connectors=None, indexing_status=None,
-            date_from=None, date_to=None,
-            sort_by="recordName", sort_order="asc"
-        )
-        assert len(records) == 1
-
-    @pytest.mark.asyncio
-    async def test_no_permission(self, connected_provider):
-        connected_provider.get_user_kb_permission = AsyncMock(return_value=None)
-        records, total, filters = await connected_provider.list_kb_records(
-            "kb1", "u1", "org1", skip=0, limit=10,
-            search=None, record_types=None, origins=None,
-            connectors=None, indexing_status=None,
-            date_from=None, date_to=None,
-            sort_by="recordName", sort_order="asc"
-        )
-        assert records == []
-        assert total == 0
-
-    @pytest.mark.asyncio
-    async def test_with_folder_filter(self, connected_provider):
-        connected_provider.get_user_kb_permission = AsyncMock(return_value="WRITER")
-        connected_provider.execute_query = AsyncMock(
-            side_effect=[[{"records": [], "total": 0}], [[]]]
-        )
-        records, total, filters = await connected_provider.list_kb_records(
-            "kb1", "u1", "org1", skip=0, limit=10,
-            search=None, record_types=None, origins=None,
-            connectors=None, indexing_status=None,
-            date_from=None, date_to=None,
-            sort_by="recordName", sort_order="asc", folder_id="f1"
-        )
-        assert records == []
-
-    @pytest.mark.asyncio
-    async def test_with_all_filters(self, connected_provider):
-        connected_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
-        connected_provider.execute_query = AsyncMock(
-            side_effect=[[{"records": [], "total": 0}], [[]]]
-        )
-        records, total, filters = await connected_provider.list_kb_records(
-            "kb1", "u1", "org1", skip=0, limit=10,
-            search="test", record_types=["FILE"], origins=["UPLOAD"],
-            connectors=["KNOWLEDGE_BASE"], indexing_status=["COMPLETED"],
-            date_from=1000, date_to=9999,
-            sort_by="recordName", sort_order="desc"
-        )
-        assert records == []
-
-    @pytest.mark.asyncio
-    async def test_a_failed_read_raises(self, connected_provider):
-        connected_provider.get_user_kb_permission = AsyncMock(side_effect=Exception("fail"))
-        with pytest.raises(Exception, match="fail"):
-            await connected_provider.list_kb_records(
-                "kb1", "u1", "org1", skip=0, limit=10,
-                search=None, record_types=None, origins=None,
-                connectors=None, indexing_status=None,
-                date_from=None, date_to=None,
-                sort_by="recordName", sort_order="asc"
-            )
-
-
-# ---------------------------------------------------------------------------
 # _validation_error
 # ---------------------------------------------------------------------------
 
@@ -12043,15 +11936,14 @@ class TestValidateFolderForUpload:
         connected_provider.get_and_validate_folder_in_kb.assert_awaited_once_with("kb1", "f1")
 
     @pytest.mark.asyncio
-    async def test_folder_not_in_kb_returns_404_with_names(self, connected_provider):
-        """Folder that exists globally but not in this KB: 404 with KB/folder names."""
+    async def test_folder_not_in_kb_names_the_kb_not_the_folder(self, connected_provider):
+        """Folder that exists but not in this KB: 404 naming the KB, not the folder."""
         connected_provider.get_user_by_user_id = AsyncMock(
             return_value={"_key": "uk1", "userId": "u1"}
         )
         connected_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         connected_provider.get_and_validate_folder_in_kb = AsyncMock(return_value=None)
         connected_provider._fetch_kb_name = AsyncMock(return_value="Docs KB")
-        connected_provider._fetch_record_name = AsyncMock(return_value="Reports")
 
         result = await connected_provider.validate_folder_for_upload(
             kb_id="kb1", folder_id="other-kb-folder", user_id="u1", org_id="org1"
@@ -12059,20 +11951,21 @@ class TestValidateFolderForUpload:
 
         assert result["valid"] is False
         assert result["code"] == 404
-        assert "other-kb-folder" in result["reason"]
-        assert "Docs KB" in result["reason"]
-        assert "Reports" in result["reason"]
+        assert "other-kb-folder" not in result["reason"]
+        assert result["reason"] == (
+            "The folder was not found in knowledge base 'Docs KB' (kb1). "
+            "The folder may not exist or may belong to a different knowledge base."
+        )
 
     @pytest.mark.asyncio
-    async def test_folder_not_in_kb_falls_back_to_ids_when_names_unavailable(self, connected_provider):
-        """When name lookups return None the reason falls back to bare IDs."""
+    async def test_folder_not_in_kb_falls_back_to_the_kb_id_when_its_name_is_unavailable(self, connected_provider):
+        """With no KB name, the KB id stands in; the folder id the client sent is not quoted."""
         connected_provider.get_user_by_user_id = AsyncMock(
             return_value={"_key": "uk1", "userId": "u1"}
         )
         connected_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         connected_provider.get_and_validate_folder_in_kb = AsyncMock(return_value=None)
         connected_provider._fetch_kb_name = AsyncMock(return_value=None)
-        connected_provider._fetch_record_name = AsyncMock(return_value=None)
 
         result = await connected_provider.validate_folder_for_upload(
             kb_id="kb1", folder_id="ghost-folder", user_id="u1", org_id="org1"
@@ -12080,8 +11973,11 @@ class TestValidateFolderForUpload:
 
         assert result["valid"] is False
         assert result["code"] == 404
-        assert "ghost-folder" in result["reason"]
-        assert "kb1" in result["reason"]
+        assert "ghost-folder" not in result["reason"]
+        assert result["reason"] == (
+            "The folder was not found in knowledge base kb1. "
+            "The folder may not exist or may belong to a different knowledge base."
+        )
 
     @pytest.mark.asyncio
     async def test_no_role_returns_403_with_no_access_message(self, connected_provider):
@@ -12098,7 +11994,7 @@ class TestValidateFolderForUpload:
 
         assert result["valid"] is False
         assert result["code"] == 404
-        assert "kb1" in result["reason"]
+        assert result["reason"] == "Knowledge base not found"
 
     @pytest.mark.asyncio
     async def test_reader_role_returns_403_with_role_in_message(self, connected_provider):
@@ -12859,10 +12755,10 @@ class TestDeleteTeamMemberEdges:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_a_failed_write_raises(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.delete_team_member_edges("t1", ["u1"])
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.delete_team_member_edges("t1", ["u1"])
 
 
 # ---------------------------------------------------------------------------
@@ -12882,12 +12778,12 @@ class TestBatchUpdateTeamMemberRoles:
         assert len(result) == 1
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_a_failed_write_raises(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.batch_update_team_member_roles(
-            "t1", [{"userId": "u1", "role": "WRITER"}], 1000
-        )
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.batch_update_team_member_roles(
+                "t1", [{"userId": "u1", "role": "WRITER"}], 1000
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -14926,9 +14822,7 @@ class TestHardDeleteAgent:
             [{"_key": "e1"}],
             # deleted_toolsets from step 7
             [{"_key": "ts1"}],
-            # mcp_server_ids (no MCP servers attached)
-            [],
-            # deleted_mcp_server_edges (none)
+            # agent -> MCP server edges removed (none attached)
             [],
             # deleted_permissions from step 8
             [{"_key": "p1"}, {"_key": "p2"}],
@@ -14951,8 +14845,7 @@ class TestHardDeleteAgent:
             [],    # no knowledge_ids
             [],    # no toolset_ids
             [],    # no toolset edges deleted
-            [],    # no mcp_server_ids
-            [],    # no deleted_mcp_server_edges
+            [],    # no agent -> MCP server edges (none removed, no server re-checked)
             [],    # no permissions
             [{"_key": "a1"}],  # agent deleted
         ])
@@ -14972,8 +14865,7 @@ class TestHardDeleteAgent:
             [],                       # no deleted_knowledge (still referenced)
             [],                       # no toolsets
             [],                       # no toolset edges
-            [],                       # no mcp_server_ids
-            [],                       # no deleted_mcp_server_edges
+            [],                       # no agent -> MCP server edges (none removed, no server re-checked)
             [],                       # no permissions
             [{"_key": "a1"}],         # agent deleted
         ])
@@ -14992,8 +14884,7 @@ class TestHardDeleteAgent:
             [],                      # no deleted_tools (still referenced)
             [{"_key": "e1"}],        # toolset edges deleted
             [],                      # no deleted_toolsets (still referenced)
-            [],                      # no mcp_server_ids
-            [],                      # no deleted_mcp_server_edges
+            [],                      # no agent -> MCP server edges (none removed, no server re-checked)
             [],                      # no permissions
             [{"_key": "a1"}],        # agent deleted
         ])
@@ -15003,6 +14894,120 @@ class TestHardDeleteAgent:
         assert result["tools_deleted"] == 0
         assert result["toolsets_deleted"] == 0
         assert result["mcp_servers_deleted"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_server_is_rechecked_after_the_agents_own_links_are_gone(self, connected_provider) -> None:
+        """The agent's server links go first; every server they named is then re-checked, so a server another agent let go of
+        concurrently (its link already removed) goes with this delete, tools and all."""
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [],                                  # no knowledge
+            [],                                  # no toolsets
+            [],                                  # no toolset edges
+            ["agentMcpServers/s1"],              # the agent's server links, removed
+            ["agentMcpServers/s1"],              # re-check: no agent is attached to s1 any more
+            ["agentTools/t1"],                   # s1's tool links, removed
+            [{"_key": "t1"}],                    # t1, held by no other server
+            [{"_key": "s1"}],                    # s1
+            [],                                  # no permissions
+            [{"_key": "a1"}],                    # agent deleted
+        ])
+        connected_provider.http_client.begin_transaction = AsyncMock(return_value="tx1")
+
+        result = await connected_provider.hard_delete_agent("a1")
+
+        queries = [c.args[0] for c in connected_provider.execute_query.await_args_list]
+        assert "REMOVE edge IN agentHasMcpServer" in queries[3] and "RETURN OLD._to" in queries[3]
+        assert connected_provider.execute_query.await_args_list[4].kwargs["bind_vars"] == {"server_ids": ["agentMcpServers/s1"]}
+        assert (result["mcp_servers_deleted"], result["tools_deleted"], result["edges_deleted"], result["agents_deleted"]) == (1, 1, 2, 1)
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_runs_the_mcp_cleanup_again_in_a_fresh_transaction(self, connected_provider) -> None:
+        """The MCP cleanup runs in a stream transaction of its own that holds the agent-to-server links exclusively; a
+        write-write conflict with another writer aborts it, and it is run again from the start."""
+        from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+
+        conflict = ArangoQueryError("Query failed", 409, '{"code":409,"error":true,"errorMessage":"write-write conflict","errorNum":1200}')
+        connected_provider.http_client.begin_transaction = AsyncMock(side_effect=["tx1", "tx2"])
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [],                                  # no knowledge
+            [],                                  # no toolsets
+            [],                                  # no toolset edges
+            ["agentMcpServers/s1"],              # tx1: the agent's server links, removed
+            ["agentMcpServers/s1"],              # tx1: s1 is orphaned
+            conflict,                            # tx1: another writer holds s1's tool links
+            ["agentMcpServers/s1"],              # tx2 (tx1 rolled back): the links, removed again
+            ["agentMcpServers/s1"],              # tx2: s1 is orphaned
+            ["agentTools/t1"],                   # tx2: s1's tool links
+            [{"_key": "t1"}],                    # tx2: t1, held by no other server
+            [{"_key": "s1"}],                    # tx2: s1
+            [],                                  # no permissions
+            [{"_key": "a1"}],                    # agent deleted
+        ])
+
+        with patch("app.services.graph_db.arango.arango_http_provider.asyncio.sleep", new=AsyncMock()):
+            result = await connected_provider.hard_delete_agent("a1")
+
+        assert (result["agents_deleted"], result["mcp_servers_deleted"], result["tools_deleted"]) == (1, 1, 1)
+        connected_provider.http_client.abort_transaction.assert_awaited_once_with("tx1")
+        connected_provider.http_client.commit_transaction.assert_awaited_once_with("tx2")
+        begin = connected_provider.http_client.begin_transaction.await_args
+        assert begin.kwargs["exclusive"] == [CollectionNames.AGENT_HAS_MCP_SERVER.value]
+        assert [c.kwargs["transaction"] for c in connected_provider.execute_query.await_args_list[3:11]] == ["tx1"] * 3 + ["tx2"] * 5
+
+    @pytest.mark.asyncio
+    async def test_a_lock_timeout_taking_the_mcp_transaction_is_run_again(self, connected_provider) -> None:
+        """Another delete holds the agent-to-server links: taking them times out, and the cleanup is tried again. Nothing is
+        aborted for the attempt that never got a transaction."""
+        from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+
+        timeout = ArangoQueryError("Begin transaction failed", 409, '{"code":409,"error":true,"errorMessage":"timeout waiting to lock","errorNum":18}')
+        connected_provider.http_client.begin_transaction = AsyncMock(side_effect=[timeout, "tx2"])
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [], [], [],                          # no knowledge, toolsets, toolset edges
+            [],                                  # tx2: the agent has no server links
+            [],                                  # no permissions
+            [{"_key": "a1"}],                    # agent deleted
+        ])
+
+        with patch("app.services.graph_db.arango.arango_http_provider.asyncio.sleep", new=AsyncMock()):
+            result = await connected_provider.hard_delete_agent("a1")
+
+        assert result["agents_deleted"] == 1
+        assert connected_provider.http_client.begin_transaction.await_count == 2
+        connected_provider.http_client.abort_transaction.assert_not_awaited()
+        connected_provider.http_client.commit_transaction.assert_awaited_once_with("tx2")
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_mcp_cleanup_aborts_its_transaction(self, connected_provider) -> None:
+        """A cancellation is not an Exception: the transaction holding the links exclusively is still aborted, and the
+        cancellation goes on to the caller."""
+        connected_provider.http_client.begin_transaction = AsyncMock(return_value="tx1")
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [], [], [],                          # no knowledge, toolsets, toolset edges
+            asyncio.CancelledError(),            # cancelled inside the cleanup
+        ])
+
+        with pytest.raises(asyncio.CancelledError):
+            await connected_provider.hard_delete_agent("a1")
+
+        connected_provider.http_client.abort_transaction.assert_awaited_once_with("tx1")
+        connected_provider.http_client.commit_transaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_mcp_cleanup_keeps_the_agents_links_for_a_retry(self, connected_provider) -> None:
+        """A cleanup that fails after the agent's links were removed is rolled back with them: a later delete finds them again."""
+        connected_provider.http_client.begin_transaction = AsyncMock(return_value="tx1")
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [], [], [],                          # no knowledge, toolsets, toolset edges
+            ["agentMcpServers/s1"],              # the agent's server links, removed in tx1
+            RuntimeError("server gone"),         # the cleanup fails
+        ])
+
+        result = await connected_provider.hard_delete_agent("a1")
+
+        assert result["agents_deleted"] == 0     # the delete failed and said so; nothing of it was committed
+        connected_provider.http_client.abort_transaction.assert_awaited_once_with("tx1")
+        connected_provider.http_client.commit_transaction.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception_returns_zeros(self, connected_provider):
@@ -15022,8 +15027,7 @@ class TestHardDeleteAgent:
             [],                      # no knowledge
             [],                      # no toolsets
             [{"_key": "te1"}],       # toolset edges deleted
-            [],                      # no mcp_server_ids
-            [],                      # no deleted_mcp_server_edges
+            [],                      # no agent -> MCP server edges (none removed, no server re-checked)
             [{"_key": "p1"}, {"_key": "p2"}, {"_key": "p3"}],  # 3 permissions deleted
             [{"_key": "a1"}],        # agent deleted
         ])
@@ -16662,13 +16666,15 @@ class TestUpdateIndexingStatusForRecordIds:
         connected_provider.logger.error.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_a_failed_statement_is_logged_not_raised(self, connected_provider):
+    async def test_a_failed_statement_is_logged_not_raised(self, connected_provider, caplog):
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("Query failed"))
-        connected_provider.logger = MagicMock()
+        connected_provider.logger = logging.getLogger("tests.arango_provider.update_indexing_status")
 
-        await connected_provider.update_indexing_status_for_record_ids(["rec1"], "QUEUED")
+        with caplog.at_level(logging.DEBUG, logger=connected_provider.logger.name):
+            await connected_provider.update_indexing_status_for_record_ids(["rec1"], "QUEUED")
 
-        connected_provider.logger.error.assert_called_once()
+        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "Query failed")
+        assert fields["op"] == "update_indexing_status_for_record_ids"
 
 class TestEnsureEdgeDefinitionsUpToDate:
     """Tests for _ensure_edge_definitions_up_to_date method."""
@@ -16939,17 +16945,18 @@ class TestEnsureEdgeDefinitionsUpToDate:
         assert "Failed to update edge definition" in warning_msg
 
     @pytest.mark.asyncio
-    async def test_exception_during_update_logs_warning(self, connected_provider):
-        """Should log warning and continue when exception occurs."""
+    async def test_exception_during_update_is_logged_and_skipped(self, connected_provider, caplog):
+        """A failed migration is logged once, without its text, and startup goes on."""
         connected_provider.http_client.get_graph = AsyncMock(
             side_effect=Exception("Connection error")
         )
-        
-        await connected_provider._ensure_edge_definitions_up_to_date("knowledge_graph")
-        
-        connected_provider.logger.warning.assert_called_once()
-        warning_msg = connected_provider.logger.warning.call_args[0][0]
-        assert "Edge definition migration failed" in warning_msg
+        connected_provider.logger = logging.getLogger("tests.arango_provider.edge_definitions")
+
+        with caplog.at_level(logging.DEBUG, logger=connected_provider.logger.name):
+            await connected_provider._ensure_edge_definitions_up_to_date("knowledge_graph")
+
+        fields = failure_line(caplog.records, "graph.provider.step_failed", "internal", logging.ERROR, "Connection error")
+        assert (fields["op"], fields["step"]) == ("_ensure_edge_definitions_up_to_date", "edge_definition_migration")
 
     @pytest.mark.asyncio
     async def test_multiple_edge_definitions_processed(self, connected_provider):
@@ -17208,16 +17215,16 @@ class TestDeleteKbHubApp:
         assert delete_call[1]["bind_vars"]["hub_app_key"] == "knowledgeBase_org123"
 
     @pytest.mark.asyncio
-    async def test_exception_during_safety_check_returns_false(self, connected_provider):
+    async def test_exception_during_safety_check_returns_false(self, connected_provider, caplog):
         """Should return False and log error when safety check fails."""
+        connected_provider.logger = logging.getLogger("tests.arango_provider.swallowed")
         connected_provider.execute_query = AsyncMock(side_effect=Exception("Query failed"))
         
         result = await connected_provider.delete_kb_hub_app("org123")
         
         assert result is False
-        connected_provider.logger.error.assert_called_once()
-        error_msg = connected_provider.logger.error.call_args[0][0]
-        assert "Failed to delete legacy KB hub app" in error_msg
+        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "Query failed")
+        assert fields["op"] == "delete_kb_hub_app"
 
     @pytest.mark.asyncio
     async def test_exception_during_edge_deletion_returns_false(self, connected_provider):
@@ -17370,8 +17377,9 @@ class TestFindSlackBurstRecordByTs:
         assert call_args[1]["txn_id"] == "txn_abc123"
 
     @pytest.mark.asyncio
-    async def test_exception_logged_and_returns_none(self, connected_provider):
+    async def test_exception_logged_and_returns_none(self, connected_provider, caplog):
         """Should log error and return None when exception occurs."""
+        connected_provider.logger = logging.getLogger("tests.arango_provider.swallowed")
         connected_provider.http_client.execute_aql = AsyncMock(
             side_effect=Exception("Database error")
         )
@@ -17383,9 +17391,8 @@ class TestFindSlackBurstRecordByTs:
         )
         
         assert result is None
-        connected_provider.logger.error.assert_called_once()
-        error_msg = connected_provider.logger.error.call_args[0][0]
-        assert "find_slack_burst_record_by_ts" in error_msg
+        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "Database error")
+        assert fields["op"] == "find_slack_burst_record_by_ts"
 
     @pytest.mark.asyncio
     async def test_multiple_candidates_returns_first(self, connected_provider):
@@ -17484,8 +17491,9 @@ class TestExecuteLocalFsRecordDeletion:
         connected_provider._delete_main_record.assert_called_once_with("rec1", "txn_123")
 
     @pytest.mark.asyncio
-    async def test_event_payload_creation_failure_handled(self, connected_provider):
+    async def test_event_payload_creation_failure_handled(self, connected_provider, caplog):
         """Should handle event payload creation failure gracefully."""
+        connected_provider.logger = logging.getLogger("tests.arango_provider.local_fs_deletion")
         connected_provider.http_client.get_document = AsyncMock(return_value=None)
         connected_provider._delete_local_fs_edges = AsyncMock()
         connected_provider._delete_main_record = AsyncMock()
@@ -17493,14 +17501,16 @@ class TestExecuteLocalFsRecordDeletion:
             side_effect=Exception("Event creation failed")
         )
         
-        result = await connected_provider._execute_local_fs_record_deletion(
-            record_id="rec1",
-            record={"_key": "rec1"}
-        )
-        
+        with caplog.at_level(logging.DEBUG, logger=connected_provider.logger.name):
+            result = await connected_provider._execute_local_fs_record_deletion(
+                record_id="rec1",
+                record={"_key": "rec1"}
+            )
+
         assert result["success"] is True
         assert result["eventData"] is None
-        connected_provider.logger.error.assert_called_once()
+        fields = failure_line(caplog.records, "graph.provider.step_failed", "internal", logging.ERROR, "Event creation failed")
+        assert (fields["op"], fields["step"]) == ("_execute_local_fs_record_deletion", "deletion_event_payload")
 
     @pytest.mark.asyncio
     async def test_none_event_payload_handled(self, connected_provider):
@@ -17519,8 +17529,9 @@ class TestExecuteLocalFsRecordDeletion:
         assert result["eventData"] is None
 
     @pytest.mark.asyncio
-    async def test_exception_during_deletion_returns_failure(self, connected_provider):
+    async def test_exception_during_deletion_returns_failure(self, connected_provider, caplog):
         """Should return failure dict when exception occurs during deletion."""
+        connected_provider.logger = logging.getLogger("tests.arango_provider.swallowed")
         connected_provider.http_client.get_document = AsyncMock(
             side_effect=Exception("Database error")
         )
@@ -17533,7 +17544,8 @@ class TestExecuteLocalFsRecordDeletion:
         assert result["success"] is False
         assert "reason" in result
         assert "Transaction failed" in result["reason"]
-        connected_provider.logger.error.assert_called()
+        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR)
+        assert fields["op"] == "_execute_local_fs_record_deletion"
 
     @pytest.mark.asyncio
     async def test_event_data_includes_connector_name_and_origin(self, connected_provider):
@@ -17855,8 +17867,9 @@ class TestGetRecordsByRecordGroup:
         connected_provider.http_client.execute_aql.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_invalid_depth_returns_empty_list(self, connected_provider):
+    async def test_invalid_depth_returns_empty_list(self, connected_provider, caplog):
         """Should return empty list and log error for depth < -1."""
+        connected_provider.logger = logging.getLogger("tests.arango_provider.swallowed")
         result = await connected_provider.get_records_by_record_group(
             record_group_id="rg1",
             connector_id="conn1",
@@ -17865,9 +17878,8 @@ class TestGetRecordsByRecordGroup:
         )
         
         assert result == []
-        connected_provider.logger.error.assert_called_once()
-        error_msg = connected_provider.logger.error.call_args[0][0]
-        assert "Failed to retrieve records" in error_msg
+        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR)
+        assert fields["op"] == "get_records_by_record_group"
 
     @pytest.mark.asyncio
     async def test_depth_minus_one_unlimited(self, connected_provider):
@@ -18069,8 +18081,9 @@ class TestGetRecordsByRecordGroup:
         assert call_args[0][2] == "txn_abc"
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty_list(self, connected_provider):
+    async def test_exception_returns_empty_list(self, connected_provider, caplog):
         """Should return empty list and log error on exception."""
+        connected_provider.logger = logging.getLogger("tests.arango_provider.swallowed")
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("Query failed"))
         
         result = await connected_provider.get_records_by_record_group(
@@ -18081,9 +18094,8 @@ class TestGetRecordsByRecordGroup:
         )
         
         assert result == []
-        connected_provider.logger.error.assert_called_once()
-        error_msg = connected_provider.logger.error.call_args[0][0]
-        assert "Failed to retrieve records" in error_msg
+        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "Query failed")
+        assert fields["op"] == "get_records_by_record_group"
 
     @pytest.mark.asyncio
     async def test_creates_typed_records(self, connected_provider):
@@ -18142,121 +18154,6 @@ class TestGetRecordsByRecordGroup:
 
 
 # ---------------------------------------------------------------------------
-# get_key_by_external_file_id & get_key_by_external_message_id
-# ---------------------------------------------------------------------------
-
-
-class TestGetKeyByExternalFileId:
-    """Tests for get_key_by_external_file_id method."""
-
-    @pytest.mark.asyncio
-    async def test_found_returns_key(self, connected_provider):
-        """Should return internal key when external ID found."""
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=["file_key_123"])
-        
-        result = await connected_provider.get_key_by_external_file_id("ext_file_456")
-        
-        assert result == "file_key_123"
-        connected_provider.logger.debug.assert_called()
-
-    @pytest.mark.asyncio
-    async def test_not_found_returns_none(self, connected_provider):
-        """Should return None and log warning when not found."""
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
-        
-        result = await connected_provider.get_key_by_external_file_id("ext_file_999")
-        
-        assert result is None
-        connected_provider.logger.warning.assert_called_once()
-        warning_msg = connected_provider.logger.warning.call_args[0][0]
-        assert "No internal key found" in warning_msg
-
-    @pytest.mark.asyncio
-    async def test_multiple_matches_returns_first(self, connected_provider):
-        """Should return first result when multiple matches found."""
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=["key1", "key2"])
-        
-        result = await connected_provider.get_key_by_external_file_id("ext_file_duplicate")
-        
-        assert result == "key1"
-
-    @pytest.mark.asyncio
-    async def test_exception_returns_none(self, connected_provider):
-        """Should return None and log error on exception."""
-        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("DB error"))
-        
-        result = await connected_provider.get_key_by_external_file_id("ext_file_err")
-        
-        assert result is None
-        connected_provider.logger.error.assert_called_once()
-        error_msg = connected_provider.logger.error.call_args[0][0]
-        assert "Failed to retrieve internal key" in error_msg
-
-    @pytest.mark.asyncio
-    async def test_transaction_support(self, connected_provider):
-        """Should pass transaction ID to execute_aql."""
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=["key"])
-        
-        await connected_provider.get_key_by_external_file_id("ext_file", transaction="txn_123")
-        
-        call_args = connected_provider.http_client.execute_aql.call_args
-        assert call_args[1]["txn_id"] == "txn_123"
-
-
-class TestGetKeyByExternalMessageId:
-    """Tests for get_key_by_external_message_id method."""
-
-    @pytest.mark.asyncio
-    async def test_found_returns_key(self, connected_provider):
-        """Should return internal key when external message ID found."""
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=["msg_key_789"])
-        
-        result = await connected_provider.get_key_by_external_message_id("ext_msg_123")
-        
-        assert result == "msg_key_789"
-        connected_provider.logger.debug.assert_called()
-
-    @pytest.mark.asyncio
-    async def test_not_found_returns_none(self, connected_provider):
-        """Should return None and log warning when not found."""
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
-        
-        result = await connected_provider.get_key_by_external_message_id("ext_msg_999")
-        
-        assert result is None
-        connected_provider.logger.warning.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_multiple_matches_returns_first(self, connected_provider):
-        """Should return first result when multiple matches found."""
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=["msg1", "msg2"])
-        
-        result = await connected_provider.get_key_by_external_message_id("ext_msg_dup")
-        
-        assert result == "msg1"
-
-    @pytest.mark.asyncio
-    async def test_exception_returns_none(self, connected_provider):
-        """Should return None and log error on exception."""
-        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("DB error"))
-        
-        result = await connected_provider.get_key_by_external_message_id("ext_msg_err")
-        
-        assert result is None
-        connected_provider.logger.error.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_transaction_support(self, connected_provider):
-        """Should pass transaction ID to execute_aql."""
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=["key"])
-        
-        await connected_provider.get_key_by_external_message_id("ext_msg", transaction="txn_456")
-        
-        call_args = connected_provider.http_client.execute_aql.call_args
-        assert call_args[1]["txn_id"] == "txn_456"
-
-
-# ---------------------------------------------------------------------------
 # get_related_records_by_relation_type, get_message_id_header_by_key, etc.
 # ---------------------------------------------------------------------------
 
@@ -18302,8 +18199,9 @@ class TestGetMessageIdHeaderByKey:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self, connected_provider):
+    async def test_exception_returns_none(self, connected_provider, caplog):
         """Should return None and log error on exception."""
+        connected_provider.logger = logging.getLogger("tests.arango_provider.swallowed")
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("DB error"))
         
         result = await connected_provider.get_message_id_header_by_key(
@@ -18312,7 +18210,8 @@ class TestGetMessageIdHeaderByKey:
         )
         
         assert result is None
-        connected_provider.logger.error.assert_called_once()
+        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "DB error")
+        assert fields["op"] == "get_message_id_header_by_key"
 
     @pytest.mark.asyncio
     async def test_transaction_support(self, connected_provider):
@@ -18327,66 +18226,6 @@ class TestGetMessageIdHeaderByKey:
         
         call_args = connected_provider.http_client.execute_aql.call_args
         assert call_args[1]["txn_id"] == "txn_abc"
-
-
-class TestGetRelatedMailsByMessageIdHeader:
-    """Tests for get_related_mails_by_message_id_header method."""
-
-    @pytest.mark.asyncio
-    async def test_found_returns_keys(self, connected_provider):
-        """Should return list of keys when related mails found."""
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=["mail2", "mail3"])
-        
-        result = await connected_provider.get_related_mails_by_message_id_header(
-            message_id_header="<msg123@example.com>",
-            exclude_key="mail1",
-            collection="mails"
-        )
-        
-        assert len(result) == 2
-        assert "mail2" in result
-
-    @pytest.mark.asyncio
-    async def test_no_matches_returns_empty_list(self, connected_provider):
-        """Should return empty list when no related mails found."""
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
-        
-        result = await connected_provider.get_related_mails_by_message_id_header(
-            message_id_header="<msg999@example.com>",
-            exclude_key="mail1",
-            collection="mails"
-        )
-        
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_exception_returns_empty_list(self, connected_provider):
-        """Should return empty list and log error on exception."""
-        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("DB error"))
-        
-        result = await connected_provider.get_related_mails_by_message_id_header(
-            message_id_header="<msg@ex.com>",
-            exclude_key="mail1",
-            collection="mails"
-        )
-        
-        assert result == []
-        connected_provider.logger.error.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_transaction_support(self, connected_provider):
-        """Should pass transaction ID to execute_aql."""
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
-        
-        await connected_provider.get_related_mails_by_message_id_header(
-            message_id_header="<msg@ex.com>",
-            exclude_key="mail1",
-            collection="mails",
-            transaction="txn_def"
-        )
-        
-        call_args = connected_provider.http_client.execute_aql.call_args
-        assert call_args[1]["txn_id"] == "txn_def"
 
 
 # ---------------------------------------------------------------------------
@@ -18604,8 +18443,9 @@ class TestMigrateAgentHubKnowledge:
         assert nodes[0]["filters"] == "{}"
 
     @pytest.mark.asyncio
-    async def test_exception_returns_error_result(self, connected_provider):
+    async def test_exception_returns_error_result(self, connected_provider, caplog):
         """Should return error result on exception."""
+        connected_provider.logger = logging.getLogger("tests.arango_provider.swallowed")
         connected_provider.execute_query = AsyncMock(side_effect=Exception("DB error"))
         
         result = await connected_provider.migrate_agent_hub_knowledge("org123")
@@ -18614,7 +18454,8 @@ class TestMigrateAgentHubKnowledge:
         assert result["knowledge_nodes_created"] == 0
         assert "error" in result
         assert "DB error" in result["error"]
-        connected_provider.logger.error.assert_called_once()
+        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR)
+        assert fields["op"] == "migrate_agent_hub_knowledge"
 
     @pytest.mark.asyncio
     async def test_skips_rows_with_missing_keys(self, connected_provider):
@@ -18727,15 +18568,16 @@ class TestGetLegacyKbRecordGroups:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_exception_logs_and_returns_empty_list(self, connected_provider):
+    async def test_exception_logs_and_returns_empty_list(self, connected_provider, caplog):
         """Should catch exception, log error, and return empty list."""
+        connected_provider.logger = logging.getLogger("tests.arango_provider.swallowed")
         connected_provider.execute_query = AsyncMock(side_effect=Exception("Query failed"))
         
         result = await connected_provider.get_legacy_kb_record_groups("org123")
         
         assert result == []
-        connected_provider.logger.error.assert_called_once()
-        assert "Get legacy KB record groups failed" in connected_provider.logger.error.call_args[0][0]
+        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "Query failed")
+        assert fields["op"] == "get_legacy_kb_record_groups"
 
 
 # ---------------------------------------------------------------------------
@@ -18844,8 +18686,9 @@ class TestFetchExistingFileNamesInParent:
         assert result == {("file1.txt", ""), ("file2.txt", "")}
 
     @pytest.mark.asyncio
-    async def test_exception_logs_and_returns_empty_set(self, connected_provider):
+    async def test_exception_logs_and_returns_empty_set(self, connected_provider, caplog):
         """Should catch exception, log error, and return empty set."""
+        connected_provider.logger = logging.getLogger("tests.arango_provider.swallowed")
         connected_provider.execute_query = AsyncMock(side_effect=Exception("Query failed"))
         
         result = await connected_provider._fetch_existing_file_names_in_parent(
@@ -18854,8 +18697,8 @@ class TestFetchExistingFileNamesInParent:
         )
         
         assert result == set()
-        connected_provider.logger.error.assert_called_once()
-        assert "Failed to fetch existing file names" in connected_provider.logger.error.call_args[0][0]
+        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "Query failed")
+        assert fields["op"] == "_fetch_existing_file_names_in_parent"
 
     @pytest.mark.asyncio
     async def test_transaction_propagation(self, connected_provider):
@@ -18900,8 +18743,9 @@ class TestGetRecordsByParentRecord:
         connected_provider.http_client.execute_aql.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_invalid_depth_returns_empty_list(self, connected_provider):
+    async def test_invalid_depth_returns_empty_list(self, connected_provider, caplog):
         """Should return empty list and log error for depth < -1."""
+        connected_provider.logger = logging.getLogger("tests.arango_provider.swallowed")
         result = await connected_provider.get_records_by_parent_record(
             parent_record_id="parent123",
             connector_id="conn1",
@@ -18910,9 +18754,8 @@ class TestGetRecordsByParentRecord:
         )
         
         assert result == []
-        connected_provider.logger.error.assert_called_once()
-        error_msg = connected_provider.logger.error.call_args[0][0]
-        assert "Failed to retrieve records" in error_msg
+        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR)
+        assert fields["op"] == "get_records_by_parent_record"
 
     @pytest.mark.asyncio
     async def test_depth_minus_one_unlimited(self, connected_provider):
@@ -19095,8 +18938,9 @@ class TestGetRecordsByParentRecord:
         assert bind_vars["user_key"] == "user_123"
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty_list(self, connected_provider):
+    async def test_exception_returns_empty_list(self, connected_provider, caplog):
         """Should catch exception, log error, and return empty list."""
+        connected_provider.logger = logging.getLogger("tests.arango_provider.swallowed")
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("Query failed"))
         
         result = await connected_provider.get_records_by_parent_record(
@@ -19107,9 +18951,8 @@ class TestGetRecordsByParentRecord:
         )
         
         assert result == []
-        connected_provider.logger.error.assert_called_once()
-        error_msg = connected_provider.logger.error.call_args[0][0]
-        assert "Failed to retrieve records" in error_msg
+        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "Query failed")
+        assert fields["op"] == "get_records_by_parent_record"
 
     @pytest.mark.asyncio
     async def test_combined_filters_and_pagination(self, connected_provider):
@@ -19469,25 +19312,25 @@ class TestArangoPersonMigrationAndReaper:
 
     @pytest.mark.asyncio
     async def test_reaper_counts_only_the_people_it_stranded(self, connected_provider):
-        self._script(
+        calls = self._script(
             connected_provider,
-            [                                        # stale flagged edges
-                {"edge": "e1", "principal": "person/p1"},
-                {"edge": "e2", "principal": "person/p2"},
-                {"edge": "e3", "principal": "users/u9"},   # a user, never swept
+            [                                        # the stale flagged edges, removed by the statement that finds them
+                {"principal": "person/p1"},
+                {"principal": "person/p2"},
+                {"principal": "users/u9"},           # a user, never swept
             ],
-            [],                                      # delete the membership edges
             [1, 1],                                  # two people removed
         )
         assert await connected_provider.reap_stale_external_app_relations("c1") == 2
+        # one decision: the grant is checked by the statement that removes the edge
+        assert "FILTER NOT" in calls[0][0] and "REMOVE uar IN userAppRelation" in calls[0][0]
 
     @pytest.mark.asyncio
     async def test_reaper_sweeps_people_but_never_users(self, connected_provider):
         """A User node stripped of external membership is still a platform account."""
         calls = self._script(
             connected_provider,
-            [{"edge": "e3", "principal": "users/u9"}],
-            [],
+            [{"principal": "users/u9"}],
         )
         assert await connected_provider.reap_stale_external_app_relations("c1") == 0
         assert not any("REMOVE key IN person" in q for q, _ in calls)
@@ -19496,7 +19339,7 @@ class TestArangoPersonMigrationAndReaper:
     async def test_reaper_no_ops_when_nothing_is_stale(self, connected_provider):
         calls = self._script(connected_provider, [])
         assert await connected_provider.reap_stale_external_app_relations("c1") == 0
-        assert len(calls) == 1, "must not issue a delete when there is nothing to delete"
+        assert len(calls) == 1, "must not look for people when no edge was removed"
 
     @pytest.mark.asyncio
     async def test_reaper_swallows_failure(self, connected_provider):
@@ -19505,6 +19348,26 @@ class TestArangoPersonMigrationAndReaper:
             side_effect=RuntimeError("db down")
         )
         assert await connected_provider.reap_stale_external_app_relations("c1") == 0
+
+    @pytest.mark.asyncio
+    async def test_reaper_raises_a_conflict_so_its_caller_runs_it_again(self, connected_provider) -> None:
+        """A write-write conflict (1200) removed nothing and aborted the caller's stream transaction: reported as 0 (success) the caller would commit it."""
+        from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=ArangoQueryError("Query failed", 409, '{"errorNum": 1200}'))
+        with pytest.raises(ArangoQueryError):
+            await connected_provider.reap_stale_external_app_relations("c1", transaction="t1")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error_num", [1200, 18, 29], ids=["conflict", "lock_timeout", "deadlock"])
+    async def test_reaper_raises_every_lost_race_so_its_caller_runs_it_again(self, connected_provider, error_num) -> None:
+        """A lock not granted in time (18) or a deadlock the server broke (29) aborts the operation as a write-write conflict (1200) does: each is
+        a transient error the caller's retry runs again, never 0 reaped."""
+        from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+        error = ArangoQueryError("Query failed", 409, f'{{"errorNum": {error_num}}}')
+        assert connected_provider.is_transient_error(error) and connected_provider.is_write_conflict(error)
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=error)
+        with pytest.raises(ArangoQueryError):
+            await connected_provider.reap_stale_external_app_relations("c1", transaction="t1")
 
     @pytest.mark.asyncio
     async def test_reaper_only_touches_flagged_edges(self, connected_provider):
@@ -19658,3 +19521,43 @@ class TestTrashWalkIndexReadiness:
     async def test_an_index_of_another_definition_does_not_count(self, connected_provider, index) -> None:
         connected_provider.http_client.get_indexes = AsyncMock(return_value=[index])
         assert await connected_provider.is_trash_walk_index_ready() is False
+
+
+class TestDeleteNodeIfMatchCancellation:
+    """A cancelled delete must not leave its stream transaction open (CancelledError is a BaseException)."""
+
+    @staticmethod
+    def _wired(provider: ArangoHTTPProvider, commit: object) -> None:
+        provider._edge_collections_of_graph = AsyncMock(return_value=["permission"])
+        provider._logical_edge_collections = MagicMock(side_effect=lambda c: [c])
+        provider.begin_transaction = AsyncMock(return_value="txn-1")
+        provider.http_client.execute_aql = AsyncMock(return_value=[1])
+        provider.commit_transaction = commit
+        provider._abort_quietly = AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_delete_aborts_the_transaction(self, connected_provider: ArangoHTTPProvider) -> None:
+        import asyncio
+
+        gate = asyncio.Event()
+
+        async def commit(txn: str) -> None:
+            await gate.wait()
+
+        self._wired(connected_provider, commit)
+        task = asyncio.create_task(connected_provider.delete_node_if_match("k", "agentSkillCandidates", {"orgId": "o"}))
+        await asyncio.sleep(0.05)  # inside commit_transaction
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        connected_provider._abort_quietly.assert_awaited_once_with("txn-1")
+
+    @pytest.mark.asyncio
+    async def test_a_miss_aborts_and_a_commit_does_not(self, connected_provider: ArangoHTTPProvider) -> None:
+        commit = AsyncMock()
+        self._wired(connected_provider, commit)
+        assert await connected_provider.delete_node_if_match("k", "agentSkillCandidates", {"orgId": "o"}) is True
+        connected_provider._abort_quietly.assert_not_awaited()
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])  # the owner does not match: nothing removed
+        assert await connected_provider.delete_node_if_match("k", "agentSkillCandidates", {"orgId": "o"}) is False
+        connected_provider._abort_quietly.assert_awaited_once_with("txn-1")

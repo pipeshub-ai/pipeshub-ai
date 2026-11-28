@@ -13,6 +13,7 @@ from app.connectors.services.kafka_service import KafkaService
 from app.containers.container import BaseAppContainer
 from app.containers.utils.utils import ContainerUtils
 from app.core.celery_app import CeleryApp
+from app.core.org_jobs import for_each_org
 from app.core.signed_url import SignedUrlConfig, SignedUrlHandler
 from app.edition_services import bootstrap_guard
 from app.health.health import Health
@@ -24,7 +25,10 @@ from app.migrations.service_account_kind_migration import (
 from app.migrations.folder_mime_type_migration import run_folder_mime_type_migration
 from app.migrations.hierarchy_backfill_migration import run_hierarchy_backfill_migration
 from app.migrations.kb_apps_migration import run_kb_apps_migration
-from app.migrations.kh_listing_state_migration import run_kh_listing_state_migration
+from app.migrations.kh_listing_state_migration import (
+    run_kh_children_order_migration,
+    run_kh_listing_state_migration,
+)
 from app.migrations.node_relation_migration import run_node_relation_migration
 from app.migrations.record_link_migration import run_record_link_migration
 from app.migrations.redundant_group_edges_migration import run_redundant_group_edges_migration
@@ -186,6 +190,7 @@ async def _kh_graph_migrations(
             ("Hierarchy backfill", run_hierarchy_backfill_migration, ("Record link",)),
             ("Redundant group edges", run_redundant_group_edges_migration, ("Hierarchy backfill",)),
             ("Knowledge hub listing state", run_kh_listing_state_migration, ("Redundant group edges",)),
+            ("Knowledge hub children order", run_kh_children_order_migration, ("Redundant group edges",)),
         ]
     else:
         # The backfill would hang collection roots from the old KB groups the KB apps migration removes.
@@ -211,13 +216,16 @@ async def _kh_listing_background(
 ) -> None:
     if not await _kh_graph_migrations(graph_provider, config_service, logger, kb_apps_done=kb_apps_done):
         return
-    # While the scope listing is enabled, keep every connector stamped. While it is off this only reads the flag.
+    # While the scope listing is enabled, keep every connector stamped. While it is off this only reads the flag,
+    # which is an org's own setting where orgs have their own, so it is read (and acted on) org by org.
+    async def restamp(org_id: str) -> None:
+        stamped = [r for r in await graph_provider.kh_scope_restamp_stale(org_id) if r.get("stamped")]
+        if stamped:
+            logger.info(f"Knowledge hub scopes stamped: {stamped}")
+
     while True:
         try:
-            results = await graph_provider.kh_scope_restamp_stale()
-            stamped = [r for r in results if r.get("stamped")]
-            if stamped:
-                logger.info(f"Knowledge hub scopes stamped: {stamped}")
+            await for_each_org(graph_provider, "kh_scope_keeper", restamp, logger, external=True)
         except Exception as e:
             logger.error(f"❌ Knowledge hub scope keeper failed: {e}")
         await asyncio.sleep(KH_SCOPE_KEEPER_SECONDS)
@@ -226,8 +234,8 @@ async def _kh_listing_background(
 async def _kh_plan_keeper(
     graph_provider: "IGraphDBProvider", config_service: ConfigurationService, logger: logging.Logger,
 ) -> None:
-    """Keep the knowledge hub's browse statements planned (see ``warm_browse_plans``):
-    once at start, then every KH_PLAN_KEEPER_SECONDS (0 turns it off)."""
+    """Keep the knowledge hub's browse statements planned (see ``warm_browse_plans``), and the plans of the listing
+    statements in use young (``kh_refresh_plans``): once at start, then every KH_PLAN_KEEPER_SECONDS (0 turns it off)."""
     from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
         KnowledgeHubService,
     )
@@ -249,6 +257,10 @@ async def _kh_plan_keeper(
             await service.warm_browse_plans()
         except Exception as e:
             logger.warning(f"Knowledge hub plan keeper failed: {e}")
+        try:
+            await graph_provider.kh_refresh_plans()
+        except Exception as e:
+            logger.warning(f"Knowledge hub plan refresh failed: {e}")
         await asyncio.sleep(every)
 
 

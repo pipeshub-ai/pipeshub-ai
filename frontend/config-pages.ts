@@ -6,19 +6,20 @@ export { default as WorkspaceLayout } from '@/app/(main)/workspace/workspaceLayo
 export { default as OnboardingPage } from '@/app/(main)/onboarding/onboardingPage';
 export { default as AiModelsPage } from '@/app/(main)/workspace/ai-models/aiModelsPage';
 export { default as AuthenticationPage } from '@/app/(main)/workspace/authentication/authenticationPage';
-export { default as GroupsPage } from '@/app/(main)/workspace/groups/groupsEnterprisePlaceholder';
 export {
+  GroupsPlaceholderPage as GroupsPage,
+  TenantsPlaceholderPage as TenantsPage,
   ScimPlaceholderPage,
   AuditLogsPlaceholderPage,
   UsagePlaceholderPage,
 } from '@/app/(main)/workspace/enterprise/enterprise-feature-pages';
+export { EnterpriseOverviewPage } from '@/app/(main)/workspace/enterprise/enterprise-overview-page';
 export { default as ConnectorsTeamPage } from '@/app/(main)/workspace/connectors/team/connectorsTeamPage';
 export { default as ConnectorsPersonalPage } from '@/app/(main)/workspace/connectors/personal/connectorsPersonalPage';
 export { default as ActionsTeamPage } from '@/app/(main)/workspace/actions/team/actionsTeamPage';
 export { default as ProfilePage } from '@/app/(main)/workspace/profile/profilePage';
 
 // Pages without implementations fall back to Next.js 404
-export { notFound as TenantsPage } from 'next/navigation';
 export { notFound as TenantsUsersPage } from 'next/navigation';
 export { notFound as TenantsGroupsPage } from 'next/navigation';
 export { notFound as OrgsPage } from 'next/navigation';
@@ -31,3 +32,5 @@ export { notFound as GithubAuthCallbackPage } from 'next/navigation';
 export { notFound as SamlSsoSuccessPage } from 'next/navigation';
 export { notFound as OAuthAuthCallbackPage } from 'next/navigation';
 export { notFound as AuthSignInErrorPage } from 'next/navigation';
+export { notFound as ApprovalsInboxPage } from 'next/navigation';
+export { notFound as ApprovalLinkPage } from 'next/navigation';

@@ -132,3 +132,12 @@ def test_a_google_file_link_keeps_its_encoding_and_fragment() -> None:
     assert not _field_values_equal("weburl", sheet, sheet.replace("#gid=0", "#gid=1"))
     assert _field_values_equal(
         "weburl", "https://docs.google.com/document/d/1/edit?ouid=1", "https://docs.google.com/document/d/1/edit")
+
+
+def test_edition_fields_compare_as_the_stored_record_reads_them_back() -> None:
+    # A key the source stopped giving is written as None to clear it, and the read drops it.
+    assert _field_values_equal("edition_fields", {"a": 1, "b": None}, {"a": 1})
+    assert _field_values_equal("edition_fields", {"b": None}, None)
+    assert _field_values_equal("edition_fields", None, None)
+    assert not _field_values_equal("edition_fields", {"a": 1}, {"a": 2})
+    assert not _field_values_equal("edition_fields", {"a": 1}, None)

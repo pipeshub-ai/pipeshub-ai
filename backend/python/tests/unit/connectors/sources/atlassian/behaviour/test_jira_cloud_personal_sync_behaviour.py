@@ -10,6 +10,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -19,6 +20,7 @@ from atlassian_behaviour_fakes import (
     FakeCheckpointStore,
     FakeConfigService,
     json_response,
+    run_full_sync,
 )
 from atlassian_cloud_fakes import (
     CLOUD_ID,
@@ -29,6 +31,11 @@ from atlassian_cloud_fakes import (
     route_every_http_client,
 )
 
+from app.connectors.core.base.connector.failure_notices import ReconnectRequiredError
+from app.connectors.core.base.token_service.oauth_service import (
+    RefreshTokenInvalidError,
+)
+from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.sources.atlassian.jira_cloud_personal.connector import (
     JiraCloudPersonalConnector,
 )
@@ -66,6 +73,8 @@ class FakeJiraSite:
         # Staged pages of a project's id listing, by page token; unset, every visible id comes in one page.
         self.id_pages: dict[str, dict[str | None, Any]] = {}
         self.failing_issue_search: set[str] = set()
+        # Projects whose issue search Jira cuts short: only the first issue, with a warning.
+        self.cut_short_searches: set[str] = set()
         self.project_answers: dict[str, httpx.Response] = {}
         self.id_bodies: list[dict[str, Any]] = []
         self.search_bodies: list[dict[str, Any]] = []
@@ -157,6 +166,8 @@ class FakeJiraSite:
             return json_response({"errorMessages": ["boom"]}, status=500)
         if "updated >" in body["jql"]:
             found = [t for t in found if t["id"] in self.changed_issues]
+        if key in self.cut_short_searches:
+            return json_response({"issues": found[:1], "warnings": ["The result set was truncated"]})
         return json_response({"issues": found})
 
     def project_reads(self, project_id: str) -> int:
@@ -171,6 +182,9 @@ class PersonalDb(CloudRecordsDb):
         super().__init__()
         self.fail_group_read = False
         self.groups_kept_for_the_trash: set[str] = set()
+
+    async def on_new_app_roles(self, roles: list[tuple[Any, list[Any]]]) -> None:
+        """A personal connector writes no roles; ``run_full_sync`` tracks the write all the same."""
 
     async def get_nodes_by_filters(
         self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None, *,
@@ -326,11 +340,16 @@ class TestLostAccess:
 
         assert tickets(db) == {"1", "2", "3", "5"}
 
-    async def test_a_token_jira_no_longer_accepts_removes_nothing(self, site, db, checkpoints) -> None:
+    async def test_a_token_jira_no_longer_accepts_stops_the_sync_and_removes_nothing(
+        self, site, db, checkpoints, monkeypatch,
+    ) -> None:
         connector, _ = await synced(db, checkpoints)
         site.signed_in = False
+        refresher = MagicMock(refresh_now=AsyncMock(side_effect=RefreshTokenInvalidError("revoked")))
+        monkeypatch.setattr(startup_service, "get_token_refresh_service", lambda: refresher)
 
-        await connector.run_sync()
+        with pytest.raises(ReconnectRequiredError, match="Jira rejected this connector's sign-in"):
+            await connector.run_sync()
 
         assert tickets(db) == {"1", "2", "3", "5"}, "to an anonymous visitor everything looks gone; none of it is"
         assert set(db.record_groups) == {"10000", "10001"}
@@ -525,3 +544,45 @@ class TestFullSyncCoverage:
         await connector.run_sync()
 
         assert connector.full_sync_coverage().complete is False, "so OPS's unread issues are not unlinked"
+
+
+class TestAFullSyncKeepsWhatItCouldNotWrite:
+    @staticmethod
+    def _missed(db: PersonalDb, graph: Any, stored: dict[str, str]) -> set[str]:  # noqa: ANN401
+        """The stored records the unlink takes the edges of: still stored, neither written nor noted as kept."""
+        from app.config.constants.arangodb import CollectionNames
+
+        if not graph.unlink_nodes_missed_by_full_sync.await_count:
+            return set()
+        seen = graph.unlink_nodes_missed_by_full_sync.await_args.args[1][CollectionNames.RECORDS.value]
+        return {ext for ext, record_id in stored.items()
+                if ext in db.records and ext not in seen and record_id not in db.kept_records}
+
+    async def test_an_issue_that_fails_to_build_keeps_itself_and_its_file(self, site, db, checkpoints) -> None:
+        connector, _ = await synced(db, checkpoints)
+        stored = {ext: r.id for ext, r in db.records.items()}
+        del site.issues["3"]
+        checkpoints.sync_points.clear()
+        db.fail_lookup_for = {"2"}
+
+        graph = await run_full_sync(connector, db)
+
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert connector.full_sync_coverage().complete is True
+        missed = self._missed(db, graph, stored)
+        assert missed == set(), "ENG-2 is still in Jira: it and its file keep their edges"
+        assert "3" not in db.records or "3" in missed, "ENG-3, removed in Jira, does not"
+
+    async def test_a_search_cut_short_keeps_the_issues_it_did_not_list(self, site, db, checkpoints) -> None:
+        connector, _ = await synced(db, checkpoints)
+        stored = {ext: r.id for ext, r in db.records.items()}
+        checkpoints.sync_points.clear()
+        site.cut_short_searches.add("ENG")
+
+        graph = await run_full_sync(connector, db)
+
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert connector.full_sync_coverage().complete is True
+        missed = self._missed(db, graph, stored)
+        assert {"2", "attachment_900"} <= set(db.records), "the id listing still lists ENG-2"
+        assert missed == set(), "ENG-2 and its file may be past where Jira stopped"

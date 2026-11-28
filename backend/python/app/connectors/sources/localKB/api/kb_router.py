@@ -34,7 +34,6 @@ from app.connectors.sources.localKB.api.models import (
     KnowledgeBaseResponse,
     ListKnowledgeBaseResponse,
     ListPermissionsResponse,
-    ListRecordsResponse,
     ListTrashResponse,
     RemovePermissionResponse,
     RestoreRecordResponse,
@@ -57,6 +56,12 @@ from app.connectors.sources.localKB.push import api as push_api
 from app.connectors.sources.localKB.push.contract import PushRefusal
 from app.connectors.sources.localKB.push.gate import GatedRoute, KbPushFlagMiddleware
 from app.connectors.sources.localKB.push.service import KbPushService
+from app.connectors.sources.localKB.upload_grant import (
+    GrantedDocument,
+    UploadGrantError,
+    load_grant_secret,
+    verify_grant,
+)
 from app.containers.connector import ConnectorAppContainer
 from app.core import org_context
 from app.modules.record_metadata.schemas import MetadataSchemaRegistry
@@ -142,18 +147,6 @@ kb_router = APIRouter(
     dependencies=[Depends(keep_path_inside_connection)],
 )
 
-
-def _listing_or_error(result: dict[str, Any]) -> dict[str, Any]:
-    """Turn the service's error payload into an error status.
-
-    The error payload is not a valid listing, so returned as-is it fails the
-    response model and the caller gets a bare 500 without the message.
-    """
-    if result.get("success") is False:
-        raise HTTPException(status_code=result.get("code") or 500, detail=result.get("reason"))
-    if result.get("error"):
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=result["error"])
-    return result
 
 def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
     """Parses a comma-separated string into a list of strings, filtering out empty items."""
@@ -500,6 +493,48 @@ async def delete_knowledge_base(
             detail=action_failed("delete this knowledge base")
         )
 
+def _upload_files(body: Any) -> list[dict[str, Any]]:  # noqa: ANN401 - straight from a request body
+    """The upload's files as the service takes them. A body of the wrong shape is a 400, before anything else runs."""
+    files = body.get("files") if isinstance(body, dict) else None
+    if not isinstance(files, list) or not files:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No files provided for upload")
+    out: list[dict[str, Any]] = []
+    for file_data in files:
+        if (
+            not isinstance(file_data, dict)
+            or not isinstance(file_data.get("record"), dict)
+            or not isinstance(file_data.get("fileRecord"), dict)
+        ):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid file entry in upload")
+        out.append({
+            "record": file_data.get("record"),
+            "fileRecord": file_data.get("fileRecord"),
+            "filePath": file_data.get("filePath"),
+            "lastModified": file_data.get("lastModified"),
+        })
+    return out
+
+
+async def _granted_documents(
+    kb_service: KnowledgeBaseService, body: dict[str, Any], org_id: str, user_id: str, kb_id: str, folder_id: Optional[str]
+) -> dict[str, GrantedDocument]:
+    """The ``{record key: GrantedDocument}`` the gateway's signed grant names for this upload.
+
+    A storage document id is never read from the body: a request without a valid grant for
+    this org, user, KB and folder is refused before anything is written."""
+    try:
+        secret = await load_grant_secret(kb_service.config_service)
+        return verify_grant(
+            secret, body.get("grant"), org_id=org_id, user_id=user_id, kb_id=kb_id, folder_id=folder_id
+        )
+    except UploadGrantError as e:
+        _log.warning("kb upload refused: invalid upload grant (%s) kb=%s", e, kb_id)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Upload is not authorised") from None
+    except Exception as e:
+        _log.error("kb upload refused: could not check the upload grant: %s", e)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Upload is not authorised") from None
+
+
 @kb_router.post(
     "/{kb_id}/upload",
     response_model=UploadRecordsinKBResponse,
@@ -533,11 +568,7 @@ async def upload_records_to_kb(
                 detail="Invalid request body"
             )
 
-        if not body.get("files"):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No files provided for upload"
-            )
+        files_data = _upload_files(body)
 
         if not user_id or not org_id:
             raise HTTPException(
@@ -545,15 +576,7 @@ async def upload_records_to_kb(
                 detail="userId and orgId are required"
             )
 
-        # Convert Pydantic models to dicts for service layer
-        files_data = []
-        for file_data in body.get("files"):
-            files_data.append({
-                "record": file_data.get("record"),
-                "fileRecord": file_data.get("fileRecord"),
-                "filePath": file_data.get("filePath"),
-                "lastModified": file_data.get("lastModified"),
-            })
+        granted = await _granted_documents(kb_service, body, org_id, user_id, kb_id, None)
 
         # Call unified service (KB root upload)
         result = await kb_service.upload_records_to_kb(
@@ -561,6 +584,7 @@ async def upload_records_to_kb(
             user_id=user_id,
             org_id=org_id,
             files=files_data,
+            granted_documents=granted,
         )
 
         if not result or result.get("success") is False:
@@ -639,11 +663,7 @@ async def upload_records_to_folder(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid request body"
             )
-        if not body.get("files"):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No files provided for upload"
-            )
+        files_data = _upload_files(body)
 
         if not user_id or not org_id:
             raise HTTPException(
@@ -651,15 +671,7 @@ async def upload_records_to_folder(
                 detail="userId and orgId are required"
             )
 
-        # Convert Pydantic models to dicts for service layer
-        files_data = []
-        for file_data in body.get("files"):
-            files_data.append({
-                "record": file_data.get("record"),
-                "fileRecord": file_data.get("fileRecord"),
-                "filePath": file_data.get("filePath"),
-                "lastModified": file_data.get("lastModified"),
-            })
+        granted = await _granted_documents(kb_service, body, org_id, user_id, kb_id, folder_id)
 
         # Call unified service (folder upload)
         result = await kb_service.upload_records_to_folder(
@@ -668,6 +680,7 @@ async def upload_records_to_folder(
             user_id=user_id,
             org_id=org_id,
             files=files_data,
+            granted_documents=granted,
         )
 
         if not result or result.get("success") is False:
@@ -1002,47 +1015,6 @@ async def delete_folder(
             status_code=500,
             detail=action_failed("delete this folder")
         )
-
-@kb_router.get(
-    "/{kb_id}/records",
-    response_model=ListRecordsResponse,
-    dependencies=[Depends(require_scopes(OAuthScopes.KB_READ))],
-)
-@inject
-async def list_kb_records(
-    kb_id: str,
-    request: Request,
-    page: int = 1,
-    limit: int = 20,
-    search: Optional[str] = None,
-    record_types: Optional[List[str]] = None,
-    origins: Optional[List[str]] = None,
-    connectors: Optional[List[str]] = None,
-    indexing_status: Optional[List[str]] = None,
-    date_from: Optional[int] = None,
-    date_to: Optional[int] = None,
-    sort_by: str = "createdAtTimestamp",
-    sort_order: str = "desc",
-    kb_service: KnowledgeBaseService = Depends(get_kb_service),
-) -> Dict[str, Any]:
-    user_id = request.state.user.get("userId")
-    org_id = request.state.user.get("orgId")
-    return _listing_or_error(await kb_service.list_kb_records(
-        kb_id=kb_id,
-        user_id=user_id,
-        org_id=org_id,
-        page=page,
-        limit=limit,
-        search=search,
-        record_types=record_types,
-        origins=origins,
-        connectors=connectors,
-        indexing_status=indexing_status,
-        date_from=date_from,
-        date_to=date_to,
-        sort_by=sort_by,
-        sort_order=sort_order,
-    ))
 
 @kb_router.get(
     "/{kb_id}/children",

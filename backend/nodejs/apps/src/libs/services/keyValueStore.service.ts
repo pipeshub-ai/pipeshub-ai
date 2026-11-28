@@ -1,12 +1,14 @@
 import { Logger } from './logger.service';
 import { IKVStoreConnection } from '../types/keyValueStore.types';
 import { DistributedKeyValueStore } from '../keyValueStore/keyValueStore';
+import type { EtcdAuthAdmin } from '../keyValueStore/etcd-auth';
 import { KeyValueStoreFactory } from '../keyValueStore/keyValueStoreFactory';
 import {
   KeyValueStoreType,
   StoreType,
 } from '../keyValueStore/constants/KeyValueStoreType';
 import { ConfigurationManagerConfig } from '../../modules/configuration_manager/config/config';
+import { KvValueCodec, kvValueCodec } from '../../edition';
 
 export class KeyValueStoreService implements IKVStoreConnection {
   private static instance: KeyValueStoreService;
@@ -16,6 +18,27 @@ export class KeyValueStoreService implements IKVStoreConnection {
     service: 'KeyValueStoreService',
   });
   private config: ConfigurationManagerConfig;
+  /** The edition's value codec (`kvValueCodec`), read once; null keeps every value as given. */
+  private codec: KvValueCodec | null | undefined;
+
+  private valueCodec(): KvValueCodec | null {
+    if (this.codec === undefined) this.codec = kvValueCodec();
+    return this.codec;
+  }
+
+  private encode<T>(key: string, value: T): T {
+    const codec = this.valueCodec();
+    return codec && typeof value === 'string'
+      ? (codec.encode(key, value) as T)
+      : value;
+  }
+
+  private decode<T>(key: string, stored: T | null): T | null {
+    const codec = this.valueCodec();
+    return codec && typeof stored === 'string'
+      ? (codec.decode(key, stored) as T)
+      : stored;
+  }
 
   private constructor(config: ConfigurationManagerConfig) {
     this.config = config;
@@ -88,7 +111,10 @@ export class KeyValueStoreService implements IKVStoreConnection {
 
         if (attempt < maxRetries) {
           // Calculate delay with exponential backoff
-          const delay = Math.min(baseDelay * Math.pow(2, attempt - 1), maxDelay);
+          const delay = Math.min(
+            baseDelay * Math.pow(2, attempt - 1),
+            maxDelay,
+          );
           this.logger.warn(
             `Failed to connect to key-value store (attempt ${attempt}/${maxRetries}). ` +
               `Retrying in ${delay / 1000} seconds...`,
@@ -100,9 +126,12 @@ export class KeyValueStoreService implements IKVStoreConnection {
     }
 
     // All retries failed
-    this.logger.error('Failed to connect to key-value store after all retries', {
-      error: lastError,
-    });
+    this.logger.error(
+      'Failed to connect to key-value store after all retries',
+      {
+        error: lastError,
+      },
+    );
     throw lastError;
   }
 
@@ -128,6 +157,19 @@ export class KeyValueStoreService implements IKVStoreConnection {
    */
   isConnected(): boolean {
     return this.isInitialized;
+  }
+
+  /** Whether the configured store is etcd, whose roles Node applies for the sandbox plane (R38IDENT-FU-9). */
+  usesEtcd(): boolean {
+    return (
+      KeyValueStoreType.fromString(this.config.storeType) === StoreType.Etcd3
+    );
+  }
+
+  /** The store's role-based auth where it has one (etcd with a client certificate); null otherwise or before connect. */
+  authAdmin(): EtcdAuthAdmin | null {
+    if (!this.isInitialized) return null;
+    return this.store.authAdmin?.() ?? null;
   }
 
   /**
@@ -158,7 +200,6 @@ export class KeyValueStoreService implements IKVStoreConnection {
     }
   }
 
-
   private async publishCacheInvalidation(key: string): Promise<void> {
     if (this.store.publishCacheInvalidation) {
       await this.store.publishCacheInvalidation(key);
@@ -170,8 +211,9 @@ export class KeyValueStoreService implements IKVStoreConnection {
    * @param key - The key to set
    * @param value - The value to store
    */
-  async set<T>(key: string, value: T): Promise<void> {
+  async set<T>(key: string, given: T): Promise<void> {
     await this.ensureConnection();
+    const value = this.encode(key, given);
     try {
       await this.store.createKey(key, value);
     } catch (error) {
@@ -191,7 +233,8 @@ export class KeyValueStoreService implements IKVStoreConnection {
    */
   async get<T>(key: string): Promise<T | null> {
     await this.ensureConnection();
-    return await this.store.getKey(key);
+    const kept = (await this.store.getKey(key)) as T | null;
+    return this.decode<T>(key, kept);
   }
 
   /**
@@ -224,7 +267,12 @@ export class KeyValueStoreService implements IKVStoreConnection {
     callback: (value: T | null) => void,
   ): Promise<void> {
     await this.ensureConnection();
-    await this.store.watchKey(key, callback);
+    await this.store.watchKey(
+      key,
+      this.valueCodec()
+        ? (value: T | null) => callback(this.decode<T>(key, value))
+        : callback,
+    );
   }
 
   /**
@@ -244,9 +292,38 @@ export class KeyValueStoreService implements IKVStoreConnection {
    * @param newValue - The new value to set if the comparison succeeds
    * @returns true if the update was successful (values matched), false otherwise
    */
-  async compareAndSet<T>(key: string, expectedValue: T | null, newValue: T): Promise<boolean> {
+  async compareAndSet<T>(
+    key: string,
+    expectedValue: T | null,
+    newValue: T,
+  ): Promise<boolean> {
     await this.ensureConnection();
-    const success = await this.store.compareAndSet(key, expectedValue, newValue);
+    let expected: T | null = expectedValue;
+    if (
+      this.valueCodec() &&
+      (typeof expectedValue === 'string' || expectedValue === null)
+    ) {
+      // The caller compares against the string it read (decoded); the store compares what it keeps: swap in the kept string
+      // when it decodes to exactly the one expected, so the store's own compare stays the atomic step. Anything other than a
+      // string is not encoded, so the store compares it as given.
+      let kept: T | null;
+      try {
+        kept = (await this.store.getKey(key)) as T | null;
+      } catch (error) {
+        // the same contract as the store's own compare-and-set: a failure is `false` (the callers retry), never a rejection
+        this.logger.warn('compare-and-set read failed', {
+          error: (error as Error).message,
+        });
+        return false;
+      }
+      if (this.decode<T>(key, kept) !== expectedValue) return false;
+      expected = kept;
+    }
+    const success = await this.store.compareAndSet(
+      key,
+      expected,
+      this.encode(key, newValue),
+    );
     if (success) {
       await this.publishCacheInvalidation(key);
     }

@@ -1906,6 +1906,6 @@ describe('AmazonS3Adapter - IAM role mode', () => {
 
     const result = await adapter.generatePresignedUrlForDirectUpload('folder/file.pdf')
     expect(result.statusCode).to.equal(200)
-    expect(result.data.url).to.equal('https://put-presigned.com')
+    expect(result.data!.url).to.equal('https://put-presigned.com')
   })
 })

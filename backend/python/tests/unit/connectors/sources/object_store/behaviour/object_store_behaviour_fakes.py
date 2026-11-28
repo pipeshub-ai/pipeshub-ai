@@ -300,6 +300,10 @@ class FakeRecordsDb:
         if self.seen is not None:
             self.seen.add(collection, node_id)
 
+    def note_kept_records(self, connector_id: str, record_ids: list[str]) -> None:
+        for record_id in record_ids:
+            self._note_seen("records", record_id)
+
     def _check(self, method: str) -> None:
         if method in self.failing:
             raise RuntimeError(f"database unavailable ({method})")
@@ -406,7 +410,7 @@ class FakeRecordsDb:
     async def ensure_team_app_edge(self, connector_id: str) -> None:
         return None
 
-    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> object:
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False, **_: object) -> object:
         """As the graph providers answer: a failed query is None unless the caller asks it to raise."""
         if "get_user_by_user_id" in self.failing:
             if raise_on_error:

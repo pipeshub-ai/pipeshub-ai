@@ -12,6 +12,8 @@ import { xssSanitizationMiddleware } from '../../../../src/libs/middlewares/xss-
 import { UnauthorizedError } from '../../../../src/libs/errors/http.errors'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 type Who = { mode: 'ok'; user: any } | { mode: 'deny' }
 let who: Who = { mode: 'ok', user: { userId: 'u1', orgId: 'o1' } }
@@ -61,6 +63,9 @@ const BODY = { source: 'code', nodeIds: ['block:9f2c'] }
 const text = (r: { body: Buffer }) => r.body.toString()
 
 describe('Graph relay through Express', () => {
+  beforeEach(() => registerAppUpstreams({ aiBackend: 'http://query:8000' }))
+  afterEach(() => registerUpstreams({}))
+
   let fetchStub: sinon.SinonStub
   beforeEach(() => {
     who = { mode: 'ok', user: { userId: 'u1', orgId: 'o1' } }
@@ -123,14 +128,14 @@ describe('Graph relay through Express', () => {
     })
   }
 
-  it('maps the service 503 to a 503 and its 500 to a 500 without its words', async () => {
+  it('maps the service 503 to a 503 and its 500 to a 502 without its words', async () => {
     fetchStub.resolves(json(503, { detail: 'Graph unavailable.' }))
     const unavailable = await call(build(), '/api/v1/graph/expand', BODY)
     expect(unavailable.status).to.equal(503)
     expect(unavailable.headers['cache-control']).to.equal('private, no-store')
     fetchStub.resolves(json(500, { detail: 'secret internals block:abc' }))
     const failed = await call(build(), '/api/v1/graph/revalidate', BODY)
-    expect(failed.status).to.equal(500)
+    expect(failed.status).to.equal(502)
     expect(text(failed)).to.not.include('secret internals')
   })
 

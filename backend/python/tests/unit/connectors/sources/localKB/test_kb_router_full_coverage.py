@@ -1,4 +1,5 @@
 import json
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -49,6 +50,14 @@ def _make_app(kb_service_mock=None, kafka_service_mock=None, logger_mock=None):
         return await call_next(request)
 
     return app, _kb, _kafka
+
+
+@pytest.fixture(autouse=True)
+def _upload_grant_is_checked_elsewhere() -> Iterator[None]:
+    """These tests are about the handlers' plumbing with a mocked service. The grant check itself
+    (a missing, forged, expired or mis-bound grant is refused) is tested in test_kb_upload_grant.py."""
+    with patch("app.connectors.sources.localKB.api.kb_router._granted_documents", AsyncMock(return_value=frozenset())):
+        yield
 
 
 class TestParseCommaSeparatedStr:
@@ -799,27 +808,6 @@ class TestFolderUploadRouteGaps:
         )
         assert result["success"] is True
         logger.error.assert_called()
-
-
-class TestListKbRecords:
-    def test_success(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.list_kb_records = AsyncMock(return_value={
-            "records": [],
-            "pagination": {
-                "page": 1, "limit": 20, "totalCount": 0, "totalPages": 0,
-            },
-            "filters": {
-                "applied": {},
-                "available": {
-                    "recordTypes": [], "origins": [], "connectors": [],
-                    "indexingStatus": [], "permissions": [],
-                },
-            },
-        })
-        client = TestClient(app)
-        resp = client.get("/api/v1/kb/kb1/records")
-        assert resp.status_code == 200
 
 
 class TestGetKbChildren:

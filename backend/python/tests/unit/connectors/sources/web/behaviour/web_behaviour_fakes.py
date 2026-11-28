@@ -131,6 +131,8 @@ class FakeWeb:
         self._lock = threading.Lock()
         self.requests: list[tuple[str, str]] = []
         self.user_agents: list[str] = []  # the User-Agent of each request in ``requests``
+        # (url, headers) of each request in ``requests``, header names lower-cased.
+        self.request_headers: list[tuple[str, dict[str, str]]] = []
         self.clients: list[tuple[str, str]] = []  # (fake client, url) for curl_cffi / cloudscraper requests
         self.challenges_solved: list[str] = []
         self.served: list[tuple[str, str, str]] = []  # (client, method, url) for every answered request
@@ -194,6 +196,7 @@ class FakeWeb:
         self.requests.append((method, url))
         self.served.append((via, method, url))
         self.user_agents.append(next((str(v) for k, v in request_headers.items() if k.lower() == "user-agent"), ""))
+        self.request_headers.append((url, {str(k).lower(): str(v) for k, v in request_headers.items()}))
         page = self._current(url, consume=method == "GET")
         if method == "HEAD" and page.head_status is not None:
             return None if page.head_status == HEAD_HANGS_UP else (page.head_status, {}, b"", page)
@@ -612,7 +615,7 @@ class FakeRecordsDb:
     async def ensure_team_app_edge(self, connector_id: str) -> None:
         self.team_app_edges.append(connector_id)
 
-    async def get_user_by_user_id(self, user_id: str) -> SimpleNamespace:
+    async def get_user_by_user_id(self, user_id: str, **_: object) -> SimpleNamespace:
         return SimpleNamespace(id=user_id, email="owner@example.com", source_user_id=user_id,
                                org_id=self.org_id, full_name="Owner", is_active=True, title=None)
 

@@ -21,8 +21,8 @@ const fakeTx = (log: Call[], pk = ['org_id', 'id'], cols = ['org_id', 'id', 'nam
       if (sql.includes('import.primary_key')) return { rows: pk.map((c) => ({ c })), rowCount: pk.length }
       if (sql.includes('import.columns')) return { rows: cols.map((c) => ({ c })), rowCount: cols.length }
       const sent = JSON.parse(params[0] as string) as Array<{ id: string }>
-      // as PostgreSQL does: rowCount covers inserted and updated rows, xmax is 0 only on the inserted ones
-      const rows = sql.includes('RETURNING') ? sent.map((r) => ({ ins: !existing.includes(r.id) })) : []
+      // as PostgreSQL does: an upsert answers rows written minus the keys that were there before
+      const rows = sql.includes('RETURNING') ? [{ ins: sent.filter((r) => !existing.includes(r.id)).length }] : []
       return { rows, rowCount: sent.length }
     },
   }) as never
@@ -84,7 +84,7 @@ describe('insertRows', () => {
     expect(n).to.equal(3)
     expect(log).to.have.length(2)
     expect(log.every((c) => c.sql.includes('ON CONFLICT DO NOTHING'))).to.equal(true)
-    expect(JSON.parse(log[0].params[0] as string)).to.have.length(2)
+    expect(JSON.parse(log[0]!.params[0] as string)).to.have.length(2)
   })
 
   it('replaces rows in place only for the tables named in withUpsert', async () => {

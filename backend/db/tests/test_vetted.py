@@ -458,7 +458,8 @@ def test_a_jobs_write_unit_runs_its_prologue(vdb):
 def test_the_catalog_and_the_manifests_agree(vdb):
     with vdb.admin() as c:
         assert c.execute("SELECT rule, object FROM kernel.rls_violations").fetchall() == []
-        assert vetted.problems(c, FNS) == []
+        # every manifest the database was migrated with (extra migration locations' too), and the fixture's
+        assert vetted.problems(c, vetted.load_all([*vetted.manifest_files(), FIXTURE])) == []
 
 
 # ---- the checklist: a planted violation for every item ---------------------------------------------------------------
@@ -758,7 +759,7 @@ def test_a_hostile_argument_name_or_message_cannot_break_out_of_the_generated_sq
 def test_the_checked_in_sql_matches_the_shipped_manifest():
     expected = vetted.render_all(vetted.load(CORE))
     here = CORE.parent
-    assert sorted(p.name for p in here.glob("*.sql") if p.name not in ("assert_profile_epoch.sql", "profile_epoch.sql")) == sorted(expected)      # the fence is hand-written
+    assert sorted(p.name for p in here.glob("*.sql") if p.name not in ("assert_profile_epoch.sql", "profile_epoch.sql", "org_write_hold.sql")) == sorted(expected)      # the fences are hand-written
     for name, sql in expected.items():
         assert (here / name).read_text(encoding="utf-8") == sql, f"{name}: run python -m db.lib.vetted render {CORE}"
     assert vetted.main(["check", str(CORE)]) == 0
@@ -767,7 +768,7 @@ def test_the_checked_in_sql_matches_the_shipped_manifest():
 def test_only_a_named_extension_point_may_be_extended(tmp_path):
     ext = tmp_path / "m.yaml"
     lineage = vetted.load(CORE)[1]
-    assert lineage.qualified == "kernel.org_lineage" and vetted.EXTENSION_POINTS == {"kernel.org_parent_ids"}
+    assert lineage.qualified == "kernel.org_lineage" and vetted.EXTENSION_POINTS == {"kernel.org_parent_ids", "kernel.org_writes_held"}
     ext.write_text(yaml.safe_dump({"functions": [{"name": "kernel.org_lineage", "class": "read", "scope": "lineage", "extends": True, "org_arg": "p_org",
         "returns": "text[]", "no_org": "'{}'", "args": [{"name": "p_org", "type": "text", "pattern": "^[0-9a-f]{24}$"}], "body": "RETURN ARRAY['x'];"}]}))
     with pytest.raises(vetted.ManifestError, match="not an extension point"):
@@ -824,6 +825,7 @@ def test_each_function_belongs_to_its_schemas_vetted_owner(vdb):
     assert owners == {"kt.notes_by_title(text,integer)": "pipeshub_vetted_kt", "kt.set_note_title(text,text)": "pipeshub_vetted_kt",
                       "kt.token_owner(text)": "pipeshub_vetted_kt", "ku.item_labels(integer)": "pipeshub_vetted_ku",
                       "kernel.org_lineage(text)": "pipeshub_vetted_kernel", "kernel.org_parent_ids(text)": "pipeshub_vetted_kernel",
+                      "kernel.org_writes_held(text)": "pipeshub_vetted_kernel", "kernel.assert_org_writable(text)": "pipeshub_vetted_kernel",
                       "kernel.assert_profile_epoch(integer)": "pipeshub_vetted_kernel", "kernel.profile_epoch()": "pipeshub_vetted_kernel",
                           "kernel.assert_store_epoch(integer)": "pipeshub_vetted_kernel", "kernel.postgres_store_epoch()": "pipeshub_vetted_kernel",
                       **dict.fromkeys(("kt.w_grants_set(bigint[],bigint[],smallint[],smallint[])", "kt.w_grants_delete(bigint[],bigint[],smallint[])", "kt.w_fence_remove(bigint)",
@@ -998,6 +1000,15 @@ def test_any_reviewed_sysfuncs_line_of_a_major_passes_and_nothing_else_is_relaxe
     secdef = "sysfunc pg_catalog.f() language=c secdef=true config=-"                      # its own line: a matching hash does not cover it
     assert surface.diff({"sysfuncs@17 count=2 md5=b", "role x", secdef}, reviewed) == [("50 surface: unexpected", secdef)]
     assert surface.diff({"sysfuncs@17 count=2 md5=b"}, reviewed) == [("50 surface: missing", "role x")]
+
+
+def test_an_optional_line_may_be_live_or_not_and_relaxes_nothing_else():
+    opt = "role m login=true"
+    expected = {"? " + opt, "role x"}
+    assert surface.diff({"role x"}, expected) == []                                 # the opt-in role is not there: nothing is missing
+    assert surface.diff({"role x", opt}, expected) == []                            # it is there, exactly as reviewed
+    assert surface.diff({"role x", "role m login=true super=true"}, expected) == [("50 surface: unexpected", "role m login=true super=true")]
+    assert surface.diff({opt}, expected) == [("50 surface: missing", "role x")]
 
 
 def test_an_allowlist_can_remove_a_line_of_the_base_state(tmp_path):

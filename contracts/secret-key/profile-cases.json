@@ -1,0 +1,14 @@
+{
+  "comment": "R51-COMPAT (ADR-OPS-07): what each ring (Python secret_key_ring.py, Node secret-key-ring.ts) does with SECRET_KEY under the security profile. env is the process environment besides SECRET_KEY ('weak' is the published placeholder, 'strong' a random key); 'refused' is whether reading the ring fails; 'writer' is the cipher key writers seal under ('sha256' is what a release without SEC-D-05 reads).",
+  "cases": [
+    {"name": "compatibility, unset profile", "env": {}, "secret": "strong", "refused": false, "writer": "sha256"},
+    {"name": "compatibility, explicit false", "env": {"PIPESHUB_HARDENED": "false"}, "secret": "strong", "refused": false, "writer": "sha256"},
+    {"name": "compatibility, not a boolean", "env": {"PIPESHUB_HARDENED": "maybe"}, "secret": "strong", "refused": false, "writer": "sha256"},
+    {"name": "compatibility keeps a weak key", "env": {}, "secret": "weak", "refused": false, "writer": "sha256"},
+    {"name": "compatibility, KDF opted in", "env": {"SECRET_KEY_KDF": "hkdf"}, "secret": "strong", "refused": false, "writer": "hkdf"},
+    {"name": "hardened", "env": {"PIPESHUB_HARDENED": "true"}, "secret": "strong", "refused": false, "writer": "hkdf"},
+    {"name": "hardened, any case", "env": {"PIPESHUB_HARDENED": "Yes"}, "secret": "strong", "refused": false, "writer": "hkdf"},
+    {"name": "hardened refuses a weak key", "env": {"PIPESHUB_HARDENED": "1"}, "secret": "weak", "refused": true, "writer": null},
+    {"name": "hardened, KDF held back for a rolling upgrade", "env": {"PIPESHUB_HARDENED": "true", "SECRET_KEY_KDF": "sha256"}, "secret": "strong", "refused": false, "writer": "sha256"}
+  ]
+}

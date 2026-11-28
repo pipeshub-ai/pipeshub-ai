@@ -72,7 +72,7 @@ def packs_root_v2(tmp_path) -> str:
 
 
 def _seed_store(graph: FakeGraphProvider, org_id: str = "org-1") -> GraphSkillStore:
-    return GraphSkillStore(graph, org_id, SEED_IDENTITY)
+    return GraphSkillStore(graph, org_id, SEED_IDENTITY, allow_builtin_writes=True)
 
 
 class TestFirstSync:
@@ -140,10 +140,12 @@ class TestForkSkip:
         seed_store = _seed_store(graph)
         await BuiltinSkillSeeder(packs_root_v1).sync(seed_store)
 
-        # A real user edits the org's copy of pack-a — updatedBy becomes
-        # their id, not the seed identity.
+        # Preserve a customized copy written before builtins became read-only.
         real_user_store = GraphSkillStore(graph, "org-1", "user-42")
-        await real_user_store.patch_skill("pack-a", "version 1", "version 1 (customized)")
+        await graph.update_node("org-1_pack-a", "agentSkills", {
+            "content": _PACK_A_V1.replace("version 1", "version 1 (customized)"),
+            "updatedBy": "user-42",
+        })
 
         await BuiltinSkillSeeder(packs_root_v2).sync(seed_store)
 
@@ -333,3 +335,21 @@ class TestResourceSeeding:
         await BuiltinSkillSeeder(packs_root_v2).sync(store)
 
         assert await store.get_resources("pack-a") == {"scripts/unpack.py": "print('v2')"}
+
+
+class TestNameTakenByAMember:
+    async def test_a_members_skill_keeps_the_name_and_the_seed_goes_on(
+        self, packs_root_v1: str, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """SLASH1: one name per org; a member's own `pack-a` stays theirs, the other builtins still seed, no error."""
+        graph = FakeGraphProvider()
+        member = GraphSkillStore(graph, "org-1", "user-1")
+        await member.create_skill("pack-a", _PACK_A_V1.replace("source: builtin", "source: manual"))
+        with caplog.at_level("INFO"):
+            await BuiltinSkillSeeder(packs_root_v1).sync(_seed_store(graph))
+        mine = await member.get_skill("pack-a")
+        assert mine is not None and mine.metadata.source == SkillSource.MANUAL
+        builtins = await _seed_store(graph).list_skills(SkillFilter(source=SkillSource.BUILTIN))
+        assert [m.name for m in builtins] == ["pack-b"]
+        assert not [r for r in caplog.records if r.levelname in ("ERROR", "WARNING")]
+        assert any("taken by an org skill" in r.getMessage() for r in caplog.records)

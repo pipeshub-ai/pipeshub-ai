@@ -6,8 +6,16 @@ import http from 'node:http'
 import { AddressInfo } from 'node:net'
 import { BaseCommand, ICommand } from '../../../src/libs/commands/command.interface'
 import { ConnectorServiceCommand } from '../../../src/libs/commands/connector_service/connector.service.command'
+import { AIServiceCommand } from '../../../src/libs/commands/ai_service/ai.service.command'
+import { ConfigurationManagerServiceCommand } from '../../../src/libs/commands/configuration_manager/cm.service.command'
+import { IAMServiceCommand } from '../../../src/libs/commands/iam/iam.service.command'
+import { handleBackendError } from '../../../src/libs/errors/backend-error'
+import { BaseError } from '../../../src/libs/errors/base.error'
+import { classifyRequestError } from '../../../src/libs/utils/error-class'
 import { runWithRequestContext } from '../../../src/libs/context/request-context'
 import { HttpMethod } from '../../../src/libs/enums/http-methods.enum'
+import { InternalServerError } from '../../../src/libs/errors/http.errors'
+import { registerUpstreams } from '../../../src/libs/http/upstream-call'
 
 // Concrete implementation for testing the abstract BaseCommand
 class TestCommand extends BaseCommand<string> {
@@ -55,8 +63,13 @@ class TestCommand extends BaseCommand<string> {
 describe('command.interface', () => {
   let clock: sinon.SinonFakeTimers
 
+  beforeEach(() => {
+    registerUpstreams({ test: ['http://example.com', 'http://api.local'] })
+  })
+
   afterEach(() => {
     sinon.restore()
+    registerUpstreams({})
   })
 
   describe('BaseCommand constructor', () => {
@@ -125,6 +138,46 @@ describe('command.interface', () => {
       const cmd = new TestCommand('http://api.local/items', {})
       // Empty params still produces ? with empty string
       expect(cmd.testBuildUrl()).to.equal('http://api.local/items?')
+    })
+
+    for (const [name, uri, reason] of [
+      ['an unregistered origin', 'http://169.254.169.254/latest/meta-data/', 'not a registered PipesHub service'],
+      ['embedded credentials', 'http://user:pass@api.local/items', 'must not contain embedded credentials'],
+      ['a non-http protocol', 'ftp://api.local/items', 'Blocked request: URL scheme must be http or https'],
+      ['an unparsable URI', 'not a url', 'URL is not valid'],
+    ] as const) {
+      it(`refuses ${name} with an InternalServerError that does not echo the URI`, () => {
+        const build = (): string => new TestCommand(uri, { q: 'v' }).testBuildUrl()
+
+        expect(build).to.throw(InternalServerError, reason)
+        try {
+          build()
+        } catch (error) {
+          expect((error as Error).message).to.not.include('169.254').and.not.include('api.local').and.not.include('not a url').and.not.include('ftp')
+        }
+      })
+    }
+  })
+
+  describe('a command to an unregistered service', () => {
+    it('is refused before its retry loop: no attempt and one rejection', async () => {
+      const fetchStub = sinon.stub(globalThis, 'fetch').resolves(new Response('{}', { status: 200 }))
+      const retry = sinon.spy(BaseCommand.prototype as any, 'fetchWithRetry')
+
+      const outcome = await new ConnectorServiceCommand({
+        uri: 'http://169.254.169.254/latest/meta-data/',
+        method: HttpMethod.GET,
+        headers: {},
+      })
+        .execute()
+        .then(
+          () => 'sent',
+          (error: unknown) => error,
+        )
+
+      expect(outcome).to.be.instanceOf(InternalServerError)
+      expect(fetchStub.called, 'fetch reached').to.equal(false)
+      expect(retry.called, 'retry loop entered').to.equal(false)
     })
   })
 
@@ -380,6 +433,68 @@ describe('command.interface', () => {
   })
 
   // Callers pass the inbound req.headers to a command: the service must get the sanitised root, not the client's id.
+  describe('a command whose redirect is refused', () => {
+    let server: http.Server
+    let origin: string
+    let received: string[]
+    let flaky: number
+
+    before(async () => {
+      server = http.createServer((req, res) => {
+        req.resume()
+        received.push(`${req.method ?? ''} ${req.url ?? ''}`)
+        // .invalid never resolves, so nothing leaves the machine on any tree.
+        if (req.url === '/submit') return void res.writeHead(303, { location: 'http://unregistered.invalid/x' }).end()
+        if (req.url === '/malformed') return void res.writeHead(302, { location: 'http://[' }).end()
+        if (req.url === '/flaky' && (flaky += 1) === 1) return void req.socket.destroy()
+        res.writeHead(200, { 'content-type': 'application/json' }).end('{}')
+      })
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+      origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    })
+
+    beforeEach(() => {
+      received = []
+      flaky = 0
+      registerUpstreams({ query: [origin] })
+    })
+
+    after(async () => {
+      server.closeAllConnections()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    })
+
+    const post = (path: string): Promise<unknown> =>
+      new AIServiceCommand({ uri: `${origin}${path}`, method: HttpMethod.POST, headers: {}, body: { q: 1 } })
+        .execute()
+        .then(
+          () => 'answered',
+          (error: unknown) => error,
+        )
+
+    it('sends the POST once and answers the refusal of a 303 to an unregistered URL', async () => {
+      const error = await post('/submit')
+
+      expect(error).to.be.instanceOf(InternalServerError)
+      expect((error as Error).message).to.equal('Blocked request: not a registered PipesHub service')
+      expect(received).to.deep.equal(['POST /submit'])
+    })
+
+    it('refuses a malformed Location like an invalid URL, once, with no cause and without its text', async () => {
+      const error = await post('/malformed')
+
+      expect(error).to.be.instanceOf(InternalServerError)
+      expect((error as Error).message).to.equal('Blocked request: URL is not valid')
+      expect((error as { cause?: unknown }).cause).to.equal(undefined)
+      expect(received).to.deep.equal(['POST /malformed'])
+    })
+
+    it('still retries a transport failure', async () => {
+      expect(await post('/flaky')).to.equal('answered')
+      expect(received).to.deep.equal(['POST /flaky', 'POST /flaky'])
+    })
+  })
+
   describe('the request id a command sends', () => {
     let server: http.Server
     let origin: string
@@ -393,6 +508,10 @@ describe('command.interface', () => {
       })
       await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
       origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    })
+
+    beforeEach(() => {
+      registerUpstreams({ connector: [origin] })
     })
 
     after(async () => {
@@ -531,5 +650,92 @@ describe('command.interface', () => {
       const result = await cmd.execute()
       expect(result).to.equal('default')
     })
+  })
+
+  // API1-P3 (A-04): a proxy's HTML or an ingress's text in front of a service. The status must survive the body.
+  describe('readBody: an error answer that is not JSON keeps its status, on every command', () => {
+    const URI = 'http://up.local/a'
+    const commands: [string, () => Promise<{ statusCode: number; data?: unknown }>][] = [
+      ['connector', () => new ConnectorServiceCommand({ uri: URI, method: HttpMethod.GET, retries: 1 }).execute()],
+      ['ai', () => new AIServiceCommand({ uri: URI, method: HttpMethod.GET, headers: {}, maxAttempts: 1 }).execute()],
+      ['cm', () => new ConfigurationManagerServiceCommand({ uri: URI, method: HttpMethod.GET, headers: {} }).execute()],
+      ['iam', () => new IAMServiceCommand({ uri: URI, method: HttpMethod.GET, headers: {} }).execute()],
+    ]
+    let fetchStub: sinon.SinonStub
+    beforeEach(() => {
+      registerUpstreams({ up: ['http://up.local'] })
+      fetchStub = sinon.stub(globalThis, 'fetch')
+    })
+
+    const answer = (status: number, body: string | null, statusText: string, headers: Record<string, string> = {}) =>
+      new Response(body, { status, statusText, headers: { 'content-type': 'text/html', ...headers } })
+    const mapped = async (run: () => Promise<unknown>): Promise<BaseError> =>
+      handleBackendError(await run(), 'do the thing') as BaseError
+    const rejection = async (run: () => Promise<unknown>): Promise<unknown> => {
+      try {
+        await run()
+      } catch (error) {
+        return error
+      }
+      return undefined
+    }
+
+    for (const [name, run] of commands) {
+      it(`${name}: a proxy's HTML 503 stays 503 and keeps its Retry-After`, async () => {
+        fetchStub.resolves(answer(503, '<html>upstream connect error</html>', 'Service Unavailable', { 'retry-after': '5' }))
+        const result = await mapped(run)
+        expect(result.statusCode).to.equal(503)
+        expect(result.metadata?.retryAfter).to.equal('5')
+        expect(result.message).to.include('5 seconds')
+      })
+
+      it(`${name}: a proxy's HTML 400 stays 400`, async () => {
+        fetchStub.resolves(answer(400, '<html>400 Bad Request</html>', 'Bad Request'))
+        const result = await mapped(run)
+        expect(result.statusCode).to.equal(400)
+        expect(result.message).to.equal('Bad Request')
+      })
+
+      it(`${name}: nginx's HTML 413 stays 413 in its status text's words, never the page`, async () => {
+        fetchStub.resolves(answer(413, '<html>413 Request Entity Too Large</html>', 'Request Entity Too Large'))
+        const result = await mapped(run)
+        expect(result.statusCode).to.equal(413)
+        expect(result.message).to.equal('Request Entity Too Large')
+      })
+
+      it(`${name}: a 413 with an empty status text reads the standard reason phrase`, async () => {
+        fetchStub.resolves(answer(413, 'too big', ''))
+        expect((await mapped(run)).message).to.equal('Payload Too Large')
+      })
+
+      it(`${name}: Starlette's text 500 is an upstream 5xx answered 502, not our bug`, async () => {
+        fetchStub.resolves(answer(500, 'Internal Server Error', 'Internal Server Error', { 'content-type': 'text/plain' }))
+        const result = await mapped(run)
+        expect(result.statusCode).to.equal(502)
+        expect(classifyRequestError(result, 502)).to.equal('upstream_5xx')
+      })
+
+      it(`${name}: a 204 has no data and its body is not read`, async () => {
+        const response = new Response(null, { status: 204 })
+        const json = sinon.spy(response, 'json')
+        fetchStub.resolves(response)
+        const result = await run()
+        expect(result.statusCode).to.equal(204)
+        expect(result.data).to.equal(undefined)
+        expect(json.called).to.equal(false)
+      })
+
+      it(`${name}: a 200 that is not JSON still fails, so a broken success is not hidden`, async () => {
+        fetchStub.resolves(answer(200, '<html>ok</html>', 'OK'))
+        expect(await rejection(run)).to.be.instanceOf(SyntaxError)
+      })
+
+      it(`${name}: a 4xx whose body cannot be read for another reason still fails`, async () => {
+        const response = answer(404, '{}', 'Not Found')
+        sinon.stub(response, 'json').rejects(new TypeError('terminated'))
+        fetchStub.resolves(response)
+        expect(await rejection(run)).to.be.instanceOf(TypeError)
+      })
+    }
   })
 })

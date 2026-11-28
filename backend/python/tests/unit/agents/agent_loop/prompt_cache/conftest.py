@@ -116,3 +116,12 @@ class RecordingEndpoint:
 def endpoint() -> Iterator[RecordingEndpoint]:
     with RecordingEndpoint() as recording:
         yield recording
+
+
+@pytest.fixture(autouse=True)
+def _offline_aws(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ChatBedrockConverse builds a boto3 control client at construction; without credentials boto3 asks the
+    # instance metadata service (169.254.169.254), which the no-network guard refuses.
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")

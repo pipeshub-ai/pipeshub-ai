@@ -209,7 +209,7 @@ export async function toggleConnectorSyncOn(
     await prepareLocalFsForEnable(connectorId, connectorType);
   }
   try {
-    await ConnectorsApi.toggleConnector(connectorId, 'sync', device);
+    await ConnectorsApi.toggleConnector(connectorId, 'sync', true, device);
   } catch (error) {
     const refusal = localFs ? readDesktopRefusal(error) : null;
     if (refusal) {

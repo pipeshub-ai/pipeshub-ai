@@ -78,7 +78,12 @@ from app.core.org_context import OrgContext, bind, current_org_id, spawn_detache
 from app.services.cache.invalidation_hooks import notify_connector_permissions_changed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider  # noqa: TC001 - FastAPI reads the annotation at runtime
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_lookup import get_org_or_503, get_user_or_503
+from app.utils.user_lookup import (
+    await_or_503,
+    get_document_or_503,
+    get_org_or_503,
+    get_user_or_503,
+)
 
 if TYPE_CHECKING:
     import asyncio
@@ -122,7 +127,7 @@ async def _per_user_connector(request: Request, connector_id: str, graph_provide
     """The connector, when it is a team connector of the caller's organisation that runs in per-user mode.
     Its config is under ``"config"``."""
     org_id = current_org_id()
-    app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+    app = await get_document_or_503(graph_provider, connector_id, CollectionNames.APPS.value)
     if (
         not app or not org_id
         or app.get("type") not in _SUPPORTED_TYPES
@@ -130,9 +135,9 @@ async def _per_user_connector(request: Request, connector_id: str, graph_provide
         or not await request.app.state.connector_registry.belongs_to_org(app, org_id)
     ):
         raise _not_found()
-    config = await _config_service(request).get_config(
+    config = await await_or_503(_config_service(request).get_config(
         f"/services/connectors/{connector_id}/config", raise_on_error=True
-    )
+    ))
     if not is_per_user(config if isinstance(config, dict) else None):
         raise _not_found()
     return {**app, "config": config}
@@ -249,12 +254,13 @@ async def connect_my_account(
 ) -> dict[str, Any]:
     app = await _per_user_connector(request, connector_id, graph_provider)
     user = await _caller(request, graph_provider)
-    connection = await _connect(request, app, connector_id, user, token.strip(), method=METHOD_TOKEN)
+    connection = await _connect(request, graph_provider, app, connector_id, user, token.strip(), method=METHOD_TOKEN)
     return _status(connection, app["config"])
 
 
 async def _connect(
     request: Request,
+    graph_provider: IGraphDBProvider,
     app: dict[str, Any],
     connector_id: str,
     user: dict[str, Any],
@@ -266,7 +272,8 @@ async def _connect(
     started_at: int | None = None,
 ) -> UserConnection:
     """Check who ``token`` belongs to and store it as the caller's connection. 400 for a credential
-    that must be refused, 409 for a Notion account another user connected, 503 when Notion is down."""
+    that must be refused, 409 for a Notion account another user connected or whose email is another
+    user's, 503 when Notion is down."""
     user_id, email = str(user.get("userId")), str(user["email"])
     # The connection dates from when connecting began, so a removal while it was under way wins.
     started_at = started_at or get_epoch_timestamp_in_ms()
@@ -276,7 +283,7 @@ async def _connect(
     async with nullcontext() if holds_lock else refresh_lock(connector_id, user_id):
         try:
             identity = await verify_token(
-                token, pipeshub_email=email, connector_id=connector_id, config_service=config_service, logger=logger,
+                token, connector_id=connector_id, config_service=config_service, logger=logger,
             )
         except NotionAccessError as e:
             raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from None
@@ -292,6 +299,7 @@ async def _connect(
                     status_code=HttpStatusCode.CONFLICT.value,
                     detail="Another PipesHub user has already connected this Notion account.",
                 )
+        await _refuse_another_users_account(graph_provider, identity.email, email)
 
         connection = UserConnection(
             user_id=user_id, email=email, token=token, source_user_id=identity.user_id,
@@ -310,6 +318,31 @@ async def _connect(
         logger.warning("Could not close the invite of a user of connector %s: %s", connector_id, e)
     await _request_sync(app, connector_id)
     return connection
+
+
+async def _refuse_another_users_account(graph_provider: IGraphDBProvider, source_email: str | None, email: str) -> None:
+    """An account under another address is fine (people try PipesHub with one email and use Notion
+    with another), unless that address is another PipesHub user's: then it is their account. An account
+    whose email Notion does not share cannot be checked, so it is refused."""
+    if not source_email:
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail="Notion did not share this account's email, so it cannot be matched to you.",
+        )
+    if source_email.casefold() == email.strip().casefold():
+        return
+    try:
+        found = await graph_provider.get_users_by_emails([source_email], raise_on_error=True, org_id=current_org_id())
+    except Exception as e:
+        raise HTTPException(
+            status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value, detail="Could not read the organisation's users."
+        ) from e
+    owner = found.get(source_email.lower())
+    if owner is not None and owner.user_id and owner.is_active is not False:
+        raise HTTPException(
+            status_code=HttpStatusCode.CONFLICT.value,
+            detail=f"This Notion account uses {source_email}, which belongs to another PipesHub user.",
+        )
 
 
 async def _drop_links(config_service: Any, connector_id: str, user_id: str) -> None:  # noqa: ANN401
@@ -431,7 +464,9 @@ async def _complete_user_sign_in(
     """Finish ``user``'s sign-in and connect them. Returns the connector."""
     try:
         app = await _per_user_connector(request, connector_id, graph_provider)
-    except HTTPException:
+    except HTTPException as e:
+        if e.status_code == HttpStatusCode.SERVICE_UNAVAILABLE.value:
+            raise
         raise _SignInFailed("This connector does not let users connect their own Notion account.") from None
     started_at = get_epoch_timestamp_in_ms()
     config_service = _config_service(request)
@@ -462,7 +497,7 @@ async def _complete_user_sign_in(
                 await provider.close()
             try:
                 await _connect(
-                    request, app, connector_id, user, token.access_token,
+                    request, graph_provider, app, connector_id, user, token.access_token,
                     method=METHOD_OAUTH, refresh_token=token.refresh_token, holds_lock=True, started_at=started_at,
                 )
             except HTTPException as e:
@@ -598,9 +633,21 @@ async def _roster(request: Request, graph_provider: IGraphDBProvider, connector_
         if user_id:
             seen.add(user_id)
 
+    # The connected account decides who a member is: a user connected to one member is never matched
+    # to another by email (their PipesHub email may be another member's address).
+    by_source = {c.source_user_id: c.user_id for c in connections.values() if c.source_user_id}
+    connected_users = set(by_source.values())
     for member in members:
         email = str(member["email"])
-        add(member.get("name"), email, member.get("sourceUserId"), users.get(email.lower()))
+        user = users.get(email.lower())
+        owner_id = by_source.get(str(member.get("sourceUserId") or ""))
+        if owner_id:
+            if user is None or user["userId"] != owner_id:
+                found_user = await get_user_or_503(graph_provider, owner_id)
+                user = found_user if _is_member(found_user, org_id) else None
+        elif user is not None and member.get("sourceUserId") and user["userId"] in connected_users:
+            user = None
+        add(member.get("name"), email, member.get("sourceUserId"), user)
     # Connected or invited people the member list does not show (yet).
     for user_id in dict.fromkeys([*connections, *invites]):
         if user_id in seen or user_id == me:
@@ -833,7 +880,9 @@ async def _link_target(
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=_LINK_GONE)
     try:
         app = await _per_user_connector(request, link.connector_id, graph_provider)
-    except HTTPException:
+    except HTTPException as e:
+        if e.status_code == HttpStatusCode.SERVICE_UNAVAILABLE.value:
+            raise
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=_LINK_GONE) from None
     return user, app
 

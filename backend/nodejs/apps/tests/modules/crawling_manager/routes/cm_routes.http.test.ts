@@ -29,6 +29,8 @@ import {
   errorMessage,
 } from '../../tokens_manager/routes/connectors-http-harness'
 import { FakeCrawlingQueue, FakeJob, FakeQueueStore, schedulerOver } from '../fake-crawling-queue'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 const JWT_SECRET = 'connectors-http-test-jwt-secret'
 const SCOPED_JWT_SECRET = 'connectors-http-test-scoped-secret'
@@ -101,6 +103,9 @@ const query = <T>(value: T): Query<T> => {
 }
 
 describe('Crawling manager over HTTP', () => {
+  beforeEach(() => registerAppUpstreams(config))
+  afterEach(() => registerUpstreams({}))
+
   const backend = new FakeBackend()
   const tokens = new AuthTokenService(JWT_SECRET, SCOPED_JWT_SECRET)
   const oauthGrants = new Map<string, { userId: string; orgId: string; scope: string }>()
@@ -857,7 +862,7 @@ describe('Crawling manager over HTTP', () => {
         body: { detail: 'arangodb: connection refused at arango-0.internal:8529' },
       })
       const res = await send('POST', `/${TYPE}/drive-team/schedule`, session(ADMIN_A), daily())
-      expect(res.status).to.equal(500)
+      expect(res.status).to.equal(502)
       expect(errorMessage(res)).to.not.include('arango')
       expect(await repeatables()).to.have.length(0)
     })

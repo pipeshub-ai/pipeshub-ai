@@ -28,6 +28,12 @@ describe('MongoService', () => {
       // strictQuery is set in constructor
       expect(service).to.exist;
     });
+
+    it('PERFD-11: a query is run without capturing a stack trace for it', () => {
+      // Mongoose 8 captured one per query unless skipOriginalStackTraces was set; Mongoose 9 captures none and
+      // dropped the option, so the version is what keeps the cost away.
+      expect(Number(mongoose.version.split('.')[0])).to.be.at.least(9);
+    });
   });
 
   describe('initialize', () => {
@@ -46,6 +52,24 @@ describe('MongoService', () => {
       await service.initialize();
       expect((mongoose.connect as sinon.SinonStub).calledOnce).to.be.true;
       expect((mongoose.connect as sinon.SinonStub).firstCall.args[0]).to.equal(mockConfig.uri);
+    });
+
+    it('WP88-FU-5: the pool holds 16 in-step sessions\' admission, commit and stream read at once', async () => {
+      const mockConnection = {
+        on: sinon.stub(),
+        db: {
+          listCollections: sinon.stub().returns({ toArray: sinon.stub().resolves([]) }),
+          createCollection: sinon.stub().resolves(),
+        },
+      };
+      sinon.stub(mongoose, 'connect').resolves(undefined as any);
+      (mongoose as any).connection = mockConnection;
+      Object.defineProperty(service, 'connection', { value: null, writable: true });
+
+      await service.initialize();
+      const options = (mongoose.connect as sinon.SinonStub).firstCall.args[1];
+      // With 10, the instant's operations queued in the driver: admission p95 250-269 ms against 187-221 at 64.
+      expect(options.maxPoolSize).to.be.at.least(16 * 3);
     });
 
     it('should skip if already initialized', async () => {
@@ -302,12 +326,19 @@ describe('MongoService', () => {
     });
   });
 
-  describe('shutdown ownership', () => {
-    it('does not disconnect on process signals itself (Application.stop owns the order)', () => {
-      const before = process.listenerCount('SIGTERM') + process.listenerCount('SIGINT');
-      (service as any).connection = { on: sinon.stub() };
-      (service as any).setupConnectionHandlers();
-      expect(process.listenerCount('SIGTERM') + process.listenerCount('SIGINT')).to.equal(before);
+  describe('OPS1-1-7: the connection is closed by its owner, not by a signal', () => {
+    it('installs no signal handler when it connects', async () => {
+      const before = {
+        term: process.listenerCount('SIGTERM'),
+        int: process.listenerCount('SIGINT'),
+      };
+      sinon.stub(mongoose, 'connect').resolves(undefined as any);
+      (mongoose as any).connection = { on: sinon.stub(), db: undefined };
+      await service.initialize();
+      expect({
+        term: process.listenerCount('SIGTERM'),
+        int: process.listenerCount('SIGINT'),
+      }).to.deep.equal(before);
     });
   });
 

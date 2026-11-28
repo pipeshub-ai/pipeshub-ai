@@ -1,7 +1,31 @@
+# Every service that runs an image the base file runs keeps the base file's
+# baseline (ADR-OPS-02): no capability but those its image proves it needs, with
+# the reason beside each, no privilege gain, and memory and process limits.
+# tests/unit/harness/security/test_container_baseline.py checks it.
+x-hardened: &hardened
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+
+# A service whose image writes only to its volumes also gets a read-only root.
+x-read-only-root: &read-only-root
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+
 services:
   pipeshub-ai:
+    <<: *hardened
+    # Only the image entrypoint holds these, as root, for its first moments: it
+    # hands earlier root-owned volumes to uid 1000 (CHOWN, DAC_OVERRIDE, FOWNER),
+    # then drops to that user (SETUID, SETGID) and empties its bounding set
+    # (SETPCAP) before any service starts, so no service process has any of them.
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, SETPCAP, KILL]
     image: pipeshub-ai:latest
     restart: always
+    # Durable agent runs drain on stop (finish the boundary, commit, yield):
+    # the process monitor waits up to 40 s for them before stopping Node.
+    stop_grace_period: 60s
     build:
       context: ../../
       dockerfile: Dockerfile
@@ -20,7 +44,7 @@ services:
       - "8091:8091"
       - "8081:8081"
       - "8088:8088"
-      - "3000:3000"
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:3000:3000"
       - "3020:3020"
       - "8001:8000"
     deploy:
@@ -28,6 +52,7 @@ services:
         limits:
           # OOM cap only (not reserved). Sibling service limits are likewise caps.
           memory: 12G
+          pids: 16384
     # Lets the kernel page out memory that a co-located idle service (e.g.
     # Docling's model weights between documents) is holding but not
     # actively using, instead of counting it against the hard OOM cap above
@@ -65,6 +90,7 @@ services:
       - NOTION_API_BASE_URL=${NOTION_CONNECTOR_BASE_URL:-}
       # The test Nextcloud (nextcloud-source) has no TLS.
       - PIPESHUB_NEXTCLOUD_ALLOW_INSECURE_HTTP=true
+      # The compatibility profile only reports the CSP; STRICT_MODE=true sends the hardened header set the e2e smoke checks.
       - STRICT_MODE=${STRICT_MODE:-false}
       # The session-revocation checks look within seconds of a sign-out; the product default is 30s.
       - SESSION_CHECK_CACHE_SECONDS=${SESSION_CHECK_CACHE_SECONDS:-2}
@@ -74,7 +100,7 @@ services:
       - TELEMETRY_COLLECTION_FLAG=${TELEMETRY_COLLECTION_FLAG:-}
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
       # Security settings - allow override with custom secret
-      - SECRET_KEY=${SECRET_KEY:-your_random_encryption_secret_key}
+      - SECRET_KEY=${SECRET_KEY:?set SECRET_KEY to a random key, e.g. the output of openssl rand -base64 32 (install.sh generates one)}
       # Signs service tokens. Fixed so the storage suite can mint tokens this
       # stack accepts; the app only reads it on the first boot of a fresh volume.
       - SCOPED_JWT_SECRET=${SCOPED_JWT_SECRET:-pipeshub-integration-scoped-jwt-secret-test-only}
@@ -102,6 +128,62 @@ services:
       # run_code needs a sandbox, and an unset SANDBOX_MODE turns it off. This
       # stack is single-user CI with no Docker daemon for sandbox containers, so run it locally.
       - SANDBOX_MODE=${SANDBOX_MODE:-local}
+      # The most seconds one code run may take (10..3600); a larger timeout
+      # asked for by the model is lowered to it.
+      - SANDBOX_MAX_RUN_TIMEOUT_S=${SANDBOX_MAX_RUN_TIMEOUT_S:-300}
+      # Code sandbox capacity, shared by every query worker. Empty = sized
+      # from the machine: min(25% of memory / 512 MB, 75% of CPUs / 0.5, processes),
+      # at least SANDBOX_MIN_TOTAL (2). SANDBOX_MAX_TOTAL replaces it; set it when
+      # several stacks share one Docker host.
+      - SANDBOX_MAX_TOTAL=${SANDBOX_MAX_TOTAL:-}
+      - SANDBOX_MAX_PER_ORG=${SANDBOX_MAX_PER_ORG:-}
+      - SANDBOX_MAX_PER_REQUEST=${SANDBOX_MAX_PER_REQUEST:-}
+      - SANDBOX_MIN_TOTAL=${SANDBOX_MIN_TOTAL:-}
+      - SANDBOX_MEMORY_SHARE=${SANDBOX_MEMORY_SHARE:-}
+      - SANDBOX_CPU_FACTOR=${SANDBOX_CPU_FACTOR:-}
+      # How long a run waits for a free sandbox before it is refused (default 120).
+      - SANDBOX_SLOT_WAIT_S=${SANDBOX_SLOT_WAIT_S:-}
+      # The sandbox host's size, when the daemon is remote and cannot be read.
+      - SANDBOX_HOST_MEMORY_BYTES=${SANDBOX_HOST_MEMORY_BYTES:-}
+      - SANDBOX_HOST_CPU_MILLIS=${SANDBOX_HOST_CPU_MILLIS:-}
+      # Live limit: holds new runs back while the host is short of memory or CPU
+      # (off disables it). Empty = defaults; see env.template.
+      - SANDBOX_LIVE_LIMIT=${SANDBOX_LIVE_LIMIT:-}
+      - SANDBOX_LIVE_INTERVAL_S=${SANDBOX_LIVE_INTERVAL_S:-}
+      - SANDBOX_HOST_MEM_FLOOR_MB=${SANDBOX_HOST_MEM_FLOOR_MB:-}
+      - SANDBOX_HOST_MEM_SOFT_MB=${SANDBOX_HOST_MEM_SOFT_MB:-}
+      - SANDBOX_HOST_CPU_BRAKE=${SANDBOX_HOST_CPU_BRAKE:-}
+      - SANDBOX_HOST_CPU_PSI_BRAKE=${SANDBOX_HOST_CPU_PSI_BRAKE:-}
+      - SANDBOX_MEMORY_OVERCOMMIT=${SANDBOX_MEMORY_OVERCOMMIT:-}
+      # Runs waiting for memory ask indexing to slow down (off disables it).
+      - SANDBOX_YIELD_INDEXING=${SANDBOX_YIELD_INDEXING:-}
+      - SANDBOX_YIELD_TTL_S=${SANDBOX_YIELD_TTL_S:-}
+      - SANDBOX_ALERTS=${SANDBOX_ALERTS:-}
+      - SANDBOX_ALERT_WINDOW_S=${SANDBOX_ALERT_WINDOW_S:-}
+      - SANDBOX_ALERT_EVAL_S=${SANDBOX_ALERT_EVAL_S:-}
+      - SANDBOX_ALERT_WARN_BUSY_PCT=${SANDBOX_ALERT_WARN_BUSY_PCT:-}
+      - SANDBOX_ALERT_WARN_MIN_WAITED=${SANDBOX_ALERT_WARN_MIN_WAITED:-}
+      - SANDBOX_ALERT_CRIT_MIN_REFUSED=${SANDBOX_ALERT_CRIT_MIN_REFUSED:-}
+      - SANDBOX_ALERT_CRIT_REFUSED_PCT=${SANDBOX_ALERT_CRIT_REFUSED_PCT:-}
+      - SANDBOX_ALERT_COOLDOWN_S=${SANDBOX_ALERT_COOLDOWN_S:-}
+      - SANDBOX_ALERT_SCOPE=${SANDBOX_ALERT_SCOPE:-}
+      # Shared state place, disk checks, container log rotation and output caps
+      # (empty: the app's defaults; see ADVANCED_DEPLOYMENT.md).
+      - SANDBOX_STATE_DIR=${SANDBOX_STATE_DIR:-}
+      - SANDBOX_DISK_WATCHDOG=${SANDBOX_DISK_WATCHDOG:-}
+      - SANDBOX_DISK_WATCH_CHECK_TIMEOUT_S=${SANDBOX_DISK_WATCH_CHECK_TIMEOUT_S:-}
+      - SANDBOX_DISK_WATCH_MAX_FAILURES=${SANDBOX_DISK_WATCH_MAX_FAILURES:-}
+      - SANDBOX_LOG_MAX_SIZE=${SANDBOX_LOG_MAX_SIZE:-}
+      - SANDBOX_LOG_MAX_FILES=${SANDBOX_LOG_MAX_FILES:-}
+      - SANDBOX_EGRESS_DNS_SERVERS=${SANDBOX_EGRESS_DNS_SERVERS:-}
+      - SANDBOX_STDIO_HEAD_BYTES=${SANDBOX_STDIO_HEAD_BYTES:-}
+      - SANDBOX_STDIO_TAIL_BYTES=${SANDBOX_STDIO_TAIL_BYTES:-}
+      - SANDBOX_OUTPUT_MAX_FILE_BYTES=${SANDBOX_OUTPUT_MAX_FILE_BYTES:-}
+      - SANDBOX_OUTPUT_MAX_TOTAL_BYTES=${SANDBOX_OUTPUT_MAX_TOTAL_BYTES:-}
+      - SANDBOX_OUTPUT_MAX_FILES=${SANDBOX_OUTPUT_MAX_FILES:-}
+      - SANDBOX_OUTPUT_MAX_SANDBOX_BYTES=${SANDBOX_OUTPUT_MAX_SANDBOX_BYTES:-}
+      - SANDBOX_OUTPUT_MAX_SANDBOX_FILES=${SANDBOX_OUTPUT_MAX_SANDBOX_FILES:-}
+      - SANDBOX_DEPS_MAX_TOTAL_BYTES=${SANDBOX_DEPS_MAX_TOTAL_BYTES:-}
       - SANDBOX_ALLOW_LOCAL=${SANDBOX_ALLOW_LOCAL:-true}
 
       # Key-Value Store Configuration
@@ -143,10 +225,13 @@ services:
       - REDIS_DB=${REDIS_DB:-0}
 
       # MongoDB config
-      - MONGO_URI=mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:-password}@mongodb:27017/?authSource=admin
+      - MONGO_URI=mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:-password}@mongodb:27017/?authSource=admin&replicaSet=rs0&w=majority
       - MONGO_DB_NAME=es
-      # Standalone mongod — multi-document transactions unavailable. App branches on this.
-      - REPLICA_SET_AVAILABLE=false
+      - REPLICA_SET_AVAILABLE=true
+      # The durable agent harness processes, as the agent-harness overlay starts
+      # them; the Labs flag still decides whether any run uses them.
+      - AGENT_HARNESS_RELAY_ENABLED=true
+      - AGENT_HARNESS_WORKER_ENABLED=true
 
       # Qdrant config
       - QDRANT_API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
@@ -163,7 +248,7 @@ services:
       - MAX_AUTH_REQUESTS_PER_MINUTE=${MAX_AUTH_REQUESTS_PER_MINUTE:-1000}
 
       # Set to true to replace secrets in config API responses with **** markers
-      - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-false}
+      - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-true}
 
       # MCP OAuth scopes
       - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,kb:write,kb:upload,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read,connector:write,connector:sync,code:read,project:read,project:write,project:delete}
@@ -247,7 +332,7 @@ services:
       redis:
         condition: service_started
       mongodb:
-        condition: service_started
+        condition: service_healthy
       neo4j:
         condition: service_healthy
       mailpit:
@@ -271,30 +356,25 @@ services:
       - "host.docker.internal:host-gateway"
 
   mongodb:
-    image: mongo:${MONGO_IMAGE_TAG:-8.0.17}
-    restart: always
-    # Shared ~16 GB hosts: cap WiredTiger so Mongo does not grab ~half of RAM.
-    # Sibling deploy.limits are OOM caps, not concurrent reservations.
-    command: ["mongod", "--bind_ip_all", "--wiredTigerCacheSizeGB", "${MONGO_CACHE_GB:-1}"]
+    # The shipped single-node replica set, defined once in the base file, so CI
+    # runs the topology users do. Host-side test clients connect with
+    # directConnection=true: the member's name, mongodb:27017, only resolves on
+    # the Compose network.
+    extends:
+      file: docker-compose.yml
+      service: mongodb
+    # The base file attaches its own network; this file uses the default one.
+    networks: !reset null
     ports:
       - "27017:27017"
     environment:
-      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-password}
-      - GLIBC_TUNABLES=${MONGO_GLIBC_TUNABLES:-glibc.pthread.rseq=0}
-    volumes:
-      - mongodb_data:/data/db
-    healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
 
   # PostgreSQL here is a connector *source* — data to be indexed — not a store
   # the platform uses. It lets the PostgreSQL connector be tested without an
   # external database, the same way MinIO covers object storage.
   postgres-source:
-    image: postgres:16.4-alpine
+    image: postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
     restart: always
     environment:
       POSTGRES_USER: ${POSTGRES_TEST_USER:-pipeshubtest}
@@ -312,7 +392,7 @@ services:
   # have live coverage without depending on a public site. Tests change what it
   # serves through its control API (integration-tests/helper/web_fixtures.py).
   web-fixtures:
-    image: python:3.12.11-alpine3.22
+    image: python:3.12.11-alpine3.22@sha256:efcdfa6a6b2fd2afb9c7dfa9a5b288a6f68338b5cfdebe6b637d986067d85757
     restart: always
     command: ["python", "/srv/server.py", "--seed", "/srv/seed", "--port", "8080", "--base-url", "http://web-fixtures:8080"]
     volumes:
@@ -474,7 +554,7 @@ services:
   # MariaDB, like postgres-source, is a connector *source* for the MariaDB
   # connector's tests, not a store the platform uses.
   mariadb-source:
-    image: mariadb:11.4
+    image: mariadb:11.4@sha256:d1891ede5a559f1086f55053bb8cc1569b0298338c4d72d71725a7f74f6ba620
     restart: always
     environment:
       MARIADB_USER: ${MARIADB_TEST_USER:-pipeshubtest}
@@ -493,7 +573,7 @@ services:
   # large enough to start only where their tests run: the workflow sets
   # COMPOSE_PROFILES=selfhosted-sources for that shard.
   nextcloud-source:
-    image: nextcloud:31.0.9-apache
+    image: nextcloud:31.0.9-apache@sha256:fdab7bfc1b35255e442ed207bca277a45495fb115f297a97711e0880167f833b
     profiles: ["selfhosted-sources"]
     restart: always
     environment:
@@ -513,7 +593,7 @@ services:
       retries: 60
 
   bookstack-db:
-    image: mariadb:11.4
+    image: mariadb:11.4@sha256:d1891ede5a559f1086f55053bb8cc1569b0298338c4d72d71725a7f74f6ba620
     profiles: ["selfhosted-sources"]
     restart: always
     environment:
@@ -532,7 +612,7 @@ services:
       retries: 20
 
   bookstack-source:
-    image: lscr.io/linuxserver/bookstack:v26.05.4-ls282
+    image: lscr.io/linuxserver/bookstack:v26.05.4-ls282@sha256:90a3df3108fe4471a9ed89625020cc321c5354255900c34309727320f2e65367
     profiles: ["selfhosted-sources"]
     restart: always
     depends_on:
@@ -562,23 +642,38 @@ services:
       retries: 60
 
   redis:
-    image: redis:7.4-bookworm
+    <<: [*hardened, *read-only-root]
+    # The image entrypoint hands /data to the redis user (CHOWN, and DAC_READ_SEARCH
+    # to reach into the 0700 folder an earlier root-running redis left) and drops to
+    # it (SETUID, SETGID); redis-server holds none of them. The command goes through
+    # that entrypoint: started straight from sh, redis-server ran as root.
+    cap_add: [CHOWN, DAC_READ_SEARCH, SETUID, SETGID]
+    image: redis:7.4.12-bookworm@sha256:2e3eb11462c4e3759e6972678dd051d150ff54b1e60714b3c33b701260172a90
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     restart: always
     ports:
       - "6379:6379"
     environment:
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
     command: >
-      sh -c "redis-server
+      sh -c "exec docker-entrypoint.sh redis-server
       --appendonly yes
       --appendfsync everysec
       ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}"
     volumes:
       - redis_data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          pids: 4096
 
   # Local SMTP sink for mail-dependent integration tests: CI runners cannot
   mailpit:
-    image: axllent/mailpit:v1.30.6
+    image: axllent/mailpit:v1.30.6@sha256:7f33095f80e901f6ad08028f06ca284aa58fe84942be5496008d041d3b9f4d4d
     restart: always
     ports:
       - "1025:1025"
@@ -629,7 +724,15 @@ services:
       "
 
   neo4j:
-    image: neo4j:5.26.0
+    <<: *hardened
+    # Its entrypoint, as root, hands /data, /logs and the plugin folder to the
+    # neo4j user (CHOWN, DAC_OVERRIDE, FOWNER) and drops to it (SETUID, SETGID).
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, KILL]
+    image: neo4j:5.26.0@sha256:5a015e53de1895e7eee1574ae0325cf8c4b89587222778108c594bdd45a474b5
+    ulimits:
+      nofile:
+        soft: 60000
+        hard: 60000
     restart: always
     ports:
       - "7474:7474"
@@ -648,7 +751,9 @@ services:
       resources:
         limits:
           cpus: '4'
-          memory: 3G
+          # 2G heap + 1G page cache still needs JVM/native headroom.
+          memory: 4G
+          pids: 4096
         reservations:
           cpus: '2'
           memory: 2G
@@ -660,8 +765,13 @@ services:
       start_period: 30s
 
   zookeeper:
+    <<: *hardened
     profiles: ["kafka"]
-    image: confluentinc/cp-zookeeper:7.9.0
+    image: confluentinc/cp-zookeeper:7.9.0@sha256:5ae28c2f45b89e12e8ba27bd0cfbe6488ef7082a17f01c878ab7f1841a58874b
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     restart: always
     ports:
       - "2181:2181"
@@ -673,10 +783,20 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          pids: 4096
 
   kafka-1:
+    <<: *hardened
     profiles: ["kafka"]
-    image: confluentinc/cp-kafka:7.9.0
+    image: confluentinc/cp-kafka:7.9.0@sha256:02170e46da5c36b1581cd42ebfbf2a55edae6348c62bc772bc2166841db745b2
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
     restart: always
     depends_on:
       zookeeper:
@@ -705,9 +825,15 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+          pids: 4096
 
   qdrant:
-    image: qdrant/qdrant:v1.15
+    <<: *hardened
+    image: qdrant/qdrant:v1.15.5@sha256:0fb8897412abc81d1c0430a899b9a81eb8328aa634e7242d1bc804c1fe8fe863
     stop_grace_period: 120s
     ports:
       - "6333:6333"
@@ -734,6 +860,7 @@ services:
           # docs/deployment/vector-db-sizing.md. QDRANT_MEMORY_LIMIT also tells
           # the app the figure, for the warning on the Services page.
           memory: ${QDRANT_MEMORY_LIMIT:-4G}
+          pids: 4096
         reservations:
           cpus: '2'
           memory: 2G
@@ -783,7 +910,7 @@ services:
   # literal string and matches nothing. The connector would sync no tickets,
   # and a test written against that would pass while proving nothing.
   zammad-db:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
     profiles: ["zammad-source"]
     restart: always
     environment:
@@ -797,7 +924,15 @@ services:
       retries: 30
 
   zammad-redis:
-    image: redis:7-alpine
+    <<: [*hardened, *read-only-root]
+    # The image entrypoint drops to the redis user (SETUID, SETGID); with no volume
+    # an earlier redis wrote, there is nothing to hand over.
+    cap_add: [SETUID, SETGID]
+    image: redis:7-alpine@sha256:7b1753b4c5ad8458906c272a8132b8c15f5557b000379eb115fb239706a384b7
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     profiles: ["zammad-source"]
     restart: always
     healthcheck:
@@ -805,9 +940,14 @@ services:
       interval: 5s
       timeout: 3s
       retries: 30
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          pids: 4096
 
   zammad-elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.3
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.3@sha256:224c75e346bd745ce908f06a1cbad7bf10988961dcdcdfccb22556b3f856b3f0
     profiles: ["zammad-source"]
     restart: always
     environment:
@@ -821,7 +961,7 @@ services:
       retries: 60
 
   zammad-init:
-    image: zammad/zammad-docker-compose:6.4.1-63
+    image: zammad/zammad-docker-compose:6.4.1-63@sha256:bf7d5afa5d943040ad26153d86cdad7a2f02cca484eb73c5390b76b202ba1159
     profiles: ["zammad-source"]
     depends_on:
       zammad-db:
@@ -846,7 +986,7 @@ services:
       - zammad-storage:/opt/zammad/storage
 
   zammad-railsserver:
-    image: zammad/zammad-docker-compose:6.4.1-63
+    image: zammad/zammad-docker-compose:6.4.1-63@sha256:bf7d5afa5d943040ad26153d86cdad7a2f02cca484eb73c5390b76b202ba1159
     profiles: ["zammad-source"]
     restart: always
     depends_on:
@@ -874,7 +1014,7 @@ services:
       - zammad-storage:/opt/zammad/storage
 
   zammad-scheduler:
-    image: zammad/zammad-docker-compose:6.4.1-63
+    image: zammad/zammad-docker-compose:6.4.1-63@sha256:bf7d5afa5d943040ad26153d86cdad7a2f02cca484eb73c5390b76b202ba1159
     profiles: ["zammad-source"]
     restart: always
     depends_on:
@@ -891,6 +1031,8 @@ volumes:
   connsim_data:
   zammad-storage:
   mongodb_data:
+    driver: local
+  mongodb_replset_key:
     driver: local
   redis_data:
     driver: local

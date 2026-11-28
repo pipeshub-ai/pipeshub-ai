@@ -1,6 +1,7 @@
 import inspect
 import json
 import re
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -53,6 +54,14 @@ def _make_app(kb_service_mock=None, kafka_service_mock=None, logger_mock=None):
         return await call_next(request)
 
     return app, _kb, _kafka
+
+
+@pytest.fixture(autouse=True)
+def _upload_grant_is_checked_elsewhere() -> Iterator[None]:
+    """These tests are about the handlers' plumbing with a mocked service. The grant check itself
+    (a missing, forged, expired or mis-bound grant is refused) is tested in test_kb_upload_grant.py."""
+    with patch("app.connectors.sources.localKB.api.kb_router._granted_documents", AsyncMock(return_value=frozenset())):
+        yield
 
 
 class TestParseCommaSeparatedStr:
@@ -841,25 +850,11 @@ class TestRemovedCreateRecordsRoutes:
         assert resp.status_code == 405
 
 
-class TestListKbRecords:
-    def test_success(self):
+class TestRemovedListRecordsRoute:
+    def test_get_kb_records_is_not_routed(self):
         app, kb_svc, _ = _make_app()
-        kb_svc.list_kb_records = AsyncMock(return_value={
-            "records": [],
-            "pagination": {
-                "page": 1, "limit": 20, "totalCount": 0, "totalPages": 0,
-            },
-            "filters": {
-                "applied": {},
-                "available": {
-                    "recordTypes": [], "origins": [], "connectors": [],
-                    "indexingStatus": [], "permissions": [],
-                },
-            },
-        })
-        client = TestClient(app)
-        resp = client.get("/api/v1/kb/kb1/records")
-        assert resp.status_code == 200
+        resp = TestClient(app).get("/api/v1/kb/kb1/records")
+        assert resp.status_code == 405
 
 
 class TestGetKbChildren:
@@ -1802,27 +1797,6 @@ class TestUploadRecordsToFolderFullCoverage:
         client = TestClient(app)
         resp = client.post("/api/v1/kb/kb1/folder/f1/upload", json=self._files_body())
         assert resp.status_code == 500
-
-
-class TestListKbRecordsFullCoverage:
-    def test_success(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.list_kb_records = AsyncMock(return_value={
-            "records": [],
-            "pagination": {
-                "page": 1, "limit": 20, "totalCount": 0, "totalPages": 0,
-            },
-            "filters": {
-                "applied": {},
-                "available": {
-                    "recordTypes": [], "origins": [], "connectors": [],
-                    "indexingStatus": [], "permissions": [],
-                },
-            },
-        })
-        client = TestClient(app)
-        resp = client.get("/api/v1/kb/kb1/records")
-        assert resp.status_code == 200
 
 
 class TestGetKbChildrenFullCoverage:

@@ -32,6 +32,10 @@ vi.mock('@/lib/store/feature-flags-store', () => ({
   selectMcpEnabled: (s: typeof flagsState) => s.flags?.ENABLE_MCP !== false,
   selectActionsEnabled: (s: typeof flagsState) => s.flags?.ENABLE_ACTIONS !== false,
   selectSkillsEnabled: (s: typeof flagsState) => s.flags?.ENABLE_SKILLS !== false,
+  selectScheduledRunsEnabled: () => false,
+  selectAgentHarnessOn: () => false,
+  selectAgentHarnessResumeEnabled: () => false,
+  selectEngineRunsEnabled: () => false,
 }));
 
 // Spread the real module so exports the import graph needs (initReactI18next) stay defined.
@@ -55,6 +59,7 @@ const NAV = en.workspace.sidebar.nav;
 const SECTIONS = en.workspace.sidebar.sections;
 const LOCKED = [
   { label: NAV.groups, href: '/workspace/groups' },
+  { label: NAV.tenants, href: '/workspace/tenants' },
   { label: NAV.scim, href: '/workspace/enterprise/scim' },
   { label: NAV.usage, href: '/workspace/enterprise/usage' },
   { label: NAV.auditLogs, href: '/workspace/enterprise/audit-logs' },
@@ -80,18 +85,30 @@ function renderSidebar() {
 }
 
 describe('WorkspaceSidebar — Enterprise Edition pages', () => {
-  it('shows an admin each Enterprise page with a lock', () => {
+  it('shows an admin each Enterprise page with an EE tag, not a lock', () => {
     renderSidebar();
 
     for (const { label, href } of LOCKED) {
-      // The lock is hidden from the link's name, so the link still reads as just its label.
+      // The tag is hidden from the link's name, so the link still reads as just its label.
       const link = linkTo(label);
       expect(link.getAttribute('href')).toBe(href);
-      expect(link.querySelector('[aria-hidden="true"]')?.textContent).toBe('lock');
+      // The entry's own icon is hidden from the name too, so the tag is one of the hidden marks.
+      const hidden = Array.from(link.querySelectorAll('[aria-hidden="true"]'), (el) => el.textContent);
+      expect(hidden).toContain(en.common.enterprise.short);
+      expect(hidden).not.toContain('lock');
     }
   });
 
-  it('lists SCIM under Groups, then the Usage & credits section after Workspace, then Audit logs under Security', () => {
+  it('lists Groups, Tenants and SCIM in that order right under People', () => {
+    renderSidebar();
+
+    const people = screen.getByText(SECTIONS.people);
+    expect(before(people, linkTo(NAV.groups))).toBe(true);
+    expect(before(linkTo(NAV.groups), linkTo(NAV.tenants))).toBe(true);
+    expect(before(linkTo(NAV.tenants), linkTo(NAV.scim))).toBe(true);
+  });
+
+  it('lists SCIM under Groups, then the Usage & billing section after Workspace, then Audit logs under Security', () => {
     renderSidebar();
 
     const workspace = screen.getByText(SECTIONS.workspace);
@@ -115,6 +132,16 @@ describe('WorkspaceSidebar — Enterprise Edition pages', () => {
 
     expect(screen.queryByText(SECTIONS.security)).toBeNull();
     for (const { label } of LOCKED) expect(screen.queryByText(label)).toBeNull();
+    expect(screen.queryByTestId('enterprise-sidebar-card')).toBeNull();
+    expect(screen.queryByText(en.workspace.enterprise.sidebarCard.title)).toBeNull();
+  });
+
+  it('shows an admin the way to the Enterprise Edition page below the list', () => {
+    renderSidebar();
+
+    const card = screen.getByTestId('enterprise-sidebar-card');
+    // Below every section, so it never pushes a settings link out of place.
+    expect(before(screen.getByText(SECTIONS.help), card)).toBe(true);
   });
 
   it('keeps showing them to an admin whatever the platform flags say', () => {

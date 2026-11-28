@@ -33,6 +33,12 @@ from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
     ConnectorInitError,
 )
+from app.connectors.core.base.connector.failure_notices import (
+    SyncIncompleteError,
+    SyncRunState,
+    notify_init_failed,
+    reports_failed_sync,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -252,6 +258,8 @@ class GitHubTeamsConnector(BaseConnector):
             data_entities_processor, self.record_remover, self.record_sync_point, connector_id, logger,
         )
 
+        self.run_state = SyncRunState()
+
         # Helper modules — instantiated once, hold a reference back to self
         self.runtime = RuntimeHelper(self)
         self.issue_reconciler = IssueReconciler(
@@ -286,6 +294,9 @@ class GitHubTeamsConnector(BaseConnector):
         except Exception as e:
             self.logger.error("Failed to initialize GitHub Teams client: %s", e, exc_info=True)
             return False
+
+    async def on_background_init_failed(self, error: Exception | None) -> None:
+        await notify_init_failed(self, "GitHub", error)
 
     async def _resolve_creator_identity(self) -> None:
         """Cache the configuring user's GitHub login (best-effort).
@@ -391,6 +402,7 @@ class GitHubTeamsConnector(BaseConnector):
             str(source_user_id) if source_user_id is not None else None,
         )
 
+    @reports_failed_sync("GitHub")
     async def run_sync(self) -> None:
         """Run a full GitHub sync (users -> repos -> issues/PRs/code)."""
         try:
@@ -409,7 +421,7 @@ class GitHubTeamsConnector(BaseConnector):
             await self.projects.sync_all_repos()
             self.repos.timestamps.schedule()
             if self.projects.failures:
-                raise RuntimeError(
+                raise SyncIncompleteError(
                     "GitHub Teams sync did not complete: " + "; ".join(self.projects.failures[:10])
                 )
         except Exception as e:

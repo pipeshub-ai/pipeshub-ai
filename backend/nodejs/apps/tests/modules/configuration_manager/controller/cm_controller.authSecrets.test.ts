@@ -68,7 +68,7 @@ describe('sign-in provider secrets', () => {
   describe('reads', () => {
     it('masks the client id on the admin route when hidden', async () => {
       const res = response()
-      await getGoogleAuthConfig(store(STORED_GOOGLE))(request(), res, sinon.stub())
+      await getGoogleAuthConfig(store(STORED_GOOGLE))(request(), res, sinon.stub<unknown[]>())
       expect(res.json.firstCall.args[0]).to.deep.equal({
         ...STORED_GOOGLE,
         clientId: CONFIG_SECRET_PLACEHOLDER,
@@ -77,28 +77,35 @@ describe('sign-in provider secrets', () => {
 
     it('returns the stored values when the admin asks to see them', async () => {
       const res = response()
-      await getGoogleAuthConfig(store(STORED_GOOGLE))(request({ reveal: 'true' }), res, sinon.stub())
+      await getGoogleAuthConfig(store(STORED_GOOGLE))(request({ reveal: 'true' }), res, sinon.stub<unknown[]>())
       expect(res.json.firstCall.args[0]).to.deep.equal(STORED_GOOGLE)
     })
 
     it('ignores a reveal from an OAuth-app token', async () => {
       const res = response()
       const req = { ...request({ reveal: 'true' }), user: { userId: 'u1', orgId: 'o1', isOAuth: true } }
-      await getGoogleAuthConfig(store(STORED_GOOGLE))(req, res, sinon.stub())
+      await getGoogleAuthConfig(store(STORED_GOOGLE))(req, res, sinon.stub<unknown[]>())
       expect(res.json.firstCall.args[0].clientId).to.equal(CONFIG_SECRET_PLACEHOLDER)
     })
 
     it('gives the internal route (sign-in) the stored values while hidden', async () => {
       const res = response()
-      await getGoogleAuthConfig(store({ clientId: 'g-id' }), false)(request(), res, sinon.stub())
+      await getGoogleAuthConfig(store({ clientId: 'g-id' }), false)(request(), res, sinon.stub<unknown[]>())
       expect(res.json.firstCall.args[0].clientId).to.equal('g-id')
     })
 
     it('shows the stored values when the flag is off', async () => {
+      process.env.HIDE_SECRET_CONFIG = 'false'
+      const res = response()
+      await getGoogleAuthConfig(store({ clientId: 'g-id' }))(request(), res, sinon.stub<unknown[]>())
+      expect(res.json.firstCall.args[0].clientId).to.equal('g-id')
+    })
+
+    it('masks them when the server never set the flag', async () => {
       delete process.env.HIDE_SECRET_CONFIG
       const res = response()
-      await getGoogleAuthConfig(store({ clientId: 'g-id' }))(request(), res, sinon.stub())
-      expect(res.json.firstCall.args[0].clientId).to.equal('g-id')
+      await getGoogleAuthConfig(store({ clientId: 'g-id' }))(request(), res, sinon.stub<unknown[]>())
+      expect(res.json.firstCall.args[0].clientId).to.equal(CONFIG_SECRET_PLACEHOLDER)
     })
   })
 
@@ -106,21 +113,21 @@ describe('sign-in provider secrets', () => {
     it('keeps the stored secret when the masked form is saved back', async () => {
       const kvs = store(STORED_GOOGLE)
       const body = { ...STORED_GOOGLE, clientId: CONFIG_SECRET_PLACEHOLDER }
-      await setGoogleAuthConfig(kvs)(request({}, body), response(), sinon.stub())
+      await setGoogleAuthConfig(kvs)(request({}, body), response(), sinon.stub<unknown[]>())
       expect(written(kvs)).to.include({ clientId: 'google-client' })
     })
 
     it('takes a newly typed secret over the stored one', async () => {
       const kvs = store(STORED_GOOGLE)
       const body = { ...STORED_GOOGLE, clientId: 'rotated' }
-      await setGoogleAuthConfig(kvs)(request({}, body), response(), sinon.stub())
+      await setGoogleAuthConfig(kvs)(request({}, body), response(), sinon.stub<unknown[]>())
       expect(written(kvs)).to.include({ clientId: 'rotated' })
     })
 
     it('builds the Microsoft authority from the stored tenant, not the placeholder', async () => {
       const kvs = store({ clientId: 'ms-id', tenantId: 'ms-tenant', authority: 'x' })
       const body = { clientId: CONFIG_SECRET_PLACEHOLDER, tenantId: CONFIG_SECRET_PLACEHOLDER }
-      await setMicrosoftAuthConfig(kvs)(request({}, body), response(), sinon.stub())
+      await setMicrosoftAuthConfig(kvs)(request({}, body), response(), sinon.stub<unknown[]>())
       expect(written(kvs)).to.include({
         clientId: 'ms-id',
         tenantId: 'ms-tenant',
@@ -179,6 +186,16 @@ describe('sign-in provider secrets', () => {
       const res = response()
       await getMicrosoftAuthConfig(storeByPath({}), false)(request(), res, sinon.stub())
       expect(res.json.firstCall.args[0]).to.deep.equal({})
+    })
+
+    it('saves typed values without reading the stored record, so one that cannot be decrypted is still replaced', async () => {
+      const kvs = { get: sinon.stub().rejects(new Error('cannot decrypt')), set: sinon.stub().resolves() }
+      const next = sinon.stub()
+      await setMicrosoftAuthConfig(kvs as any)(request({}, { clientId: 'new-id', tenantId: 'new-tenant' }), response(), next)
+      expect(next.called, String(next.firstCall?.args[0])).to.equal(false)
+      expect(kvs.get.called).to.equal(false)
+      expect(kvs.set.firstCall.args[0]).to.equal(configPaths.auth.microsoft)
+      expect(written(kvs)).to.include({ clientId: 'new-id', tenantId: 'new-tenant' })
     })
   })
 })

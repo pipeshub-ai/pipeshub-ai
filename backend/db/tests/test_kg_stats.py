@@ -188,3 +188,15 @@ def test_the_job_analyzes_only_the_browse_tables_and_a_bad_interval_is_a_configu
     env(monkeypatch, cluster, name, every="ten")
     assert maintain.main(["analyze"]) == 2
     assert maintain.main(["placement"]) == 2
+
+
+QUEUES = {"kg.graph_changes", "kg.restamp_queue", "kg.analyze_requests"}
+
+
+def test_every_kg_table_the_copy_fills_is_analyzed(rdb):
+    """A kg table left out of the ANALYZE keeps the planner's one-row guess for an org after its first load (a bootstrap's grant-mark lookups ran a hash join over the org's grants
+    at 1.6 s a call, 15 ms once kg.scope_members was analysed): every kg table but the queues is in kg_stats.TABLES, so a new table has to be put on one side."""
+    cluster, name = rdb
+    with cluster.admin(name) as c:
+        tables = {r[0] for r in c.execute("SELECT format('%I.%I', schemaname, tablename) FROM pg_tables WHERE schemaname = 'kg'")}
+    assert tables - QUEUES == set(kg_stats.TABLES) and QUEUES <= tables

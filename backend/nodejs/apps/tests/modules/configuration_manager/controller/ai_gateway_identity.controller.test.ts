@@ -245,6 +245,57 @@ describe('ai gateway identity', () => {
       expect(first.model).to.equal('a');
     });
 
+    for (const [label, change] of [
+      ['a service key', { serviceApiKey: 'sk-new' }],
+      [
+        'a typed credential header',
+        { headerTemplates: { Authorization: 'Bearer typed-new' } },
+      ],
+    ] as const) {
+      it(`refuses ${label} when the first entry moved to another endpoint, and saves nothing`, async () => {
+        const models = seed();
+        models.llm[0]!.configuration = {
+          ...models.llm[0]!.configuration,
+          endpoint: 'https://elsewhere.example',
+        } as any;
+        models.llm[1]!.configuration = {
+          ...models.llm[1]!.configuration,
+          endpoint: 'https://gw.example.com',
+        } as any;
+        const store = keyedStore({ [MODELS_PATH]: models });
+        const before = JSON.stringify(store.read(MODELS_PATH));
+        const events = eventService();
+        const res = await put(
+          store,
+          'conn-1',
+          { ...forwarding, ...change },
+          events,
+        );
+        expect(res.statusCode).to.equal(400);
+        expect(res.body.error_code).to.equal('credential_reentry_required');
+        expect(
+          res.body.models.map((model: { modelKey: string }) => model.modelKey),
+        ).to.deep.equal(['b']);
+        expect(JSON.stringify(store.read(MODELS_PATH))).to.equal(before);
+        expect(events.published).to.deep.equal([]);
+      });
+    }
+
+    it('applies settings without a new secret to every entry, whatever its endpoint', async () => {
+      const models = seed();
+      models.llm[1]!.configuration = {
+        ...models.llm[1]!.configuration,
+        endpoint: 'https://elsewhere.example',
+      } as any;
+      const store = keyedStore({ [MODELS_PATH]: models });
+      const res = await put(store, 'conn-1', forwarding);
+      expect(res.body).to.deep.include({ updated: 2 });
+      expect(res.body.credentialReentryRequired).to.equal(undefined);
+      expect(
+        store.read(MODELS_PATH).llm[1].configuration.identityForwardingEnabled,
+      ).to.equal(true);
+    });
+
     it('answers 404 for a connection that does not exist', async () => {
       const store = keyedStore({ [MODELS_PATH]: seed() });
       const res = await put(store, 'nope', forwarding);
@@ -290,7 +341,7 @@ describe('ai gateway identity', () => {
 
     it('restores a redacted template from storage on save, and drops one with nothing stored', async () => {
       const models = seed();
-      (models.llm[0].configuration as any).identityForwardingHeaderTemplates = {
+      (models.llm[0]!.configuration as any).identityForwardingHeaderTemplates = {
         Authorization: 'Bearer static-secret',
       };
       const store = keyedStore({ [MODELS_PATH]: models });
@@ -359,9 +410,26 @@ describe('ai gateway identity', () => {
       expect(sent.configuration.connectionId).to.equal(undefined);
     });
 
+    it('maps an error answer that was not JSON, so the client gets its status and Retry-After', async () => {
+      execute.resolves({ statusCode: 503, data: undefined, msg: 'Service Unavailable', headers: { 'retry-after': '5' } });
+      const body = identityPreviewSchema.parse({
+        body: { connectionId: 'conn-1', configuration: { identityForwardingEnabled: true } },
+      }).body;
+      const res = response();
+      let passed: any;
+      await previewIdentityForwarding(keyedStore({ [MODELS_PATH]: seed() }) as any, appConfig)(
+        { body, headers: {} } as any,
+        res as any,
+        (error: unknown) => { passed = error; },
+      );
+      expect(res.body).to.equal(undefined);
+      expect(passed.statusCode).to.equal(503);
+      expect(passed.metadata.retryAfter).to.equal('5');
+    });
+
     it('restores a redacted template before previewing', async () => {
       const models = seed();
-      (models.llm[0].configuration as any).identityForwardingHeaderTemplates = {
+      (models.llm[0]!.configuration as any).identityForwardingHeaderTemplates = {
         Authorization: 'Bearer static-secret',
       };
       const store = keyedStore({ [MODELS_PATH]: models });

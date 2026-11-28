@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from app.core.db import Tx
 
 CAP = 5000
-STAMP_COLS = ("sk", "coll", "id", "kind", "path", "class_id", "self_lit", "seed", "own_grant", "under_deleted", "legacy_reason", "leaf")
+STAMP_COLS = ("sk", "coll", "id", "kind", "path", "class_id", "self_lit", "seed", "own_grant", "under_deleted", "legacy_reason", "leaf", "r13")
 RECORD_COLS = ("sk", "coll", "id", "kind", "app_sk", "group_sk", "parent_sk", "rule", "model", "vrid", "name", "name_key", "updated_ms", "created_ms",
                "size_bytes", "record_type", "origin", "external_id", "deleted", "placeholder", "granted")
 # The per-item checks of w_records_upsert (kg manifest) on the values a node's document supplies: one row that fails a check refuses the whole call. The id is not here: a key
@@ -79,6 +79,33 @@ class KgWriter:
                                         *[[r[i] for r in part] for i in range(6)])
         return n
 
+    async def pc_top_set(self, rows: list[tuple[int, int, str, int, bool]]) -> int:
+        """Whether each record has no PARENT_CHILD parent that is a record: (sk, coll code, id, kind code, pc_top), of rows the caller has just written (the writer is an upsert)."""
+        n = 0
+        for part in _chunks(sorted(rows)):
+            n += await self.tx.fetchval("/* pipeshub:kg.w_pc_top_set */ SELECT kg.w_pc_top_set($1::bigint[], $2::smallint[], $3::text[], $4::smallint[], $5::boolean[])",
+                                        *[[r[i] for r in part] for i in range(5)])
+        return n
+
+    async def grant_marks_set(self, rows: list[tuple[int, int, str, bool, int | None]]) -> int:
+        """The placement marks of grants (``grant_marks``): (principal_sk, node_sk, gtype, parent_held, node_group); it updates the rows that exist and makes none."""
+        return sum([await self.tx.fetchval("/* pipeshub:kg.w_grant_marks_set */ SELECT kg.w_grant_marks_set($1::bigint[], $2::bigint[], $3::text[], $4::boolean[], $5::bigint[])",
+                                           *[[r[i] for r in p] for i in range(5)]) for p in _chunks(sorted(rows, key=lambda r: r[:3]))])
+
+    async def grant_parent_set(self, rows: list[tuple[int, int, str, int | None]]) -> int:
+        """The node_parent mark of grants (``grant_marks``): (principal_sk, node_sk, gtype, node_parent); it updates the rows that exist and makes none."""
+        return sum([await self.tx.fetchval("/* pipeshub:kg.w_grant_parent_set */ SELECT kg.w_grant_parent_set($1::bigint[], $2::bigint[], $3::text[], $4::bigint[])",
+                                           *[[r[i] for r in p] for i in range(4)]) for p in _chunks(sorted(rows, key=lambda r: r[:3]))])
+
+    async def kb_listing_set(self, rows: list[tuple]) -> int:
+        """The knowledge-base listing columns: (sk, coll code, id, kind code, indexing_status, connector_name, doc_created_ms, doc_updated_ms, file_size, file_kind, kb_odd),
+        of rows the caller has just written (the writer is an upsert)."""
+        n = 0
+        for part in _chunks(sorted(rows)):
+            n += await self.tx.fetchval("/* pipeshub:kg.w_kb_listing_set */ SELECT kg.w_kb_listing_set($1::bigint[], $2::smallint[], $3::text[], $4::smallint[], $5::text[], $6::text[], "
+                                        "$7::bigint[], $8::bigint[], $9::bigint[], $10::smallint[], $11::boolean[])", *[[r[i] for r in part] for i in range(11)])
+        return n
+
     async def classes_set(self, rows: list[tuple[int, int, int | None, str, bytes]]) -> int:
         """New classes, by id (an existing id is left as it is): (id, app_sk, group_sk, clauses as JSON text, hash)."""
         return sum([await self.tx.fetchval("/* pipeshub:kg.w_classes_set */ SELECT kg.w_classes_set($1::bigint[], $2::bigint[], $3::bigint[], $4::text[]::jsonb[], $5::bytea[])",
@@ -125,20 +152,12 @@ class KgWriter:
                                            [r[0] for r in p], [r[1] for r in p], [r[2] for r in p]) for p in _chunks(sorted(rows))])
 
     async def stamps_set(self, rows: list[dict]) -> int:
-        """The access stamps of records (path, class, flags): one upsert whose update list is the stamp columns and nothing else."""
+        """The access stamps of records (path, class, flags) and their r13: one upsert whose update list is those columns and nothing else, so a row is rewritten once."""
         n = 0
         for part in _chunks(rows):
             n += await self.tx.fetchval(
-                "/* pipeshub:kg.w_stamps_set */ SELECT kg.w_stamps_set($1::bigint[], $2::smallint[], $3::text[], $4::smallint[], $5::bytea[], $6::bigint[], $7::boolean[], $8::boolean[], $9::boolean[], "
-                "$10::boolean[], $11::smallint[], $12::boolean[], $13)", *[[r[c] for r in part] for c in STAMP_COLS], CODE_EPOCH)
-        return n
-
-    async def r13_set(self, rows: list[tuple[int, int, str, int, bool]]) -> int:
-        """Whether a record of no connector is opened by a grant on it alone: rows are (sk, coll code, id, kind code, r13), of records the caller has just stamped (the writer is an upsert)."""
-        n = 0
-        for part in _chunks(sorted(rows)):
-            n += await self.tx.fetchval("/* pipeshub:kg.w_r13_set */ SELECT kg.w_r13_set($1::bigint[], $2::smallint[], $3::text[], $4::smallint[], $5::boolean[])",
-                                        *[[r[i] for r in part] for i in range(5)])
+                "/* pipeshub:kg.w_stamps_r13_set */ SELECT kg.w_stamps_r13_set($1::bigint[], $2::smallint[], $3::text[], $4::smallint[], $5::bytea[], $6::bigint[], $7::boolean[], $8::boolean[], "
+                "$9::boolean[], $10::boolean[], $11::smallint[], $12::boolean[], $13::boolean[], $14)", *[[r[c] for r in part] for c in STAMP_COLS], CODE_EPOCH)
         return n
 
     async def scopes_set(self, rows: list[tuple[int, int, int, bool, bool, bool, bool]]) -> int:

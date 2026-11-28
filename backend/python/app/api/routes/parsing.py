@@ -32,6 +32,7 @@ from app.api.middlewares.auth import (
     require_service_token,
     service_token_org,
 )
+from app.config import file_types
 from app.config.constants.service import TokenScopes
 from app.exceptions.indexing_exceptions import (
     MultimodalModelNotConfiguredError,
@@ -40,6 +41,7 @@ from app.exceptions.indexing_exceptions import (
 from app.exceptions.non_retryable import NonRetryableError
 from app.modules.parsers.encryption import raise_if_password_protected_office
 from app.modules.pipeline.fingerprint import content_revision
+from app.services.docling.client import DoclingNotServing
 from app.services.model_identity.propagation import scope_from_claims
 from app.services.model_identity.workload import Workload
 from app.services.paid_cache import access as paid_cache_access
@@ -59,6 +61,7 @@ from app.services.paid_cache.orphan import (
     orphan_check_enabled,
 )
 from app.services.parsing.interface import (
+    DOCLING_UNAVAILABLE_REASON,
     ParseError,
     ParseErrorCode,
     ParserProvider,
@@ -72,13 +75,13 @@ from app.services.parsing.registry import ParserRegistry
 from app.services.parsing.thread_work import ThreadWork, track
 from app.services.resource_governor import (
     acquire_gate_with_backpressure,
-    classify,
     gate_pool,
     parse_cost,
+    reader_tier,
 )
 from app.services.resource_governor.kinds import (
     EXCESS_WAIT_SECONDS,
-    classify_kind,
+    parse_format_kind,
     permit_excess_bytes,
 )
 from app.services.resource_governor.lanes import LaneWaitTimeout
@@ -95,6 +98,13 @@ from app.utils.error_class import already_logged, classify_error, level_for, log
 from app.utils.logging_fields import log_event
 from app.utils.request_context import current_display_id
 from app.utils.semaphore_logger import SemaphoreLogger
+from app.utils.table_row_memory import (
+    MAX_SENT_ROW_BYTES,
+    PreviousRows,
+    decode_stored_tables,
+    end_previous_rows,
+    offer_previous_rows,
+)
 from app.utils.user_errors import SCANNED_DOCUMENT_NEEDS_OCR
 
 logger = logging.getLogger(__name__)
@@ -290,6 +300,9 @@ async def parse_file(
     record_marker: Annotated[str, Form(description="The record's delete marker as the run saw it at its start")] = "",
     org_marker: Annotated[str, Form(description="The org's delete marker as the run saw it at its start")] = "",
     stop_disabled: Annotated[bool, Form(description="Do not refuse this parse for a changed delete marker")] = False,  # noqa: FBT002
+    stored_rows: Annotated[
+        UploadFile | None, File(description="On an update, the stored version's table rows (digest to texts, per table)")
+    ] = None,
 ) -> JSONResponse:
     """Count the request in, refuse it at once when ``PARSING_MAX_CONCURRENT`` is reached, else parse it."""
     load = parse_load()
@@ -297,17 +310,36 @@ async def parse_file(
     if not load.try_enter(max_concurrent):
         return _saturated_response(max_concurrent)
     try:
+        await _offer_stored_rows(stored_rows, record_name or file.filename or "a file")
         response = await _parse_file(
             request, file, claims, record_name, mime_type, extension, org_id,
             provider, skip_table_enrichment, file_path, refresh_paid_outputs, record_budget_s, refresh_token,
             OrphanFields(orphan_guard, record_marker[:64], org_marker[:64], stop_disabled),
         )
     finally:
+        end_previous_rows()
         load.leave()
     if response.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
         # The gate's wait or the memory wait ran out: saturated all the same.
         load.note_saturated()
     return response
+
+
+async def _offer_stored_rows(part: UploadFile | None, record_name: str) -> None:
+    """Offer, for this parse alone, the stored version's table rows the indexing side sent with an update, so an unchanged row
+    keeps its text. Rows that cannot be read are ignored: the tables are described as on a first index."""
+    if part is None:
+        return
+    try:
+        raw = await part.read(MAX_SENT_ROW_BYTES + 1)
+    except OSError:
+        # The part is optional: a read that fails must not stop the parse of the file itself.
+        raw = b""
+    tables = decode_stored_tables(raw) if raw else None
+    if tables is None:
+        logger.warning("Parse of %s: the stored table rows sent with it are unreadable or too large; its tables are described again", record_name)
+        return
+    offer_previous_rows(PreviousRows.already_read(tables, logger, record_name))
 
 
 async def _parse_file(
@@ -388,7 +420,9 @@ async def _parse_file(
             })
 
     message_id = current_display_id()
-    tier = classify(extension, mime_type)
+    # The parser the registry resolves decides a heavy tier: a PDF labelled txt is parsed by the PDF parser.
+    fmt = file_types.parse_format(mime_type, extension)
+    tier = reader_tier(extension, mime_type, file_types.format_tier(fmt))
     cost = parse_cost(tier, len(content))
     logger.debug(
         "Received parse request: record='%s' format=%s provider=%s size_bytes=%d tier=%s cost=%d",
@@ -452,7 +486,7 @@ async def _parse_file(
         working_set = governor.heavy_working_set
         base_gb = working_set.gb if tier is ParseTier.HEAVY else INDEX_LIGHT_WORKING_SET_GB
         excess = permit_excess_bytes(
-            classify_kind(extension, mime_type), base_gb, working_set.source, len(content)
+            parse_format_kind(fmt, extension, mime_type), base_gb, working_set.source, len(content)
         )
         if excess:
             if not await governor.memory_budget.reserve(excess, EXCESS_WAIT_SECONDS):
@@ -629,6 +663,22 @@ async def _parse_file(
                         "code": ParseErrorCode.PARSE_FAILED.value,
                         "message": "Parsing took longer than the service allows",
                         "details": {"requestId": message_id},
+                    },
+                },
+            )
+        except DoclingNotServing:
+            # Docling never received the file: the caller's record waits for it. 424, not 5xx, as extraction answers a
+            # provider outage: a 5xx is retried and counted by the caller's breaker, which then fails every parse type.
+            # PARSE_BACKPRESSURE, not a new code: an older client reads an unknown code as PARSE_FAILED, a verdict.
+            logger.info("Parse deferred: provider=%s Docling is not serving", provider_enum.value)
+            return JSONResponse(
+                status_code=status.HTTP_424_FAILED_DEPENDENCY,
+                content={
+                    "success": False,
+                    "error": {
+                        "code": ParseErrorCode.PARSE_BACKPRESSURE.value,
+                        "message": "Docling is not serving; retry later",
+                        "details": {"requestId": message_id, "reason": DOCLING_UNAVAILABLE_REASON},
                     },
                 },
             )
