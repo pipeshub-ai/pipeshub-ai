@@ -920,6 +920,28 @@ describe('agent-harness projection: RunStreamService', () => {
       expect(sink.body).to.not.include(TOOL);
     });
 
+    it('what a reader gets of a durable answer they may see: its final text, never a step, and that steps were left out', async () => {
+      const world = new World('agent_quick_tool_call');
+      readable([FILE]);
+      const sink = await watch(world, conversation(world, { question: { attachments: [{ recordId: FILE }] } }));
+      const final = sink.frames().filter((f) => f.type === 'STATE_SNAPSHOT').map((f) => f['snapshot'] as Record<string, unknown>).find((snap) => snap['final'] === true)!;
+      // The owner's final snapshot of the same run has its tool call and narration; the reader's keeps the final text.
+      const owners = (await answerOf(world));
+      expect(final['answer']).to.equal(owners);
+      expect((final['parts'] as Array<Record<string, unknown>>).every((part) => part['type'] === 'text' && part['isFinal'] === true)).to.equal(true);
+      expect(final).to.not.have.property('reasoning');
+      expect(final['activityWithheld']).to.equal(true);
+      // The saved row in RUN_FINISHED: the same, as a chat read gives it.
+      const finished = sink.frames().at(-1)!;
+      const rows = ((finished['result'] as Record<string, unknown>)['conversation'] as { messages: Array<Record<string, unknown>> }).messages;
+      const answer = rows.find((row) => row['messageType'] === 'bot_response')!;
+      expect(answer['activityWithheld']).to.equal(true);
+      expect(answer).to.not.have.property('reasoning');
+      expect(answer['tools'] ?? []).to.deep.equal([]);
+      expect((answer['parts'] as Array<Record<string, unknown>>).map((part) => part['type'])).to.deep.equal(['text']);
+      expect(JSON.stringify(finished)).to.not.include(TOOL);
+    });
+
     it("the run's answer after one withheld from the viewer is withheld too, though it cites nothing", async () => {
       const world = new World('agent_quick_tool_call');
       readable([]);

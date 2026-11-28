@@ -407,7 +407,17 @@ export function sharedCompletion(
     kept['notFound'] = sharedNotFound(completion['notFound']);
   if ('citations' in kept)
     kept['citations'] = access.citations(kept['citations']);
-  return artifacts.completion({ ...kept, parts });
+  // Another person's answer says when its steps were left out, as a chat read's row does (`activityWithheld`).
+  const stepsLeftOut =
+    (Array.isArray(completion['parts']) &&
+      completion['parts'].length > parts.length) ||
+    (Array.isArray(completion['reasoning']) &&
+      completion['reasoning'].length > 0);
+  return artifacts.completion({
+    ...kept,
+    parts,
+    ...(stepsLeftOut && { activityWithheld: true }),
+  });
 }
 
 /**
