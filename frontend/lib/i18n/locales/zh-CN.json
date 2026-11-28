@@ -7159,7 +7159,14 @@
       "thisApp": "此应用",
       "help": "连接此应用的用户只能搜索和阅读您在此处选择的内容，且绝不会超出他们自己可见的范围。",
       "everything": "每位用户可见的全部内容",
-      "everythingHint": "包括之后添加的来源。"
+      "everythingHint": "包括之后添加的来源。",
+      "clientCredentials": {
+        "title": "服务账号的细粒度权限仅在企业版（Enterprise Edition）中提供",
+        "description": "将使用 client_credentials 的应用限制为你选择的来源、空间、文件夹和文件。",
+        "kept_other": "此应用有之前设置的限制：可以查看 {{count}} 个已选项目。在你移除该限制之前，它无法获得令牌。",
+        "remove": "移除限制",
+        "removeToSave": "要使用 client_credentials，请在“细粒度权限”标签页中移除知识限制。"
+      }
     },
     "appLimited_other": "{{appName}} 只能查看其创建者选择的 {{count}} 个项目，且仅限您可见的部分。"
   },

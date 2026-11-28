@@ -7159,7 +7159,14 @@
       "thisApp": "이 앱",
       "help": "이 앱을 연결한 사용자는 여기에서 선택한 항목만 검색하고 읽을 수 있으며, 본인이 볼 수 있는 범위를 넘지 않습니다.",
       "everything": "각 사용자가 볼 수 있는 모든 항목",
-      "everythingHint": "나중에 추가되는 소스도 포함됩니다."
+      "everythingHint": "나중에 추가되는 소스도 포함됩니다.",
+      "clientCredentials": {
+        "title": "서비스 계정의 세부 권한은 Enterprise Edition에서 사용할 수 있습니다",
+        "description": "client_credentials를 사용하는 애플리케이션을 선택한 소스, 스페이스, 폴더, 파일로 제한합니다.",
+        "kept_other": "이 애플리케이션에는 이전에 설정된 제한이 있습니다: 선택한 항목 {{count}}개를 볼 수 있습니다. 제한을 제거할 때까지 토큰을 받을 수 없습니다.",
+        "remove": "제한 제거",
+        "removeToSave": "client_credentials를 사용하려면 세부 권한 탭에서 지식 제한을 제거하세요."
+      }
     },
     "appLimited_other": "{{appName}}은(는) 작성자가 선택한 {{count}}개 항목 중 회원님이 볼 수 있는 항목만 볼 수 있습니다."
   },

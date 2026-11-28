@@ -18,6 +18,7 @@ import {
   sameKnowledgeLimit,
   toKnowledgeLimit,
 } from '../types/knowledge_limit';
+import { clientCredentialsKnowledgeLimit } from './client-credentials-knowledge-limit';
 import {
   InvalidClientError,
   InvalidRedirectUriError,
@@ -209,6 +210,11 @@ export class OAuthAppService {
       tokenIdentityUserId = await this.requireUsableServiceAccount(
         data.tokenIdentityUserId,
         orgId,
+      );
+      clientCredentialsKnowledgeLimit().checkSave(
+        toKnowledgeLimit(data.knowledgeLimit),
+        undefined,
+        false,
       );
     }
 
@@ -676,6 +682,20 @@ export class OAuthAppService {
       data.knowledgeLimit !== undefined
         ? toKnowledgeLimit(data.knowledgeLimit)
         : previousLimit;
+    const hadClientCredentials = app.allowedGrantTypes.includes(
+      OAuthGrantType.CLIENT_CREDENTIALS,
+    );
+    const hasClientCredentials = (
+      data.allowedGrantTypes ?? app.allowedGrantTypes
+    ).includes(OAuthGrantType.CLIENT_CREDENTIALS);
+    if (hasClientCredentials) {
+      clientCredentialsKnowledgeLimit().checkSave(
+        newLimit,
+        previousLimit,
+        hadClientCredentials,
+      );
+    }
+
     const limitNarrowed = !isKnowledgeLimitWithin(previousLimit, newLimit);
     const limitWidened =
       !limitNarrowed && !sameKnowledgeLimit(newLimit, previousLimit);

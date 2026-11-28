@@ -7293,7 +7293,15 @@
       "thisApp": "this app",
       "help": "Users who connect this app can search and read only what you pick here, and never more than they can see themselves.",
       "everything": "Everything each user can see",
-      "everythingHint": "Includes sources added later."
+      "everythingHint": "Includes sources added later.",
+      "clientCredentials": {
+        "title": "Granular permissions for service accounts are available in the Enterprise Edition",
+        "description": "Limit an application that uses client_credentials to the sources, spaces, folders and files you pick.",
+        "kept_one": "This application has a limit from before: it can see {{count}} picked item. It gets no tokens until you remove the limit.",
+        "kept_other": "This application has a limit from before: it can see {{count}} picked items. It gets no tokens until you remove the limit.",
+        "remove": "Remove the limit",
+        "removeToSave": "Remove the knowledge limit on the Granular permissions tab to use client_credentials."
+      }
     },
     "appLimited_one": "{{appName}} can see only {{count}} item its creator picked, and only if you can see it.",
     "appLimited_other": "{{appName}} can see only {{count}} items its creator picked, and only the ones you can see."

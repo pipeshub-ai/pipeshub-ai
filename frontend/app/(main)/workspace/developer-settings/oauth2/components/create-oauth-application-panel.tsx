@@ -20,6 +20,7 @@ import {
   knowledgeLimitForApi,
   type KnowledgeLimitValue,
 } from '@/app/components/knowledge-limit';
+import { ClientCredentialsKnowledgeLimitField, clientCredentialsKnowledgeLimit } from '@/config';
 import { FormField, FormFieldTextArea, FormFieldTextField, WorkspaceRightPanel } from '../../../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { Oauth2Api } from '../api';
@@ -460,6 +461,12 @@ export function CreateOAuthApplicationPanel({
   }, []);
 
 
+  const usesClientCredentials = grantTypes.has('client_credentials');
+  // A pick made before choosing client_credentials is sent only as that grant allows.
+  const effectiveKnowledgeLimit = usesClientCredentials
+    ? clientCredentialsKnowledgeLimit.onCreate(knowledgeLimit)
+    : knowledgeLimit;
+
   const buildPayload = useCallback(() => {
     const redirectUrisClean = usesAuthorizationCode
       ? redirectUris.map((u) => u.trim()).filter(Boolean)
@@ -474,7 +481,7 @@ export function CreateOAuthApplicationPanel({
       privacyPolicyUrl: optionalUrlOrEmpty(privacyPolicyUrl),
       termsOfServiceUrl: optionalUrlOrEmpty(termsUrl),
       isConfidential: true as const,
-      knowledgeLimit: knowledgeLimitForApi(knowledgeLimit),
+      knowledgeLimit: knowledgeLimitForApi(effectiveKnowledgeLimit),
       // Sent only where it means something; the server ignores it otherwise.
       tokenIdentityUserId: grantTypes.has('client_credentials')
         ? serviceAccountId
@@ -490,7 +497,7 @@ export function CreateOAuthApplicationPanel({
     privacyPolicyUrl,
     termsUrl,
     usesAuthorizationCode,
-    knowledgeLimit,
+    effectiveKnowledgeLimit,
     // Without this the form validates against the chosen account and then
     // submits whatever was selected at the last edit of another field —
     // an empty string, or the account chosen before.
@@ -513,7 +520,7 @@ export function CreateOAuthApplicationPanel({
       setActiveTab('scopes');
       return;
     }
-    if (!isKnowledgeLimitValid(knowledgeLimit)) {
+    if (!isKnowledgeLimitValid(effectiveKnowledgeLimit)) {
       setActiveTab('granular');
       return;
     }
@@ -548,7 +555,7 @@ export function CreateOAuthApplicationPanel({
     } finally {
       setIsCreating(false);
     }
-  }, [validateGeneral, buildPayload, addToast, t, onCreated, totalScopeCount, selectedScopeCount, knowledgeLimit]);
+  }, [validateGeneral, buildPayload, addToast, t, onCreated, totalScopeCount, selectedScopeCount, effectiveKnowledgeLimit]);
 
   const onPrimaryClick = useCallback(() => {
     if (createdCredentials) {
@@ -601,7 +608,7 @@ export function CreateOAuthApplicationPanel({
     : undefined;
 
   const primaryDisabledGranular =
-    primaryDisabledScopes || !isKnowledgeLimitValid(knowledgeLimit);
+    primaryDisabledScopes || !isKnowledgeLimitValid(effectiveKnowledgeLimit);
 
   const documentationAction = (
     <Button
@@ -1286,13 +1293,22 @@ export function CreateOAuthApplicationPanel({
 
           <Tabs.Content value="granular">
             <Box style={CARD_STYLE}>
-              <KnowledgeLimitChoice
-                appName={name.trim() || t('knowledgeLimit.app.thisApp')}
-                value={knowledgeLimit}
-                onChange={setKnowledgeLimit}
-                idPrefix="oauth-app-create"
-                forApp
-              />
+              {usesClientCredentials ? (
+                <ClientCredentialsKnowledgeLimitField
+                  appName={name.trim() || t('knowledgeLimit.app.thisApp')}
+                  value={effectiveKnowledgeLimit}
+                  onChange={setKnowledgeLimit}
+                  idPrefix="oauth-app-create"
+                />
+              ) : (
+                <KnowledgeLimitChoice
+                  appName={name.trim() || t('knowledgeLimit.app.thisApp')}
+                  value={knowledgeLimit}
+                  onChange={setKnowledgeLimit}
+                  idPrefix="oauth-app-create"
+                  forApp
+                />
+              )}
             </Box>
           </Tabs.Content>
         </Tabs.Root>

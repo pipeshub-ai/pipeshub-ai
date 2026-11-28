@@ -33673,6 +33673,10 @@ paths:
               `refresh_token` that another refresh presenting it at the same time rotated first
               ("Refresh token has already been used"); only one of them gets a new pair.
             - `unsupported_grant_type` - the app does not have the grant
+            - `unauthorized_client` - a `client_credentials` grant for an app that still stores a
+              `knowledgeLimit`, which `client_credentials` tokens do not carry ("This application has a
+              knowledge limit, which client_credentials tokens cannot carry. ..."). Remove the limit from
+              the app to get a token.
             - `invalid_scope` - a requested scope is not allowed for the app, or the token would carry
               no scope at all ("A token must carry at least one scope"). A `client_credentials` grant
               drops `openid`, `profile`, `email` and `offline_access`, so it needs at least one other
@@ -34400,7 +34404,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account, or the application allows client_credentials and the caller is not an organisation administrator
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account, or the application allows client_credentials and the caller is not an organisation administrator, or the application allows client_credentials and sets a `knowledgeLimit` (`An application that uses client_credentials cannot be given a knowledge limit. ...`)
           content:
             application/json:
               schema:
@@ -34642,7 +34646,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account, or the update adds `client_credentials` and the caller is not an organisation administrator. An app the caller did not create is 404, not 403, for an org admin too.
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account, or the update adds `client_credentials` and the caller is not an organisation administrator, or the app allows `client_credentials` after the update and the update sets a new or different `knowledgeLimit` or adds the grant to an app that has one (`An application that uses client_credentials cannot be given a knowledge limit. ...`; an app that already had the grant keeps its limit unchanged and may remove it with `null`). An app the caller did not create is 404, not 403, for an org admin too.
           content:
             application/json:
               schema:

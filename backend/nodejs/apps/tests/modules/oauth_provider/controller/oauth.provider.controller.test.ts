@@ -39,6 +39,11 @@ function stubOrgLookup(org: unknown) {
   return sinon.stub(Org, 'findOne').returns(chainable as any)
 }
 
+import {
+  CLIENT_CREDENTIALS_TOKEN_WITH_LIMIT_MESSAGE,
+  clientCredentialsKnowledgeLimitDefault,
+  setClientCredentialsKnowledgeLimit,
+} from '../../../../src/modules/oauth_provider/services/client-credentials-knowledge-limit'
 describe('OAuthProviderController', () => {
   let controller: OAuthProviderController
   let mockLogger: any
@@ -1366,6 +1371,53 @@ describe('OAuthProviderController', () => {
   // token – client_credentials grant additional branches
   // -----------------------------------------------------------------------
   describe('token - client_credentials grant (extended)', () => {
+    describe('knowledge limit', () => {
+      const storedLimit = { apps: ['a1'], recordGroups: [], records: [] }
+
+      function grant(knowledgeLimit?: typeof storedLimit) {
+        mockOAuthAppService.verifyClientCredentials.resolves({
+          clientId: 'cid',
+          orgId: { toString: () => 'org-1' },
+          allowedScopes: ['org:read'],
+          isConfidential: true,
+          createdBy: { toString: () => 'owner-1' },
+          knowledgeLimit,
+        })
+        mockOAuthAppService.isGrantTypeAllowed.returns(true)
+        mockOAuthTokenService.generateTokens.resolves({
+          accessToken: 'at', tokenType: 'Bearer', expiresIn: 3600, scope: 'org:read',
+        })
+        const identity = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves({ fullName: 'Owner' }) }
+        const chainable = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves(null) }
+        sinon.stub(Users, 'findOne').returns(identity as any)
+        sinon.stub(Org, 'findOne').returns(chainable as any)
+        return controller.token(
+          tokenRequest({ grant_type: 'client_credentials', client_id: 'cid', client_secret: 'secret' }),
+          mockRes,
+          mockNext,
+        )
+      }
+
+      afterEach(() => setClientCredentialsKnowledgeLimit(clientCredentialsKnowledgeLimitDefault))
+
+      it('refuses a token while the app stores a limit, and mints nothing', async () => {
+        await grant(storedLimit)
+
+        expect(mockOAuthTokenService.generateTokens.called).to.equal(false)
+        expect(mockRes.status.calledWith(400)).to.equal(true)
+        expect(mockRes.json.firstCall.args[0].error_description).to.equal(CLIENT_CREDENTIALS_TOKEN_WITH_LIMIT_MESSAGE)
+      })
+
+      it('signs the limit the client_credentials policy gives, not the stored one', async () => {
+        const given = { apps: ['given'], recordGroups: [], records: [] }
+        setClientCredentialsKnowledgeLimit({ checkSave: () => undefined, tokenLimit: () => given })
+
+        await grant(storedLimit)
+
+        expect(mockOAuthTokenService.generateTokens.firstCall.args[0].knowledgeLimit).to.deep.equal(given)
+      })
+    })
+
     it('should filter user-specific scopes', async () => {
       const mockApp = {
         clientId: 'cid',
