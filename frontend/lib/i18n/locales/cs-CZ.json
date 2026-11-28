@@ -7232,7 +7232,8 @@
     "timedOut": "Vypršel časový limit požadavku",
     "somethingWentWrong": "Něco se pokazilo",
     "tryAgainShortly": "Zkuste to prosím za chvíli znovu",
-    "connectedServiceProblem": "Problém s připojenou službou"
+    "connectedServiceProblem": "Problém s připojenou službou",
+    "openGuide": "Otevřít návod"
   },
   "approvalCard": {
     "title": "Schválit {{tool}}?",

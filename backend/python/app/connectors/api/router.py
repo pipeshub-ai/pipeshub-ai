@@ -154,7 +154,7 @@ from app.connectors.core.registry.filters import SyncFilterKey, sync_filter_sele
 from app.connectors.core.registry.sync_field_validation import sync_custom_field_problems
 from app.connectors.sources.atlassian.core.auth_fields import apply_confluence_jira_scope
 from app.connectors.core.sync.sync_coordinator import get_coordinator
-from app.edition_services import max_connector_workers, sync_executor_enabled
+from app.edition_services import max_connector_workers, sync_executor_enabled, validate_sync_settings
 from app.connectors.core.sync.sync_dispatcher import get_dispatcher
 from app.connectors.core.sync.sync_runner import write_app_status
 from app.connectors.core.registry.folder_scope import folder_path_problems, saved_folder_values
@@ -6244,6 +6244,11 @@ async def update_connector_instance_filters_sync_config(
                     new_config["filters"][key] = body["filters"][key]
 
         await _validate_sync_custom_fields(connector_registry, instance.get("type", ""), body.get("sync"), new_config)
+        edition_problems = await validate_sync_settings(
+            container, connector_id, instance.get("type", ""), existing_config, new_config,
+        )
+        if edition_problems:
+            raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=" ".join(edition_problems))
         if isinstance((body.get("filters") or {}).get("sync"), dict):
             await _validate_sync_filter_selections(
                 connector_registry, instance.get("type", ""), new_config, "saving",
@@ -6450,6 +6455,11 @@ async def update_connector_instance_config(
         if auth_updated:
             _reject_auth_the_connector_refuses(connector_type, _auth_section(cast(object, body)), _auth_section(cast(object, existing_config)))
         await _validate_sync_custom_fields(connector_registry, instance.get("type", ""), body.get("sync"), new_config)
+        edition_problems = await validate_sync_settings(
+            container, connector_id, instance.get("type", ""), existing_config, new_config,
+        )
+        if edition_problems:
+            raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=" ".join(edition_problems))
         if isinstance((body.get("filters") or {}).get("sync"), dict):
             await _validate_sync_filter_selections(
                 connector_registry, instance.get("type", ""), new_config, "saving",

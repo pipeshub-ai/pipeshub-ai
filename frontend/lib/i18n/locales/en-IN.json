@@ -7299,7 +7299,8 @@
     "timedOut": "Request timed out",
     "somethingWentWrong": "Something went wrong",
     "tryAgainShortly": "Please try again shortly",
-    "connectedServiceProblem": "Problem with a connected service"
+    "connectedServiceProblem": "Problem with a connected service",
+    "openGuide": "Open guide"
   },
   "validation": {
     "password": {

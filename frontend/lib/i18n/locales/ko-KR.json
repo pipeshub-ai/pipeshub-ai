@@ -7164,7 +7164,8 @@
     "timedOut": "요청 시간 초과",
     "somethingWentWrong": "문제가 발생했습니다",
     "tryAgainShortly": "잠시 후 다시 시도해 주세요",
-    "connectedServiceProblem": "연결된 서비스에 문제가 있습니다"
+    "connectedServiceProblem": "연결된 서비스에 문제가 있습니다",
+    "openGuide": "가이드 열기"
   },
   "validation": {
     "password": {

@@ -61,13 +61,24 @@ export function asSentence(text: string): string {
   return /[.!?…)"'”’»]$/.test(sentence) ? sentence : `${sentence}.`;
 }
 
+// A PipesHub docs link that ends a server message becomes the toast's button: the reader gets one short
+// sentence and a link they can click, not a long URL in the text. Other links stay as written.
+const DOCS_LINK_AT_END = /\s+(https:\/\/docs\.pipeshub\.com\/[^\s<>"']*?)[.)]?\s*$/;
+
+export function splitDocsLink(text: string): { text: string; href?: string } {
+  const found = DOCS_LINK_AT_END.exec(text);
+  if (!found || found.index === 0) return { text };
+  return { text: text.slice(0, found.index), href: found[1] };
+}
+
 export function showErrorToast(error: ProcessedError): void {
   const config = ERROR_TOAST_MAP[error.type];
   if (!config) return;
 
   // The server's words when they were written for a reader; otherwise the
   // sentence above, which always says what to do next.
-  const base = asSentence(getUserFacingErrorMessage(error, config.description));
+  const { text: message, href: guide } = splitDocsLink(getUserFacingErrorMessage(error, config.description));
+  const base = asSentence(message);
   // Quoting the reference is how an admin finds this failure in the logs.
   const description = error.requestId
     ? `${base} Reference: ${error.requestId}`
@@ -100,6 +111,7 @@ export function showErrorToast(error: ProcessedError): void {
     description,
     duration: null,
     showCloseButton: true,
+    ...(guide ? { action: { label: i18n.t('errorToast.openGuide'), href: guide, openInNewTab: true } } : {}),
   });
 
   activeErrorToasts.set(dedupeKey, id);
