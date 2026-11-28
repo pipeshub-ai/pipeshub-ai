@@ -40,6 +40,7 @@ import {
   isTokenExpired,
   isRefreshInProgress,
   refreshOrSignOut,
+  accountChanged,
   sessionOver,
 } from './token-refresh';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
@@ -163,12 +164,14 @@ async function ensureFreshToken(): Promise<
     if (sessionOver(outcome)) {
       return { token: null, sessionExpired: true };
     }
-    if (outcome === 'account-changed') {
+    // Read and checked in one step: the store may have changed since refreshOrSignOut checked it.
+    const refreshed = useAuthStore.getState().accessToken;
+    if (outcome === 'account-changed' || accountChanged(token, refreshed)) {
       const stop = new Error('The signed-in account changed.');
       stop.name = 'AbortError';
       throw stop;
     }
-    token = useAuthStore.getState().accessToken;
+    token = refreshed;
   }
 
   return { token, sessionExpired: false };

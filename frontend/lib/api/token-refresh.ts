@@ -75,8 +75,11 @@ export function isTokenExpired(
  */
 export type RefreshAnswer = 'refreshed' | 'refused' | 'unreachable' | 'account-changed';
 
-/** Both tokens name an account and the accounts differ. Unknown on either side is not a change. */
-function accountChanged(before: string | null | undefined, after: string | null | undefined): boolean {
+/**
+ * Both tokens name an account and the accounts differ. Unknown on either side is not a change.
+ * Callers run it on the very token they are about to send, read in the same step.
+ */
+export function accountChanged(before: string | null | undefined, after: string | null | undefined): boolean {
   const a = accountOfToken(before);
   const b = accountOfToken(after);
   return a !== null && b !== null && a !== b;

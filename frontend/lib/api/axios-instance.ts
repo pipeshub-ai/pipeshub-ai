@@ -5,6 +5,7 @@ import { showErrorToast } from './error-toast';
 import {
   refreshOrSignOut,
   sessionOver,
+  accountChanged,
   isTokenExpired,
   isRefreshInProgress,
   REFRESH_TOKEN_ENDPOINT,
@@ -144,7 +145,12 @@ apiClient.interceptors.request.use(
       if (sessionOver(outcome)) return dropped();
       if (outcome === 'account-changed') return cancelledForAccount();
       // No answer: send with the token we have and let the server decide.
-      if (outcome === 'refreshed') accessToken = useAuthStore.getState().accessToken;
+      if (outcome === 'refreshed') {
+        // Read and checked in one step: the store may have changed since refreshOrSignOut checked it.
+        const refreshed = useAuthStore.getState().accessToken;
+        if (accountChanged(accessToken, refreshed)) return cancelledForAccount();
+        accessToken = refreshed;
+      }
     }
 
     if (accessToken) {
@@ -212,6 +218,8 @@ apiClient.interceptors.response.use(
         return rejectShown(refusedWithSession(error), originalRequest);
       }
       const newToken = useAuthStore.getState().accessToken;
+      // Read and checked in one step: the store may have changed since refreshOrSignOut checked it.
+      if (accountChanged(sentWith, newToken)) return cancelledForAccount();
       if (newToken) {
         originalRequest.headers.Authorization = `Bearer ${newToken}`;
       }
