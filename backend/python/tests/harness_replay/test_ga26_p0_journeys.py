@@ -229,3 +229,20 @@ async def test_ga26_j15_what_the_admin_did_not_allow_is_refused_before_it_runs()
             endpoint.rig.token(binding), {}, body_of({"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]})
         )
     assert ENGINE_MODEL_ID != "gpt-4o" and never.played == 0, "the provider was never asked"
+
+
+@pytest.mark.parametrize(("given", "expected"), [
+    ({}, "test"),
+    ({"SECRET_KEY": ""}, "test"),
+    ({"SECRET_KEY": "", "SECRET_KEY_FILE": "/run/secrets/key"}, ""),
+    ({"SECRET_KEY": "given"}, "given"),
+    ({"SECRET_KEY_FILE": "/run/secrets/key"}, None),
+])
+def test_the_recorder_sets_the_test_secret_key_only_when_none_is_given(given: dict[str, str], expected: str | None) -> None:
+    from tests.harness_replay.ga26.__main__ import (
+        TEST_SECRET_KEY,
+        ensure_test_secret_key,
+    )
+    env = dict(given)
+    ensure_test_secret_key(env)
+    assert env.get("SECRET_KEY") == (TEST_SECRET_KEY if expected == "test" else expected)
