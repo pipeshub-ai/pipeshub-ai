@@ -643,6 +643,11 @@ export interface ChatSlots {
   useRailEffects?(): void;
   /** Unset or `null`: Shared chats shows only while it has a chat, with no +. */
   useSharedChatsStart?(): SharedChatsStart | null;
+  /**
+   * Drawn at the end of a rail list's "More": the mark of the loaded chats it hides. Unset: the rail draws the strongest
+   * of their row marks.
+   */
+  useMoreMark?(hidden: Conversation[], currentConversationId: string | null): ReactNode;
   useConversationShareAdapter(conversationId: string | null, agentId: string | null): ShareAdapter | null;
   useChatHeader(opts: ChatHeaderOptions): ChatHeaderExtension;
   /** Replaces the message list of a loaded, empty chat. */

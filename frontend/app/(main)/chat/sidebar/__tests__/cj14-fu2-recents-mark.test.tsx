@@ -6,7 +6,7 @@
  */
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, screen } from '@testing-library/react';
+import { act, cleanup, screen, within } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 import { installMemoryStorage } from '@/lib/api/__tests__/sse-response';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
@@ -26,6 +26,7 @@ vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null })
 
 const { useChatStore } = await import('@/chat/store');
 const { ChatSections } = await import('../chat-sections');
+const { chatSlots } = await import('@/config');
 const initialState = useChatStore.getState();
 
 type State = NonNullable<Conversation['harnessState']>;
@@ -109,6 +110,33 @@ describe('CJ14-FU-2 each More keeps the marks of the chats it hides', () => {
       expect(markOn(moreRows()[0])).toBe('finished');
       act(() => useChatStore.getState().markConversationRead('a'));
       expect(markOn(moreRows()[0])).toBeNull();
+    });
+  });
+
+  describe('in a build whose chat slots draw the More mark', () => {
+    afterEach(() => {
+      delete chatSlots.useMoreMark;
+    });
+
+    it('shows the mark the slots draw from the chats each More hides, in place of the rail’s own', () => {
+      const asked: string[][] = [];
+      chatSlots.useMoreMark = (hidden, open) => {
+        asked.push([...hidden.map((c) => c.id), `open:${String(open)}`]);
+        return hidden.length > 0 ? <span data-testid="slot-mark">{hidden.map((c) => c.id).join(',')}</span> : null;
+      };
+      render([...quiet('y', 5), chat('a', state({ runState: 'needs_you', needsYou: true }))], [...quiet('s', 3), chat('d')]);
+      const [shared, yours] = moreRows();
+      expect(within(yours).getByTestId('slot-mark').textContent).toBe('a');
+      expect(within(shared).getByTestId('slot-mark').textContent).toBe('d');
+      expect(markOn(yours)).toBeNull();
+      expect(asked).toContainEqual(['a', 'open:open']);
+    });
+
+    it('draws no mark where the slots draw none, even for a hidden chat that needs you', () => {
+      chatSlots.useMoreMark = () => null;
+      render([...quiet('y', 5), chat('a', state({ runState: 'needs_you', needsYou: true }))]);
+      expect(markOn(moreRows()[0])).toBeNull();
+      expect(screen.queryByRole('button', { name: 'More Needs you' })).toBeNull();
     });
   });
 

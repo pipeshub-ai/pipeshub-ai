@@ -71,10 +71,20 @@ const markOfKey = (key: string): SidebarDot | null => {
   return { dot: dot as SidebarDot['dot'], ...(unseen === 'unseen' && { unseen: true }) };
 };
 
-/** The mark of a More (`hiddenMark`), redrawn as the hidden chats' own state changes and only when the mark does. */
-function useHiddenMark(hidden: Conversation[], currentConversationId: string | null): SidebarDot | null {
-  const key = useChatStore((s) => markKey(hiddenMark(hidden, currentConversationId, s.slots, s.unreadConversationIds)));
-  return useMemo(() => markOfKey(key), [key]);
+/**
+ * A More's mark: the one the slots draw where they draw one (`ChatSlots.useMoreMark`), else the strongest mark of the
+ * chats it hides (`hiddenMark`) in the row mark's words for a screen reader, redrawn as the hidden chats' own state
+ * changes and only when the mark does.
+ */
+function useRailMoreMark(hidden: Conversation[], currentConversationId: string | null): React.ReactNode {
+  const { t } = useTranslation();
+  const drawn = chatSlots.useMoreMark?.(hidden, currentConversationId);
+  const key = useChatStore((s) =>
+    chatSlots.useMoreMark ? '' : markKey(hiddenMark(hidden, currentConversationId, s.slots, s.unreadConversationIds)),
+  );
+  const own = useMemo(() => markOfKey(key), [key]);
+  if (chatSlots.useMoreMark) return drawn ?? null;
+  return own ? <ChatDotMark dot={own.dot} label={markWords(t, own)} /> : null;
 }
 
 /** Number of skeleton items shown while loading each section */
@@ -157,9 +167,9 @@ export const ChatSections = React.memo(function ChatSections({
   // The pins come first, with no label of their own.
   const today = useLocalDay();
   const yourDays = useMemo(() => groupConversationsWithPinned(your.rows, today), [your.rows, today]);
-  // Each More carries the strongest mark of the chats it hides, in the row mark's words for a screen reader.
-  const sharedMoreMark = useHiddenMark(shared.hidden, currentConversationId);
-  const yourMoreMark = useHiddenMark(your.hidden, currentConversationId);
+  // Each More carries the mark of the chats it hides.
+  const sharedMoreMark = useRailMoreMark(shared.hidden, currentConversationId);
+  const yourMoreMark = useRailMoreMark(your.hidden, currentConversationId);
 
   // Rows Shared chats shows, its More included.
   const sharedRowsShown = shared.rows.length + (shared.hasMore ? 1 : 0);
@@ -194,7 +204,7 @@ export const ChatSections = React.memo(function ChatSections({
           skeletonCount={reserveShared ? lastTime.sharedRows : sharedRowsShown}
           hasMore={shared.hasMore}
           onMore={() => onOpenMoreChats('shared')}
-          moreMark={sharedMoreMark ? <ChatDotMark dot={sharedMoreMark.dot} label={markWords(t, sharedMoreMark)} /> : null}
+          moreMark={sharedMoreMark}
           emptyStateText={sharedStart?.emptyText ?? t('chat.noSharedChats')}
         />
       )}
@@ -213,7 +223,7 @@ export const ChatSections = React.memo(function ChatSections({
         skeletonCount={YOUR_CHATS_SKELETON_COUNT}
         hasMore={your.hasMore}
         onMore={() => onOpenMoreChats('your')}
-        moreMark={yourMoreMark ? <ChatDotMark dot={yourMoreMark.dot} label={markWords(t, yourMoreMark)} /> : null}
+        moreMark={yourMoreMark}
         pendingConversations={activePendingConversations}
         emptyStateText={t('chat.yourChatsEmpty')}
       />
