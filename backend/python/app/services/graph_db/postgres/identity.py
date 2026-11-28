@@ -38,8 +38,6 @@ from app.services.graph_db.postgres.base import (
     _arango,
     _doc,
     _ekey,
-    _grant_columns,
-    _hold_groups,
     _j,
 )
 from app.services.graph_db.user_email_identity import (
@@ -55,8 +53,6 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
-
-    from app.core.db import Tx
 
 
 _KB = Connectors.KNOWLEDGE_BASE.value
@@ -638,33 +634,22 @@ class IdentityMixin(PgBase):
         if not grants:
             return []
         org = current_org_id()
-        async def go(tx: Tx) -> list:
-            await _hold_groups(tx, org, grants)
-            return await tx.fetch("""/* pipeshub:graph.lock_external_app_memberships */ WITH g AS (SELECT * FROM unnest($2::text[], $3::text[], $4::text[], $5::text[]) AS g(hc, hi, tc, ti)),
-              -- a user's or person's grant counts only while its holder has a flagged membership (one probe of edges_external_by_holder): only then is its target read
-              hg AS (SELECT g.* FROM g WHERE g.hc IN ('users', 'person') AND EXISTS (SELECT 1 FROM graph.edges f WHERE f.org_id = $1 AND f.coll = 'userAppRelation'
-                       AND f.from_coll = g.hc AND f.from_id = g.hi AND f.doc->>'isExternalUser' = 'true')
-                     UNION ALL SELECT g.* FROM g WHERE g.hc IN ('groups', 'roles', 'teams')),
-              a AS (SELECT hg.hc, hg.hi, t.doc->>'connectorId' AS app FROM hg JOIN graph.nodes t ON t.org_id = $1 AND t.coll = hg.tc AND t.id = hg.ti
-                    WHERE hg.tc IN ('records', 'recordGroups')),
+        cols = list(zip(*grants, strict=True))
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.lock_external_app_memberships */ WITH g AS (
+                SELECT * FROM unnest($2::text[], $3::text[], $4::text[], $5::text[]) AS g(hc, hi, tc, ti)),
+              a AS (SELECT g.hc, g.hi, t.doc->>'connectorId' AS app FROM g JOIN graph.nodes t ON t.org_id = $1 AND t.coll = g.tc AND t.id = g.ti
+                    WHERE g.tc IN ('records', 'recordGroups')),
               k AS (SELECT a.hc AS c, a.hi AS i, a.app FROM a WHERE a.hc IN ('users', 'person')
-                -- a group's, role's or team's: the app's flagged memberships (edges_external_by_app), each probed for its membership of the holder
-                UNION SELECT f.from_coll, f.from_id, a.app FROM a
+                UNION SELECT m.from_coll, m.from_id, a.app FROM a
                   JOIN graph.edges f ON f.org_id = $1 AND f.coll = 'userAppRelation' AND f.to_id = a.app AND f.to_coll = 'apps' AND f.doc->>'isExternalUser' = 'true'
-                  WHERE a.hc IN ('groups', 'roles', 'teams') AND EXISTS (SELECT 1 FROM graph.edges m WHERE m.org_id = $1 AND m.coll = 'permission'
-                    AND m.from_coll = f.from_coll AND m.from_id = f.from_id AND m.to_coll = a.hc AND m.to_id = a.hi AND m.doc->>'type' = 'USER')
-                UNION SELECT hg.hc, hg.hi, NULL FROM hg WHERE hg.hc IN ('users', 'person') AND hg.tc IN ('groups', 'roles', 'teams')),
-            -- a membership of a group, role or team holds the group's node exclusively, after the member's memberships: it waits for a grant
-              -- of the group being written, which holds the node shared (_hold_groups) before it reads the members
-              gx AS (SELECT 1 FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = ANY($6::text[]) AND n.id = ANY($7::text[])
-                     AND cardinality($7::text[]) > 0 ORDER BY n.coll, n.id FOR UPDATE OF n),
-              mem AS (SELECT u.from_coll, u.from_id, u.to_id FROM graph.edges u JOIN k ON u.from_coll = k.c AND u.from_id = k.i AND (k.app IS NULL OR u.to_id = k.app)
-                WHERE u.org_id = $1 AND u.coll = 'userAppRelation' AND u.to_coll = 'apps' AND u.doc->>'isExternalUser' = 'true'
-                ORDER BY 1, 2, 3 FOR UPDATE OF u)
-            -- the one row of z takes the node locks whether or not a membership is held
-            SELECT mem.* FROM (SELECT (SELECT count(*) FROM gx)) AS z(n) LEFT JOIN mem ON true""", org, *_grant_columns(grants))
-        rows = await self._q(go, transaction, write=True)
-        return sorted({(r["from_coll"], r["from_id"], r["to_id"]) for r in rows if r["from_coll"] is not None})
+                  JOIN graph.edges m ON m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = f.from_coll AND m.from_id = f.from_id
+                    AND m.to_coll = a.hc AND m.to_id = a.hi AND m.doc->>'type' = 'USER'
+                  WHERE a.hc IN ('groups', 'roles', 'teams')
+                UNION SELECT g.hc, g.hi, NULL FROM g WHERE g.hc IN ('users', 'person') AND g.tc IN ('groups', 'roles', 'teams'))
+            SELECT u.from_coll, u.from_id, u.to_id FROM graph.edges u JOIN k ON u.from_coll = k.c AND u.from_id = k.i AND (k.app IS NULL OR u.to_id = k.app)
+            WHERE u.org_id = $1 AND u.coll = 'userAppRelation' AND u.to_coll = 'apps' AND u.doc->>'isExternalUser' = 'true'
+            ORDER BY 1, 2, 3 FOR UPDATE OF u""", org, *(list(c) for c in cols)), transaction, write=True)
+        return sorted({(r["from_coll"], r["from_id"], r["to_id"]) for r in rows})
 
     async def ensure_team_app_edge(self, connector_id: str, org_id: str, transaction: str | None = None) -> None:
         """The org's "All" team gets an edge to the app (the app is created bare when missing, as MERGE does). Idempotent."""

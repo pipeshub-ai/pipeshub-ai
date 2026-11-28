@@ -10,6 +10,7 @@ from app.config.constants.arangodb import CollectionNames
 from app.core.db.uow import QUERY_LOG_SKIP
 from app.core.org_context import current_or_system, current_org_id, spawn_in_request
 from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError
+from app.services.graph_db.common.grant_locks import lock_targets
 from app.utils.db_query_log import CALLER_FRAME, caller_origin
 
 if TYPE_CHECKING:
@@ -68,22 +69,11 @@ def _edge(e: dict) -> tuple[str, str, str, str, dict]:
     return fc, fi, tc, ti, props
 
 
-async def _hold_groups(tx: Tx, org: str, grants: Sequence[tuple[str, str, str, str]]) -> None:
-    """A grant from a group, role or team on a record or record group holds the group's node shared, in a statement of its own before the one
-    that reads the group's members: a membership of the group being written holds the node exclusively (``gx`` of the grant writers), so one
-    waits for the other, and the members read next include one whose membership committed first (a statement reads the snapshot it started with)."""
-    groups = sorted({(hc, hi) for hc, hi, tc, _ in grants if hc in ("groups", "roles", "teams") and tc in ("records", "recordGroups")})
-    if groups:
-        # the keys as arrays an index condition takes (a join to unnest() can be planned as a scan of the org's nodes)
-        await tx.execute("""/* pipeshub:graph.hold_granting_groups */ SELECT 1 FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = ANY($2::text[])
-            AND n.id = ANY($3::text[]) ORDER BY n.coll, n.id FOR SHARE OF n""", org, sorted({c for c, _ in groups}), [i for _, i in groups])
-
-
-def _grant_columns(grants: Sequence[tuple[str, str, str, str]]) -> list[list[str]]:
-    """Grants (holder collection, holder, target collection, target) as the arrays the lock of the memberships they keep binds: the four
-    columns, then the collections and ids of the groups, roles and teams a user's or person's grant makes it a member of (``gx``)."""
-    groups = sorted({(tc, ti) for hc, _, tc, ti in grants if hc in ("users", "person") and tc in ("groups", "roles", "teams")})
-    return [[g[i] for g in grants] for i in range(4)] + [[c for c, _ in groups], [i for _, i in groups]]
+def _target_columns(grants: Sequence[tuple[str, str, str, str]]) -> list[list[str]]:
+    """The collections and keys of the nodes whose app locks a write of ``grants`` takes (``common.grant_locks.lock_targets``), as the two
+    arrays the lock binds: arrays the primary key takes as index conditions (a join to unnest() can be planned as a scan of the org's nodes)."""
+    targets = lock_targets(grants)
+    return [sorted({c for c, _ in targets}), [k for _, k in targets]]
 
 
 def _ekey(coll: str, props: dict) -> str:

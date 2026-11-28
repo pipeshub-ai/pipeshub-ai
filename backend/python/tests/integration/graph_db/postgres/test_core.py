@@ -164,7 +164,7 @@ CALLS = [
     ("delete_edge", ("x", "things", "y", "things", "belongsTo"), {}),
     ("delete_edges_from", ("x", "things", "belongsTo"), {}),
     ("delete_edges_to", ("y", "things", "belongsTo"), {}),
-    ("replace_edges_to", ("y", "things", [_EDGE], "belongsTo"), {"lock_grants": [("users", "u", "records", "r")]}),
+    ("lock_grant_apps", ([("records", "y")],), {}),
     ("delete_all_edges_for_node", ("things/x", "belongsTo"), {}),
     ("delete_inherit_permissions_relation_record_group", ("r", "g"), {}),
     ("check_collection_has_document", ("things", "k"), {}),

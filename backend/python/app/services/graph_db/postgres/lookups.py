@@ -968,9 +968,12 @@ class LookupsMixin(PgBase):
         org = current_org_id()
 
         async def go(tx: Tx) -> int:
-            # The flagged edges are locked first and decided by the next statement, which sees every grant committed by then: a writer of a grant locks
-            # its holder's flagged edges before it writes it (``lock_external_app_memberships``, from the store), so it either holds the lock first (this
-            # unit waits and sees its grant) or waits for this unit, whose decision then predates the grant.
+            # The org's lock shared, then the app's exclusively (common.grant_locks): every writer of a grant of the app holds the app's shared, and a
+            # writer of a team's membership the org's exclusively, until its transaction ends, so this unit waits for each and the next statements read
+            # its grants, or the writer waits for this unit, whose decision then predates them.
+            # Then the flagged edges, which a writer of a membership updates in place.
+            await tx.execute("/* pipeshub:graph.reap_lock_org */ SELECT pg_advisory_xact_lock_shared(hashtextextended('grant_org:' || $1, 0))", org)
+            await tx.execute("/* pipeshub:graph.reap_lock_app */ SELECT pg_advisory_xact_lock(hashtextextended('grant_app:' || $1 || ':' || $2, 0))", org, connector_id)
             await tx.execute("""/* pipeshub:graph.reap_lock_external_edges */ SELECT 1 FROM graph.edges u WHERE u.org_id = $1 AND u.coll = 'userAppRelation'
                 AND u.to_coll = 'apps' AND u.to_id = $2 AND u.doc->>'isExternalUser' = 'true' FOR UPDATE""", org, connector_id)
             gone = await tx.fetch("""/* pipeshub:graph.reap_stale_external_edges */ DELETE FROM graph.edges d USING (

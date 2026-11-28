@@ -5,7 +5,7 @@ import inspect
 import logging
 import random
 import re
-from collections.abc import Awaitable, Callable, Collection, Iterable
+from collections.abc import Awaitable, Callable, Collection
 from contextlib import asynccontextmanager, suppress
 from logging import Logger
 from typing import Any, AsyncContextManager, Optional, TypeVar
@@ -361,10 +361,6 @@ class GraphTransactionStore(TransactionStore):
         self.explicit = explicit  # the block runs in one real transaction
         # each person this store upserted, by the id it got: without a transaction, what a grant to one the reaper removed is written to again
         self._people_written: dict[str, Person] = {}
-        # (holder collection, holder, app) pairs whose memberships this transaction has locked or keeps by a committed grant (replace_* lock_done)
-        self._lock_done: set[tuple[str, str, str]] = set()
-        # the records and record groups this transaction wrote: a grant into one is not kept, the reaper reads its committed liveness (_write_grant)
-        self._written: set[tuple[str, str]] = set()
         self.logger = graph_provider.logger
         # Lookups whose answer cannot change for the life of the transaction.
         # One batch is 100 records from a single connector, so the record group
@@ -475,12 +471,7 @@ class GraphTransactionStore(TransactionStore):
         for key in [key for key in self._memo if key[0] == "record"]:
             del self._memo[key]
 
-    def _wrote(self, collection: str, keys: Iterable[object]) -> None:
-        if collection in _GRANTED:
-            self._written.update((collection, k) for k in keys if isinstance(k, str))
-
     async def batch_upsert_nodes(self, nodes: list[dict], collection: str) -> bool | None:
-        self._wrote(collection, (n.get("_key", n.get("id")) for n in nodes))
         return await self.graph_provider.batch_upsert_nodes(nodes, collection, transaction=self.txn)
 
     async def name_default_knowledge_base(self, user_key: str, kb_key: str, expected: str | None) -> bool:
@@ -498,7 +489,6 @@ class GraphTransactionStore(TransactionStore):
         )
 
     async def batch_update_nodes(self, nodes: list[dict], collection: str) -> bool | None:
-        self._wrote(collection, (n.get("_key", n.get("id")) for n in nodes))
         return await self.graph_provider.batch_update_nodes(nodes, collection, transaction=self.txn)
 
     async def get_record_by_path(self, connector_id: str, path: list[str], external_record_group_id: str) -> dict | None:
@@ -715,20 +705,15 @@ class GraphTransactionStore(TransactionStore):
     async def delete_edges_to(self, to_id: str, to_collection: str, collection: str) -> int:
         return await self.graph_provider.delete_edges_to(to_id, to_collection, collection, transaction=self.txn)
 
-    async def _write_grant(self, edges: list[dict], collection: str, write: Callable[..., Awaitable[_T]], *,
-                           replace: tuple[str, str] | None = None) -> _T:
-        """Writes ``edges`` with ``write``. Before a grant, the flagged app memberships it would keep (its users' and people's own, or the members' of a
-        group, role or team it comes from) are locked as the external-collaborator reaper locks them before it decides, so a reaper either waits for
-        this grant to commit and sees it, or decided before the grant existed. In a transaction the statement that writes the grants takes the lock
-        (``lock_grants``), so a grant costs no statement of its own. A replace also skips the (holder, app) pairs the transaction has locked
-        (``lock_done``), and is told whether this transaction wrote its target (``target_written``): a grant into a record or record group
-        written here is not kept, as the reaper reads the target's committed liveness."""
+    async def _write_grant(self, edges: list[dict], collection: str, write: Callable[..., Awaitable[_T]]) -> _T:
+        """Writes ``edges`` with ``write``. In a transaction the statement that writes the grants the external-collaborator reaper counts first
+        holds their apps' locks shared until the transaction ends (``lock_grants``; the reaper holds an app's lock exclusively before it
+        decides, ``common.grant_locks``), so a reaper either waits for this grant to commit and sees it, or decided before the grant existed."""
         grants = _counted_grants(edges) if collection == CollectionNames.PERMISSION.value else []
         if not grants:
             return await write(edges)
         if self.explicit:
-            return await write(edges, lock_grants=grants, **({"lock_done": self._lock_done, "target_written": replace in self._written}
-                                                             if replace else {}))
+            return await write(edges, lock_grants=grants)
         held = await self.graph_provider.lock_external_app_memberships(grants, transaction=self.txn)
         return await self._write_grant_alone(edges, grants, held, write)
 
@@ -768,15 +753,14 @@ class GraphTransactionStore(TransactionStore):
         return key
 
     async def replace_edges_to(self, to_id: str, to_collection: str, edges: list[dict], collection: str) -> None:
-        await self._write_grant(edges, collection, lambda es, **lock: self.graph_provider.replace_edges_to(
-            to_id, to_collection, es, collection, transaction=self.txn, **lock), replace=(to_collection, to_id))
+        await self._write_grant(edges, collection, lambda es, **lock: self.graph_provider.replace_edges_to(to_id, to_collection, es, collection, transaction=self.txn, **lock))
 
     async def replace_record_permissions(
         self, record_id: str, edges: list[dict], record_group_id: str | None, *, inherit: bool
     ) -> None:
         await self._write_grant(edges, CollectionNames.PERMISSION.value, lambda es, **lock: self.graph_provider.replace_record_permissions(
             record_id, es, record_group_id, inherit=inherit, transaction=self.txn, **lock
-        ), replace=(CollectionNames.RECORDS.value, record_id))
+        ))
 
     async def link_record_to_group(
         self,
@@ -892,13 +876,15 @@ class GraphTransactionStore(TransactionStore):
         connector_id: str | None = None,
         require_live_parent: bool = False,
     ) -> list[str]:
-        """Bring records back from the trash within the active transaction."""
-        restored = await self.graph_provider.restore_records(
+        """Bring records back from the trash within the active transaction. A restore makes the records' grants count for the reaper again, so
+        their apps' locks are held first, as a grant writer's are (``_write_grant``)."""
+        if self.explicit and restores:
+            await self.graph_provider.lock_grant_apps(
+                sorted({(CollectionNames.RECORDS.value, r["id"]) for r in restores if r.get("id")}), transaction=self.txn)
+        return await self.graph_provider.restore_records(
             restores, batch_id, transaction=self.txn,
             connector_id=connector_id, require_live_parent=require_live_parent,
         )
-        self._wrote(CollectionNames.RECORDS.value, [*(r.get("id") for r in restores), *(restored or [])])
-        return restored
 
     async def claim_push_record(self, **claim: object) -> object:
         """The conditional write that arbitrates concurrent pushes, within the active transaction."""
@@ -1222,7 +1208,6 @@ class GraphTransactionStore(TransactionStore):
 
         Delegates to graph_provider for the full record upsert logic.
         """
-        self._wrote(CollectionNames.RECORDS.value, (r.id for r in records))
         result = await self.graph_provider.batch_upsert_records(
             records, transaction=self.txn, release_trashed_external_ids=release_trashed_external_ids
         )
@@ -1230,7 +1215,6 @@ class GraphTransactionStore(TransactionStore):
         return result
 
     async def upsert_record_under_parent(self, record: Record, parent_record_id: str | None) -> None:
-        self._wrote(CollectionNames.RECORDS.value, [record.id])
         await self.graph_provider.upsert_record_under_parent(record, parent_record_id, transaction=self.txn)
         self._memo_forget_upserted([record])
 
@@ -1255,7 +1239,6 @@ class GraphTransactionStore(TransactionStore):
 
         Delegates to graph_provider for implementation.
         """
-        self._wrote(CollectionNames.RECORD_GROUPS.value, (g.id for g in record_groups))
         result = await self.graph_provider.batch_upsert_record_groups(record_groups, transaction=self.txn)
         for group in record_groups:
             external_id = getattr(group, "external_group_id", None)

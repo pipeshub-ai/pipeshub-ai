@@ -162,6 +162,7 @@ from app.services.graph_db.common.full_sync_unlink import (
     split_unseen_by_window,
     unseen_node_keys,
 )
+from app.services.graph_db.common.grant_locks import lock_targets
 from app.services.graph_db.common.name_match import cypher_name_key, name_query_params
 from app.services.graph_db.common.record_visibility import (
     HAS_INDEXED_COPY,
@@ -1905,7 +1906,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         indexes.extend(named_entity_neo4j_indexes())
         indexes.extend(_STAGE_STATE_INDEXES)
         indexes.append(_KH_CHILDREN_ORDER_DDL)
-        # the flagged (external-collaborator) app memberships, so a group's grant locks its members' among them, not among all of an app's
+        # the flagged (external-collaborator) app memberships: the reaper and the memberships a write without a transaction makes again
         indexes.append("CREATE INDEX user_app_external IF NOT EXISTS FOR ()-[r:USER_APP_RELATION]-() ON (r.isExternalUser)")
         return indexes
 
@@ -2909,98 +2910,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             grouped.setdefault(key, []).append({"from_key": from_key, "to_key": to_key, "props": props})
         return {labels: _in_lock_order(rows, _by_ends) for labels, rows in grouped.items()}
 
-    def _replace_held_cypher(self, to_collection: str, lock_grants: Sequence[tuple[str, str, str, str]], parameters: dict[str, Any]) -> str:
-        """The subqueries of a replace that write-lock, before each member's node, the flagged memberships its created edge keeps (those
-        ``_held_match`` names: the member's own, or a group's, role's or team's members' on the target's app). An edge the replace keeps is a
-        committed grant the reaper already sees, so only a member whose edge is created (the members below) is locked: a large group's resync locks
-        its newcomers alone. "" when *lock_grants* is empty."""
-        if not lock_grants:
-            return ""
-        parameters["lock_keys"] = sorted({f"{collection_to_label(hc)}|{hi}" for hc, hi, _, _ in lock_grants})
-        parameters["lock_ids"] = sorted({hi for _, hi, _, _ in lock_grants})      # read before the labels: one property, the cheaper test
-        rel = edge_collection_to_relationship(CollectionNames.USER_APP_RELATION.value)
-        perm = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
-        app_label = collection_to_label(CollectionNames.APPS.value)
-        target = collection_to_label(to_collection)
-        lock = f"""SET r.{_MATCH_LOCK} = true
-                REMOVE r.{_MATCH_LOCK}"""
-        listed = "any(l IN labels(member) WHERE (l + '|' + member.id) IN $lock_keys)"
-        people = f"(member:{collection_to_label(CollectionNames.USERS.value)} OR member:{collection_to_label(CollectionNames.PEOPLE.value)})"
-        if to_collection not in (CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value):
-            return f"""
-            CALL {{
-                WITH member
-                WITH member WHERE {people} AND {listed}
-                MATCH (member)-[r:{rel}]->(:{app_label})
-                WHERE r.isExternalUser = true
-                {lock}
-            }}"""
-        # the target is read inside a nested subquery, so only for a listed member (unnested, the planner reads it for every member)
-        return f"""
-            CALL {{
-                WITH member
-                WITH member WHERE member.id IN $lock_ids AND {listed}
-                CALL {{
-                    WITH member
-                    MATCH (t:{target} {{id: $to_id}})
-                    CALL {{
-                        WITH member, t
-                        WITH member, t WHERE {people}
-                        MATCH (member)-[r:{rel}]->(:{app_label} {{id: t.connectorId}})
-                        WHERE r.isExternalUser = true
-                        {lock}
-                    }}
-                    CALL {{
-                        WITH member, t
-                        WITH member, t WHERE NOT {people}
-                        SET member.{_MATCH_LOCK} = true      // the group first (_group_node_locks), then the members it has then
-                        REMOVE member.{_MATCH_LOCK}
-                        WITH member, t
-                        MATCH (p)-[r:{rel} {{isExternalUser: true}}]->(:{app_label} {{id: t.connectorId}})
-                        WHERE EXISTS {{ (p)-[:{perm} {{type: 'USER'}}]->(member) }}
-                        {lock}
-                    }}
-                }}
-            }}"""
-
-    def _replace_head_cypher(self, to_collection: str, lock_grants: Sequence[tuple[str, str, str, str]], parameters: dict[str, Any], *,
-                             target_written: bool) -> str:
-        """The head of a replace that locks: the target's node, then, when no grant into it can be kept, every grant's memberships. A grant into a
-        record or record group the reaper reads as deleted (committed), or that this transaction wrote (``target_written``: its committed
-        liveness is not known here), does not count for the reaper, so the edge it already has protects nothing."""
-        target = collection_to_label(to_collection)
-        on_records = to_collection in (CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value)
-        parameters["lock_all"] = target_written and on_records
-        head = f"""
-            OPTIONAL MATCH (lock_t:{target} {{id: $to_id}})
-            CALL {{ WITH lock_t WITH lock_t WHERE lock_t IS NOT NULL SET lock_t.{_MATCH_LOCK} = true REMOVE lock_t.{_MATCH_LOCK} }}"""
-        if not on_records:
-            return head + "\n            WITH 0 AS lock_none"
-        for i, hc in enumerate(sorted({hc for hc, _, _, _ in lock_grants})):
-            match = self._held_match(hc, to_collection)
-            if match is None:
-                continue
-            parameters[f"lock_all_{i}"] = sorted({hi for c, hi, _, _ in lock_grants if c == hc})
-            group = "" if hc in (CollectionNames.USERS.value, CollectionNames.PEOPLE.value) else f"""
-                MATCH (gn:{collection_to_label(hc)} {{id: row.h}})      // the group before its members (_group_node_locks)
-                SET gn.{_MATCH_LOCK} = true
-                REMOVE gn.{_MATCH_LOCK}
-                WITH row"""
-            head += f"""
-            CALL {{
-                WITH lock_t
-                WITH lock_t WHERE $lock_all OR coalesce(lock_t.isDeleted, false)
-                UNWIND [h IN $lock_all_{i} | {{h: h, t: $to_id}}] AS row{group}
-                {match}
-                WITH DISTINCT r WHERE r.isExternalUser = true
-                SET r.{_MATCH_LOCK} = true
-                REMOVE r.{_MATCH_LOCK}
-            }}"""
-        return head + "\n            WITH 0 AS lock_none"
-
     def _replace_edges_to_cypher(
-        self, to_id: str, to_collection: str, edges: list[dict], collection: str, lock_grants: Sequence[tuple[str, str, str, str]] = (),
-        *, target_written: bool = False,
+        self, to_id: str, to_collection: str, edges: list[dict], collection: str, lock_grants: Sequence[tuple[str, str, str, str]] = ()
     ) -> tuple[str, dict[str, Any]]:
         """The statement of ``replace_edges_to`` up to its RETURN, so a caller can add to the same write.
 
@@ -3067,19 +2978,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     r.updatedAtTimestamp = edge.props.updatedAtTimestamp
             }}""")
         parameters["keep"] = keep
-        head = ""
-        if lock_grants:
-            # With grants to lock the target is locked first, so the edges read as kept are the ones committed by then: a replace that removes
-            # one waits here or has committed it (on the target, the union's first branch, it would be locked only after the read).
-            member_sources = member_sources[1:]
-            head = self._replace_head_cypher(to_collection, lock_grants, parameters, target_written=target_written)
         member_union = "\n                UNION".join(member_sources)
-        held = self._replace_held_cypher(to_collection, lock_grants, parameters)
-        return f"""{head}
+        held, lock_params = self._app_lock_cypher(lock_grants)      # the apps first, before any node or edge of the replace is locked
+        parameters.update(lock_params)
+        return f"""{held}
             CALL {{{member_union}
             }}
             WITH DISTINCT member WHERE member IS NOT NULL
-            WITH member ORDER BY elementId(member){held}
+            WITH member ORDER BY elementId(member)
             SET member.{_MATCH_LOCK} = true
             REMOVE member.{_MATCH_LOCK}
             WITH count(*) AS locked
@@ -3098,12 +3004,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         lock_grants: Sequence[tuple[str, str, str, str]] = (),
-        lock_done: set[tuple[str, str, str]] | None = None,
-        target_written: bool = False,
     ) -> None:
-        """Replace the *collection* edges into *to_id*: every old one is gone unless *edges* has it again. It locks only the grants it creates
-        (``common.grant_locks.kept_holders``: every grant into a record or record group read as deleted or ``target_written``) and keeps no
-        (holder, app) pair in ``lock_done``: here the check that a member's edge is created costs no more than its lock."""
+        """Replace the *collection* edges into *to_id*: every old one is gone unless *edges* has it again."""
         if edge_collection_to_relationship(collection) in _KH_TREE_TYPES:
             # Its ``SET r = ...`` rewrites a kept edge whole, which would drop a hierarchy edge's children order stamps, and it keeps no
             # tree label: hierarchy and inherit edges go through the writers that keep both (batch_create_edges and the rest).
@@ -3112,8 +3014,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # NEO4J_EXPLICIT_TRANSACTIONS is true, but false is a supported mode in
         # which a separate delete would commit before the new edges were written,
         # and a group whose rewrite failed was left with no members.
-        statement, parameters = self._replace_edges_to_cypher(to_id, to_collection, edges, collection, lock_grants,
-                                                              target_written=target_written)
+        statement, parameters = self._replace_edges_to_cypher(to_id, to_collection, edges, collection, lock_grants)
         await self.client.execute_query(
             f"{statement}\n            RETURN count(*) AS done", parameters=parameters, txn_id=transaction,
             **_bulk_rows("group replace", len(edges)),
@@ -3152,14 +3053,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         inherit: bool,
         transaction: str | None = None,
         lock_grants: Sequence[tuple[str, str, str, str]] = (),
-        lock_done: set[tuple[str, str, str]] | None = None,
-        target_written: bool = False,
     ) -> None:
         # One statement: written apart, a failure on the inherit edge left the new
         # permissions beside the old inheritance, so a group that had just lost the
         # record could still read it.
         statement, parameters = self._replace_edges_to_cypher(
-            record_id, CollectionNames.RECORDS.value, edges, CollectionNames.PERMISSION.value, lock_grants, target_written=target_written
+            record_id, CollectionNames.RECORDS.value, edges, CollectionNames.PERMISSION.value, lock_grants
         )
         if not inherit:
             # Every record group, not only the one passed: the record must not keep
@@ -3330,7 +3229,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     if is_link else f"MERGE (from)-[r:{relationship_type}]->(to)"
                 )
                 refresh = "" if is_link else _cypher_kh_tree_refresh(relationship_type, "from", "to")
-                held, lock_rows = self._held_cypher(lock_grants, from_label, to_label)
+                held, lock_params = self._app_lock_cypher(lock_grants)
                 query = f"""{held}
                 UNWIND $edges AS edge
                 MATCH (from:{from_label} {{id: edge.from_key}})
@@ -3348,7 +3247,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
                 rows = await self.client.execute_query(
                     query,
-                    parameters={"edges": group_edges, "lock_rows": lock_rows},
+                    parameters={"edges": group_edges, **lock_params},
                     txn_id=transaction,
                     **_bulk_rows("batch edge create", len(group_edges)),
                 )
@@ -3388,8 +3287,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # A hierarchy or inherit edge keeps its ends' tree state and its children order stamps, as batch_create_edges does.
             refresh = _cypher_kh_tree_refresh(relationship_type, "from", "to")
 
+            held, lock_params = self._app_lock_cypher(lock_grants)
             for (from_label, to_label), group_edges in self._edges_by_labels(edges).items():
-                held, lock_rows = self._held_cypher(lock_grants, from_label, to_label)
                 query = f"""{held}
                 UNWIND $edges AS edge
                 MATCH (from:{from_label} {{id: edge.from_key}})
@@ -3403,7 +3302,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 """
                 rows = await self.client.execute_query(
                     query,
-                    parameters={"edges": group_edges, "lock_rows": lock_rows},
+                    parameters={"edges": group_edges, **lock_params},
                     txn_id=transaction,
                     **_bulk_rows("edge create if absent", len(group_edges)),
                 )
@@ -19403,57 +19302,38 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             raise
 
     @staticmethod
-    def _held_match(hc: str, tc: str) -> str | None:
-        """The match, per ``row`` {h: holder, t: target}, of the memberships ``p``-[``r``]->``app`` a grant of that kind keeps (the flag is checked by
-        the caller): the holder's own on the target's app, or on every app when the target is a group, role or team; for a group, role or team
-        holder, its members' on the target's app. None for a grant that keeps no one's (a group's to a group)."""
-        rel = edge_collection_to_relationship(CollectionNames.USER_APP_RELATION.value)
-        perm = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+    def _app_lock_cypher(lock_grants: Sequence[tuple[str, str, str, str]]) -> tuple[str, dict[str, Any]]:
+        """The head of a statement that writes ``lock_grants``: a subquery that write-locks, until the transaction ends, the apps of their
+        targets in one order (``common.grant_locks``; Neo4j has no shared lock, so writers of one app take turns); ("", {}) when none."""
+        by_label: dict[str, list[str]] = {}
+        for collection, key in lock_targets(lock_grants):
+            by_label.setdefault(collection_to_label(collection), []).append(key)
+        if not by_label:
+            return "", {}
         app_label = collection_to_label(CollectionNames.APPS.value)
-        holder, target = collection_to_label(hc), collection_to_label(tc)
-        on_records = tc in (CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value)
-        if hc in (CollectionNames.USERS.value, CollectionNames.PEOPLE.value):
-            return (f"MATCH (t:{target} {{id: row.t}}) MATCH (p:{holder} {{id: row.h}})-[r:{rel}]->(app:{app_label} {{id: t.connectorId}})"
-                    if on_records else f"MATCH (p:{holder} {{id: row.h}})-[r:{rel}]->(app:{app_label})")
-        if on_records:
-            # the app's flagged memberships (user_app_external), each probed for its membership of the holder, never every membership of the app
-            return (f"MATCH (t:{target} {{id: row.t}}) MATCH (p)-[r:{rel} {{isExternalUser: true}}]->(app:{app_label} {{id: t.connectorId}}) "
-                    f"WHERE EXISTS {{ (p)-[:{perm} {{type: 'USER'}}]->(:{holder} {{id: row.h}}) }}")
-        return None
-
-    @staticmethod
-    def _group_node_locks(hc: str, tc: str) -> tuple[str, str]:
-        """The write locks of the group, role or team node in a grant of that kind, per ``row``, (before the members are read, after the
-        memberships are locked). A group's grant on a record locks the group before it reads the members, and a membership of a group locks the
-        group after the member's memberships: a member added while the group's grant is written waits for it, or the grant for the member, and
-        then reads it (a read sees what committed before it)."""
-        vias = (CollectionNames.GROUPS.value, CollectionNames.ROLES.value, CollectionNames.TEAMS.value)
-        lock = f"SET gn.{_MATCH_LOCK} = true REMOVE gn.{_MATCH_LOCK}"
-        if hc in vias and tc in (CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value):
-            return f"CALL {{ UNWIND $lock_rows AS row MATCH (gn:{collection_to_label(hc)} {{id: row.h}}) {lock} }}", ""
-        if hc in (CollectionNames.USERS.value, CollectionNames.PEOPLE.value) and tc in vias:
-            return "", f"CALL {{ UNWIND $lock_rows AS row MATCH (gn:{collection_to_label(tc)} {{id: row.t}}) {lock} }}"
-        return "", ""
-
-    def _held_cypher(self, lock_grants: Sequence[tuple[str, str, str, str]], from_label: str, to_label: str) -> tuple[str, list[dict]]:
-        """For the head of the statement that writes the grants from ``from_label`` to ``to_label`` nodes: a subquery that write-locks the flagged
-        memberships those of ``lock_grants`` keep, as ``lock_external_app_memberships`` does, before the statement writes them; ("", []) when none."""
-        kinds = {(hc, tc) for hc, _, tc, _ in lock_grants if collection_to_label(hc) == from_label and collection_to_label(tc) == to_label}
-        match = self._held_match(*next(iter(kinds))) if kinds else None
-        if match is None:
-            return "", []
-        rows = sorted({(hi, ti) for hc, hi, tc, ti in lock_grants if (hc, tc) in kinds})
-        before, after = self._group_node_locks(*next(iter(kinds)))
+        org_label = collection_to_label(CollectionNames.ORGS.value)
+        # a node without a connector (a team) keeps memberships of every app of its org: its org's node is locked, which every reaper locks too
+        branches = "\n                    UNION".join(f"""
+                    UNWIND $lock_apps_{i} AS key
+                    MATCH (t:{label} {{id: key}})
+                    OPTIONAL MATCH (own:{app_label} {{id: t.connectorId}})
+                    OPTIONAL MATCH (org:{org_label} {{id: t.orgId}}) WHERE own IS NULL
+                    WITH coalesce(own, org) AS held WHERE held IS NOT NULL
+                    RETURN held""" for i, label in enumerate(sorted(by_label)))
         return f"""
-                {before}
                 CALL {{
-                    UNWIND $lock_rows AS row
-                    {match}
-                    WITH DISTINCT r WHERE r.isExternalUser = true
-                    SET r.{_MATCH_LOCK} = true
-                    REMOVE r.{_MATCH_LOCK}
-                }}
-                {after}""", [{"h": h, "t": t} for h, t in rows]
+                    CALL {{{branches}
+                    }}
+                    WITH DISTINCT held ORDER BY held:{app_label}, held.id      // the org's first, then the apps', as the reaper takes them
+                    SET held.{_MATCH_LOCK} = true
+                    REMOVE held.{_MATCH_LOCK}
+                }}""", {f"lock_apps_{i}": by_label[label] for i, label in enumerate(sorted(by_label))}
+
+    async def lock_grant_apps(self, targets: Sequence[tuple[str, str]], transaction: str | None = None) -> None:
+        """Write-locks the apps of ``targets`` until the transaction ends, as a grant's statement does (``_app_lock_cypher``)."""
+        head, params = self._app_lock_cypher([("", "", c, k) for c, k in targets])
+        if head:
+            await self.client.execute_query(f"{head}\n                RETURN 1 AS locked", parameters=params, txn_id=transaction)
 
     async def lock_external_app_memberships(
         self,
@@ -19467,28 +19347,36 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         on every app when the target is a group, role or team; for a group, role or team
         holder, its members' on the target's app. Returns them as ``(principal
         collection, principal, app)``; a principal with none locks nothing."""
+        rel = edge_collection_to_relationship(CollectionNames.USER_APP_RELATION.value)
+        perm = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+        app_label = collection_to_label(CollectionNames.APPS.value)
         people = {collection_to_label(c): c for c in (CollectionNames.USERS.value, CollectionNames.PEOPLE.value)}
         by_kind: dict[tuple[str, str], set[tuple[str, str]]] = {}
         for hc, hi, tc, ti in grants:
             by_kind.setdefault((hc, tc), set()).add((hi, ti))
         held: set[tuple[str, str, str]] = set()
         for (hc, tc), pairs in sorted(by_kind.items()):
-            match = self._held_match(hc, tc)
-            if match is None:
-                continue
-            before, after = self._group_node_locks(hc, tc)
+            holder, target = collection_to_label(hc), collection_to_label(tc)
+            on_records = tc in (CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value)
+            if hc in (CollectionNames.USERS.value, CollectionNames.PEOPLE.value):
+                match = (f"MATCH (t:{target} {{id: row.t}}) MATCH (p:{holder} {{id: row.h}})-[r:{rel}]->(app:{app_label} {{id: t.connectorId}})"
+                         if on_records else f"MATCH (p:{holder} {{id: row.h}})-[r:{rel}]->(app:{app_label})")
+            elif on_records:
+                # the app's flagged memberships (user_app_external), each probed for its membership of the holder
+                match = (f"MATCH (t:{target} {{id: row.t}}) MATCH (p)-[r:{rel} {{isExternalUser: true}}]->(app:{app_label} {{id: t.connectorId}}) "
+                         f"WHERE EXISTS {{ (p)-[:{perm} {{type: 'USER'}}]->(:{holder} {{id: row.h}}) }}")
+            else:
+                continue      # a grant from a group to a group keeps no one's membership
             rows = await self.client.execute_query(
                 f"""
-                {before}
-                {after}
-                UNWIND $lock_rows AS row
+                UNWIND $rows AS row
                 {match}
                 WITH DISTINCT p, r, app WHERE r.isExternalUser = true
                 SET r.{_MATCH_LOCK} = true
                 REMOVE r.{_MATCH_LOCK}
                 RETURN p.id AS id, labels(p) AS labels, app.id AS app
                 """,
-                parameters={"lock_rows": [{"h": h, "t": t} for h, t in sorted(pairs)]},
+                parameters={"rows": [{"h": h, "t": t} for h, t in sorted(pairs)]},
                 txn_id=transaction,
             )
             for row in rows or []:
@@ -19670,12 +19558,21 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (app:{app_label} {{id: $connector_id}})
             MATCH (principal)-[uar:{app_rel}]->(app)
             WHERE uar.isExternalUser = true
-            // The write lock first (a property set and removed: nothing kept), then the flag and the grant: a writer of a grant locks its
-            // holder's flagged edges before it writes it (lock_external_app_memberships) and a writer of a membership writes its flag, so either
-            // has committed (and is read below) or waits for this transaction, whose decision then predates its write.
+            // The edges' write lock first (a property set and removed: nothing kept): a writer of a membership writes its flag, so it has committed
+            // (and is read below) or waits for this transaction. Then the app's lock (common.grant_locks): a writer of a grant of the app holds it
+            // until its transaction ends, so this waits for it and reads its grant below, or the writer waits for this transaction. In this order: a
+            // writer of a membership of the app holds the edge and, as it commits, a share of the app's node.
             SET uar.{_MATCH_LOCK} = true
             REMOVE uar.{_MATCH_LOCK}
-            WITH principal, uar, app
+            WITH app, collect([principal, uar]) AS flagged
+            CALL {{      // the org's node, which a writer of a team's membership locks, then the app's
+                WITH app OPTIONAL MATCH (org:{collection_to_label(CollectionNames.ORGS.value)} {{id: app.orgId}})
+                FOREACH (o IN CASE WHEN org IS NULL THEN [] ELSE [org] END | SET o.{_MATCH_LOCK} = true REMOVE o.{_MATCH_LOCK})
+                SET app.{_MATCH_LOCK} = true
+                REMOVE app.{_MATCH_LOCK}
+            }}
+            UNWIND flagged AS row
+            WITH row[0] AS principal, row[1] AS uar, app
             WHERE uar.isExternalUser = true AND NOT {grant_exists}
             WITH collect(DISTINCT principal) AS stale_principals, collect(uar) AS stale_edges
 

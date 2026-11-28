@@ -1229,9 +1229,9 @@ class IGraphDBProvider(ABC):
         Batch create edges/relationships between nodes. With ``count_created`` it returns how many edges the call created
         (a found edge that was only rewritten is not one) instead of True; ``edge_effects.note_created`` gets their end ids either way.
 
-        The statement that writes the edges first locks the flagged memberships ``lock_grants`` keep, as
-        :meth:`lock_external_app_memberships` does, so a grant costs no statement of its own (the same in ``create_edges_if_absent``,
-        ``replace_edges_to`` and ``replace_record_permissions``, where a provider may leave out a grant its write keeps unchanged).
+        The statement that writes the edges first holds, until the transaction ends, the app locks of ``lock_grants`` (``common.grant_locks``:
+        the apps of their targets, in one order), as :meth:`lock_grant_apps` does: a grant costs no statement of its own (the same in
+        ``create_edges_if_absent``, ``replace_edges_to`` and ``replace_record_permissions``).
 
         Args:
             edges (List[Dict]): List of edges in generic format:
@@ -1463,15 +1463,8 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         lock_grants: Sequence[tuple[str, str, str, str]] = (),
-        lock_done: set[tuple[str, str, str]] | None = None,
-        target_written: bool = False,
     ) -> None:
         """Delete every *collection* edge into the node, then create *edges* (locking as :meth:`batch_create_edges`).
-
-        A provider may lock only the grants it creates (``common.grant_locks.kept_holders``): a holder's edge that was there is a grant the
-        reaper reads, unless the node is a record or record group the reaper reads as deleted or this transaction wrote
-        (``target_written``). ``lock_done`` holds the transaction's (user or person, holder, app) pairs whose membership it has locked; a
-        provider may skip those and adds the ones it locks (``record_locked``). This default locks every grant and keeps no pair.
 
         Concrete by design: a provider with real transactions keeps the two calls.
         Neo4j overrides it with one statement, since with NEO4J_EXPLICIT_TRANSACTIONS
@@ -1490,10 +1483,8 @@ class IGraphDBProvider(ABC):
         inherit: bool,
         transaction: str | None = None,
         lock_grants: Sequence[tuple[str, str, str, str]] = (),
-        lock_done: set[tuple[str, str, str]] | None = None,
-        target_written: bool = False,
     ) -> None:
-        """Replace the PERMISSION edges into the record and set whether it inherits from its group (locking as :meth:`replace_edges_to`).
+        """Replace the PERMISSION edges into the record and set whether it inherits from its group (locking as :meth:`batch_create_edges`).
 
         *inherit* true writes the INHERIT_PERMISSIONS edge to *record_group_id*, when
         there is one. False removes the record's inherit edge to every record group,
@@ -1503,8 +1494,7 @@ class IGraphDBProvider(ABC):
         new permissions beside an inherit edge that should have gone.
         """
         await self.replace_edges_to(
-            record_id, CollectionNames.RECORDS.value, edges, CollectionNames.PERMISSION.value, transaction, lock_grants=lock_grants,
-            lock_done=lock_done, target_written=target_written,
+            record_id, CollectionNames.RECORDS.value, edges, CollectionNames.PERMISSION.value, transaction, lock_grants=lock_grants
         )
         if not inherit:
             await self._stop_inheriting_from_record_groups(record_id, transaction)
@@ -4557,6 +4547,19 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def lock_grant_apps(
+        self,
+        targets: Sequence[tuple[str, str]],
+        transaction: str | None = None,
+    ) -> None:
+        """
+        Hold, until the transaction ends, the app locks of the nodes ``targets`` (collection, key) as a write that can make a grant chain count
+        does (``common.grant_locks``): the app of a record, record group, group or role is its ``connectorId``, a team's (or one without a
+        connector's) every app of the org. The reaper of an app holds the same lock exclusively before it decides. Raises on failure.
+        """
+        pass
+
+    @abstractmethod
     async def migrate_person_to_user(
         self,
         email: str,
@@ -4602,6 +4605,9 @@ class IGraphDBProvider(ABC):
         whose access is real and their records vanish from the tree.
 
         Only flagged edges are considered, so a real app member is never at risk.
+
+        It holds the app's lock exclusively (``common.grant_locks``) before it decides, until its transaction ends: every grant writer of
+        the app holding it has committed or rolled back by then.
 
         Args:
             connector_id (str): App whose membership edges to sweep

@@ -247,6 +247,7 @@ CLASSIFICATION: dict[str, str] = {
     "is_trash_walk_index_ready": "ddl",
     # a property set and removed on existing edges: a lock, nothing kept
     "lock_external_app_memberships": _I,
+    "lock_grant_apps": _I,
 }
 
 # Names filled in below from the first run of the classification test (deletes and maintenance).

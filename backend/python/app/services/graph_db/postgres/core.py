@@ -8,12 +8,6 @@ from typing import TYPE_CHECKING, Any
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.neo4j import parse_node_id
 from app.core.org_context import current_or_system, current_org_id
-from app.services.graph_db.common.grant_locks import (
-    GRANTED,
-    grants_to_lock,
-    kept_holders,
-    record_locked,
-)
 from app.services.graph_db.conditions import check_conditions
 from app.utils import error_class
 
@@ -32,11 +26,10 @@ from app.services.graph_db.postgres.base import (
     _edge_scope,
     _ekey,
     _field,
-    _grant_columns,
-    _hold_groups,
     _hot,
     _j,
     _node,
+    _target_columns,
 )
 
 
@@ -420,7 +413,6 @@ class CoreMixin(PgBase):
         payload = _j(list(rows.values()))
 
         async def go(tx: Tx) -> None:
-            await _hold_groups(tx, org, lock_grants)
             if collection == "permission":   # one grant per pair, the last type wins (as a MERGE does); the types written together stay together
                 # Probe each pair of the batch through the edge key (an index lookup per pair), then delete what was found: a statement that
                 # joins the batch to the table scans every permission edge of the org when there are no statistics.
@@ -437,38 +429,35 @@ class CoreMixin(PgBase):
                     await tx.execute("""/* pipeshub:graph.batch_create_edges_retype */ DELETE FROM graph.edges e USING unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[]) AS d(fc, fi, tc, ti, k)
                         WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_id = d.fi AND e.from_coll = d.fc AND e.to_id = d.ti AND e.to_coll = d.tc AND e.ekey = d.k""",
                                      org, [r["fc"] for r in stale], [r["fi"] for r in stale], [r["tc"] for r in stale], [r["ti"] for r in stale], [r["ekey"] for r in stale])
-            # The flagged memberships ``lock_grants`` keep are locked by this statement, as lock_external_app_memberships locks them, before its
-            # first row is written.
-            await tx.execute("""/* pipeshub:graph.batch_create_edges */ WITH g AS (SELECT * FROM unnest($4::text[], $5::text[], $6::text[], $7::text[]) AS g(hc, hi, tc, ti)),
-                    -- a user's or person's grant counts only while its holder has a flagged membership (one probe of edges_external_by_holder): only then is its target read
-                    hg AS (SELECT g.* FROM g WHERE g.hc IN ('users', 'person') AND EXISTS (SELECT 1 FROM graph.edges f WHERE f.org_id = $1 AND f.coll = 'userAppRelation'
-                             AND f.from_coll = g.hc AND f.from_id = g.hi AND f.doc->>'isExternalUser' = 'true')
-                           UNION ALL SELECT g.* FROM g WHERE g.hc IN ('groups', 'roles', 'teams')),
-                    a AS (SELECT hg.hc, hg.hi, t.doc->>'connectorId' AS app FROM hg JOIN graph.nodes t ON t.org_id = $1 AND t.coll = hg.tc AND t.id = hg.ti
-                          WHERE hg.tc IN ('records', 'recordGroups')),
-                    k AS (SELECT a.hc AS c, a.hi AS i, a.app FROM a WHERE a.hc IN ('users', 'person')
-                      -- a group's, role's or team's: the app's flagged memberships (edges_external_by_app), each probed for its membership of the holder
-                      UNION SELECT f.from_coll, f.from_id, a.app FROM a
-                        JOIN graph.edges f ON f.org_id = $1 AND f.coll = 'userAppRelation' AND f.to_id = a.app AND f.to_coll = 'apps' AND f.doc->>'isExternalUser' = 'true'
-                        WHERE a.hc IN ('groups', 'roles', 'teams') AND EXISTS (SELECT 1 FROM graph.edges m WHERE m.org_id = $1 AND m.coll = 'permission'
-                          AND m.from_coll = f.from_coll AND m.from_id = f.from_id AND m.to_coll = a.hc AND m.to_id = a.hi AND m.doc->>'type' = 'USER')
-                      UNION SELECT hg.hc, hg.hi, NULL FROM hg WHERE hg.hc IN ('users', 'person') AND hg.tc IN ('groups', 'roles', 'teams')),
-                  -- a membership of a group, role or team holds the group's node exclusively, after the member's memberships: it waits for a grant
-                    -- of the group being written, which holds the node shared (_hold_groups) before it reads the members
-                    gx AS (SELECT 1 FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = ANY($8::text[]) AND n.id = ANY($9::text[])
-                           AND cardinality($9::text[]) > 0 ORDER BY n.coll, n.id FOR UPDATE OF n),
-                  held AS (SELECT 1 FROM graph.edges u JOIN k ON u.from_coll = k.c AND u.from_id = k.i AND (k.app IS NULL OR u.to_id = k.app)
-                    WHERE u.org_id = $1 AND u.coll = 'userAppRelation' AND u.to_coll = 'apps' AND u.doc->>'isExternalUser' = 'true'
-                      AND cardinality($5::text[]) > 0      -- no grant to lock: nothing is read
-                    ORDER BY u.from_coll, u.from_id, u.to_id FOR UPDATE OF u)
+            await tx.execute("""/* pipeshub:graph.batch_create_edges */ WITH lt AS (SELECT t.coll, t.doc->>'connectorId' AS app FROM graph.nodes t WHERE t.org_id = $1 AND t.coll = ANY($4::text[]) AND t.id = ANY($5::text[])
+                     AND cardinality($5::text[]) > 0),
+                  -- the locks of the grants' targets (common.grant_locks), in one order: the org's, exclusively, for a team or a node without a connector,
+                  -- then each app's, shared
+                  held AS (SELECT (SELECT count(pg_advisory_xact_lock(hashtextextended('grant_org:' || $1, 0)))
+                                     FROM (SELECT 1 FROM lt WHERE lt.coll = 'teams' OR lt.app IS NULL LIMIT 1) o)
+                                + (SELECT count(pg_advisory_xact_lock_shared(hashtextextended('grant_app:' || $1 || ':' || s.a, 0)))
+                                     FROM (SELECT DISTINCT lt.app AS a FROM lt WHERE lt.app IS NOT NULL AND lt.coll <> 'teams' ORDER BY 1) s) AS n)
                 INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
                 SELECT $1, $2, x.fc, x.fi, x.tc, x.ti, x.k, (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(x.doc) AS _nv WHERE _nv.value <> 'null'::jsonb)
                 FROM jsonb_to_recordset($3::jsonb) AS x(fc text, fi text, tc text, ti text, k text, doc jsonb)
-                WHERE (SELECT count(*) FROM held) + (SELECT count(*) FROM gx) >= 0      -- locked once, before the first row is written
+                WHERE (SELECT n FROM held) >= 0      -- the locks are taken once, before the first row is written
                 ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = EXCLUDED.doc, from_coll = EXCLUDED.from_coll, to_coll = EXCLUDED.to_coll""",
-                             org, collection, payload, *_grant_columns(lock_grants))
+                             org, collection, payload, *_target_columns(lock_grants))
         await self._q(go, transaction, write=True)
         return True
+
+    async def lock_grant_apps(self, targets: Sequence[tuple[str, str]], transaction: str | None = None) -> None:
+        """Holds the app locks of ``targets`` shared until the transaction ends, as batch_create_edges does for its grants (common.grant_locks)."""
+        if not targets:
+            return
+        org = current_org_id()
+        await self._q(lambda tx: tx.execute("""/* pipeshub:graph.lock_grant_apps */ WITH lt AS (SELECT t.coll, t.doc->>'connectorId' AS app FROM graph.nodes t
+                WHERE t.org_id = $1 AND t.coll = ANY($2::text[]) AND t.id = ANY($3::text[])),
+              o AS (SELECT count(pg_advisory_xact_lock(hashtextextended('grant_org:' || $1, 0))) AS n
+                    FROM (SELECT 1 FROM lt WHERE lt.coll = 'teams' OR lt.app IS NULL LIMIT 1) x)
+            SELECT (SELECT n FROM o) + (SELECT count(pg_advisory_xact_lock_shared(hashtextextended('grant_app:' || $1 || ':' || s.a, 0)))
+                                        FROM (SELECT DISTINCT lt.app AS a FROM lt WHERE lt.app IS NOT NULL AND lt.coll <> 'teams' ORDER BY 1) s)""",
+                                            org, sorted({c for c, _ in targets}), [k for _, k in targets]), transaction)
 
     async def get_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str,
                        transaction: str | None = None, *, raise_on_error: bool = False) -> dict | None:
@@ -578,33 +567,6 @@ class CoreMixin(PgBase):
         return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.delete_edges_to */ WITH d AS (DELETE FROM graph.edges e WHERE e.org_id = $1
             AND e.coll = ANY($2::text[]) AND e.to_coll = $3 AND e.to_id = $4 AND ($5::int = 0 OR ($5::int = 1 AND e.ekey = '') OR ($5::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> ''))) RETURNING 1) SELECT count(*) FROM d""",
                                                      org, colls, to_collection, to_id, kind), transaction, write=True)
-
-    async def replace_edges_to(self, to_id: str, to_collection: str, edges: list[dict], collection: str, transaction: str | None = None, *,
-                               lock_grants: Sequence[tuple[str, str, str, str]] = (), lock_done: set[tuple[str, str, str]] | None = None,
-                               target_written: bool = False) -> None:
-        """The interface's delete then create, locking only the grants it creates (``kept_holders``): a holder whose edge into the node was there is
-        deleted and written again by this transaction, and until it commits the reaper reads the committed edge. ``lock_done`` as on the
-        interface: the user and person pairs locked here are added, and a pair there is not locked again."""
-        if not lock_grants:
-            await super().replace_edges_to(to_id, to_collection, edges, collection, transaction)
-            return
-        org = current_org_id()
-        colls, kind = _edge_scope(collection)
-        # The delete waits for one of the node's edges that another transaction removes, and then finds it gone: what it removes was committed.
-        row = await self._q(lambda tx: tx.fetchrow("""/* pipeshub:graph.replace_edges_to_delete */ WITH d AS (DELETE FROM graph.edges e WHERE e.org_id = $1
-            AND e.coll = ANY($2::text[]) AND e.to_coll = $3 AND e.to_id = $4 AND ($5::int = 0 OR ($5::int = 1 AND e.ekey = '') OR ($5::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> '')))
-            RETURNING e.from_coll, e.from_id),
-              t AS MATERIALIZED (SELECT n.doc->>'connectorId' AS app, coalesce((n.doc->>'isDeleted')::boolean, false) AS dead FROM graph.nodes n
-                                 WHERE n.org_id = $1 AND n.coll = $3 AND n.id = $4)
-            SELECT coalesce(array_agg(d.from_coll), '{}') AS cs, coalesce(array_agg(d.from_id), '{}') AS ids,
-                   (SELECT t.app FROM t) AS app, coalesce((SELECT t.dead FROM t), false) AS dead FROM d""",
-                                                   org, colls, to_collection, to_id, kind), transaction, write=True)
-        app = row["app"] if to_collection in GRANTED else None
-        kept = kept_holders(set(zip(row["cs"], row["ids"], strict=True)), to_collection, dead=row["dead"], target_written=target_written)
-        created = grants_to_lock(lock_grants, kept, app, lock_done)
-        if edges:
-            await self.batch_create_edges(edges, collection, transaction, lock_grants=created)
-        record_locked(lock_done, created, app)
 
     # ---- checks on documents and edges, and the update of an edge -------------------------------------------------------------------
     async def check_collection_has_document(self, collection_name: str, document_id: str, transaction: str | None = None) -> bool:
