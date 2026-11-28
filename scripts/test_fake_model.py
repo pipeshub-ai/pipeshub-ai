@@ -82,9 +82,22 @@ def within(value: Any, schema: dict[str, Any]) -> bool:
     return all((
         low is None or value >= low,
         high is None or value <= high,
-        low_open in (None, False) or value > low_open,
-        high_open in (None, False) or value < high_open,
+        low_open is None or low_open is False or value > low_open,
+        high_open is None or high_open is False or value < high_open,
     ))
+
+
+class BoundsCheck(unittest.TestCase):
+    """The tests' own bounds check: a bound of 0 is a bound, not an unset flag, though 0 == False in Python."""
+
+    def test_a_zero_exclusive_bound_is_checked(self) -> None:
+        self.assertFalse(within(0, {"exclusiveMaximum": 0}))
+        self.assertFalse(within(0, {"exclusiveMinimum": 0}))
+        self.assertFalse(within(0, {"minimum": 0, "exclusiveMinimum": True}))
+        self.assertFalse(within(0, {"maximum": 0, "exclusiveMaximum": True}))
+        self.assertTrue(within(-1, {"exclusiveMaximum": 0}))
+        self.assertTrue(within(1, {"minimum": 0, "exclusiveMinimum": True}))
+        self.assertTrue(within(0, {"minimum": 0, "exclusiveMinimum": False}))
 
 
 class ImportIsSafe(unittest.TestCase):
