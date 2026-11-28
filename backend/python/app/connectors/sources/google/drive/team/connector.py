@@ -2090,6 +2090,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         can_share: bool = False,
         item_drive_id: str | None = None,
         item_is_stored: bool = False,
+        keep_managers: bool = False,
     ) -> Tuple[List[Permission], bool, List[str]]:
         """
         Fetch all permissions for a Google Drive resource (file or shared drive) with pagination.
@@ -2329,6 +2330,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             is_drive=is_drive,
             organizer_permissions=organizer_permissions,
             inherits_from_drive=inherits_from_drive,
+            keep_managers=keep_managers,
         )
         # The syncing user may reach the item only through the link (or a group), so add
         # their grant to the list that was read rather than replacing it. Not for a member of the
@@ -5717,9 +5719,16 @@ class GoogleDriveTeamConnector(BaseConnector):
                     "inherits_from_drive": not item_drive_id or file_record.external_record_group_id == item_drive_id,
                     "item_drive_id": item_drive_id,
                 }
+                # Another organization's item whose folder is hidden from this reader and not known: it is taken off
+                # the drive's group below, so the grants stored keep its Managers, who reach it through the drive.
+                keep_managers = bool(
+                    item_drive_id and item_drive_id not in self._listed_shared_drive_ids
+                    and not metadata.get("parents") and not file_record.parent_external_record_id
+                ) and await self._admin_sees_drive(item_drive_id) is False
                 try:
                     new_permissions, is_fallback_permissions, individually_shared_emails = await self._fetch_permissions(
                         file_id,
+                        keep_managers=keep_managers,
                         is_drive=False,
                         user_email=user_email,
                         drive_data_source=drive_data_source,
@@ -5865,7 +5874,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                         and not metadata.get("parents") and not file_record.parent_external_record_id
                     ):
                         # Its folder is hidden from this reader and not known: hung off the drive's group it could
-                        # skip a limited folder above. They open it through a grant on the item itself, stored here.
+                        # skip a limited folder above. They open it through a grant on the item itself, stored here
+                        # with the drive's Managers (keep_managers).
                         # Whose drive it is decides that, so an item whose drive is not known yet is not written.
                         seen_by_admin = await self._admin_sees_drive(item_drive_id)
                         if seen_by_admin is None:

@@ -77,6 +77,17 @@ class TestDriveAccess:
             is_drive=False, organizer_permissions=[manager_grant],
         ) == [direct_grant]
 
+    def test_an_item_taken_off_its_drive_keeps_its_managers_only(self) -> None:
+        """Not limited itself, but stored without the drive's inheritance: the other inherited entries may be members
+        a hidden limited folder above cuts out."""
+        manager_grant, member_grant, direct_grant = _grant("manager@x.com"), _grant("member@x.com"), _grant("direct@x.com")
+        everyone = [manager_grant, member_grant, direct_grant]
+        kept = {"saw_permission_details": True, "inherited_permissions_disabled": False, "is_drive": False,
+                "organizer_permissions": [manager_grant], "keep_managers": True}
+        assert grants_to_store(everyone, [direct_grant], **kept) == [direct_grant, manager_grant]
+        # Filed outside its drive, it keeps the whole list as before.
+        assert grants_to_store(everyone, [direct_grant], **kept, inherits_from_drive=False) == everyone
+
     def test_fallback_does_not_inherit(self) -> None:
         assert item_inherits_parent(
             saw_permission_details=True, inherited_permissions_disabled=False, is_fallback=True

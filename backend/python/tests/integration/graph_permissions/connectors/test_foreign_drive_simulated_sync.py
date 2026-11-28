@@ -915,3 +915,21 @@ async def test_a_partners_shared_drive_through_its_life_on_both_orgs(partnership
     await ours.full_resync()
     await p.sync()
     await p.check()
+
+
+
+async def test_a_manager_keeps_an_item_whose_folder_its_first_reader_cannot_see(sim: Sim) -> None:
+    """Alice writes the item first, with its folder hidden from her, and Bob's own pass does not get through: he is a
+    Manager, who keeps access below a limited folder, so the grants Alice's pass stores are not hers alone."""
+    foreign(sim, {ALICE: "writer", BOB: "organizer", CAROL: "reader"})
+    sim.world.folder("dir", "dir", parent=FOREIGN)
+    sim.world.folder("inner", "inner", parent="dir")
+    sim.world.limit("dir")
+    await sim.sync()
+    sim.world.add_item("x", "x.txt", parent="inner", perms=[{"type": "user", "role": "writer", "emailAddress": ALICE}])
+    sim.http.fail("GET", r"/drive/v3/changes", 500, "backendError", when=lambda req: sim.world._caller(req) == BOB)
+    await sim.sync()
+    assert await sim.wrong(["x"]) == []
+    sim.http.clear_faults()
+    await sim.sync()
+    assert await sim.wrong() == []
