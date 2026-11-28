@@ -1,0 +1,33 @@
+// Copyright (c) 2026 PipesHub Inc.
+// Licensed under the PipesHub Enterprise License. See the LICENSE file in this
+// ee folder. Free for development, testing and evaluation. Production use needs
+// a PipesHub licence key.
+
+// Values a license is checked against. Constants, not env: anything the
+// operator could set here would be a way around the license.
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** The grace period of a license that does not name its own `graceDays`; 0 is honored as no grace. */
+export const DEFAULT_GRACE_DAYS = 3;
+/** The most `graceDays` a file may name; a file with more is refused as malformed. */
+export const MAX_GRACE_DAYS = 5;
+
+/** Admins are warned this long before the license ends. */
+export const EXPIRY_WARNING_DAYS = 7;
+export const EXPIRY_WARNING_MS = EXPIRY_WARNING_DAYS * DAY_MS;
+
+/** Clock skew tolerated between the issuer and the install when checking `issuedAt`. */
+export const ISSUED_AT_LEEWAY_MS = DAY_MS;
+
+/** A clock further behind the last license check than this counts as set back: license time then counts on from that check. */
+export const CLOCK_ROLLBACK_TOLERANCE_MS = 60 * 60 * 1000;
+
+export const MAX_LICENSE_SEATS = 100_000;
+/** The `seats` value of a license with no seat cap. */
+export const UNLIMITED_SEATS = 'unlimited' as const;
+/** A real license file is well under 1 KB. */
+export const MAX_LICENSE_BYTES = 16 * 1024;
+
+export const graceEndFor = (endDate: Date, graceDays: number): Date =>
+  new Date(endDate.getTime() + graceDays * DAY_MS);
