@@ -183,6 +183,19 @@ def filters_sql(filters: dict[str, Any], p: Params, *, browse: bool = False) -> 
     return "".join(f" AND {c}" for c in out)
 
 
+# A window of a page (``page_sql``), and a node's children read up to a bound in no order (held, sampled, undecided, counted), are read with sorts, sequential and bitmap
+# scans off, so the index of the order (or of the parent) is the only plan that answers them. With analysed statistics a new organisation's node or connector is estimated at
+# a row or two, or its folder at many rows of a table its rows were appended to: a window's LIMIT then saved nothing, and the planner read every row by the narrowest index
+# and sorted them all, or a bounded read scanned the table from its start until it had found enough of the node's rows. A sort that remains (the window's own, under the
+# admitted page's outer order) costs ``disable_cost`` on PostgreSQL 17, so JIT is off too, or it would compile it. The statement returns the settings as they were, for
+# ``PAGE_RESTORE`` (the page's other reads share its snapshot's transaction).
+PAGE_PROFILE = ("/* pipeshub:kg.page_profile */ WITH s AS MATERIALIZED (SELECT current_setting('enable_sort') AS o, current_setting('enable_seqscan') AS q, "
+                "current_setting('enable_bitmapscan') AS b, current_setting('jit') AS j) SELECT o, q, b, j, set_config('enable_sort', 'off', true), "
+                "set_config('enable_seqscan', 'off', true), set_config('enable_bitmapscan', 'off', true), set_config('jit', 'off', true) FROM s")
+PAGE_RESTORE = ("/* pipeshub:kg.page_restore */ SELECT set_config('enable_sort', $1, true), set_config('enable_seqscan', $2, true), set_config('enable_bitmapscan', $3, true), "
+                "set_config('jit', $4, true)")
+
+
 def page_sql(field_: str, sort_dir: str, direction: str, where: str, branches: list[str] | None, admit: str | None = None, scopes: list[tuple[str, str]] | None = None) -> str:
     """The window of the sort order past the boundary, ``$3`` rows; ``where`` is the connector's conditions and the filters (``$1`` the org, ``$2`` the connector). ``admit``, when given, is a condition
     on the rows of the window (alias ``w``: what the viewer's classes open), answered as the column ``ok`` of every row of the window, in the window's order. ``scopes`` replaces the connector's live
@@ -216,8 +229,18 @@ CLASSES_OF = """/* pipeshub:kg.listing_classes_of */ SELECT count(*) AS n, coale
 DECIDED = "r.r13 IS FALSE AND r.path IS NOT NULL AND r.class_id IS NOT NULL AND r.fence_job IS NULL"
 
 
-def undecided_sql(where: str, classes_param: str) -> str:
-    """The ids of the rows kg does not decide (or whose class names a literal kg cannot vouch for), for the walk: ``$3`` of them at most."""
+def keyed_rows(keys: str) -> str:
+    """The rows of the sks ``keys`` as ``r``, each read by its key in a subquery of its own (a LIMIT keeps the planner from flattening it into a join that reads the connector by
+    another index instead, with the keys as a filter, when a new organisation's connector is estimated at a few rows)."""
+    return f"unnest({keys}::bigint[]) AS q(sk) CROSS JOIN LATERAL (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.sk = q.sk LIMIT 1) r"
+
+
+def undecided_sql(where: str, classes_param: str, keys: str | None = None) -> str:
+    """The ids of the rows kg does not decide (or whose class names a literal kg cannot vouch for), for the walk: ``$3`` of them at most. ``keys``: a scope's sks, its rows
+    read by their keys (:func:`keyed_rows`)."""
+    if keys is not None:
+        return (f"/* pipeshub:kg.listing_undecided */ SELECT r.id FROM {keyed_rows(keys)} WHERE r.app_sk = $2 AND {LIVE}{where} "
+                f"AND (NOT ({DECIDED}) OR r.class_id = ANY({classes_param}::bigint[])) LIMIT $3")
     # Two disjoint reads, each by its own index: as one OR the plan read every row of the connector, or the organisation's fenced rows. The classes are read one key each
     # (records_list_class), so an empty list reads nothing.
     rows = f"SELECT r.id FROM kg.records r WHERE r.org_id = $1 AND r.app_sk = $2 AND {LIVE}{where}"
@@ -225,9 +248,11 @@ def undecided_sql(where: str, classes_param: str) -> str:
             f"UNION ALL (SELECT r.id FROM unnest({classes_param}::bigint[]) AS c(id) CROSS JOIN LATERAL ({rows} AND {DECIDED} AND r.class_id = c.id LIMIT $3) r LIMIT $3)) u LIMIT $3")
 
 
-def count_sql(where: str, plain: str, own: str, granted: str, unvouched: str) -> str:
-    """The rows kg admits, by type, each branch stopping at ``$3`` (the cap): a row whose class a clause of the viewer's grants meets with no grant of the row's own, or one that needs it and the row is granted."""
-    return (f"/* pipeshub:kg.listing_count */ SELECT t.kind, t.folder, count(*) AS n FROM (SELECT r.kind, r.folder FROM kg.records r WHERE r.org_id = $1 AND r.app_sk = $2 AND {LIVE}{where} AND {DECIDED} "
+def count_sql(where: str, plain: str, own: str, granted: str, unvouched: str, keys: str | None = None) -> str:
+    """The rows kg admits, by type, each branch stopping at ``$3`` (the cap): a row whose class a clause of the viewer's grants meets with no grant of the row's own, or one that needs it and the row is granted.
+    ``keys``: a scope's sks, its rows read by their keys (:func:`keyed_rows`)."""
+    rows = f"{keyed_rows(keys)} WHERE r.app_sk = $2" if keys is not None else "kg.records r WHERE r.org_id = $1 AND r.app_sk = $2"
+    return (f"/* pipeshub:kg.listing_count */ SELECT t.kind, t.folder, count(*) AS n FROM (SELECT r.kind, r.folder FROM {rows} AND {LIVE}{where} AND {DECIDED} "
             f"AND NOT r.class_id = ANY({unvouched}::bigint[]) AND (r.class_id = ANY({plain}::bigint[]) OR (r.class_id = ANY({own}::bigint[]) AND r.id = ANY({granted}::text[]))) LIMIT $3) t GROUP BY t.kind, t.folder")
 
 
@@ -309,6 +334,12 @@ def browse_scopes(links: str | None) -> list[tuple[str, str]]:
         scopes.append((f"unnest({links}::bigint[]) AS q(sk) CROSS JOIN LATERAL (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.sk = q.sk LIMIT 1) r",
                        f"r.parent_sk IS DISTINCT FROM $2 AND {BROWSE_LIVE}"))
     return scopes
+
+
+def keyed_scope(keys: str) -> list[tuple[str, str]]:
+    """The live rows of the connector ``$2`` among the sks ``keys``, as :func:`page_sql`'s ``scopes``: each read by its key in a subquery of its own (a LIMIT keeps the planner
+    from flattening it into a join that reads the connector by an index of the order instead)."""
+    return [(keyed_rows(keys), f"r.app_sk = $2 AND {LIVE}")]
 
 
 def _children(cols: str, where: str, links: str | None, tail: str | None = None) -> str:
