@@ -37,6 +37,22 @@ def test_bedrock_profile_id_rejection_keeps_the_generic_message() -> None:
     assert "refused these chat model settings" in message
 
 
+def test_embedding_model_rejected_settings_omits_chat_options_hint() -> None:
+    config = {"provider": "openAICompatible", "configuration": {}}
+    message = _rejected_settings_message("invalid_request", "embedding model", config, "nvidia/nemotron-3.5-embed-8b")
+    assert "refused these embedding model settings" in message
+    assert "Check the model name and its options, then try again." in message
+    assert "reasoning effort" not in message
+    assert "context length" not in message
+
+
+def test_chat_model_rejected_settings_includes_chat_options_hint() -> None:
+    config = {"provider": "openAICompatible", "configuration": {}}
+    message = _rejected_settings_message("invalid_request", "chat model", config, "meta-llama/llama-3-70b-instruct")
+    assert "refused these chat model settings" in message
+    assert "(such as reasoning effort or context length)" in message
+
+
 def test_bedrock_openai_access_denied_names_the_default_project() -> None:
     message = _rejected_settings_message("auth_error", "chat model", _BEDROCK, "us.openai.gpt-6-luna")
     assert "bedrock:InvokeModel" in message

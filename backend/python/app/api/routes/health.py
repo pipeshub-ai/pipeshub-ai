@@ -491,9 +491,10 @@ def _rejected_settings_message(
             "Check the model name (or deployment name) and the endpoint address "
             "in Workspace > AI Models, then try again."
         )
+    options_hint = " (such as reasoning effort or context length)" if kind == "chat model" else ""
     return (
-        f"{provider} refused these {kind} settings. Check the model name and its options "
-        "(such as reasoning effort or context length), then try again."
+        f"{provider} refused these {kind} settings. Check the model name and its options"
+        f"{options_hint}, then try again."
     )
 
 
