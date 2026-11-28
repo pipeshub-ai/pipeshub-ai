@@ -60,8 +60,15 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
             [docs.map((d) => d.id)],
           );
           seen.push(rows[0]!.n);
-          if (docs.some((d) => d.doc.qaFault === true))
+          const faulty = docs.filter((d) => d.doc.qaFault === true);
+          if (faulty.length) {
+            // a field written in the unit before the failure: undone with the documents
+            await k.query(
+              "UPDATE identity.users SET full_name = 'written by the carrier' WHERE id = ANY ($1::text[])",
+              [faulty.map((d) => d.id)],
+            );
             throw new Error('injected: the fields cannot be written');
+          }
         },
         remove: async () => undefined,
         expected: () => [],
@@ -88,7 +95,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expected: () => [],
         actual: async () => new Map(),
         restore: async () => ({ written: 0, removed: 0 }),
-        clear: async () => undefined,
+        clear: async () => logoFields.clear(),
       };
       const users = async (): Promise<
         Array<{ id: string; full_name: string | null }>
@@ -253,6 +260,16 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect(logoFields.has(id), 'after the copy').to.equal(false);
         await resyncCarried(carryPg(rt), carryMongo(rt), [logoCarrier]);
         expect(logoFields.has(id), 'after a resync').to.equal(false);
+        const logos = await mongo.client.db(DB).collection('org-logos').find({}).toArray();
+        expect(
+          [...logoFields.keys()].sort(),
+          'the resync cleared the fields and wrote every other logo\'s again',
+        ).to.deep.equal(
+          logos
+            .map((l) => String(l._id).toLowerCase())
+            .filter((l) => l !== id)
+            .sort(),
+        );
         // the verify expects every logo the copy took, and none it refused (the fake's actual is what it holds)
         const v = await verifyCarried(carryPg(rt), carryMongo(rt), [
           {
