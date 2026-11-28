@@ -211,6 +211,7 @@ import {
   AuthenticatedUserRequest,
 } from '../../../libs/middlewares/types';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
+import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
@@ -1453,6 +1454,8 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/web-search-usage/:provider',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
+    // Admins only: lists every agent in the org (private ones too) for the pre-delete check.
+    userAdminCheck,
     ValidationMiddleware.validate(getWebSearchProviderUsageRequestSchema),
     getWebSearchProviderUsage(appConfig),
   );
@@ -1461,6 +1464,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/model-usage/:model_key',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
+    userAdminCheck,
     ValidationMiddleware.validate(getModelUsageRequestSchema),
     getModelUsage(appConfig),
   );
