@@ -1345,6 +1345,38 @@ class TestForeignSharedDrive:
 
     FOREIGN = {"id": "0APG", "name": "Untitled shared drive"}
 
+    async def test_a_drive_the_admin_opens_is_the_domains_only_when_its_listing_holds_it(self, connector) -> None:
+        connector.drive_data_source.drives_get = AsyncMock(return_value={"id": "0APG", "name": "Bob's \\ 'plans'"})
+        connector.drive_data_source.drives_list = AsyncMock(side_effect=[
+            {"drives": [{"id": "other"}], "nextPageToken": "p2"}, {"drives": [{"id": "0APG"}]},
+        ])
+        assert await connector._admin_sees_drive("0APG") is True
+        first = connector.drive_data_source.drives_list.await_args_list[0].kwargs
+        assert first["useDomainAdminAccess"] is True and first["q"] == "name = 'Bob\\'s \\\\ \\'plans\\''"
+
+        # Opened as a member of another organization's drive: the domain's listing does not have it.
+        connector._foreign_drive_confirmed.clear()
+        connector.drive_data_source.drives_list = AsyncMock(return_value={"drives": [{"id": "other"}]})
+        assert await connector._admin_sees_drive("0APG") is False
+        # Whether it was deleted is another question: a drive that answers is never taken for gone.
+        assert await connector._shared_drive_exists("0APG") is True
+
+        connector._foreign_drive_confirmed.clear()
+        connector.drive_data_source.drives_list = AsyncMock(side_effect=RuntimeError("listing failed"))
+        assert await connector._admin_sees_drive("0APG") is None
+
+    async def test_a_drive_the_admin_cannot_open_is_not_the_domains(self, connector) -> None:
+        from googleapiclient.errors import HttpError
+
+        resp = MagicMock()
+        resp.status = HttpStatusCode.NOT_FOUND.value
+        connector.drive_data_source.drives_get = AsyncMock(side_effect=HttpError(resp, b"notFound"))
+        connector.drive_data_source.drives_list = AsyncMock()
+        connector._foreign_drive_confirmed.clear()
+        assert await connector._admin_sees_drive("0APG") is False
+        assert await connector._shared_drive_exists("0APG") is False
+        connector.drive_data_source.drives_list.assert_not_awaited()
+
     @staticmethod
     def _store(connector) -> dict:
         state: dict = {}

@@ -750,14 +750,18 @@ class DriveWorld:
             })
         if m := re.fullmatch(r"name contains '(.*)'", req.query.get("q", "")):
             drives = [d for d in drives if m.group(1).lower() in d["name"].lower()]
+        elif m := re.fullmatch(r"name = '(.*)'", req.query.get("q", "")):
+            name = re.sub(r"\\(.)", r"\1", m.group(1))
+            drives = [d for d in drives if d["name"] == name]
         return paginate(drives, req.query, default_size=self.page_size, key="drives")
 
     def _drives_get(self, req: ApiRequest) -> object:
         if req.query.get("useDomainAdminAccess") != "true" or self._caller(req) != self.admin_email:
             return google_error(403, "forbidden")
         drive = self.drives.get(req.path.split("/drives/")[1])
-        # Another organization's drive is not this admin's to see.
-        if drive is None or drive.get("foreign"):
+        # Another organization's drive is not this admin's to see, unless the admin is a member of it: the flag
+        # opens the domain's drives without refusing a member.
+        if drive is None or (drive.get("foreign") and not self.drive_role(drive["id"], self.admin_email)):
             return google_error(404, "notFound")
         if self.restrictions_unreadable:
             return google_error(500, "backendError")

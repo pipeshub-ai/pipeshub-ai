@@ -686,6 +686,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         # Per run: the admin's drives.get answer for each drive missing from its listing (True: it exists, so it is
         # this Workspace's; False: foreign; None: not known).
         self._foreign_drive_confirmed: dict[str, bool | None] = {}
+        self._admin_drive_names: dict[str, str] = {}  # what the admin's drives.get named each drive, this run
         self._group_people: dict[str, set[str] | None] = {}
         self._warned_groups: set[tuple[str, str]] = set()
         self._hidden_groups: dict[str, set[str]] = {}
@@ -1012,6 +1013,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._foreign_limited_folders = set()
             self._leaver_cleanup_failed = set()
             self._foreign_drive_confirmed = {}
+            self._admin_drive_names = {}
             self._external_emails = set()
             self._undecided_visited = set()
             self._undecided_file_ids = set()
@@ -3171,14 +3173,35 @@ class GoogleDriveTeamConnector(BaseConnector):
         """Whether a shared drive missing from the listing still exists, by drives.get as the admin: False only on
         404, None when that could not be told."""
         try:
-            await self.drive_data_source.drives_get(driveId=drive_id, useDomainAdminAccess=True)
+            drive = await self.drive_data_source.drives_get(driveId=drive_id, useDomainAdminAccess=True)
         except Exception as e:
             if isinstance(e, HttpError) and e.resp.status == HttpStatusCode.NOT_FOUND.value:
                 return False
             self.logger.warning(f"Could not confirm shared drive {drive_id} was deleted; keeping it: {e}")
             return None
+        self._admin_drive_names[drive_id] = (drive or {}).get("name") or ""
         self.logger.warning(f"Shared drive {drive_id} is missing from the listing but still exists; keeping it")
         return True
+
+    async def _domain_lists_drive(self, drive_id: str, name: str) -> bool | None:
+        """Whether the domain's own listing, narrowed to the drive's name, holds it; None when it could not be read."""
+        if not name:
+            return True
+        escaped = name.replace("\\", "\\\\").replace("'", "\\'")
+        page_token: str | None = None
+        try:
+            while True:
+                result = await self.drive_data_source.drives_list(
+                    pageSize=100, pageToken=page_token, q=f"name = '{escaped}'", useDomainAdminAccess=True,
+                    fields="nextPageToken,drives(id)",
+                )
+                if any(d.get("id") == drive_id for d in result.get("drives") or []):
+                    return True
+                if not (page_token := result.get("nextPageToken")):
+                    return False
+        except Exception as e:
+            self.logger.warning(f"Could not tell whether shared drive {drive_id} is this domain's: {e}")
+            return None
 
     async def _create_personal_record_group(self, user: AppUser) -> None:
         """Create a personal record group for the user's My Drive."""
@@ -7249,7 +7272,13 @@ class GoogleDriveTeamConnector(BaseConnector):
     async def _admin_sees_drive(self, drive_id: str) -> bool | None:
         """The admin's drives.get answer for a drive missing from its listing, once a run."""
         if drive_id not in self._foreign_drive_confirmed:
-            self._foreign_drive_confirmed[drive_id] = await self._shared_drive_exists(drive_id)
+            answer = await self._shared_drive_exists(drive_id)
+            if answer is True:
+                # The admin flag opens the domain's drives; it does not refuse an admin who is a member of another
+                # organization's drive, so a 200 alone does not make the drive this domain's. Unlike a deletion,
+                # taking it for another organization's on a listing that left it out costs no access it holds.
+                answer = await self._domain_lists_drive(drive_id, self._admin_drive_names.get(drive_id, ""))
+            self._foreign_drive_confirmed[drive_id] = answer
         return self._foreign_drive_confirmed[drive_id]
 
     async def _read_drive_from_the_start(self, source_user_id: str, drive_id: str) -> None:

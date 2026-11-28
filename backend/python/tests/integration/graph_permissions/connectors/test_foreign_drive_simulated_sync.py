@@ -138,7 +138,7 @@ class Sim:
         domain: str = "example.com", guests: tuple[str, ...] = (), monkeypatch: pytest.MonkeyPatch | None = None,
     ) -> None:
         self.provider, self.org, self.http = provider, org, http
-        self.admin, self.people, self.monkeypatch = admin, people, monkeypatch
+        self.admin, self.people, self.guests, self.monkeypatch = admin, people, guests, monkeypatch
         self.connector_id = f"conn-{uuid.uuid4().hex[:8]}"
         self.world = FaithfulWorld(http, domain=domain)
         self.world.admin_email = admin
@@ -233,12 +233,12 @@ class Sim:
             return record is not None and bool(
                 await self.provider.check_record_access_with_details(self.user_ids[email], self.org, record.id))
 
-    async def wrong(self, files: list[str] | None = None) -> list[str]:
+    async def wrong(self, files: list[str] | None = None, *, people: tuple[str, ...] | None = None) -> list[str]:
         """Every user and file where PipesHub and Google disagree."""
         out = []
         roots = {u.root_id for u in self.world.users.values()} | set(self.world.drives)
         for file_id in files or [f for f in self.world.files if f not in roots]:
-            for email in self.people:
+            for email in people or self.people:
                 google, here = self.world.can_open(file_id, email), await self.opens(email, file_id)
                 if google != here:
                     out.append(f"{'LEAK' if here else 'LOST'} {email.split('@')[0]} {file_id}")
@@ -794,16 +794,22 @@ class Partnership:
             assert not sim.incomplete
 
     async def nodes(self, sim: Sim) -> set[str]:
-        out = {f"{CollectionNames.USERS.value}/{key}" for key in sim.user_ids.values()}
-        out |= {f"{CollectionNames.APPS.value}/{sim.connector_id}", f"{CollectionNames.ORGS.value}/{sim.org}"}
-        with sim.bound():
-            group = await sim.processor.get_record_group_by_external_id(sim.connector_id, FOREIGN)
-        if group is not None:
-            out.add(f"{CollectionNames.RECORD_GROUPS.value}/{group.id}")
-        for file_id in sim.world.files:
-            record = await sim.record(file_id)
-            if record is not None:
-                out.add(f"{CollectionNames.RECORDS.value}/{record.id}")
+        """Everything the org holds: its connector's records and record groups (the drive's, and each user's My
+        Drive and Shared with Me), its users and people, its app and itself."""
+        out = {f"{CollectionNames.APPS.value}/{sim.connector_id}", f"{CollectionNames.ORGS.value}/{sim.org}"}
+        found = {}
+        for collection, field, value in (
+            (CollectionNames.RECORDS.value, "connectorId", sim.connector_id),
+            (CollectionNames.RECORD_GROUPS.value, "connectorId", sim.connector_id),
+            (CollectionNames.USERS.value, "orgId", sim.org),
+            (CollectionNames.PEOPLE.value, "orgId", sim.org),
+        ):
+            with sim.bound():
+                nodes = await sim.provider.get_nodes_by_filters(collection, {field: value}, raise_on_error=True)
+            found[collection] = {f"{collection}/{n.get('_key') or n.get('id')}" for n in nodes}
+            out |= found[collection]
+        assert {f"{CollectionNames.USERS.value}/{key}" for key in sim.user_ids.values()} <= out
+        assert len(found[CollectionNames.RECORD_GROUPS.value]) > 1
         return out
 
     async def crossings(self) -> list[str]:
@@ -821,7 +827,7 @@ class Partnership:
 
     async def check(self) -> None:
         assert await self.ours.wrong() == []
-        assert await self.theirs.wrong() == []
+        assert await self.theirs.wrong(people=(*self.theirs.people, *self.theirs.guests)) == []
         assert await self.crossings() == []
 
 
@@ -929,7 +935,21 @@ async def test_a_manager_keeps_an_item_whose_folder_its_first_reader_cannot_see(
     sim.world.add_item("x", "x.txt", parent="inner", perms=[{"type": "user", "role": "writer", "emailAddress": ALICE}])
     sim.http.fail("GET", r"/drive/v3/changes", 500, "backendError", when=lambda req: sim.world._caller(req) == BOB)
     await sim.sync()
+    assert sim.incomplete
+    assert any(sim.world._caller(req) == BOB for req in sim.http.calls("GET", r"/drive/v3/changes"))
     assert await sim.wrong(["x"]) == []
     sim.http.clear_faults()
+    await sim.sync()
+    assert await sim.wrong() == []
+
+
+async def test_a_foreign_drive_its_admin_is_a_member_of(sim: Sim) -> None:
+    """The admin's drives.get answers as a member, not as the drive's admin: the domain's listing decides."""
+    foreign(sim, {ADMIN: "reader", ALICE: "writer", BOB: "reader"}, files=2)
+    await sim.sync()
+    assert await sim.wrong() == [] and not sim.incomplete
+    group = await sim.processor.get_record_group_by_external_id(sim.connector_id, FOREIGN)
+    assert group.description == FOREIGN_SHARED_DRIVE_DESCRIPTION
+    del sim.world.drives[FOREIGN]["members"][BOB]
     await sim.sync()
     assert await sim.wrong() == []
