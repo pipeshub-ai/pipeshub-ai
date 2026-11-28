@@ -86,14 +86,14 @@ class BedrockMultimodalProvider(IMultimodalEmbeddingProvider):
         from botocore.exceptions import ClientError, NoCredentialsError
 
         client_kwargs: dict = {"service_name": "bedrock-runtime"}
+        if self.region_name:
+            client_kwargs["region_name"] = self.region_name
         access_key = (self.aws_access_key_id or "").strip()
         secret_key = (self.aws_secret_access_key or "").strip()
         if access_key and secret_key:
             client_kwargs.update(
                 {"aws_access_key_id": access_key, "aws_secret_access_key": secret_key}
             )
-            if self.region_name:
-                client_kwargs["region_name"] = self.region_name
         elif not self.allow_ambient:
             raise EmbeddingError("Enter an AWS access key and secret for this model.")
         elif (access_key or secret_key) and self.logger:

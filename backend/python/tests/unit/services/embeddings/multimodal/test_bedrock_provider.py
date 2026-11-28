@@ -184,6 +184,23 @@ class TestBedrockOutputEmbeddingLength:
         body = json.loads(bedrock.invoke_model.call_args.kwargs["body"])
         assert body["embeddingConfig"]["outputEmbeddingLength"] == 384
 
+    @pytest.mark.asyncio
+    async def test_the_configured_region_reaches_a_client_without_saved_keys(self) -> None:
+        provider = BedrockMultimodalProvider(
+            model_name="titan", region_name="eu-west-1", allow_ambient=True,
+            normalize_fn=lambda _uri: "aW1hZ2U=",
+        )
+        response_body = MagicMock()
+        response_body.read.return_value = json.dumps({"embedding": [0.1] * 1024})
+        bedrock = MagicMock()
+        bedrock.invoke_model.return_value = {"body": response_body}
+
+        with patch("boto3.client", return_value=bedrock) as client:
+            await provider.embed_images(["aW1hZ2U="])
+
+        assert client.call_args.kwargs["region_name"] == "eu-west-1"
+        assert "aws_access_key_id" not in client.call_args.kwargs
+
 
 class TestBedrockErrorReportedInBody:
     """Titan reports per-image generation failures in a `message` field while
