@@ -171,6 +171,34 @@ async def test_a_gated_connector_kg_does_not_serve_reads_every_grant_by_node_id_
     assert (got, browse) == (walk, browse_walk) and "A1" in seen(got)
 
 
+async def test_a_connector_distrusted_while_another_ones_trust_is_read_takes_all_records_to_the_read_by_id(pg_db, monkeypatch, reads) -> None:
+    """As on a page (``test_kh_kg_grants``): app2's trust needs a read (an old distrust, since re-verified), and while it runs the process comes to distrust app1. The listing's
+    own question (``kh_pages_read_grants``, the page's read) says no, so every grant is read by node id, and All Records is what it was."""
+    from app.services.graph_db.postgres.kg import net
+    p, org = prov(pg_db), new_org()
+    await kgg.world(p, pg_db, org, [kgg._perm("u1", "users", "L1"), kgg._perm("u1", "users", "A1")])
+    monkeypatch.setattr(net, "DISTRUSTED", {(org, "app2"): "a verification before the last one"})
+    real = uow.Tx.fetchrow
+
+    async def fetchrow(self: Any, sql: str, *args: Any) -> Any:  # noqa: ANN401
+        if "pipeshub:kg.net_state */" in sql and args[1:] == ("app2",):
+            net.distrust(org, "app1")
+        return await real(self, sql, *args)
+    monkeypatch.setattr(uow.Tx, "fetchrow", fetchrow)
+    calls: list[str] = []
+    real_access = p.get_knowledge_hub_access_v3
+
+    async def counted(*a: Any, **kw: Any) -> dict[str, Any]:  # noqa: ANN401
+        calls.append(kw.get("user_key") or a[0])
+        return await real_access(*a, **kw)
+    p.get_knowledge_hub_access_v3 = counted
+    reads.clear()
+    got = await all_records(p, org, "u1")
+    assert (org, "app1") in net.DISTRUSTED and reads and not any(reads), reads
+    assert calls == ["u1"], calls      # read by id once, for every page: not by each page on its own
+    assert {"L1", "A1"} <= seen(got) and got == await as_before(p, all_records(p, org, "u1")), got
+
+
 async def test_all_records_grant_blocks_grow_by_a_fraction_of_a_block_per_grant(pg_db, monkeypatch) -> None:
     """The viewer holds 500, then 5,000 grants in another connector. The grant statements All Records runs (the read by id of every grant, kg's read of the grants, the check's
     reads per node): read by id, every grant costs its edge and its graph node (about 3 blocks a grant, once); read as kg keys, a range of members per principal, many to a block
