@@ -60,6 +60,8 @@ const FIELDS: Record<string, readonly string[]> = {
   STATE_SNAPSHOT: ['snapshot'],
   CUSTOM: ['name', 'value'],
   HEARTBEAT: [],
+  // The classic loop's notice before it retries a model call that failed for a moment, as main passed it on.
+  status: ['status', 'message'],
 };
 
 /** Each forwarded event type, with the fields it may carry. */
@@ -150,6 +152,16 @@ function snapshotFrame(frame: Frame): Frame {
   };
 }
 
+/**
+ * The classic loop's retry notice (`{status: 'retrying', message}`), so the asker's client shows the retry instead of a
+ * stream that seems to hang: its two fields alone, as main sent them; '' when either is not text.
+ */
+function statusFrame(frame: Frame): string {
+  const { status, message } = frame;
+  if (typeof status !== 'string' || typeof message !== 'string') return '';
+  return frameOf('status', { status, message });
+}
+
 const CONTENT_OF: Record<string, string> = {
   TEXT_MESSAGE_END: 'TEXT_MESSAGE_CONTENT',
   REASONING_MESSAGE_END: 'REASONING_MESSAGE_CONTENT',
@@ -189,6 +201,8 @@ export class StreamRelay {
         return frameOf(eventType, snapshotFrame(frame));
       case 'STATE_DELTA':
         return this.stateDelta(frame);
+      case 'status':
+        return statusFrame(frame);
       case 'TEXT_MESSAGE_CONTENT':
       case 'REASONING_MESSAGE_CONTENT':
         return this.textDelta(eventType, frame);

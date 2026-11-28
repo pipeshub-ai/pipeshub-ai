@@ -35,7 +35,7 @@ describe('stream relay: what reaches the browser', () => {
       'CUSTOM', 'HEARTBEAT', 'REASONING_END', 'REASONING_MESSAGE_CONTENT', 'REASONING_MESSAGE_END', 'REASONING_MESSAGE_START',
       'REASONING_START', 'RUN_ERROR', 'RUN_FINISHED', 'RUN_STARTED', 'STATE_DELTA', 'STATE_SNAPSHOT', 'STEP_FINISHED', 'STEP_STARTED',
       'TEXT_MESSAGE_CONTENT', 'TEXT_MESSAGE_END', 'TEXT_MESSAGE_START', 'TOOL_CALL_ARGS', 'TOOL_CALL_END', 'TOOL_CALL_RESULT',
-      'TOOL_CALL_START',
+      'TOOL_CALL_START', 'status',
     ])
     expect([...RELAYED_CUSTOM_EVENTS].sort()).to.deep.equal([
       'artifact', 'ask_user_question', 'message_discarded', 'retrieval_context', 'run_usage', 'tool_unavailable', 'tools_unavailable',
@@ -197,6 +197,16 @@ describe('stream relay: what reaches the browser', () => {
     expect(frames[1]).to.include('TEXT_MESSAGE_END')
   })
 
+  it("sends the asker the classic loop's retry notice as main did: its status and message alone", () => {
+    const relay = new StreamRelay()
+    const notice = { status: 'retrying', message: 'The AI provider is rate limiting requests, retrying (1/3)...' }
+    // As the AI backend's retry hook writes it: no type, nothing else.
+    expect(relay.relay('status', JSON.stringify(notice))).to.equal(`event: status\ndata: ${JSON.stringify(notice)}\n\n`)
+    expect(relayed(relay, 'status', { ...notice, runId: RUN, provenance: LABEL, details: 'CANARY-x' })).to.deep.equal(notice)
+    expect(relayed(relay, 'status', { status: 'retrying', message: { text: 'x' } }), 'a message that is not text').to.equal(undefined)
+    expect(relayed(relay, 'status', { message: 'x' }), 'no status').to.equal(undefined)
+  })
+
   it('sanitises the numbered copy of the answer whole, keeping nothing of it', () => {
     sinon.stub(sanitizer, 'sanitizePartialAnswerMarkdown').callsFake((text: string) => text.replace('https://evil.test/p.png', '#'))
     const relay = new StreamRelay()
@@ -233,6 +243,24 @@ describe('stream relay: every stream the browser reads', () => {
       expect(text.map((e) => e.data.delta)).to.deep.equal(['Revenue grew.'])
       const snapshots = run.res.eventsOf('STATE_SNAPSHOT')
       expect(snapshots.map((e) => e.data.snapshot)).to.deep.equal([{ final: true, answer: 'Revenue grew.' }])
+      expect(run.res.eventsOf('RUN_FINISHED')).to.have.length(1)
+    })
+
+    it(`${flow.name}: passes the asker each retry notice before the answer, as main did`, async () => {
+      const run = await startStream(flow)
+      const notices = [1, 2].map((n) => ({ status: 'retrying', message: `A temporary connection issue occurred, retrying (${n}/3)...` }))
+      // As the AI backend's retry hook writes them (`retry_with_status.py`, json.dumps).
+      for (const notice of notices) {
+        run.ai.sendRaw(`event: status\ndata: {"status": "retrying", "message": "${notice.message}"}\n\n`)
+      }
+      run.ai.send('TEXT_MESSAGE_CONTENT', delta('Revenue grew.'))
+      run.ai.send('RUN_FINISHED', finalAnswer('Revenue grew.'))
+      run.ai.finish()
+      await run.res.ended
+      await settle()
+      expect(run.res.eventsOf('status').map((e) => e.data)).to.deep.equal(notices)
+      const order = run.res.events().map((e) => e.event)
+      expect(order.lastIndexOf('status')).to.be.lessThan(order.indexOf('TEXT_MESSAGE_CONTENT'))
       expect(run.res.eventsOf('RUN_FINISHED')).to.have.length(1)
     })
   }
