@@ -111,6 +111,80 @@ export function describeOutboxContract(fx: OutboxFixture): void {
     });
   });
 
+  describe('deleteAllForOrg / countForOrg', () => {
+    it("removes and counts every event of the org, delivered or not, never another org's", async () => {
+      const [org, elsewhere] = [fx.newId(), fx.newId()];
+      const append = (orgId: string, key: string, orderingKey: string) =>
+        (fx.appendIn ?? ((_o: string, e: NewOutboxEvent) => repo.append(e)))(
+          orgId,
+          ev({ key, orderingKey, value: JSON.stringify({ eventType: key, payload: { orgId } }) }),
+        );
+      await append(org, 'sent', `org:${org}`);
+      await append(org, 'pending', `user:${org}:${fx.newId()}`);
+      await append(elsewhere, 'theirs', `org:${elsewhere}`);
+      await append(elsewhere, 'their-person', `user:${elsewhere}:${fx.newId()}`);
+      const sent = (await fx.allRows()).find((row) => row.key === 'sent');
+      await fx.setRow(sent!._id, { status: 'published' });
+      expect(await repo.countForOrg(org)).to.equal(2);
+      expect(await repo.deleteAllForOrg(org)).to.equal(2);
+      expect(await repo.countForOrg(org)).to.equal(0);
+      expect(await repo.deleteAllForOrg(org)).to.equal(0);
+      expect(await repo.countForOrg(elsewhere)).to.equal(2);
+      expect((await fx.allRows()).map((row) => row.key).sort()).to.deep.equal(['their-person', 'theirs']);
+    });
+  });
+
+  describe('deleteAllForOrg / countForOrg: events named by their payload', () => {
+    it("removes and counts the org's control-plane and run-keyed events too, never another org's", async () => {
+      const [org, elsewhere] = [fx.newId(), fx.newId()];
+      const append = (orgId: string, key: string, orderingKey: string) =>
+        (fx.appendIn ?? ((_o: string, e: NewOutboxEvent) => repo.append(e)))(
+          orgId,
+          ev({ key, orderingKey, value: JSON.stringify({ eventType: key, payload: { orgId, runId: orderingKey } }) }),
+        );
+      for (const orgId of [org, elsewhere]) {
+        await append(orgId, `cp-${orgId}`, `cp:${orgId}`);
+        await append(orgId, `run-${orgId}`, fx.newId());
+      }
+      expect(await repo.countForOrg(org)).to.equal(2);
+      expect(await repo.deleteAllForOrg(org)).to.equal(2);
+      expect(await repo.countForOrg(org)).to.equal(0);
+      expect(await repo.countForOrg(elsewhere)).to.equal(2);
+      expect((await fx.allRows()).map((row) => row.key).sort()).to.deep.equal([`cp-${elsewhere}`, `run-${elsewhere}`].sort());
+    });
+  });
+
+  describe('the org of an event is its own top-level payload.orgId, never one nested deeper', () => {
+    const appendFor = (orgId: string, key: string, payload: Record<string, unknown>) =>
+      (fx.appendIn ?? ((_o: string, e: NewOutboxEvent) => repo.append(e)))(
+        orgId,
+        ev({ key, orderingKey: `org:${orgId}`, value: JSON.stringify({ eventType: key, payload }) }),
+      );
+    // org B's event is about org A (an org named inside its payload, written before B's own orgId)
+    const seed = async () => {
+      const [a, b] = [fx.newId(), fx.newId()];
+      await appendFor(a, 'a-own', { orgId: a });
+      await appendFor(b, 'b-about-a', { subject: { orgId: a }, orgId: b });
+      return { a, b };
+    };
+
+    it('countForOrg and deleteAllForOrg of A leave B\'s event that names A inside its payload', async () => {
+      const { a, b } = await seed();
+      expect(await repo.countForOrg(a)).to.equal(1);
+      expect(await repo.deleteAllForOrg(a)).to.equal(1);
+      expect((await fx.allRows()).map((row) => row.key)).to.deep.equal(['b-about-a']);
+      expect(await repo.countForOrg(b)).to.equal(1);
+    });
+
+    it('eraseDeliveredForOrg of A leaves B\'s delivered event that names A inside its payload', async () => {
+      const { a } = await seed();
+      for (const row of await fx.allRows()) await fx.setRow(row._id, { status: 'published' });
+      expect(await repo.eraseDeliveredForOrg(a, 10)).to.equal(1);
+      expect(await repo.eraseDeliveredForOrg(a, 10)).to.equal(0);
+      expect((await fx.allRows()).map((row) => row.key)).to.deep.equal(['b-about-a']);
+    });
+  });
+
   describe('claimNext', () => {
     it('takes the oldest due event first and marks it publishing', async () => {
       const [a, b] = await appendAll([ev({ key: 'a', orderingKey: 'o1' }), ev({ key: 'b', orderingKey: 'o2' })]);

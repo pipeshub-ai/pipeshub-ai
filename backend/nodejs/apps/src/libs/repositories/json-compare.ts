@@ -1,10 +1,21 @@
 /**
  * JSON-semantic comparison of two API payloads (what JSON.parse-based clients and response validators can observe): same key SET per object (absent is not null),
  * same JSON type per value (number is not string), arrays in order, object key order ignored. Both sides are first
- * put through JSON, as on the wire (Dates become ISO strings, `undefined` disappears).
+ * put through JSON, as on the wire (Dates become ISO strings, `undefined` disappears). A Map, which JSON would turn into
+ * `{}` whatever it holds, is compared as its entries sorted by key, so two stores' maps differ when their entries do.
  */
+const byKey = (a: [string, unknown], b: [string, unknown]): number =>
+  a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
+
+const entries = (_k: string, v: unknown): unknown =>
+  v instanceof Map
+    ? [...(v as Map<unknown, unknown>).entries()]
+        .map(([k, x]): [string, unknown] => [JSON.stringify(k), x])
+        .sort(byKey)
+    : v;
+
 const wire = (x: unknown): unknown =>
-  x === undefined ? undefined : JSON.parse(JSON.stringify(x));
+  x === undefined ? undefined : JSON.parse(JSON.stringify(x, entries));
 
 const own = (o: object, k: string): boolean =>
   Object.prototype.hasOwnProperty.call(o, k);

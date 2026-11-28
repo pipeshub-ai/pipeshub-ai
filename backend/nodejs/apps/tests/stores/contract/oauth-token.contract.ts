@@ -223,6 +223,21 @@ export function describeOAuthTokenContract(fx: OAuthTokenFixture): void {
     });
   });
 
+  describe('access token by hash', () => {
+    it('findAccessByHash returns the row whether or not it is revoked, and nothing for an unknown hash', async () => {
+      const h = sha(uniq('at'));
+      const at = await tokens.issueAccess({ tokenHash: h, clientId: 'c', userId: fx.newId(), orgId: ORG, scopes: ['a'], expiresAt: future() });
+      expect((await tokens.findAccessByHash(h))?._id).to.equal(at._id);
+      expect(await tokens.revokeAccessByHash(h, 'c')).to.equal(true);
+      const again = await tokens.findAccessByHash(h);
+      expect(again?._id).to.equal(at._id);
+      expect(again?.clientId).to.equal('c');
+      expect(again?.isRevoked).to.equal(true);
+      expect(again?.revokedAt).to.be.instanceOf(Date);
+      expect(await tokens.findAccessByHash(sha('nope'))).to.equal(null);
+    });
+  });
+
   describe('single use (races)', () => {
     const ROUNDS = 40;
     const CONTENDERS = 4;

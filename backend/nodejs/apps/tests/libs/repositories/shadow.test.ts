@@ -152,6 +152,19 @@ describe('shadow reads (DOC_STORE=shadow)', () => {
     });
   }
 
+  it('a read that answers a Map (findAnswers) is compared by its entries: another order is equal, another answer a difference', async () => {
+    const left = new Map([['q1', 'a1'], ['q2', 'a2']]);
+    const read = (answer: Map<string, string>) =>
+      shadowWrap('conversation', { findAnswers: async () => left }, () => ({ findAnswers: async () => answer }), runPg).findAnswers!();
+    await read(new Map([['q2', 'a2'], ['q1', 'a1']]));
+    await wait(100);
+    expect(counts['conversation:equal'], 'reordered').to.equal(1);
+    expect(counts['conversation:diff'], 'reordered').to.equal(undefined);
+    await read(new Map([['q1', 'a1']]));
+    await wait(100);
+    expect(counts['conversation:diff'], 'different').to.equal(1);
+  });
+
   it('keeps a synchronous method synchronous (isConnected is a boolean, not a promise)', () => {
     const repo = shadowWrap('thing', { isConnected: () => false }, () => ({ isConnected: () => true }), runPg);
     expect(isReadMethod('isConnected')).to.equal(false);

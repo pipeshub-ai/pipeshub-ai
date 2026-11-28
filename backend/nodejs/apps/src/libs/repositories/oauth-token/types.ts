@@ -213,6 +213,8 @@ export interface OAuthTokenRepository {
   issueRefresh(input: NewRefreshToken): Promise<RefreshTokenDto>;
   /** The refresh token with this hash, revoked or not. */
   findRefreshByHash(tokenHash: string): Promise<RefreshTokenDto | null>;
+  /** The access token with this hash, revoked or not (which token a revoke request just ended). */
+  findAccessByHash(tokenHash: string): Promise<AccessTokenDto | null>;
   /**
    * Rotation: revokes a still-live refresh token and stamps `rotated`, as one
    * conditional write. True for exactly one of any number of concurrent callers.
