@@ -45,12 +45,12 @@ Every value in the key-value store (Redis, etcd or Postgres) that is either encr
    ```
 
    It prints `APPLIED` only when every write went through and exits 0. Keys listed as `expiring` do not change that: they are left on the old key by design and the services recreate them. It is safe to re-run after an interruption: values already on the new key are counted as `alreadyRotated`. Keys listed as `conflicts` were not rewritten (the value changed, or the store did not apply the write) and `writeErrors` hit a store error; run it again until both are empty.
-4. Set `SECRET_KEY` to the new value in every service's environment in every region, then start all services together. Node and Python services must share the same value.
+4. Set `SECRET_KEY` to the new value in every service's environment in every region. Before you start any service, record the id and stored secret (`clientSecretEncrypted`, column `client_secret_encrypted` on Postgres) of every OAuth app; a rollback needs this record (see "If it goes wrong") and it cannot be made once the services have run on the new key. Then start all services together and note the time they first start on the new key. Node and Python services must share the same value.
 5. Verify: sign in, open the AI model settings and confirm models load, check storage settings, run a chat. Then do the follow-up for data outside the store (above).
 
 ## If it goes wrong
 
-Stop all services, restore the backup, and start them with the old `SECRET_KEY`. You need two records from step 4 to find what was written under the new key, so take both before you start the services: the time they first start on the new key, and the id and stored secret (`clientSecretEncrypted`, column `client_secret_encrypted` on Postgres) of every OAuth app.
+Stop all services, restore the backup, and start them with the old `SECRET_KEY`. Use the two records from step 4, the OAuth app record and the first start time on the new key, to find what was written under the new key.
 
 The backup covers the key-value store only. Records the tool never rotated (listed in "Not rotated by the tool") read again once the old key is back, except those written while the services ran on the new key, including every secret you regenerated and every sync point re-synced in the follow-up after the switch. Those stay on the new key and do not decrypt after the rollback:
 
