@@ -28,7 +28,7 @@ import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from app.config.constants.arangodb import CollectionNames, Connectors
+from app.config.constants.arangodb import AccessLimit, CollectionNames, Connectors
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.modules.agents.capability_summary import PROJECT_FILES_KEY
 from app.modules.agents.qna.chat_state import (
@@ -349,7 +349,8 @@ async def service_account_knowledge(
 
     Anyone in the org runs such an agent on one identity, so it keeps only what
     is shared with the whole org: the org's team connectors, never a personal
-    one. Collections have no org-wide grant, so one is kept only when the agent
+    one, nor one whose access limit admits less than the whole org (the agent's
+    creator passes a limit to the creator, its callers must not). Collections have no org-wide grant, so one is kept only when the agent
     runs as a bound service account, whose own grants then decide what of it is
     read. A failed connector lookup keeps no connector, and a source whose app
     could not be read is kept only if the lookup lists it as a team connector.
@@ -363,6 +364,7 @@ async def service_account_knowledge(
             str(i.get("_key") or i.get("id"))
             for i in instances
             if isinstance(i, dict) and i.get("scope") == ConnectorScope.TEAM.value and not _is_collection(i)
+            and i.get("accessLimit") in (None, AccessLimit.ORG.value)
         }
     kept = [
         k for k in knowledge

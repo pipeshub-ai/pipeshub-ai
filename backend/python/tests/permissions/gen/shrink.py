@@ -33,6 +33,7 @@ def drop_ids(world: World, gone: set[str]) -> World:
             parents=tuple(p for p in n.parents if p.id not in gone),
             inherits=tuple(i for i in n.inherits if i not in gone),
             belongs=tuple(b for b in n.belongs if b not in gone),
+            created_by=None if n.created_by in gone else n.created_by,  # a creator who is gone matches nobody, as no creator does
         )
 
     return World(

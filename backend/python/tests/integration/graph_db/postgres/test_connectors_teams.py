@@ -92,6 +92,30 @@ async def test_a_limited_team_connector_is_listed_for_whom_its_limit_admits_what
     assert await keys("uid-you") == ["theirsLimited", "orgWide"]
 
 
+async def test_a_limited_team_connector_follows_the_membership_edge_not_the_users_own_org_id(w: World) -> None:
+    """Membership comes from the edge to the connector's own org, and a limited connector is listed only under its own org (RULE-L23/L24 on
+    ArangoDB and Neo4j): ``u1``'s orgId names another org but its edge is to this one, ``u2`` is the reverse. A connector of the other org is never
+    listed here, whoever created it."""
+    await w.nodes("users", {"_key": "u1", "userId": "uid-u1", "orgId": "elsewhere"}, {"_key": "u2", "userId": "uid-u2", "orgId": w.org})
+    await w.nodes("organizations", {"_key": "elsewhere"})
+    await w.edge("belongsTo", ("users", "u1"), ("organizations", w.org), entityType="ORGANIZATION")
+    await w.edge("belongsTo", ("users", "u2"), ("organizations", "elsewhere"), entityType="ORGANIZATION")
+    await app(w, "byU1", ts=5, accessLimit="CREATOR", created_by="uid-u1")
+    await app(w, "byU2", ts=4, accessLimit="CREATOR", created_by="uid-u2")
+    await app(w, "orgWide", ts=3, accessLimit="ORG")
+    await app(w, "theirsByU1", ts=2, accessLimit="CREATOR", created_by="uid-u1", orgId="elsewhere")      # another org's connector
+    await app(w, "theirsOrgWide", ts=1, accessLimit="ORG", orgId="elsewhere")
+    for user in ("u1", "u2"):
+        for key in ("byU1", "byU2", "orgWide", "theirsByU1", "theirsOrgWide"):
+            await w.edge("userAppRelation", ("users", user), ("apps", key))                                 # links count for nothing on a limited connector
+
+    async def keys(user_id: str) -> list[str]:
+        rows, _ = await w.p.get_filtered_connector_instances("apps", "orgAppRelation", w.org, user_id, scope="team")
+        return [r["_key"] for r in rows]
+    assert await keys("uid-u1") == ["byU1", "orgWide"]
+    assert await keys("uid-u2") == ["byU2"]
+
+
 async def test_a_connector_name_clashes_by_scope_ignoring_case_and_surrounding_whitespace(w: World) -> None:
     await app(w, "t1", name="  Sales Slack \t")
     await app(w, "p1", scope="personal", name="Mine", created_by="uid-me")

@@ -6,7 +6,7 @@ viewer and grants to many groups, mixed access rules (an unknown one included)
 along the chains, seeds below seeds, link shares that must grant nothing,
 linked accounts, deleted and placeholder intermediates, record-group-level
 groups nested under each other, org grants on containers, non-member viewers
-and an intermediate node of another org.
+and an intermediate node of another org. Each app may carry an access limit (``with_access_limit``).
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..model import ORG_ID, Node, World, WorldBuilder
-from .proptest import with_parent_and_grant
+from .proptest import with_access_limit, with_parent_and_grant
 
 if TYPE_CHECKING:
     import random
@@ -51,7 +51,7 @@ class _Adversary:
         return n
 
 
-def adversarial_world(rng: random.Random) -> World:
+def adversarial_world(rng: random.Random, *, access_limits: bool = True) -> World:
     adv = _Adversary(rng)
     b = adv.b
     apps = [
@@ -97,6 +97,8 @@ def adversarial_world(rng: random.Random) -> World:
         f = b.node(Node(f"up{i}", "record", "no-app", "OPEN", origin="UPLOAD"))
         g = rng.choice(grantees)
         b.grant(g, f, rng.choice(["ORGANIZATION", "DOMAIN"]) if g == ORG_ID else "USER")
+    if access_limits:
+        with_access_limit(b, rng, apps, users)
     return b.build()
 
 

@@ -49,13 +49,16 @@ async def check_service_account_knowledge(graph: IGraphDBProvider) -> None:
     org, other_org = run.rjust(24, "0"), run.rjust(24, "1")
     creator = f"creator-{run}"
     pg, drive, kb = Connectors.POSTGRESQL.value, Connectors.GOOGLE_DRIVE.value, Connectors.KNOWLEDGE_BASE.value
-    # name -> (key, type, scope, org, created by)
+    # name -> (key, type, scope, org, created by[, access limit])
     apps = {
         "pg_team": (f"pg-team-{run}", pg, "team", org, creator),
         "pg_mine": (f"pg-mine-{run}", pg, "personal", org, creator),
         "drive_team": (f"drive-team-{run}", drive, "team", org, creator),
         "drive_mine": (f"drive-mine-{run}", drive, "personal", org, creator),
         "drive_colleague": (f"drive-colleague-{run}", drive, "personal", org, f"colleague-{run}"),
+        # Team connectors with an access limit: one open to the org, one limited to its creator (the identity the agent runs as).
+        "drive_open": (f"drive-open-{run}", drive, "team", org, creator, "ORG"),
+        "drive_limited": (f"drive-limited-{run}", drive, "team", org, creator, "CREATOR"),
         "collection": (f"kb-{run}", kb, "team", org, creator),
         "other_org": (f"pg-other-{run}", pg, "team", other_org, f"other-{run}"),
     }
@@ -63,7 +66,7 @@ async def check_service_account_knowledge(graph: IGraphDBProvider) -> None:
     agent_key = f"agent-{run}"
     linked = ("pg_team", "other_org")
     try:
-        for app_key, app_type, scope, app_org, created_by in apps.values():
+        for app_key, app_type, scope, app_org, created_by, *limit in apps.values():
             with for_org(app_org, job="test"):
                 await graph.batch_upsert_nodes([{
                     "_key": app_org, "name": app_org, "accountType": "enterprise", "isActive": True, "createdAtTimestamp": 1,
@@ -71,7 +74,7 @@ async def check_service_account_knowledge(graph: IGraphDBProvider) -> None:
                 await graph.batch_upsert_nodes([{
                     "_key": app_key, "orgId": app_org, "name": f"Name {app_key}", "type": app_type, "appGroup": app_type,
                     "scope": scope, "createdBy": created_by, "isActive": True, "isConfigured": True,
-                    "createdAtTimestamp": 1, "updatedAtTimestamp": 1,
+                    "createdAtTimestamp": 1, "updatedAtTimestamp": 1, **({"accessLimit": limit[0]} if limit else {}),
                 }], APPS)
                 await graph.batch_create_edges([{
                     "from_id": app_org, "from_collection": ORGS, "to_id": app_key, "to_collection": APPS, "createdAtTimestamp": 1,
@@ -133,9 +136,10 @@ async def check_service_account_knowledge(graph: IGraphDBProvider) -> None:
                     await _assert_service_account_knowledge([key["drive_team"], foreign], graph, org, creator, bound=True)
         # The creator reads their own sources when they run an agent themselves...
         assert {key["pg_mine"], key["drive_mine"]} <= {d.get("_key") or d.get("id") for d in own}
-        # ...but an agent the whole org runs on their identity does not.
-        assert [k["connectorId"] for k in unbound] == [key["pg_team"], key["drive_team"]]
-        assert [k["connectorId"] for k in bound] == [key["pg_team"], key["drive_team"], key["collection"]]
+        # ...but an agent the whole org runs on their identity does not, nor a team connector limited to them.
+        assert key["drive_limited"] in {d.get("_key") or d.get("id") for d in own}
+        assert [k["connectorId"] for k in unbound] == [key["pg_team"], key["drive_team"], key["drive_open"]]
+        assert [k["connectorId"] for k in bound] == [key["pg_team"], key["drive_team"], key["drive_open"], key["collection"]]
     finally:
         for o in (org, other_org):
             with contextlib.suppress(Exception), for_org(o, job="test"):

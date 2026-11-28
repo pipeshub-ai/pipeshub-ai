@@ -19663,6 +19663,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         user_id: str,
         transaction: str | None = None,
+        *,
+        org_id: str | None = None,
     ) -> list[str]:
         """Return the ``id`` list of team-scoped apps this user may access.
 
@@ -19691,7 +19693,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # Match by userId (MongoDB ID) — not by id (the graph-internal key).
         # Intermediate WITH after the first OPTIONAL MATCH avoids an M×N
         # Cartesian product when both paths return multiple rows.
-        # A limited connector is listed for whom its limit admits, whatever edges exist (the gate, _kh_gate_cypher).
+        # A limited connector of the request's org (org_id; the user's own orgId only when none is given) is listed for whom its limit
+        # admits, whatever edges exist (the gate, _kh_gate_cypher): membership is the edge to that org.
         query = f"""
         MATCH (u:User {{userId: $user_id}})
         OPTIONAL MATCH (u)-[:USER_APP_RELATION]->(a1:App {{scope: $team_scope}})
@@ -19701,7 +19704,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         WHERE a2.accessLimit IS NULL
         WITH u, direct_ids, collect(DISTINCT a2.id) AS team_ids
         OPTIONAL MATCH (a3:App {{scope: $team_scope}})
-        WHERE a3.orgId = u.orgId AND a3.accessLimit IS NOT NULL AND {_cypher_limit_admits("a3", "u")}
+        WHERE a3.orgId = coalesce($org_id, u.orgId) AND a3.accessLimit IS NOT NULL AND {_cypher_limit_admits("a3", "u")}
         WITH direct_ids, team_ids, collect(DISTINCT a3.id) AS limited_ids
         WITH direct_ids + team_ids + limited_ids AS all_ids
         UNWIND all_ids AS app_id
@@ -19710,7 +19713,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         results = await self.client.execute_query(
             query,
-            parameters={"user_id": user_id, "team_scope": "team"},
+            parameters={"user_id": user_id, "team_scope": "team", "org_id": org_id},
             txn_id=transaction,
         )
         return [r["app_id"] for r in results] if results else []
@@ -19781,7 +19784,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 params["team_scope"] = "team"
                 if not is_admin:
                     accessible_team_ids = await self._get_user_accessible_team_app_ids(
-                        user_id, transaction
+                        user_id, transaction, org_id=org_id
                     )
                     if not accessible_team_ids:
                         self.logger.info(

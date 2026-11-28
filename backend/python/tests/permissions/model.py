@@ -31,6 +31,8 @@ class Principal:
     org_member: bool = True  # users only: a BELONGS_TO edge to the organization
     active: bool = True  # users only: User.isActive; the access check does not read it
     deleted: bool = False  # groups only: Group.isDeleted; the access check does not read it
+    org: str | None = None  # users only: label of a foreign org their own orgId field names; None: the world's org
+    member_of: tuple[str, ...] = ()  # users only: labels of foreign orgs they hold a membership edge (BELONGS_TO, ORGANIZATION) to
 
 
 @dataclass(frozen=True)
@@ -180,6 +182,10 @@ class WorldBuilder:
 
     def _edit(self, node_id: str, **changes: object) -> None:
         self._nodes[node_id] = replace(self._nodes[node_id], **changes)
+
+    def edit(self, node_id: str, **changes: object) -> None:
+        """Change fields of a node already added (an app's access limit, say)."""
+        self._edit(node_id, **changes)
 
     def parent(self, parent: str, child: str, rel: str = "PARENT_CHILD") -> None:
         self._edit(child, parents=(*self._nodes[child].parents, Parent(parent, rel)))

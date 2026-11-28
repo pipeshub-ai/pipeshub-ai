@@ -8,10 +8,12 @@ permission or group, a linked account, 1-3 top groups and 3-14 nodes per app
 with every access rule (absent included), inherit edges (10% to a non-parent),
 record-group-level groups, second parents, attachment and link edges, deleted
 and placeholder nodes, org grants of every type, and unattached uploads.
+Each app may carry an access limit (``with_access_limit``).
 """
 
 from __future__ import annotations
 
+import random as _random
 import zlib
 from typing import TYPE_CHECKING
 
@@ -30,6 +32,33 @@ def with_parent_and_grant(name: str, rule: str | None) -> str | None:
     return "PARENT_AND_GRANT" if rule == "RESTRICTED" and zlib.crc32(name.encode()) % 3 == 0 else rule
 
 
+# accessLimit per app: absent most often, then each value the gate must honour, one it must refuse (UNKNOWN, ""), and a
+# cleared limit stored as null.
+LIMITS = [None, None, None, None, "CREATOR", "CREATOR", "ORG", "ORG", "UNKNOWN", "", "null"]
+
+
+def with_access_limit(b: WorldBuilder, rng: random.Random, apps: list[str], users: list[str]) -> None:
+    """Give each app an access limit drawn from ``LIMITS``, a creator (any user, one outside the org included, or none) and,
+    mostly, the APP_LEVEL model the limit is written with (sometimes not, as before the model is written). The draws come
+    from a generator of their own seeded from ``rng``'s state, so ``rng`` and every earlier shape of a seed are unchanged."""
+    own = _random.Random(repr(rng.getstate()))
+    for a in apps:
+        limit = own.choice(LIMITS)
+        creator = own.choice([*users, None])
+        if limit is None:
+            if own.random() < 0.3:  # a creator on an unlimited app gets nothing for it
+                b.edit(a, created_by=creator)
+            continue
+        changes: dict[str, object] = {"created_by": creator}
+        if limit == "null":
+            changes["access_limit_null"] = True
+        else:
+            changes["access_limit"] = limit
+            if own.random() < 0.85:
+                changes["model"] = "APP_LEVEL"
+        b.edit(a, **changes)
+
+
 def _shared_vrid(rng: random.Random, earlier: list[str]) -> str | None:
     """One record in five carries the content id of an earlier one, so a citation has copies to choose between."""
     return f"v-{rng.choice(earlier)}" if earlier and rng.random() < 0.2 else None
@@ -41,7 +70,7 @@ def _group(b: WorldBuilder, name: str, app: str, rule: str | None, rng: random.R
         model=RGL if rng.random() < rgl else None, deleted=rng.random() < deleted))
 
 
-def random_world(rng: random.Random) -> World:
+def random_world(rng: random.Random, *, access_limits: bool = True) -> World:
     b = WorldBuilder()
     kinds = [("A", rng.choice(["RECORD", "RECORD", "APP_LEVEL", "KB"])), ("B", "RECORD")]
     apps = [b.node(Node(
@@ -113,4 +142,6 @@ def random_world(rng: random.Random) -> World:
         f = b.node(Node(f"up{i}", "record", "no-app", "OPEN", origin="UPLOAD"))
         g = rng.choice(grantees)
         b.grant(g, f, rng.choice(["ORGANIZATION", "DOMAIN"]) if g == ORG_ID else "USER")
+    if access_limits:
+        with_access_limit(b, rng, apps, users)
     return b.build()

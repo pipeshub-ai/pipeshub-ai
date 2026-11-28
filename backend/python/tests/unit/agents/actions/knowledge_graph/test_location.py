@@ -584,3 +584,25 @@ class TestAConnectionLimitTrimsTheTrail:
 
         assert named == {}
         assert whole == {"story": "Jira (App ID: app1)"}
+
+
+@pytest.mark.asyncio
+async def test_another_connectors_app_on_the_trail_is_named_only_when_the_viewer_reaches_it() -> None:
+    """A record of connector B filed under a group of connector A walks up to A. The retrieval check admitted the record,
+    which says nothing about A: A (say, limited to its creator) is named only when the access check admits it."""
+    adjacency = _adj(
+        {"appA": ("app", "Limited"), "rgA": ("recordGroup", "Theirs"), "appB": ("app", "Mine"), "rgB": ("recordGroup", "Ours")},
+        {"jb": [("rgA", "recordGroup", "belongsTo")], "rgA": [("appA", "app", "belongsTo")],
+         "jc": [("rgB", "recordGroup", "belongsTo")], "rgB": [("appB", "app", "belongsTo")]},
+    )
+    docs = {"jb": {"connectorId": "appB"}, "jc": {"connectorId": "appB"}}
+    for admitted, want in ((frozenset(), {"jc": "Mine (App ID: appB)"}),
+                           (frozenset({"appA", "rgB"}), {"jb": "Limited (App ID: appA)", "jc": "Mine (App ID: appB) -> Ours (Record Group ID: rgB)"})):
+        mock_provider = MagicMock()
+        mock_provider.get_record_parent_adjacency = AsyncMock(return_value=adjacency)
+        mock_provider.check_access = AsyncMock(return_value=AccessCheck(node_ids=admitted))
+        locs = await resolve_ancestor_locations(
+            ["jb", "jc"], graph_provider=mock_provider, org_id="org", user_key="uk", record_docs=docs,
+        )
+        assert locs == want
+        assert set(mock_provider.check_access.call_args.kwargs["node_ids"]) == {"rgA", "rgB", "appA"}  # the record's own app is not asked

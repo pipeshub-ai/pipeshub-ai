@@ -98,7 +98,8 @@ concurrency:
 jobs:
   python:
     runs-on: ubuntu-latest
-    # shard 1 is one test case of ~22-26 min serial (the not-current adversarial worlds), which no split can shorten
+    # The not-current adversarial worlds took ~22-26 min serial on CI as one case (2 min a world; ~10 min a world on a loaded workstation, past the
+    # case's hour). They are now six cases of two worlds, two cases to a shard (1, 8, 9), so each of those shards stays well inside its cap.
     timeout-minutes: ${{ matrix.shard == 1 && 60 || 45 }}
     strategy:
       fail-fast: false
@@ -110,23 +111,29 @@ jobs:
         # scripts/test_pg_runtime_shards.py checks that every case runs exactly once; each shard checks its run against its own
         # collection, so no count is written here. The shards are sized to about 20 min of the 45 min limit (shard 1: 25-35 of
         # 60); --durations in the graph step prints the per-test times to rebalance by.
-        shard: [1, 2, 3, 4, 5, 6, 7]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9]
         include:
-          # test_conformance_kh_pg.py alone is longer than a shard should be: its two slowest cases run on their own, and the
-          # rest is split by the state of the copy
+          # test_conformance_kh_pg.py alone is longer than a shard should be: its not-current adversarial cases run two to a
+          # shard (1, 8, 9), the current adversarial ones in shard 2, and the rest is split by the state of the copy (3, 6)
           - shard: 1
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
-            graph_k: '[not_current-adversarial]'
+            graph_k: '[not_current-adversarial-1of6] or [not_current-adversarial-2of6]'
           # also runs tests/integration/db and tests/integration/pg_runtime
           - shard: 2
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
-            graph_k: not [not_current-adversarial] and [current-adversarial]
+            graph_k: 'not ([not_current-adversarial-1of6] or [not_current-adversarial-2of6]) and not ([not_current-adversarial-3of6] or [not_current-adversarial-4of6]) and not ([not_current-adversarial-5of6] or [not_current-adversarial-6of6]) and [current-adversarial-'
           - shard: 3
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
-            graph_k: not [not_current-adversarial] and not [current-adversarial] and not_current
+            graph_k: 'not ([not_current-adversarial-1of6] or [not_current-adversarial-2of6]) and not ([not_current-adversarial-3of6] or [not_current-adversarial-4of6]) and not ([not_current-adversarial-5of6] or [not_current-adversarial-6of6]) and not [current-adversarial- and not_current'
           - shard: 6
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
-            graph_k: not [not_current-adversarial] and not [current-adversarial] and not not_current
+            graph_k: 'not ([not_current-adversarial-1of6] or [not_current-adversarial-2of6]) and not ([not_current-adversarial-3of6] or [not_current-adversarial-4of6]) and not ([not_current-adversarial-5of6] or [not_current-adversarial-6of6]) and not [current-adversarial- and not not_current'
+          - shard: 8
+            graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
+            graph_k: 'not ([not_current-adversarial-1of6] or [not_current-adversarial-2of6]) and ([not_current-adversarial-3of6] or [not_current-adversarial-4of6])'
+          - shard: 9
+            graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
+            graph_k: 'not ([not_current-adversarial-1of6] or [not_current-adversarial-2of6]) and not ([not_current-adversarial-3of6] or [not_current-adversarial-4of6]) and ([not_current-adversarial-5of6] or [not_current-adversarial-6of6])'
           # test_kg_read.py stays in shard 5, behind most of the files that run before it in the whole folder: its plan gate
           # depends on the statistics they leave.
           - shard: 4

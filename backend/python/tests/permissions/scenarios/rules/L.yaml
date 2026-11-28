@@ -29,10 +29,11 @@
       - {id: A, kind: app, model: APP_LEVEL, access_limit: CREATOR, created_by: c}
       - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
       - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    grants:
+      - [o, A]              # a permission edge to the app, typed as connectors write it
     gates:
       - [c, A]
       - [o, A]
-      - [o, A, PERMISSION]
   expect:
     verdicts:
       c: {A: admit, f: admit}
@@ -56,10 +57,11 @@
       - [o, t]
       - [o, g]
       - [c, t]
+    grants:
+      - [org, A, ORG]       # the organization's permission on the app, typed as connectors write it
     gates:
       - [t, A]
       - [g, A]
-      - [org, A, PERMISSION]
   expect:
     verdicts:
       c: {f: admit}
@@ -228,3 +230,887 @@
       o: {d: deny, f: deny, g: deny, h: deny, k: deny}
   tags: [rules, access-limit]
   comment: No node inherits and only o holds grants; APP_LEVEL opens every hop for whoever passes the gate. A deleted node still blocks.
+# The read-side matrix (RULE-L11 onwards): every limit value against every link kind a viewer can hold, from inside and from outside the org,
+# with a second connector that is never limited; then knowledge bases and records that cross connectors.
+- id: RULE-L11
+  title: 'No limit: every link kind gates as today, on both connectors'
+  source: 'licence gate design B (accessLimit): the read-side matrix'
+  rule: access-limit
+  world:
+    principals:
+    - {id: c}
+    - {id: m}
+    - {id: i, active: false}
+    - {id: cx, org_member: false}
+    - {id: t, kind: team, org_member: false}
+    - {id: g, kind: group, org_member: false}
+    - {id: r, kind: role, org_member: false}
+    - {id: s, org_member: false}
+    - {id: u_uar}
+    - {id: x_uar, org_member: false}
+    - {id: u_perm}
+    - {id: x_perm, org_member: false}
+    - {id: u_team}
+    - {id: x_team, org_member: false}
+    - {id: u_grp}
+    - {id: x_grp, org_member: false}
+    - {id: u_role}
+    - {id: x_role, org_member: false}
+    - {id: u_src}
+    - {id: x_src, org_member: false}
+    - {id: u_rec}
+    - {id: x_rec, org_member: false}
+    - {id: u_rg}
+    - {id: x_rg, org_member: false}
+    - {id: u_org}
+    - {id: x_org, org_member: false}
+    nodes:
+    - {id: A, kind: app, created_by: c}
+    - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A], inherits: [A]}
+    - {id: f, kind: record, connector: A, rule: OPEN, parents: [d], inherits: [d], vrid: same}
+    - {id: h, kind: record, connector: A, rule: RESTRICTED, parents: [d], inherits: [d]}
+    - {id: k, kind: record, connector: A, rule: STRICT, parents: [d]}
+    - {id: z, kind: record, connector: A, rule: OPEN, parents: [d], inherits: [d], deleted: true}
+    - {id: B, kind: app, created_by: c}
+    - {id: e, kind: group, connector: B, rule: OPEN, parents: [B], belongs: [B], inherits: [B]}
+    - {id: j, kind: record, connector: B, rule: OPEN, parents: [e], inherits: [e], vrid: same}
+    grants: [[u_perm, A], [u_rec, h], [u_rec, k], [u_rg, d], [u_perm, B], [u_rec, j], [u_rg, e], [x_perm, A], [x_rec, h], [x_rec, k], [x_rg, d], [x_perm, B], [x_rec, j], [x_rg, e], [g, A, GROUP], [g, B, GROUP], [r, A, ROLE], [r, B,
+        ROLE], [s, k], [s, j], [t, k], [g, h], [r, k], [org, k, ORG], [org, h, ORGANIZATION], [org, j, ANYONE]]
+    memberships: [[u_team, t], [u_grp, g], [u_role, r], [x_team, t], [x_grp, g], [x_role, r]]
+    gates: [[u_uar, A], [u_uar, B], [x_uar, A], [x_uar, B], [t, A], [t, B], [i, A], [i, B], [cx, A]]
+    links: [[u_src, s, A], [u_src, s, B], [x_src, s, A], [x_src, s, B]]
+  expect:
+    verdicts:
+      c: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      m: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      i: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: admit, e: admit, j: admit}
+      cx: {A: admit, d: admit, f: admit, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_uar: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: admit, e: admit, j: admit}
+      x_uar: {A: admit, d: admit, f: admit, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_perm: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: admit, e: admit, j: admit}
+      x_perm: {A: admit, d: admit, f: admit, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_team: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: admit, e: admit, j: admit}
+      x_team: {A: admit, d: admit, f: admit, h: deny, k: admit, z: deny, B: admit, e: admit, j: admit}
+      u_grp: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: admit, e: admit, j: admit}
+      x_grp: {A: admit, d: admit, f: admit, h: admit, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_role: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: admit, e: admit, j: admit}
+      x_role: {A: admit, d: admit, f: admit, h: deny, k: admit, z: deny, B: admit, e: admit, j: admit}
+      u_src: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: admit, e: admit, j: admit}
+      x_src: {A: admit, d: admit, f: admit, h: deny, k: admit, z: deny, B: admit, e: admit, j: admit}
+      u_rec: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      x_rec: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_rg: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      x_rg: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_org: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      x_org: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+    cite:
+    - {viewer: c, vrid: same, record: null, indexed_only: false}
+    - {viewer: m, vrid: same, record: null, indexed_only: false}
+    - {viewer: u_uar, vrid: same, record: f, indexed_only: false}
+    - {viewer: x_uar, vrid: same, record: f, indexed_only: false}
+    - {viewer: u_src, vrid: same, record: f, indexed_only: false}
+    - {viewer: x_rec, vrid: same, record: null, indexed_only: false}
+  tags: [rules, access-limit, access-limit-matrix]
+  comment: 'Viewers: c the creator; m a member with no link; i an inactive member with a user-app edge; cx a creator-like user outside the org with a user-app edge; u_<kind> a member and x_<kind> a user outside the org, each holding
+    one link kind on both A and B (uar user-app edge, perm permission edge to the app, team/grp/role a membership whose team, group or role is linked to the app and holds record grants, src a linked source account holding grants, rec
+    record grants, rg a record-group grant, org the org-wide shares every member holds). B is never limited: its verdicts are the unlimited world''s.'
+- id: RULE-L12
+  title: 'Limited to the creator: no link of any kind, from a member or from outside the org, admits anyone else'
+  source: 'licence gate design B (accessLimit): the read-side matrix'
+  rule: access-limit
+  world:
+    principals:
+    - {id: c}
+    - {id: m}
+    - {id: i, active: false}
+    - {id: cx, org_member: false}
+    - {id: t, kind: team, org_member: false}
+    - {id: g, kind: group, org_member: false}
+    - {id: r, kind: role, org_member: false}
+    - {id: s, org_member: false}
+    - {id: u_uar}
+    - {id: x_uar, org_member: false}
+    - {id: u_perm}
+    - {id: x_perm, org_member: false}
+    - {id: u_team}
+    - {id: x_team, org_member: false}
+    - {id: u_grp}
+    - {id: x_grp, org_member: false}
+    - {id: u_role}
+    - {id: x_role, org_member: false}
+    - {id: u_src}
+    - {id: x_src, org_member: false}
+    - {id: u_rec}
+    - {id: x_rec, org_member: false}
+    - {id: u_rg}
+    - {id: x_rg, org_member: false}
+    - {id: u_org}
+    - {id: x_org, org_member: false}
+    nodes:
+    - {id: A, kind: app, created_by: c, access_limit: CREATOR, model: APP_LEVEL}
+    - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A], inherits: [A]}
+    - {id: f, kind: record, connector: A, rule: OPEN, parents: [d], inherits: [d], vrid: same}
+    - {id: h, kind: record, connector: A, rule: RESTRICTED, parents: [d], inherits: [d]}
+    - {id: k, kind: record, connector: A, rule: STRICT, parents: [d]}
+    - {id: z, kind: record, connector: A, rule: OPEN, parents: [d], inherits: [d], deleted: true}
+    - {id: B, kind: app, created_by: c}
+    - {id: e, kind: group, connector: B, rule: OPEN, parents: [B], belongs: [B], inherits: [B]}
+    - {id: j, kind: record, connector: B, rule: OPEN, parents: [e], inherits: [e], vrid: same}
+    grants: [[u_perm, A], [u_rec, h], [u_rec, k], [u_rg, d], [u_perm, B], [u_rec, j], [u_rg, e], [x_perm, A], [x_rec, h], [x_rec, k], [x_rg, d], [x_perm, B], [x_rec, j], [x_rg, e], [g, A, GROUP], [g, B, GROUP], [r, A, ROLE], [r, B,
+        ROLE], [s, k], [s, j], [t, k], [g, h], [r, k], [org, A, ORG], [org, k, ORG], [org, h, ORGANIZATION], [org, j, ANYONE]]
+    memberships: [[u_team, t], [u_grp, g], [u_role, r], [x_team, t], [x_grp, g], [x_role, r]]
+    gates: [[u_uar, A], [u_uar, B], [x_uar, A], [x_uar, B], [t, A], [t, B], [i, A], [i, B], [cx, A]]
+    links: [[u_src, s, A], [u_src, s, B], [x_src, s, A], [x_src, s, B]]
+  expect:
+    verdicts:
+      c: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: deny, e: deny, j: deny}
+      m: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      i: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      cx: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_uar: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_uar: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_perm: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_perm: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_team: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_team: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_grp: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_grp: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_role: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_role: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_src: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_src: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_rec: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      x_rec: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_rg: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      x_rg: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_org: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      x_org: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+    cite:
+    - {viewer: c, vrid: same, record: f, indexed_only: false}
+    - {viewer: m, vrid: same, record: null, indexed_only: false}
+    - {viewer: u_uar, vrid: same, record: j, indexed_only: false}
+    - {viewer: x_uar, vrid: same, record: j, indexed_only: false}
+    - {viewer: u_src, vrid: same, record: j, indexed_only: false}
+    - {viewer: x_rec, vrid: same, record: null, indexed_only: false}
+  tags: [rules, access-limit, access-limit-matrix]
+  comment: 'Viewers: c the creator; m a member with no link; i an inactive member with a user-app edge; cx a creator-like user outside the org with a user-app edge; u_<kind> a member and x_<kind> a user outside the org, each holding
+    one link kind on both A and B (uar user-app edge, perm permission edge to the app, team/grp/role a membership whose team, group or role is linked to the app and holds record grants, src a linked source account holding grants, rec
+    record grants, rg a record-group grant, org the org-wide shares every member holds). B is never limited: its verdicts are the unlimited world''s.'
+- id: RULE-L13
+  title: 'Opened to the org: every member passes with or without a link, no link admits a user outside the org'
+  source: 'licence gate design B (accessLimit): the read-side matrix'
+  rule: access-limit
+  world:
+    principals:
+    - {id: c}
+    - {id: m}
+    - {id: i, active: false}
+    - {id: cx, org_member: false}
+    - {id: t, kind: team, org_member: false}
+    - {id: g, kind: group, org_member: false}
+    - {id: r, kind: role, org_member: false}
+    - {id: s, org_member: false}
+    - {id: u_uar}
+    - {id: x_uar, org_member: false}
+    - {id: u_perm}
+    - {id: x_perm, org_member: false}
+    - {id: u_team}
+    - {id: x_team, org_member: false}
+    - {id: u_grp}
+    - {id: x_grp, org_member: false}
+    - {id: u_role}
+    - {id: x_role, org_member: false}
+    - {id: u_src}
+    - {id: x_src, org_member: false}
+    - {id: u_rec}
+    - {id: x_rec, org_member: false}
+    - {id: u_rg}
+    - {id: x_rg, org_member: false}
+    - {id: u_org}
+    - {id: x_org, org_member: false}
+    nodes:
+    - {id: A, kind: app, created_by: c, access_limit: ORG, model: APP_LEVEL}
+    - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A], inherits: [A]}
+    - {id: f, kind: record, connector: A, rule: OPEN, parents: [d], inherits: [d], vrid: same}
+    - {id: h, kind: record, connector: A, rule: RESTRICTED, parents: [d], inherits: [d]}
+    - {id: k, kind: record, connector: A, rule: STRICT, parents: [d]}
+    - {id: z, kind: record, connector: A, rule: OPEN, parents: [d], inherits: [d], deleted: true}
+    - {id: B, kind: app, created_by: c}
+    - {id: e, kind: group, connector: B, rule: OPEN, parents: [B], belongs: [B], inherits: [B]}
+    - {id: j, kind: record, connector: B, rule: OPEN, parents: [e], inherits: [e], vrid: same}
+    grants: [[u_perm, A], [u_rec, h], [u_rec, k], [u_rg, d], [u_perm, B], [u_rec, j], [u_rg, e], [x_perm, A], [x_rec, h], [x_rec, k], [x_rg, d], [x_perm, B], [x_rec, j], [x_rg, e], [g, A, GROUP], [g, B, GROUP], [r, A, ROLE], [r, B,
+        ROLE], [s, k], [s, j], [t, k], [g, h], [r, k], [org, A, ORG], [org, k, ORG], [org, h, ORGANIZATION], [org, j, ANYONE]]
+    memberships: [[u_team, t], [u_grp, g], [u_role, r], [x_team, t], [x_grp, g], [x_role, r]]
+    gates: [[u_uar, A], [u_uar, B], [x_uar, A], [x_uar, B], [t, A], [t, B], [i, A], [i, B], [cx, A]]
+    links: [[u_src, s, A], [u_src, s, B], [x_src, s, A], [x_src, s, B]]
+  expect:
+    verdicts:
+      c: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: deny, e: deny, j: deny}
+      m: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: deny, e: deny, j: deny}
+      i: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: admit, e: admit, j: admit}
+      cx: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_uar: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: admit, e: admit, j: admit}
+      x_uar: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_perm: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: admit, e: admit, j: admit}
+      x_perm: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_team: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: admit, e: admit, j: admit}
+      x_team: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_grp: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: admit, e: admit, j: admit}
+      x_grp: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_role: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: admit, e: admit, j: admit}
+      x_role: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_src: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: admit, e: admit, j: admit}
+      x_src: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_rec: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: deny, e: deny, j: deny}
+      x_rec: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_rg: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: deny, e: deny, j: deny}
+      x_rg: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_org: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: deny, e: deny, j: deny}
+      x_org: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+    cite:
+    - {viewer: c, vrid: same, record: f, indexed_only: false}
+    - {viewer: m, vrid: same, record: f, indexed_only: false}
+    - {viewer: u_uar, vrid: same, record: f, indexed_only: false}
+    - {viewer: x_uar, vrid: same, record: j, indexed_only: false}
+    - {viewer: u_src, vrid: same, record: f, indexed_only: false}
+    - {viewer: x_rec, vrid: same, record: null, indexed_only: false}
+  tags: [rules, access-limit, access-limit-matrix]
+  comment: 'Viewers: c the creator; m a member with no link; i an inactive member with a user-app edge; cx a creator-like user outside the org with a user-app edge; u_<kind> a member and x_<kind> a user outside the org, each holding
+    one link kind on both A and B (uar user-app edge, perm permission edge to the app, team/grp/role a membership whose team, group or role is linked to the app and holds record grants, src a linked source account holding grants, rec
+    record grants, rg a record-group grant, org the org-wide shares every member holds). B is never limited: its verdicts are the unlimited world''s.'
+- id: RULE-L14
+  title: An unknown limit admits nobody, the creator included, whatever links exist
+  source: 'licence gate design B (accessLimit): the read-side matrix'
+  rule: access-limit
+  world:
+    principals:
+    - {id: c}
+    - {id: m}
+    - {id: i, active: false}
+    - {id: cx, org_member: false}
+    - {id: t, kind: team, org_member: false}
+    - {id: g, kind: group, org_member: false}
+    - {id: r, kind: role, org_member: false}
+    - {id: s, org_member: false}
+    - {id: u_uar}
+    - {id: x_uar, org_member: false}
+    - {id: u_perm}
+    - {id: x_perm, org_member: false}
+    - {id: u_team}
+    - {id: x_team, org_member: false}
+    - {id: u_grp}
+    - {id: x_grp, org_member: false}
+    - {id: u_role}
+    - {id: x_role, org_member: false}
+    - {id: u_src}
+    - {id: x_src, org_member: false}
+    - {id: u_rec}
+    - {id: x_rec, org_member: false}
+    - {id: u_rg}
+    - {id: x_rg, org_member: false}
+    - {id: u_org}
+    - {id: x_org, org_member: false}
+    nodes:
+    - {id: A, kind: app, created_by: c, access_limit: UNKNOWN, model: APP_LEVEL}
+    - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A], inherits: [A]}
+    - {id: f, kind: record, connector: A, rule: OPEN, parents: [d], inherits: [d], vrid: same}
+    - {id: h, kind: record, connector: A, rule: RESTRICTED, parents: [d], inherits: [d]}
+    - {id: k, kind: record, connector: A, rule: STRICT, parents: [d]}
+    - {id: z, kind: record, connector: A, rule: OPEN, parents: [d], inherits: [d], deleted: true}
+    - {id: B, kind: app, created_by: c}
+    - {id: e, kind: group, connector: B, rule: OPEN, parents: [B], belongs: [B], inherits: [B]}
+    - {id: j, kind: record, connector: B, rule: OPEN, parents: [e], inherits: [e], vrid: same}
+    grants: [[u_perm, A], [u_rec, h], [u_rec, k], [u_rg, d], [u_perm, B], [u_rec, j], [u_rg, e], [x_perm, A], [x_rec, h], [x_rec, k], [x_rg, d], [x_perm, B], [x_rec, j], [x_rg, e], [g, A, GROUP], [g, B, GROUP], [r, A, ROLE], [r, B,
+        ROLE], [s, k], [s, j], [t, k], [g, h], [r, k], [org, A, ORG], [org, k, ORG], [org, h, ORGANIZATION], [org, j, ANYONE]]
+    memberships: [[u_team, t], [u_grp, g], [u_role, r], [x_team, t], [x_grp, g], [x_role, r]]
+    gates: [[u_uar, A], [u_uar, B], [x_uar, A], [x_uar, B], [t, A], [t, B], [i, A], [i, B], [cx, A]]
+    links: [[u_src, s, A], [u_src, s, B], [x_src, s, A], [x_src, s, B]]
+  expect:
+    verdicts:
+      c: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      m: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      i: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      cx: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_uar: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_uar: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_perm: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_perm: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_team: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_team: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_grp: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_grp: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_role: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_role: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_src: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_src: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_rec: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      x_rec: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_rg: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      x_rg: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_org: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      x_org: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+    cite:
+    - {viewer: c, vrid: same, record: null, indexed_only: false}
+    - {viewer: m, vrid: same, record: null, indexed_only: false}
+    - {viewer: u_uar, vrid: same, record: j, indexed_only: false}
+    - {viewer: x_uar, vrid: same, record: j, indexed_only: false}
+    - {viewer: u_src, vrid: same, record: j, indexed_only: false}
+    - {viewer: x_rec, vrid: same, record: null, indexed_only: false}
+  tags: [rules, access-limit, access-limit-matrix]
+  comment: 'Viewers: c the creator; m a member with no link; i an inactive member with a user-app edge; cx a creator-like user outside the org with a user-app edge; u_<kind> a member and x_<kind> a user outside the org, each holding
+    one link kind on both A and B (uar user-app edge, perm permission edge to the app, team/grp/role a membership whose team, group or role is linked to the app and holds record grants, src a linked source account holding grants, rec
+    record grants, rg a record-group grant, org the org-wide shares every member holds). B is never limited: its verdicts are the unlimited world''s.'
+- id: RULE-L15
+  title: An empty-string limit admits nobody, the creator included, whatever links exist
+  source: 'licence gate design B (accessLimit): the read-side matrix'
+  rule: access-limit
+  world:
+    principals:
+    - {id: c}
+    - {id: m}
+    - {id: i, active: false}
+    - {id: cx, org_member: false}
+    - {id: t, kind: team, org_member: false}
+    - {id: g, kind: group, org_member: false}
+    - {id: r, kind: role, org_member: false}
+    - {id: s, org_member: false}
+    - {id: u_uar}
+    - {id: x_uar, org_member: false}
+    - {id: u_perm}
+    - {id: x_perm, org_member: false}
+    - {id: u_team}
+    - {id: x_team, org_member: false}
+    - {id: u_grp}
+    - {id: x_grp, org_member: false}
+    - {id: u_role}
+    - {id: x_role, org_member: false}
+    - {id: u_src}
+    - {id: x_src, org_member: false}
+    - {id: u_rec}
+    - {id: x_rec, org_member: false}
+    - {id: u_rg}
+    - {id: x_rg, org_member: false}
+    - {id: u_org}
+    - {id: x_org, org_member: false}
+    nodes:
+    - {id: A, kind: app, created_by: c, access_limit: '', model: APP_LEVEL}
+    - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A], inherits: [A]}
+    - {id: f, kind: record, connector: A, rule: OPEN, parents: [d], inherits: [d], vrid: same}
+    - {id: h, kind: record, connector: A, rule: RESTRICTED, parents: [d], inherits: [d]}
+    - {id: k, kind: record, connector: A, rule: STRICT, parents: [d]}
+    - {id: z, kind: record, connector: A, rule: OPEN, parents: [d], inherits: [d], deleted: true}
+    - {id: B, kind: app, created_by: c}
+    - {id: e, kind: group, connector: B, rule: OPEN, parents: [B], belongs: [B], inherits: [B]}
+    - {id: j, kind: record, connector: B, rule: OPEN, parents: [e], inherits: [e], vrid: same}
+    grants: [[u_perm, A], [u_rec, h], [u_rec, k], [u_rg, d], [u_perm, B], [u_rec, j], [u_rg, e], [x_perm, A], [x_rec, h], [x_rec, k], [x_rg, d], [x_perm, B], [x_rec, j], [x_rg, e], [g, A, GROUP], [g, B, GROUP], [r, A, ROLE], [r, B,
+        ROLE], [s, k], [s, j], [t, k], [g, h], [r, k], [org, A, ORG], [org, k, ORG], [org, h, ORGANIZATION], [org, j, ANYONE]]
+    memberships: [[u_team, t], [u_grp, g], [u_role, r], [x_team, t], [x_grp, g], [x_role, r]]
+    gates: [[u_uar, A], [u_uar, B], [x_uar, A], [x_uar, B], [t, A], [t, B], [i, A], [i, B], [cx, A]]
+    links: [[u_src, s, A], [u_src, s, B], [x_src, s, A], [x_src, s, B]]
+  expect:
+    verdicts:
+      c: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      m: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      i: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      cx: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_uar: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_uar: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_perm: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_perm: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_team: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_team: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_grp: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_grp: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_role: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_role: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_src: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_src: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_rec: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      x_rec: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_rg: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      x_rg: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_org: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      x_org: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+    cite:
+    - {viewer: c, vrid: same, record: null, indexed_only: false}
+    - {viewer: m, vrid: same, record: null, indexed_only: false}
+    - {viewer: u_uar, vrid: same, record: j, indexed_only: false}
+    - {viewer: x_uar, vrid: same, record: j, indexed_only: false}
+    - {viewer: u_src, vrid: same, record: j, indexed_only: false}
+    - {viewer: x_rec, vrid: same, record: null, indexed_only: false}
+  tags: [rules, access-limit, access-limit-matrix]
+  comment: 'Viewers: c the creator; m a member with no link; i an inactive member with a user-app edge; cx a creator-like user outside the org with a user-app edge; u_<kind> a member and x_<kind> a user outside the org, each holding
+    one link kind on both A and B (uar user-app edge, perm permission edge to the app, team/grp/role a membership whose team, group or role is linked to the app and holds record grants, src a linked source account holding grants, rec
+    record grants, rg a record-group grant, org the org-wide shares every member holds). B is never limited: its verdicts are the unlimited world''s.'
+- id: RULE-L16
+  title: 'Limited to the creator before the model is written (no APP_LEVEL): the creator passes the gate and reads by the record rules, nobody else passes'
+  source: 'licence gate design B (accessLimit): the read-side matrix'
+  rule: access-limit
+  world:
+    principals:
+    - {id: c}
+    - {id: m}
+    - {id: i, active: false}
+    - {id: cx, org_member: false}
+    - {id: t, kind: team, org_member: false}
+    - {id: g, kind: group, org_member: false}
+    - {id: r, kind: role, org_member: false}
+    - {id: s, org_member: false}
+    - {id: u_uar}
+    - {id: x_uar, org_member: false}
+    - {id: u_perm}
+    - {id: x_perm, org_member: false}
+    - {id: u_team}
+    - {id: x_team, org_member: false}
+    - {id: u_grp}
+    - {id: x_grp, org_member: false}
+    - {id: u_role}
+    - {id: x_role, org_member: false}
+    - {id: u_src}
+    - {id: x_src, org_member: false}
+    - {id: u_rec}
+    - {id: x_rec, org_member: false}
+    - {id: u_rg}
+    - {id: x_rg, org_member: false}
+    - {id: u_org}
+    - {id: x_org, org_member: false}
+    nodes:
+    - {id: A, kind: app, created_by: c, access_limit: CREATOR}
+    - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A], inherits: [A]}
+    - {id: f, kind: record, connector: A, rule: OPEN, parents: [d], inherits: [d], vrid: same}
+    - {id: h, kind: record, connector: A, rule: RESTRICTED, parents: [d], inherits: [d]}
+    - {id: k, kind: record, connector: A, rule: STRICT, parents: [d]}
+    - {id: z, kind: record, connector: A, rule: OPEN, parents: [d], inherits: [d], deleted: true}
+    - {id: B, kind: app, created_by: c}
+    - {id: e, kind: group, connector: B, rule: OPEN, parents: [B], belongs: [B], inherits: [B]}
+    - {id: j, kind: record, connector: B, rule: OPEN, parents: [e], inherits: [e], vrid: same}
+    grants: [[u_perm, A], [u_rec, h], [u_rec, k], [u_rg, d], [u_perm, B], [u_rec, j], [u_rg, e], [x_perm, A], [x_rec, h], [x_rec, k], [x_rg, d], [x_perm, B], [x_rec, j], [x_rg, e], [g, A, GROUP], [g, B, GROUP], [r, A, ROLE], [r, B,
+        ROLE], [s, k], [s, j], [t, k], [g, h], [r, k], [org, A, ORG], [org, k, ORG], [org, h, ORGANIZATION], [org, j, ANYONE]]
+    memberships: [[u_team, t], [u_grp, g], [u_role, r], [x_team, t], [x_grp, g], [x_role, r]]
+    gates: [[u_uar, A], [u_uar, B], [x_uar, A], [x_uar, B], [t, A], [t, B], [i, A], [i, B], [cx, A]]
+    links: [[u_src, s, A], [u_src, s, B], [x_src, s, A], [x_src, s, B]]
+  expect:
+    verdicts:
+      c: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: deny, e: deny, j: deny}
+      m: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      i: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      cx: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_uar: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_uar: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_perm: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_perm: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_team: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_team: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_grp: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_grp: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_role: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_role: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_src: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_src: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_rec: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      x_rec: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_rg: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      x_rg: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_org: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      x_org: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+    cite:
+    - {viewer: c, vrid: same, record: f, indexed_only: false}
+    - {viewer: m, vrid: same, record: null, indexed_only: false}
+    - {viewer: u_uar, vrid: same, record: j, indexed_only: false}
+    - {viewer: x_uar, vrid: same, record: j, indexed_only: false}
+    - {viewer: u_src, vrid: same, record: j, indexed_only: false}
+    - {viewer: x_rec, vrid: same, record: null, indexed_only: false}
+  tags: [rules, access-limit, access-limit-matrix]
+  comment: 'Viewers: c the creator; m a member with no link; i an inactive member with a user-app edge; cx a creator-like user outside the org with a user-app edge; u_<kind> a member and x_<kind> a user outside the org, each holding
+    one link kind on both A and B (uar user-app edge, perm permission edge to the app, team/grp/role a membership whose team, group or role is linked to the app and holds record grants, src a linked source account holding grants, rec
+    record grants, rg a record-group grant, org the org-wide shares every member holds). B is never limited: its verdicts are the unlimited world''s.'
+- id: RULE-L17
+  title: 'Opened to the org before the model is written (no APP_LEVEL): every member passes the gate and reads by the record rules, no outsider passes'
+  source: 'licence gate design B (accessLimit): the read-side matrix'
+  rule: access-limit
+  world:
+    principals:
+    - {id: c}
+    - {id: m}
+    - {id: i, active: false}
+    - {id: cx, org_member: false}
+    - {id: t, kind: team, org_member: false}
+    - {id: g, kind: group, org_member: false}
+    - {id: r, kind: role, org_member: false}
+    - {id: s, org_member: false}
+    - {id: u_uar}
+    - {id: x_uar, org_member: false}
+    - {id: u_perm}
+    - {id: x_perm, org_member: false}
+    - {id: u_team}
+    - {id: x_team, org_member: false}
+    - {id: u_grp}
+    - {id: x_grp, org_member: false}
+    - {id: u_role}
+    - {id: x_role, org_member: false}
+    - {id: u_src}
+    - {id: x_src, org_member: false}
+    - {id: u_rec}
+    - {id: x_rec, org_member: false}
+    - {id: u_rg}
+    - {id: x_rg, org_member: false}
+    - {id: u_org}
+    - {id: x_org, org_member: false}
+    nodes:
+    - {id: A, kind: app, created_by: c, access_limit: ORG}
+    - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A], inherits: [A]}
+    - {id: f, kind: record, connector: A, rule: OPEN, parents: [d], inherits: [d], vrid: same}
+    - {id: h, kind: record, connector: A, rule: RESTRICTED, parents: [d], inherits: [d]}
+    - {id: k, kind: record, connector: A, rule: STRICT, parents: [d]}
+    - {id: z, kind: record, connector: A, rule: OPEN, parents: [d], inherits: [d], deleted: true}
+    - {id: B, kind: app, created_by: c}
+    - {id: e, kind: group, connector: B, rule: OPEN, parents: [B], belongs: [B], inherits: [B]}
+    - {id: j, kind: record, connector: B, rule: OPEN, parents: [e], inherits: [e], vrid: same}
+    grants: [[u_perm, A], [u_rec, h], [u_rec, k], [u_rg, d], [u_perm, B], [u_rec, j], [u_rg, e], [x_perm, A], [x_rec, h], [x_rec, k], [x_rg, d], [x_perm, B], [x_rec, j], [x_rg, e], [g, A, GROUP], [g, B, GROUP], [r, A, ROLE], [r, B,
+        ROLE], [s, k], [s, j], [t, k], [g, h], [r, k], [org, A, ORG], [org, k, ORG], [org, h, ORGANIZATION], [org, j, ANYONE]]
+    memberships: [[u_team, t], [u_grp, g], [u_role, r], [x_team, t], [x_grp, g], [x_role, r]]
+    gates: [[u_uar, A], [u_uar, B], [x_uar, A], [x_uar, B], [t, A], [t, B], [i, A], [i, B], [cx, A]]
+    links: [[u_src, s, A], [u_src, s, B], [x_src, s, A], [x_src, s, B]]
+  expect:
+    verdicts:
+      c: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: deny, e: deny, j: deny}
+      m: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: deny, e: deny, j: deny}
+      i: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: admit, e: admit, j: admit}
+      cx: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_uar: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: admit, e: admit, j: admit}
+      x_uar: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_perm: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: admit, e: admit, j: admit}
+      x_perm: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_team: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: admit, e: admit, j: admit}
+      x_team: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_grp: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: admit, e: admit, j: admit}
+      x_grp: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_role: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: admit, e: admit, j: admit}
+      x_role: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_src: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: admit, e: admit, j: admit}
+      x_src: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_rec: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: deny, e: deny, j: deny}
+      x_rec: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_rg: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: deny, e: deny, j: deny}
+      x_rg: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_org: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: deny, e: deny, j: deny}
+      x_org: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+    cite:
+    - {viewer: c, vrid: same, record: f, indexed_only: false}
+    - {viewer: m, vrid: same, record: f, indexed_only: false}
+    - {viewer: u_uar, vrid: same, record: f, indexed_only: false}
+    - {viewer: x_uar, vrid: same, record: j, indexed_only: false}
+    - {viewer: u_src, vrid: same, record: f, indexed_only: false}
+    - {viewer: x_rec, vrid: same, record: null, indexed_only: false}
+  tags: [rules, access-limit, access-limit-matrix]
+  comment: 'Viewers: c the creator; m a member with no link; i an inactive member with a user-app edge; cx a creator-like user outside the org with a user-app edge; u_<kind> a member and x_<kind> a user outside the org, each holding
+    one link kind on both A and B (uar user-app edge, perm permission edge to the app, team/grp/role a membership whose team, group or role is linked to the app and holds record grants, src a linked source account holding grants, rec
+    record grants, rg a record-group grant, org the org-wide shares every member holds). B is never limited: its verdicts are the unlimited world''s.'
+- id: RULE-L18
+  title: 'Limited to the creator, who is no longer active: the creator still passes (the limit reads userId alone), nobody else does'
+  source: 'licence gate design B (accessLimit): the read-side matrix'
+  rule: access-limit
+  world:
+    principals:
+    - {id: c}
+    - {id: m}
+    - {id: i, active: false}
+    - {id: cx, org_member: false}
+    - {id: t, kind: team, org_member: false}
+    - {id: g, kind: group, org_member: false}
+    - {id: r, kind: role, org_member: false}
+    - {id: s, org_member: false}
+    - {id: u_uar}
+    - {id: x_uar, org_member: false}
+    - {id: u_perm}
+    - {id: x_perm, org_member: false}
+    - {id: u_team}
+    - {id: x_team, org_member: false}
+    - {id: u_grp}
+    - {id: x_grp, org_member: false}
+    - {id: u_role}
+    - {id: x_role, org_member: false}
+    - {id: u_src}
+    - {id: x_src, org_member: false}
+    - {id: u_rec}
+    - {id: x_rec, org_member: false}
+    - {id: u_rg}
+    - {id: x_rg, org_member: false}
+    - {id: u_org}
+    - {id: x_org, org_member: false}
+    nodes:
+    - {id: A, kind: app, created_by: i, access_limit: CREATOR, model: APP_LEVEL}
+    - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A], inherits: [A]}
+    - {id: f, kind: record, connector: A, rule: OPEN, parents: [d], inherits: [d], vrid: same}
+    - {id: h, kind: record, connector: A, rule: RESTRICTED, parents: [d], inherits: [d]}
+    - {id: k, kind: record, connector: A, rule: STRICT, parents: [d]}
+    - {id: z, kind: record, connector: A, rule: OPEN, parents: [d], inherits: [d], deleted: true}
+    - {id: B, kind: app, created_by: c}
+    - {id: e, kind: group, connector: B, rule: OPEN, parents: [B], belongs: [B], inherits: [B]}
+    - {id: j, kind: record, connector: B, rule: OPEN, parents: [e], inherits: [e], vrid: same}
+    grants: [[u_perm, A], [u_rec, h], [u_rec, k], [u_rg, d], [u_perm, B], [u_rec, j], [u_rg, e], [x_perm, A], [x_rec, h], [x_rec, k], [x_rg, d], [x_perm, B], [x_rec, j], [x_rg, e], [g, A, GROUP], [g, B, GROUP], [r, A, ROLE], [r, B,
+        ROLE], [s, k], [s, j], [t, k], [g, h], [r, k], [org, A, ORG], [org, k, ORG], [org, h, ORGANIZATION], [org, j, ANYONE]]
+    memberships: [[u_team, t], [u_grp, g], [u_role, r], [x_team, t], [x_grp, g], [x_role, r]]
+    gates: [[u_uar, A], [u_uar, B], [x_uar, A], [x_uar, B], [t, A], [t, B], [i, A], [i, B], [cx, A]]
+    links: [[u_src, s, A], [u_src, s, B], [x_src, s, A], [x_src, s, B]]
+  expect:
+    verdicts:
+      c: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      m: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      i: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: admit, e: admit, j: admit}
+      cx: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_uar: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_uar: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_perm: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_perm: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_team: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_team: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_grp: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_grp: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_role: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_role: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_src: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_src: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_rec: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      x_rec: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_rg: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      x_rg: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_org: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      x_org: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+    cite:
+    - {viewer: c, vrid: same, record: null, indexed_only: false}
+    - {viewer: m, vrid: same, record: null, indexed_only: false}
+    - {viewer: u_uar, vrid: same, record: j, indexed_only: false}
+    - {viewer: x_uar, vrid: same, record: j, indexed_only: false}
+    - {viewer: u_src, vrid: same, record: j, indexed_only: false}
+    - {viewer: x_rec, vrid: same, record: null, indexed_only: false}
+  tags: [rules, access-limit, access-limit-matrix]
+  comment: 'Viewers: c the creator; m a member with no link; i an inactive member with a user-app edge; cx a creator-like user outside the org with a user-app edge; u_<kind> a member and x_<kind> a user outside the org, each holding
+    one link kind on both A and B (uar user-app edge, perm permission edge to the app, team/grp/role a membership whose team, group or role is linked to the app and holds record grants, src a linked source account holding grants, rec
+    record grants, rg a record-group grant, org the org-wide shares every member holds). B is never limited: its verdicts are the unlimited world''s.'
+- id: RULE-L19
+  title: 'Limited to the creator, who has no membership edge to the org: the creator still passes (the limit reads userId alone), nobody else does'
+  source: 'licence gate design B (accessLimit): the read-side matrix'
+  rule: access-limit
+  world:
+    principals:
+    - {id: c}
+    - {id: m}
+    - {id: i, active: false}
+    - {id: cx, org_member: false}
+    - {id: t, kind: team, org_member: false}
+    - {id: g, kind: group, org_member: false}
+    - {id: r, kind: role, org_member: false}
+    - {id: s, org_member: false}
+    - {id: u_uar}
+    - {id: x_uar, org_member: false}
+    - {id: u_perm}
+    - {id: x_perm, org_member: false}
+    - {id: u_team}
+    - {id: x_team, org_member: false}
+    - {id: u_grp}
+    - {id: x_grp, org_member: false}
+    - {id: u_role}
+    - {id: x_role, org_member: false}
+    - {id: u_src}
+    - {id: x_src, org_member: false}
+    - {id: u_rec}
+    - {id: x_rec, org_member: false}
+    - {id: u_rg}
+    - {id: x_rg, org_member: false}
+    - {id: u_org}
+    - {id: x_org, org_member: false}
+    nodes:
+    - {id: A, kind: app, created_by: cx, access_limit: CREATOR, model: APP_LEVEL}
+    - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A], inherits: [A]}
+    - {id: f, kind: record, connector: A, rule: OPEN, parents: [d], inherits: [d], vrid: same}
+    - {id: h, kind: record, connector: A, rule: RESTRICTED, parents: [d], inherits: [d]}
+    - {id: k, kind: record, connector: A, rule: STRICT, parents: [d]}
+    - {id: z, kind: record, connector: A, rule: OPEN, parents: [d], inherits: [d], deleted: true}
+    - {id: B, kind: app, created_by: c}
+    - {id: e, kind: group, connector: B, rule: OPEN, parents: [B], belongs: [B], inherits: [B]}
+    - {id: j, kind: record, connector: B, rule: OPEN, parents: [e], inherits: [e], vrid: same}
+    grants: [[u_perm, A], [u_rec, h], [u_rec, k], [u_rg, d], [u_perm, B], [u_rec, j], [u_rg, e], [x_perm, A], [x_rec, h], [x_rec, k], [x_rg, d], [x_perm, B], [x_rec, j], [x_rg, e], [g, A, GROUP], [g, B, GROUP], [r, A, ROLE], [r, B,
+        ROLE], [s, k], [s, j], [t, k], [g, h], [r, k], [org, A, ORG], [org, k, ORG], [org, h, ORGANIZATION], [org, j, ANYONE]]
+    memberships: [[u_team, t], [u_grp, g], [u_role, r], [x_team, t], [x_grp, g], [x_role, r]]
+    gates: [[u_uar, A], [u_uar, B], [x_uar, A], [x_uar, B], [t, A], [t, B], [i, A], [i, B], [cx, A]]
+    links: [[u_src, s, A], [u_src, s, B], [x_src, s, A], [x_src, s, B]]
+  expect:
+    verdicts:
+      c: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      m: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      i: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      cx: {A: admit, d: admit, f: admit, h: admit, k: admit, z: deny, B: deny, e: deny, j: deny}
+      u_uar: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_uar: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_perm: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_perm: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_team: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_team: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_grp: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_grp: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_role: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_role: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_src: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      x_src: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: admit, e: admit, j: admit}
+      u_rec: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      x_rec: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_rg: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      x_rg: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      u_org: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+      x_org: {A: deny, d: deny, f: deny, h: deny, k: deny, z: deny, B: deny, e: deny, j: deny}
+    cite:
+    - {viewer: c, vrid: same, record: null, indexed_only: false}
+    - {viewer: m, vrid: same, record: null, indexed_only: false}
+    - {viewer: u_uar, vrid: same, record: j, indexed_only: false}
+    - {viewer: x_uar, vrid: same, record: j, indexed_only: false}
+    - {viewer: u_src, vrid: same, record: j, indexed_only: false}
+    - {viewer: x_rec, vrid: same, record: null, indexed_only: false}
+  tags: [rules, access-limit, access-limit-matrix]
+  comment: 'Viewers: c the creator; m a member with no link; i an inactive member with a user-app edge; cx a creator-like user outside the org with a user-app edge; u_<kind> a member and x_<kind> a user outside the org, each holding
+    one link kind on both A and B (uar user-app edge, perm permission edge to the app, team/grp/role a membership whose team, group or role is linked to the app and holds record grants, src a linked source account holding grants, rec
+    record grants, rg a record-group grant, org the org-wide shares every member holds). B is never limited: its verdicts are the unlimited world''s.'
+- id: RULE-L20
+  title: A record of a limited connector filed in a knowledge base is not read through the knowledge base
+  source: 'licence gate design B (accessLimit): the read-side matrix'
+  rule: access-limit
+  world:
+    principals:
+    - {id: c}
+    - {id: o}
+    - {id: x, org_member: false}
+    nodes:
+    - {id: A, kind: app, model: APP_LEVEL, access_limit: CREATOR, created_by: c}
+    - {id: K, kind: app, app_type: KB, created_by: o}
+    - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+    - {id: f, kind: record, connector: A, rule: OPEN, parents: [K], belongs: [K], inherits: [K]}
+    - {id: f2, kind: record, connector: A, rule: OPEN, parents: [d, K], belongs: [K, A], inherits: [d, K]}
+    - {id: q, kind: record, connector: K, rule: OPEN, parents: [K], belongs: [K]}
+    grants: [[o, f], [o, f2], [x, f], [o, K], [x, K]]
+    gates: [[o, A]]
+  expect:
+    verdicts:
+      c: {A: admit, K: deny, d: admit, f: deny, f2: admit, q: deny}
+      o: {A: deny, K: admit, d: deny, f: deny, f2: deny, q: admit}
+      x: {A: deny, K: admit, d: deny, f: deny, f2: deny, q: admit}
+  tags: [rules, access-limit, access-limit-matrix]
+  comment: f is filed only in K; f2 in both. o is a member of K, holds grants on both records and a user-app edge to A; x shares K from outside the org.
+- id: RULE-L21
+  title: 'A knowledge base limited to its creator: no share, team share or org share admits anyone else'
+  source: 'licence gate design B (accessLimit): the read-side matrix'
+  rule: access-limit
+  world:
+    principals:
+    - {id: c}
+    - {id: o}
+    - {id: t, kind: team, org_member: false}
+    - {id: p}
+    nodes:
+    - {id: K, kind: app, app_type: KB, access_limit: CREATOR, created_by: c}
+    - {id: fo, kind: group, connector: K, rule: OPEN, parents: [K], belongs: [K]}
+    - {id: q, kind: record, connector: K, rule: OPEN, parents: [fo], belongs: [K]}
+    memberships: [[p, t]]
+    grants: [[o, q], [org, q, ORG], [o, K], [t, K, TEAM], [org, K, ORG]]
+  expect:
+    verdicts:
+      c: {K: admit, fo: admit, q: admit}
+      o: {K: deny, fo: deny, q: deny}
+      p: {K: deny, fo: deny, q: deny}
+  tags: [rules, access-limit, access-limit-matrix]
+  comment: o holds a share, p a team share, and the organization an org share of the knowledge base.
+- id: RULE-L22
+  title: 'Records and groups that cross connectors: a limited connector''s records under an open one stay closed, and the other way round'
+  source: 'licence gate design B (accessLimit): the read-side matrix'
+  rule: access-limit
+  world:
+    principals:
+    - {id: c}
+    - {id: o}
+    nodes:
+    - {id: A, kind: app, model: APP_LEVEL, access_limit: CREATOR, created_by: c}
+    - {id: B, kind: app, created_by: o}
+    - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A], inherits: [A]}
+    - {id: e, kind: group, connector: B, rule: OPEN, parents: [B], belongs: [B], inherits: [B]}
+    - {id: fa, kind: record, connector: A, rule: OPEN, parents: [e], inherits: [e], belongs: [e], vrid: two}
+    - {id: fb, kind: record, connector: A, rule: OPEN, parents: [d, e], inherits: [d, e]}
+    - {id: jb, kind: record, connector: B, rule: OPEN, parents: [d], inherits: [d], belongs: [d]}
+    - {id: jc, kind: record, connector: B, rule: OPEN, parents: [e], inherits: [e], vrid: two}
+    - {id: ja, kind: record, connector: B, rule: OPEN, parents: [fb], inherits: [fb]}
+    grants: [[o, fa], [o, fb], [o, d]]
+    gates: [[o, B], [o, A]]
+  expect:
+    verdicts:
+      c: {A: admit, B: deny, d: admit, e: deny, fa: deny, fb: admit, jb: deny, jc: deny, ja: deny}
+      o: {A: deny, B: admit, d: deny, e: admit, fa: deny, fb: deny, jb: deny, jc: admit, ja: admit}
+  tags: [rules, access-limit, access-limit-matrix]
+  comment: fa and fb are A's records under B's group e (o reaches B, the creator c only A); jb and ja are B's records under A's group d and record fb. fa and jc share content.
+# The membership edge and the user's own orgId disagree (RULE-L23 asked under org A, RULE-L24 the same facts asked under org B).
+- id: RULE-L23
+  title: 'A membership edge and the user''s own orgId disagree: asked under org A, the edge to the app''s own org decides, and an app of org B stays closed'
+  source: 'licence gate design B (accessLimit): the read-side matrix'
+  rule: access-limit
+  world:
+    principals:
+    - {id: u1, org: b}
+    - {id: u2, org_member: false, member_of: [b]}
+    - {id: m}
+    - {id: n, org: b, org_member: false, member_of: [b]}
+    nodes:
+    - {id: A1, kind: app, model: APP_LEVEL, access_limit: CREATOR, created_by: u1}
+    - {id: rA1, kind: record, connector: A1, rule: OPEN, parents: [A1], belongs: [A1], inherits: [A1]}
+    - {id: A2, kind: app, model: APP_LEVEL, access_limit: CREATOR, created_by: u2}
+    - {id: rA2, kind: record, connector: A2, rule: OPEN, parents: [A2], belongs: [A2], inherits: [A2]}
+    - {id: AO, kind: app, model: APP_LEVEL, access_limit: ORG, created_by: u1}
+    - {id: rAO, kind: record, connector: AO, rule: OPEN, parents: [AO], belongs: [AO], inherits: [AO]}
+    - {id: B1, kind: app, model: APP_LEVEL, access_limit: CREATOR, created_by: u1, org: b}
+    - {id: rB1, kind: record, connector: B1, rule: OPEN, parents: [B1], belongs: [B1], inherits: [B1], org: b}
+    - {id: B2, kind: app, model: APP_LEVEL, access_limit: CREATOR, created_by: u2, org: b}
+    - {id: rB2, kind: record, connector: B2, rule: OPEN, parents: [B2], belongs: [B2], inherits: [B2], org: b}
+    - {id: BO, kind: app, model: APP_LEVEL, access_limit: ORG, created_by: u2, org: b}
+    - {id: rBO, kind: record, connector: BO, rule: OPEN, parents: [BO], belongs: [BO], inherits: [BO], org: b}
+    gates: [[u1, A1], [u1, A2], [u1, AO], [u1, B1], [u1, B2], [u1, BO], [u2, A1], [u2, A2], [u2, AO], [u2, B1], [u2, B2], [u2, BO], [m, A1], [m, A2], [m, AO], [m, B1], [m, B2], [m, BO], [n, A1], [n, A2], [n, AO], [n, B1], [n, B2], [
+        n, BO]]
+  expect:
+    verdicts:
+      u1: {A1: admit, rA1: admit, A2: deny, rA2: deny, AO: admit, rAO: admit, B1: deny, rB1: deny, B2: deny, rB2: deny, BO: deny, rBO: deny}
+      u2: {A1: deny, rA1: deny, A2: admit, rA2: admit, AO: deny, rAO: deny, B1: deny, rB1: deny, B2: deny, rB2: deny, BO: deny, rBO: deny}
+      m: {A1: deny, rA1: deny, A2: deny, rA2: deny, AO: admit, rAO: admit, B1: deny, rB1: deny, B2: deny, rB2: deny, BO: deny, rBO: deny}
+      n: {A1: deny, rA1: deny, A2: deny, rA2: deny, AO: deny, rAO: deny, B1: deny, rB1: deny, B2: deny, rB2: deny, BO: deny, rBO: deny}
+  tags: [rules, access-limit, access-limit-matrix, org-isolation]
+  comment: Asked under org A (the world's org). u1's orgId names B and its membership edge points to A; u2 the reverse; m belongs to A, n to B, each with a matching orgId. A1, B1 are limited to u1, A2, B2 to u2, AO and BO open to their
+    org. Every user holds a user-app link to every app.
+- id: RULE-L24
+  title: 'A membership edge and the user''s own orgId disagree: asked under org B, the edge to the app''s own org decides, and an app of org A stays closed'
+  source: 'licence gate design B (accessLimit): the read-side matrix'
+  rule: access-limit
+  world:
+    principals:
+    - {id: u1, org_member: false, member_of: [a]}
+    - {id: u2, org: a}
+    - {id: m, org: a, org_member: false, member_of: [a]}
+    - {id: n}
+    nodes:
+    - {id: A1, kind: app, model: APP_LEVEL, access_limit: CREATOR, created_by: u1, org: a}
+    - {id: rA1, kind: record, connector: A1, rule: OPEN, parents: [A1], belongs: [A1], inherits: [A1], org: a}
+    - {id: A2, kind: app, model: APP_LEVEL, access_limit: CREATOR, created_by: u2, org: a}
+    - {id: rA2, kind: record, connector: A2, rule: OPEN, parents: [A2], belongs: [A2], inherits: [A2], org: a}
+    - {id: AO, kind: app, model: APP_LEVEL, access_limit: ORG, created_by: u1, org: a}
+    - {id: rAO, kind: record, connector: AO, rule: OPEN, parents: [AO], belongs: [AO], inherits: [AO], org: a}
+    - {id: B1, kind: app, model: APP_LEVEL, access_limit: CREATOR, created_by: u1}
+    - {id: rB1, kind: record, connector: B1, rule: OPEN, parents: [B1], belongs: [B1], inherits: [B1]}
+    - {id: B2, kind: app, model: APP_LEVEL, access_limit: CREATOR, created_by: u2}
+    - {id: rB2, kind: record, connector: B2, rule: OPEN, parents: [B2], belongs: [B2], inherits: [B2]}
+    - {id: BO, kind: app, model: APP_LEVEL, access_limit: ORG, created_by: u2}
+    - {id: rBO, kind: record, connector: BO, rule: OPEN, parents: [BO], belongs: [BO], inherits: [BO]}
+    gates: [[u1, A1], [u1, A2], [u1, AO], [u1, B1], [u1, B2], [u1, BO], [u2, A1], [u2, A2], [u2, AO], [u2, B1], [u2, B2], [u2, BO], [m, A1], [m, A2], [m, AO], [m, B1], [m, B2], [m, BO], [n, A1], [n, A2], [n, AO], [n, B1], [n, B2], [
+        n, BO]]
+  expect:
+    verdicts:
+      u1: {A1: deny, rA1: deny, A2: deny, rA2: deny, AO: deny, rAO: deny, B1: admit, rB1: admit, B2: deny, rB2: deny, BO: deny, rBO: deny}
+      u2: {A1: deny, rA1: deny, A2: deny, rA2: deny, AO: deny, rAO: deny, B1: deny, rB1: deny, B2: admit, rB2: admit, BO: admit, rBO: admit}
+      m: {A1: deny, rA1: deny, A2: deny, rA2: deny, AO: deny, rAO: deny, B1: deny, rB1: deny, B2: deny, rB2: deny, BO: deny, rBO: deny}
+      n: {A1: deny, rA1: deny, A2: deny, rA2: deny, AO: deny, rAO: deny, B1: deny, rB1: deny, B2: deny, rB2: deny, BO: admit, rBO: admit}
+  tags: [rules, access-limit, access-limit-matrix, org-isolation]
+  comment: Asked under org B (the world's org). u1's orgId names B and its membership edge points to A; u2 the reverse; m belongs to A, n to B, each with a matching orgId. A1, B1 are limited to u1, A2, B2 to u2, AO and BO open to their
+    org. Every user holds a user-app link to every app.
+

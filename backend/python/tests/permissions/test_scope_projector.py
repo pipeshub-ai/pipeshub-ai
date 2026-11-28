@@ -400,7 +400,7 @@ async def test_a_non_open_node_between_a_record_and_its_seed_makes_union_and_ove
 async def test_a_parentless_granted_open_node_is_a_seed_and_what_hangs_below_it_is_not_stamped_union() -> None:
     """A STRICT record under a granted OPEN ancestor that reaches nothing: the grant makes that ancestor a seed, but the walk
     does not carry the STRICT record below it, so a path stamp through the seed would admit it to the seed's readers."""
-    world = retyped(gen.generate("proptest", 1414213, 200)[78], "DRIVE WORKSPACE")
+    world = retyped(gen.generate("proptest", 1414213, 200, access_limits=False)[78], "DRIVE WORKSPACE")
     layer, oracle = OracleScopeLayer(), OracleLayer()
     projected = await project(world)
     nodes = [n.id for n in world.nodes]
@@ -417,7 +417,7 @@ async def test_a_record_below_a_readable_seed_is_admitted_whatever_restricts_the
     """Generated world 116 of the adversarial generator at seed 20261024, typed as a Drive connector: `A-c1` is OPEN under the seed
     `A-c0` (granted, with the restricted `A-s0` above it). Its reader of the seed reads it (R10) although `A-s0` is excluded, so the Union
     stamp carries the seed in `aclScope`."""
-    world = retyped(gen.generate("adversarial", 20261024, 200)[116], "DRIVE WORKSPACE")
+    world = retyped(gen.generate("adversarial", 20261024, 200, access_limits=False)[116], "DRIVE WORKSPACE")
     projected = await project(world)
     fields = projected["A-c1"].fields
     assert fields.stamp is Stamp.UNION and {"A-c1", "A-c0"} <= set(fields.acl_scope)
@@ -435,7 +435,7 @@ async def test_a_record_moved_into_a_group_level_group_under_a_seed_the_walk_can
     from . import mutations
     from .model import Mutation
 
-    world = mutations.apply(retyped(gen.generate("adversarial", 2091, 1)[0], "SHAREPOINT"), Mutation("moved", "A-c9", "A-c6", "A-c6"))
+    world = mutations.apply(retyped(gen.generate("adversarial", 2091, 1, access_limits=False)[0], "SHAREPOINT"), Mutation("moved", "A-c9", "A-c6", "A-c6"))
     projected = await project(world)
     stamped = as_stamped(world, projected)
     layer, oracle = OracleScopeLayer(), OracleLayer()

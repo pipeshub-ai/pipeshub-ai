@@ -2946,6 +2946,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         user_id: str,
         transaction: str | None = None,
+        *,
+        org_id: str | None = None,
     ) -> list[str]:
         """Return the ``_key`` list of team-scoped apps this user may access.
 
@@ -3001,7 +3003,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         // A limited connector is listed for whom its limit admits, whatever edges exist (the gate, _kh_gate_aql).
         LET limited_keys = (
             FOR app IN {CollectionNames.APPS.value}
-                FILTER app.scope == @team_scope AND app.orgId == user_doc.orgId AND app.accessLimit != null
+                // Of the request's org (org_id; the user's own orgId only when none is given): membership is the edge to that org.
+                FILTER app.scope == @team_scope AND app.orgId == (@org_id != null ? @org_id : user_doc.orgId) AND app.accessLimit != null
                 FILTER {_aql_limit_admits("app", "user_doc")}
                 RETURN app._key
         )
@@ -3010,7 +3013,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         results = await self.execute_query(
             query,
-            bind_vars={"user_id": user_id, "team_scope": "team"},
+            bind_vars={"user_id": user_id, "team_scope": "team", "org_id": org_id},
             transaction=transaction,
         )
         return results or []
@@ -3101,7 +3104,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 bind_vars["team_scope"] = "team"
                 if not is_admin:
                     accessible_team_keys = await self._get_user_accessible_team_app_keys(
-                        user_id, transaction
+                        user_id, transaction, org_id=org_id
                     )
                     if not accessible_team_keys:
                         self.logger.info(

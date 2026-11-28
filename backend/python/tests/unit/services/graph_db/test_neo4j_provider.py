@@ -4033,7 +4033,7 @@ class TestNeo4jGetFilteredConnectorInstances:
         )
         assert total == 2
         assert len(docs) == 2
-        neo4j_provider._get_user_accessible_team_app_ids.assert_awaited_once_with("user1", None)
+        neo4j_provider._get_user_accessible_team_app_ids.assert_awaited_once_with("user1", None, org_id="org1")  # under the request's org
 
     @pytest.mark.asyncio
     async def test_team_scope_non_admin_empty_ids_logs_warning(self, neo4j_provider: Neo4jProvider):

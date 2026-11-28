@@ -181,7 +181,8 @@ def _rows(cls: Callable[..., T], entries: Iterable[object], names: tuple[str, ..
 def world_from_data(data: Data) -> World:
     _check_keys(data, (*_WORLD_KEYS, "name", "comment"), "world")
     return World(
-        principals=tuple(_from_fields(Principal, p, "principal") for p in data.get("principals", ())),  # type: ignore[attr-defined]
+        principals=tuple(_from_fields(Principal, {**p, **({"member_of": tuple(p["member_of"])} if "member_of" in p else {})}, "principal")  # type: ignore[arg-type]
+                         for p in data.get("principals", ())),  # type: ignore[attr-defined]
         nodes=tuple(_node(n) for n in data.get("nodes", ())),  # type: ignore[attr-defined]
         grants=_rows(Grant, data.get("grants", ()), ("grantee", "node", "type", "role")),  # type: ignore[arg-type]
         memberships=_rows(Membership, data.get("memberships", ()), ("member", "group", "type", "edge")),  # type: ignore[arg-type]

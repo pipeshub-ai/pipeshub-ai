@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from .model import World
 
 KNOWN_RULES = (None, "OPEN", "STRICT", "RESTRICTED", "PARENT_AND_GRANT")
+KNOWN_LIMITS = (None, "CREATOR", "ORG")  # App.accessLimit as Arango's app schema takes it; it refuses any other value
 # The permission-type values Arango's edge schema accepts (schema/arango/edges.py); ANYONE is not one of them.
 ARANGO_GRANT_TYPES = {None, "USER", "GROUP", "DOMAIN", "TEAM", "ORG", "ROLE", "ORGANIZATION"}
 LoadFn = Callable[[list, list], Awaitable[None]]
@@ -40,10 +41,11 @@ UnloadFn = Callable[[list[str]], Awaitable[None]]
 
 
 def arango_graph(graph: Graph) -> Graph:
-    """The graph as Arango stores it: also without a node whose accessRule is unknown, and without a
-    permission edge whose type its edge schema rejects."""
+    """The graph as Arango stores it: also without a node whose accessRule is unknown, an app whose accessLimit its schema
+    refuses, and a permission edge whose type its edge schema rejects."""
     nodes, edges = arango_shape(graph["nodes"], graph["edges"])
-    bad = {n["id"] for n in nodes if n["props"].get("accessRule") not in KNOWN_RULES}
+    bad = {n["id"] for n in nodes if n["props"].get("accessRule") not in KNOWN_RULES
+           or (n["kind"] == "App" and n["props"].get("accessLimit") not in KNOWN_LIMITS)}
     return {
         "nodes": [n for n in nodes if n["id"] not in bad],
         "edges": [e for e in edges if e["from"] not in bad and e["to"] not in bad

@@ -96,16 +96,19 @@ def walk_ancestors(
 def filter_accessible_prefix(
     trail: Sequence[Mapping[str, Any]],
     accessible_ids: set[str],
+    own_app: str | None = None,
 ) -> list[Mapping[str, Any]]:
     """Keep the accessible prefix from the root; break at the first denied node.
 
-    App segments need no check (retrieval ACL already verified app access).
+    The record's own app needs no check (retrieval ACL already verified app access);
+    another connector's app the trail climbs into is kept only when accessible. With
+    ``own_app`` unknown every app segment is taken as the record's own.
     Depth-cap and permission truncation render identically (no marker), so a
     short trail never reveals that a denied ancestor exists.
     """
     prefix: list[Mapping[str, Any]] = []
     for seg in trail:
-        if seg.get("type") == "app" or seg.get("id") in accessible_ids:
+        if seg.get("id") in accessible_ids or (seg.get("type") == "app" and own_app in (None, seg.get("id"))):
             prefix.append(seg)
         else:
             break
@@ -191,13 +194,14 @@ async def resolve_ancestor_locations(
             rid: walk_ancestors(rid, adjacency, max_depth=max_depth) for rid in ids
         }
 
-        # Unique non-app ancestors needing KH permission_role checks.
+        own = {rid: _app_of((record_docs or {}).get(rid)) for rid in ids}
+        # Unique ancestors needing KH permission_role checks: every one but the record's own app.
         seen: set[str] = set()
         candidates: list[dict[str, str]] = []
-        for trail in trails.values():
+        for rid, trail in trails.items():
             for seg in trail:
                 seg_id = seg.get("id")
-                if not seg_id or seg.get("type") == "app" or seg_id in seen:
+                if not seg_id or (seg.get("type") == "app" and own[rid] in (None, seg_id)) or seg_id in seen:
                     continue
                 seen.add(seg_id)
                 candidates.append({"id": seg_id, "type": seg.get("type") or "record"})
@@ -230,7 +234,7 @@ async def resolve_ancestor_locations(
 
         result: dict[str, str] = {}
         for rid, trail in trails.items():
-            shown = filter_accessible_prefix(trail, accessible)
+            shown = filter_accessible_prefix(trail, accessible, own[rid])
             if connection_limit is not None:
                 shown = keep_inside_limit(shown, connection_limit, _app_of((record_docs or {}).get(rid)))
             rendered = render_trail(shown)
