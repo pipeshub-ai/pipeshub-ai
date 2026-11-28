@@ -33,6 +33,9 @@ const JWT_SECRET = 'notification-socket-jwt-secret';
 interface NotificationServiceInternals {
   io: SocketServer | null;
   sessionRefusal: sinon.SinonStub;
+  connectedUsers: Set<string>;
+  notificationQueue: Map<string, unknown[]>;
+  queueNotification(userId: string, event: string, data: unknown): void;
 }
 const RECORD_SEPARATOR = '\x1e';
 
@@ -413,13 +416,17 @@ describe('NotificationService over a real socket', () => {
       expect(await carolSocket.nextEvent()).to.deep.equal(['notification', { last: true }]);
     });
 
-    it('holds nothing for a user who is offline: the stored notification is fetched on connect', async () => {
-      expect(service.sendToUser(alice.userId, 'notification', { offline: true })).to.be.true;
+    it('holds notifications for a user who is offline and delivers them in order on connect', async () => {
+      // With Redis another replica may hold the user's socket, so each also goes out through Redis (true).
+      expect(service.sendToUser(alice.userId, 'notification', { n: 1 })).to.be.true;
+      expect(service.sendToUser(alice.userId, 'notification', { n: 2 })).to.be.true;
+      expect(internals().notificationQueue.get(alice.userId)).to.have.length(2);
 
       const aliceSocket = await connectAs(alice);
-      service.sendToUser(alice.userId, 'notification', { online: true });
 
-      expect(await aliceSocket.nextEvent()).to.deep.equal(['notification', { online: true }]);
+      expect(await within(1000, aliceSocket.nextEvent())).to.deep.equal(['notification', { n: 1 }]);
+      expect(await within(1000, aliceSocket.nextEvent())).to.deep.equal(['notification', { n: 2 }]);
+      expect(internals().notificationQueue.has(alice.userId)).to.equal(false);
     });
 
     describe('a scheduled notification (visibleAt ahead)', () => {
@@ -434,6 +441,7 @@ describe('NotificationService over a real socket', () => {
 
       it('is not delivered to a user who connects later', async () => {
         expect(service.sendToUser(alice.userId, 'newNotification', { id: 'scheduled', visibleAt: future() })).to.be.false;
+        expect(internals().notificationQueue.has(alice.userId)).to.equal(false);
         const aliceSocket = await connectAs(alice);
         expect(service.sendToUser(alice.userId, 'newNotification', { id: 'plain' })).to.be.true;
         expect(await within(1000, aliceSocket.nextEvent())).to.deep.equal(['newNotification', { id: 'plain' }]);
@@ -849,6 +857,68 @@ describe('NotificationService without a Redis server (REDIS_MODE=postgres)', () 
     expect(createPubSubClient.called).to.equal(false);
     const io = (service as unknown as NotificationServiceInternals).io;
     expect(io?.of('/').adapter.constructor.name).to.equal('Adapter');
+  });
+
+  // Main's offline queue, as main pins it: one process, where a user with no socket here has none anywhere.
+  describe('holds notifications for a user who is offline', () => {
+    const internals = (): NotificationServiceInternals => service as unknown as NotificationServiceInternals;
+    const alice = { userId: 'user-alice', orgId: 'org-1', role: 'member' };
+    let base: string;
+    let intervalSpy: sinon.SinonSpy;
+
+    async function connectAs(claims: Record<string, unknown>) {
+      const c = new PollingClient(base);
+      clients.push(c);
+      const reply = await c.connect({ token: sessionToken(claims) });
+      expect(reply.startsWith('40{'), reply).to.be.true;
+      return c;
+    }
+
+    beforeEach(() => {
+      intervalSpy = sinon.spy(global, 'setInterval');
+      service.initialize(server);
+      base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    });
+
+    it('holds notifications for a user who is offline and delivers them in order on connect', async () => {
+      expect(service.sendToUser(alice.userId, 'notification', { n: 1 })).to.be.false;
+      expect(service.sendToUser(alice.userId, 'notification', { n: 2 })).to.be.false;
+
+      const aliceSocket = await connectAs(alice);
+
+      expect(await within(1000, aliceSocket.nextEvent())).to.deep.equal(['notification', { n: 1 }]);
+      expect(await within(1000, aliceSocket.nextEvent())).to.deep.equal(['notification', { n: 2 }]);
+    });
+
+    it('a scheduled notification is not put in the queue of an offline user, and is not delivered when they connect', async () => {
+      const future = new Date(Date.now() + 3600_000).toISOString();
+      expect(service.sendToUser(alice.userId, 'newNotification', { id: 'scheduled', visibleAt: future })).to.be.false;
+      expect(internals().notificationQueue.has(alice.userId)).to.equal(false);
+      expect(service.sendToUser(alice.userId, 'newNotification', { id: 'plain' })).to.be.false;
+      expect(internals().notificationQueue.get(alice.userId)).to.have.length(1);
+      const aliceSocket = await connectAs(alice);
+      expect(await within(1000, aliceSocket.nextEvent())).to.deep.equal(['newNotification', { id: 'plain' }]);
+    });
+
+    it('goes back to holding notifications once the user disconnects', async () => {
+      const aliceSocket = await connectAs(alice);
+      await aliceSocket.close();
+
+      await waitFor(() => internals().connectedUsers.has(alice.userId) === false);
+      expect(service.sendToUser(alice.userId, 'notification', { later: true })).to.be.false;
+      expect(internals().notificationQueue.get(alice.userId)).to.have.length(1);
+    });
+
+    it('delivers anything still queued for an online user on the next queue pass', async () => {
+      const aliceSocket = await connectAs(alice);
+      internals().queueNotification(alice.userId, 'notification', { retried: true });
+      const queuePass = intervalSpy.getCalls().find((c) => c.args[1] === 5000)!.args[0];
+
+      queuePass();
+
+      expect(await aliceSocket.nextEvent()).to.deep.equal(['notification', { retried: true }]);
+      expect(internals().notificationQueue.has(alice.userId)).to.be.false;
+    });
   });
 
   it('still delivers to a signed-in user on this process', async () => {
