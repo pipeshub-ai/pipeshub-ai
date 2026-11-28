@@ -295,11 +295,13 @@ function rows become warnings (`kernel.rls_warnings`) and that one snapshot line
 **An administrator that is not a superuser** (a managed service's master user: `LOGIN CREATEROLE CREATEDB`, no SUPERUSER,
 BYPASSRLS or REPLICATION) can run `db.bootstrap_roles` when it owns the database and the platform installs the extensions (`vector`,
 `pg_trgm`) into schema `ext` owned by `pipeshub_owner`. `kernel.bootstrap_admin()` names it: the database owner when it is such a role
-and not one of ours or a predefined one (prefixes compared literally). An owner with BYPASSRLS or REPLICATION, or without CREATEDB, is
-not it: it stays an actor and checks 22 and 41 report it. The checks treat the administrator as they treat the bootstrap superuser:
+(all of `LOGIN`, `CREATEROLE` and `CREATEDB`; none of SUPERUSER, BYPASSRLS and REPLICATION) and not one of ours or a predefined one
+(prefixes compared literally). Any other owner is not it and stays an actor: check 22 reports its BYPASSRLS, and check 41 reports
+the CREATEROLE, CREATEDB or REPLICATION it holds (for example an owner with CREATEROLE but no CREATEDB, or one that cannot log in). The checks treat the administrator as they treat the bootstrap superuser:
 it is not an application actor; the ADMIN-only memberships PostgreSQL 16+ gives it on every role it created, and its memberships of
 roles that are not ours (a platform's own administrative role), are accepted (checks 18 and 37); its surface lines are compared under
-the superuser's token, and the lines of the platform roles it holds are left to the semantic checks; check 43 reports PUBLIC's access
+the superuser's token, and the lines of the platform roles it holds (NOLOGIN groups with none of the attributes checks 22 and 41
+are about, or predefined roles) are left to the semantic checks; check 43 reports PUBLIC's access
 to the large-object functions as a warning, as on a declared managed platform. Everything else is unchanged: a role that reaches the
 administrator is still an actor holding what it reaches; the administrator holding one of our roles with INHERIT or SET is a violation
 (`37 bootstrap administrator holds an application role`); an actor's own grant on a large-object function is still check 43, on a

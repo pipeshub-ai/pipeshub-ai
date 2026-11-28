@@ -237,36 +237,42 @@ def live_lines(conn: psycopg.Connection) -> list[str]:
     if admin is None:
         return sorted(normalise(out, superuser))
     # A managed platform's administrator stands where the bootstrap superuser does. Its own role line, the ADMIN-only memberships
-    # PostgreSQL 16+ gives it on every role it created, its memberships of roles that are not ours, and those roles' own lines (the
-    # platform's administrative roles) are left to the semantic checks (check 37 accepts exactly those memberships); every other line
-    # naming it is compared under the superuser's token. The lines to leave out are rendered by the queries that render them in the
-    # surface, so a name that needs quoting matches too.
+    # PostgreSQL 16+ gives it on every role it created, and its memberships and the role lines of the platform roles it holds
+    # (_PLATFORM_ROLE) are left to the semantic checks; every other line naming it is compared under the superuser's token. A role
+    # line is matched up to its first field ("role <name> login="), so a longer name that starts with a listed one stays. The lines
+    # to leave out are rendered by the queries that render them in the surface, so a name that needs quoting matches too.
     raw, rendered = admin
     members = {"member " + line for (line,) in conn.execute(_ADMIN_MEMBERS)}
     roles = (raw, *(r for (r,) in conn.execute(_PLATFORM_ROLES)))
-    out = [x for x in out if x not in members and not x.startswith(tuple(f"role {r} " for r in roles))]
+    out = [x for x in out if x not in members and not x.startswith(tuple(f"role {r} login=" for r in roles))]
     return sorted(normalise(out, superuser, raw, rendered))
 
 
-# The administrator's memberships the semantic checks accept, as the "member" query renders them (kernel_0024, check 37).
-_ADMIN_MEMBERS = """SELECT m.member::regrole || ' -> ' || m.roleid::regrole || ' inherit=' || m.inherit_option || ' set=' || m.set_option
+# A platform role: not ours, and either a predefined role or a NOLOGIN group with none of the attributes checks 22 and 41 are about
+# (a login, or an attribute, keeps its lines in the surface: nothing else would report a role the administrator holds that can log in).
+_PLATFORM_ROLE = """NOT starts_with(r.rolname::text, s.role_prefix) AND (starts_with(r.rolname::text, 'pg_') OR (NOT r.rolcanlogin
+      AND NOT (r.rolsuper OR r.rolbypassrls OR r.rolreplication OR r.rolcreaterole OR r.rolcreatedb)))"""
+
+# The administrator's memberships left to the semantic checks, as the "member" query renders them: the ADMIN-only grants on the roles it
+# created (kernel_0024, checks 18 and 37), and its memberships of platform roles.
+_ADMIN_MEMBERS = f"""SELECT m.member::regrole || ' -> ' || m.roleid::regrole || ' inherit=' || m.inherit_option || ' set=' || m.set_option
         || ' admin=' || m.admin_option FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid, kernel.settings s
     WHERE m.member = kernel.bootstrap_admin()
-      AND ((m.admin_option AND NOT m.inherit_option AND NOT m.set_option) OR NOT starts_with(r.rolname::text, s.role_prefix))"""
+      AND ((m.admin_option AND NOT m.inherit_option AND NOT m.set_option) OR ({_PLATFORM_ROLE}))"""
 
-
-# Roles the administrator holds (with INHERIT or SET: not one it merely created) that are not ours or predefined: the platform's own
-# administrative roles, as the role query renders them. A role the administrator only created still shows in the surface.
-_PLATFORM_ROLES = """SELECT r.rolname FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid, kernel.settings s
-    WHERE m.member = kernel.bootstrap_admin() AND (m.inherit_option OR m.set_option)
-      AND NOT starts_with(r.rolname::text, s.role_prefix) AND NOT starts_with(r.rolname::text, 'pg_')"""
+# The platform roles the administrator holds (with INHERIT or SET: not one it merely created), as the role query renders them. A role
+# the administrator only created, or one that can log in or holds an attribute, still shows in the surface.
+_PLATFORM_ROLES = f"""SELECT r.rolname FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid, kernel.settings s
+    WHERE m.member = kernel.bootstrap_admin() AND (m.inherit_option OR m.set_option) AND NOT starts_with(r.rolname::text, 'pg_')
+      AND {_PLATFORM_ROLE}"""
 
 
 def normalise(lines: Iterable[str], superuser: str, *also: str) -> set[str]:
     """Replace the bootstrap superuser's name (whatever the deployment calls it), and each name in ``also``, by a fixed token, in
     one pass: a token written for one name is never read again for another (an administrator called ``bootstrap``)."""
     names = sorted({superuser, *also}, key=len, reverse=True)
-    token = re.compile(r'(?<![\w"])(?:' + "|".join(re.escape(n) for n in names) + r')(?![\w"])')
+    # (?!=): a name followed by '=' is a field label (owner=, admin=), never a role value
+    token = re.compile(r'(?<![\w"])(?:' + "|".join(re.escape(n) for n in names) + r')(?![\w"=])')
     return {token.sub(BOOTSTRAP_SUPERUSER, x) for x in lines}
 
 
@@ -366,8 +372,8 @@ def violations(conn: psycopg.Connection, extra: Iterable[str] = ()) -> list[tupl
         expected = {x for x in expected if not x.startswith("lofunctions ")}
     live = set(live_lines(conn))
     for role in _window_roles(conn) | _migration_roles(conn):
-        live = {x for x in live if not x.startswith(f"role {role} ")}
-        expected = {x for x in expected if not x.startswith(f"role {role} ")}
+        live = {x for x in live if not x.startswith(f"role {role} login=")}
+        expected = {x for x in expected if not x.startswith(f"role {role} login=")}
     return diff(live, expected)
 
 

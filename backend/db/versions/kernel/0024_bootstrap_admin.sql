@@ -1,7 +1,7 @@
 -- A managed PostgreSQL hands out an administrator that is not a superuser: it can create roles and databases (CREATEROLE, CREATEDB)
 -- and owns the database, and the platform's own superuser installs the allow-listed extensions. The checks treat that administrator
 -- as they treat the bootstrap superuser:
--- * kernel.bootstrap_admin() names it: the owner of this database when it is not a superuser, holds CREATEROLE and CREATEDB, has
+-- * kernel.bootstrap_admin() names it: the owner of this database when it can log in, is not a superuser, holds CREATEROLE and CREATEDB, has
 --   neither BYPASSRLS nor REPLICATION (it then stays an actor, and checks 22 and 41 report it) and is neither one of our roles nor a
 --   predefined one (prefixes compared literally). Otherwise NULL (a superuser bootstrap has none).
 -- * It is not an application actor (as superusers are not). On PostgreSQL 16 and later it holds ADMIN on every role it created,
@@ -16,7 +16,7 @@
 CREATE FUNCTION kernel.bootstrap_admin() RETURNS oid
 LANGUAGE sql STABLE SET search_path = pg_catalog, kernel, pg_temp AS $$
   SELECT r.oid FROM pg_database d JOIN pg_roles r ON r.oid = d.datdba, kernel.settings s
-  WHERE d.datname = current_database() AND NOT r.rolsuper AND r.rolcreaterole AND r.rolcreatedb
+  WHERE d.datname = current_database() AND r.rolcanlogin AND NOT r.rolsuper AND r.rolcreaterole AND r.rolcreatedb
     AND NOT r.rolbypassrls AND NOT r.rolreplication          -- these two reach around row security: such an owner stays checked
     AND NOT starts_with(r.rolname::text, s.role_prefix) AND NOT starts_with(r.rolname::text, 'pg_') $$;
 REVOKE ALL ON FUNCTION kernel.bootstrap_admin() FROM PUBLIC;

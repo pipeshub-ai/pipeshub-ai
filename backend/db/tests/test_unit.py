@@ -908,3 +908,9 @@ def test_lint_reads_backslash_escapes_in_an_e_string(tmp_path, sql, flagged):
     py = tmp_path / "0003_x.py"
     py.write_text('revision = "graph_0003"\n\n\ndef upgrade():\n    op.execute(' + repr(sql) + ')\n')
     assert any("may DROP INDEX" in m for m in lint.lint_revision(py, {"graph": 2})) is flagged, sql
+
+
+def test_normalise_leaves_field_labels_that_match_a_name():
+    from db import surface
+    assert surface.normalise(["database owner=owner", "role owner login=true", "member owner -> x admin=true"], "postgres", "owner") == {
+        "database owner=<bootstrap-superuser>", "role <bootstrap-superuser> login=true", "member <bootstrap-superuser> -> x admin=true"}

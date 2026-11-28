@@ -17,7 +17,7 @@ pytestmark = pytest.mark.postgres
 ADMIN = "platform_admin"
 DB = "t_managed_admin"
 ADMIN_ATTRS = "LOGIN CREATEROLE CREATEDB NOSUPERUSER NOBYPASSRLS"
-PROBES = ("probe_actor", "probe_provider_admin")
+PROBES = ("probe_actor", "probe_provider_admin", "platform_admin extra")
 
 
 def _ident(name: str) -> sql.Composable:
@@ -81,7 +81,8 @@ def test_a_non_superuser_administrator_bootstraps_and_migrates_with_every_check_
 # Names that a pattern, a quoting rule or a token substitution could get wrong: '_' is a LIKE wildcard ('pipeshubx_admin' matched
 # 'pipeshub_%'), a name that needs quoting renders differently in the role line and in regrole text, and 'bootstrap' occurs in the
 # superuser's token itself.
-@pytest.mark.parametrize("admin", ["pipeshubx_admin", "Platform Admin", "bootstrap"])
+# ... and 'owner' is also a field label in surface lines ('database owner=...').
+@pytest.mark.parametrize("admin", ["pipeshubx_admin", "Platform Admin", "bootstrap", "owner"])
 def test_any_administrator_name_passes(cluster, admin):
     with _managed(cluster, admin) as (c, name):
         r = _migrate(c, name)
@@ -150,3 +151,33 @@ def test_a_role_the_administrator_only_created_is_still_in_the_surface(managed):
         c.execute("CREATE ROLE probe_actor LOGIN")
     found = _violations(cluster, name)
     assert [v for v in found if v[0] == "50 surface: unexpected" and v[1].startswith("role probe_actor ")], found
+
+
+def test_an_owner_that_cannot_log_in_is_not_the_administrator(managed):
+    cluster, name = managed
+    assert _migrate(cluster, name).returncode == 0
+    with cluster.admin() as su:
+        su.execute(f"ALTER ROLE {ADMIN} NOLOGIN")
+    assert ("41 role holds CREATEROLE", ADMIN) in _violations(cluster, name)
+
+
+def test_a_role_whose_name_extends_the_administrators_is_still_in_the_surface(managed):
+    cluster, name = managed
+    assert _migrate(cluster, name).returncode == 0
+    with psycopg.connect(host="127.0.0.1", port=cluster.port, user=ADMIN, dbname=name, autocommit=True) as c:
+        c.execute('CREATE ROLE "platform_admin extra" LOGIN')
+    found = _violations(cluster, name)
+    assert [v for v in found if v[0] == "50 surface: unexpected" and v[1].startswith("role platform_admin extra login=")], found
+
+
+@pytest.mark.parametrize("attrs", ["LOGIN", "NOLOGIN CREATEDB"])
+def test_a_held_role_that_can_log_in_or_holds_an_attribute_is_still_in_the_surface(managed, attrs):
+    """Only a NOLOGIN group with none of the attributes checks 22 and 41 report is the platform's: nothing else reports a login the
+    administrator holds."""
+    cluster, name = managed
+    assert _migrate(cluster, name).returncode == 0
+    with cluster.admin() as su:
+        su.execute(f"CREATE ROLE probe_actor {attrs}; GRANT probe_actor TO {ADMIN} WITH INHERIT TRUE")
+    found = {v[1] for v in _violations(cluster, name) if v[0] == "50 surface: unexpected"}
+    assert any(x.startswith("role probe_actor login=") for x in found), found
+    assert any(x.startswith(f"member {ADMIN} -> probe_actor ") for x in found), found
