@@ -215,11 +215,13 @@ describe('a run that stops on a question', () => {
 
     const run = streamMessageForSlot(slotId, 'Plan the launch', request());
     await vi.waitFor(() => expect(cards()).toHaveLength(1));
+    // The streamed parts reach the store on a time throttle (`scheduleFlush`), so the narration the tool call settled
+    // can land a flush after the card: wait for it before reading what is drawn above the card.
+    await vi.waitFor(() => expect(screen.getByTestId('chat-activity-card').textContent).toContain(NARRATION));
     expect(slot(slotId).isStreaming).toBe(true);
     const [card] = cards();
     const [row] = rows();
     const drawnAbove = above(card);
-    expect(screen.getByTestId('chat-activity-card').textContent).toContain(NARRATION);
     expect(screen.queryByText('Thinking…')).toBeNull();
 
     await act(async () => {
