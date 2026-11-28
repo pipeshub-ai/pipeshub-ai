@@ -206,17 +206,16 @@ describe('rotateEncryptedValues', () => {
     expect(await store.getKey('/services/aiModels')).to.equal(before);
   });
 
-  it('leaves keys with an expiry alone and reports them', async () => {
+  it('rotates keys with an expiry too (compareAndSet keeps the expiry)', async () => {
+    // A store that reports an expiry, as Redis, etcd and Postgres can: the key must still move.
     const withTtl = Object.assign(Object.create(store), {
-      hasExpiry: async (k: string) => k === '/scoped/services/aiModels',
-    }) as InMemoryKeyValueStore<string> & {
-      hasExpiry: (k: string) => Promise<boolean>;
-    };
-    const before = await store.getKey('/scoped/services/aiModels');
+      hasExpiry: async () => true,
+    }) as InMemoryKeyValueStore<string>;
     const r = await rotateEncryptedValues(withTtl, OLD, NEW, { dryRun: false });
-    expect(r.expiring).to.deep.equal(['/scoped/services/aiModels']);
-    expect(r.rotated).to.equal(1);
-    expect(await store.getKey('/scoped/services/aiModels')).to.equal(before);
+    expect(r).to.deep.include({ rotated: 2, conflicts: [], writeErrors: [] });
+    expect(
+      cipher(NEW).decrypt((await store.getKey('/scoped/services/aiModels'))!),
+    ).to.equal('{"llm":[]}');
   });
 
   it('rotates an encrypted string at any depth', async () => {

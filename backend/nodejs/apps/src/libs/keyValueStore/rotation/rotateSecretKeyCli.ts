@@ -92,18 +92,16 @@ function report(
     r.failed.length +
     r.conflicts.length +
     r.writeErrors.length +
-    r.skipped.length +
-    r.expiring.length;
+    r.skipped.length;
   log(
     `rotated=${r.rotated} alreadyRotated=${r.alreadyRotated} plaintext=${r.plaintext} failed=${r.failed.length} ` +
-      `conflicts=${r.conflicts.length} writeErrors=${r.writeErrors.length} skipped=${r.skipped.length} expiring=${r.expiring.length}`,
+      `conflicts=${r.conflicts.length} writeErrors=${r.writeErrors.length} skipped=${r.skipped.length}`,
   );
   for (const [label, keys] of [
     ['failed', r.failed],
     ['conflicts', r.conflicts],
     ['writeErrors', r.writeErrors],
     ['skipped', r.skipped],
-    ['expiring', r.expiring],
   ] as const)
     keys.forEach((k) => {
       log(`${label}: ${k}`);
@@ -134,11 +132,6 @@ function report(
         'and the writeErrors keys hit a store error. Re-run to finish.',
     );
     code = 1;
-  }
-  if (r.expiring.length) {
-    error(
-      'Keys with an expiry were not rotated (a rewrite would drop the expiry). They still use the old secret.',
-    );
   }
   if (code === 0) log(dryRun ? 'DRY RUN (nothing written)' : 'APPLIED');
   log(

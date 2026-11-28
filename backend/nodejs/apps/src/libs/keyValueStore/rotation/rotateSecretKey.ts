@@ -7,13 +7,12 @@ import {
 import { isPlaceholderSecretKey } from '../../../modules/configuration_manager/config/config';
 import type { DistributedKeyValueStore } from '../keyValueStore';
 
+// compareAndSet keeps a key's expiry on every store (Redis KEEPTTL, etcd lease, Postgres expires_at),
+// so keys with an expiry are rotated like any other.
 type RotationStore = Pick<
   DistributedKeyValueStore<string>,
   'getAllKeys' | 'getKey' | 'compareAndSet'
-> & {
-  /** Optional: providers that can tell a key has an expiry (Redis, etcd, Postgres). */
-  hasExpiry?: (key: string) => Promise<boolean>;
-};
+>;
 
 export interface RotationResult {
   /** Values re-encrypted (or that would be, on a dry run). */
@@ -30,8 +29,6 @@ export interface RotationResult {
   writeErrors: string[];
   /** Key names holding a non-string value (Redis WRONGTYPE); left alone. */
   skipped: string[];
-  /** Key names with an expiry. A rewrite would drop the expiry, so they are not touched. */
-  expiring: string[];
 }
 
 // iv(12 bytes):ciphertext:authTag(16 bytes), all hex, as written by EncryptionService.
@@ -154,7 +151,6 @@ export async function rotateEncryptedValues(
     conflicts: [],
     writeErrors: [],
     skipped: [],
-    expiring: [],
   };
   const pending: { key: string; raw: string; next: string }[] = [];
 
@@ -189,13 +185,9 @@ export async function rotateEncryptedValues(
       result.failed.push(key);
       continue;
     }
-    if (t.rotated > 0) {
-      if (store.hasExpiry && (await store.hasExpiry(key))) {
-        result.expiring.push(key);
-        continue;
-      }
+    if (t.rotated > 0)
       pending.push({ key, raw, next: quoted ? JSON.stringify(next) : next });
-    } else if (t.already > 0) result.alreadyRotated++;
+    else if (t.already > 0) result.alreadyRotated++;
     else result.plaintext++;
   }
 

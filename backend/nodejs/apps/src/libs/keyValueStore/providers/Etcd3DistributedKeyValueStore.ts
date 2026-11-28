@@ -62,13 +62,6 @@ export class Etcd3DistributedKeyValueStore<T> implements DistributedKeyValueStor
     await this.client.delete().key(key);
   }
 
-  /** True when the key is attached to a lease (a plain put would detach it). */
-  async hasExpiry(key: string): Promise<boolean> {
-    const res = await this.client.get(key).exec();
-    const lease = res.kvs[0]?.lease;
-    return lease !== undefined && lease !== '0';
-  }
-
   async getAllKeys(): Promise<string[]> {
     return await this.client.getAll().keys();
   }
