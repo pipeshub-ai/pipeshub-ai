@@ -339,6 +339,15 @@ describe('docstore-migrate: coverage without a database (R45-MIGR)', () => {
     ]);
   });
 
+  it('R45-CARRY: a carrier may not write userCredentials fields with their documents (the copy writes one credential per account)', () => {
+    const fields = new Set(['userCredentials.qaField']);
+    const carrier = { ...BUILT_IN_CARRIERS[1]!, name: 'qa-credentials', collections: [], fields: { userCredentials: ['qaField'] } } as Carrier;
+    expect(carrierProblems([carrier], new Set(), fields)).to.deep.equal([]);
+    expect(carrierProblems([{ ...carrier, withDocument: true }], new Set(), fields)).to.deep.equal([
+      'qa-credentials writes userCredentials fields with their documents, which the credential copy does not support',
+    ]);
+  });
+
   it("R45-CARRY: an edition's carriers come from the one edition seam (EDITION_DOCSTORE_COVERAGE.carriers), checked for their shape", () => {
     expect(EDITION_CARRIERS).to.have.length(EDITION_DOCSTORE_COVERAGE.carriers.length);
     expect(CARRIERS.map((c) => c.name)).to.deep.equal([...BUILT_IN_CARRIERS, ...EDITION_CARRIERS].map((c) => c.name));

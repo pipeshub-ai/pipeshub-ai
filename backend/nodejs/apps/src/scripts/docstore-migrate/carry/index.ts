@@ -59,6 +59,12 @@ export function carrierProblems(
         claim(`${coll}.${p}`, c.name);
       }
     if (!c.tables.length) problems.push(`${c.name} names no table`);
+    // the copy offers one credential per account (credentials.ts) and the follower rewrites an account's credentials outside the
+    // document units, so no unit writes a credential's carried fields with it
+    if (c.withDocument && (c.fields.userCredentials ?? []).length)
+      problems.push(
+        `${c.name} writes userCredentials fields with their documents, which the credential copy does not support`,
+      );
   }
   return problems;
 }
