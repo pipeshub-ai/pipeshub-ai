@@ -5658,6 +5658,23 @@ class TestPersonMigrationAndReaper:
         assert "uar.isExternalUser = true" in self._query_of(mocked.client)
 
     @pytest.mark.asyncio
+    async def test_reaper_raises_a_conflict_so_its_caller_runs_it_again(self, mocked, monkeypatch) -> None:
+        """A deadlock or lock timeout aborted the transaction: reported as 0 (success) the caller would commit a dead one."""
+        mocked.client.execute_query.side_effect = RuntimeError("DeadlockDetected")
+        monkeypatch.setattr(mocked, "is_write_conflict", lambda e: True)
+        with pytest.raises(RuntimeError):
+            await mocked.reap_stale_external_app_relations("conn-1", transaction="t1")
+
+    @pytest.mark.asyncio
+    async def test_reaper_locks_each_edge_before_it_reads_the_flag_and_the_grant(self, mocked) -> None:
+        mocked.client.execute_query.return_value = [{"reaped_people": 0}]
+        await mocked.reap_stale_external_app_relations("conn-1")
+        q = self._query_of(mocked.client)
+        assert q.index("SET uar.matchLock = true") < q.index("WHERE uar.isExternalUser = true AND NOT")
+        assert "SET uar.isExternalUser" not in q      # the flag itself is never written
+        assert q.index("SET principal.matchLock = true") < q.index("WHERE NOT (principal)--()")
+
+    @pytest.mark.asyncio
     async def test_reaper_scopes_person_sweep_to_this_pass(self, mocked):
         """A global orphan sweep would race a Person created moments ago whose first edge
         is not committed yet."""
@@ -5809,7 +5826,9 @@ class TestPersonUpsertByEmail:
         await mocked.upsert_person_by_email(Person(email="out@x.io"))
         q = mocked.client.execute_query.await_args.args[0]
         assert "ON CREATE SET p = $props" in q
-        assert "ON MATCH SET" not in q
+        # a match only takes the node's write lock (a flag set and removed again): nothing of the person changes
+        assert "ON MATCH SET p.matchLock = true" in q and "REMOVE p.matchLock" in q
+        assert "ON MATCH SET p =" not in q and "p +=" not in q
 
     @pytest.mark.asyncio
     async def test_get_person_by_email_normalises(self, mocked):

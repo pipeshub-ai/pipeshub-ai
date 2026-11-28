@@ -30,7 +30,7 @@ from slack_behaviour_setup import (
 )
 from test_slack_personal_full_sync_coverage_behaviour import KeepingSlackStore
 
-from app.models.entities import FileRecord, ProgressStatus
+from app.models.entities import FileRecord, MessageRecord, ProgressStatus
 
 DM_BOB, DM_DAVE, GROUP_DM, RANDOM = "D0BOB", "D0DAVE", "G0MPIM", "C0RANDOM"
 
@@ -55,6 +55,10 @@ def workspace(slack: SlackWorkspace) -> SlackWorkspace:
 
 def block_ts(store, group: str) -> list[str]:
     return [b.source_id for r in store.messages() if r.external_record_group_id == group for b in r.block_containers.blocks]
+
+
+def block_ts_of(record: MessageRecord) -> list[str]:
+    return [b.source_id for b in record.block_containers.blocks]
 
 
 async def body(response) -> bytes:
@@ -232,6 +236,202 @@ class TestAccountAndTokens:
 
 
 CHANNELS_ONLY_SCOPES = {"channels:history", "channels:read", "groups:history", "groups:read", "users:read"}
+
+
+class TestRegroupedMessages:
+    """A re-read groups messages into 5-minute records again; a message is never left
+    in an earlier record beside the one that now holds it."""
+
+    async def test_a_message_read_again_with_a_newer_one_minutes_later_is_stored_once(self, workspace, store, checkpoints) -> None:
+        first, reply, second = ts_minutes_ago(10), ts_minutes_ago(9.5), ts_minutes_ago(8)
+        workspace.post(GENERAL, first, BOB, "deploying")
+        workspace.reply(GENERAL, first, reply, ALICE, "ok")
+        # An unread thread holds the channel checkpoint back, so the next sync reads `first` again.
+        workspace.fail("conversations.replies", SlackError("internal_error"), times=None)
+        connector, _ = await personal_connector(store, checkpoints)
+        await connector.run_sync()
+        assert block_ts(store, GENERAL) == [first]
+
+        workspace._faults.clear()
+        workspace.post(GENERAL, second, ALICE, "done")
+        await connector.run_sync()
+
+        assert [r.start_ts for r in store.messages() if r.external_record_group_id == GENERAL] == [first]
+        assert block_ts(store, GENERAL) == [first, second]
+
+    async def test_a_thread_read_in_full_again_keeps_each_reply_once(self, workspace, store, checkpoints) -> None:
+        parent, early, late = ts_minutes_ago(30), ts_minutes_ago(29), ts_minutes_ago(28)
+        thread = f"thread_{GENERAL}_{parent}"
+        workspace.post(GENERAL, parent, BOB, "question")
+        workspace.reply(GENERAL, parent, early, ALICE, "answer")
+        connector, _ = await personal_connector(store, checkpoints)
+        await connector.run_sync()
+        (before,) = [r for r in store.messages() if r.external_record_group_id == thread]
+        workspace.reply(GENERAL, parent, late, BOB, "thanks")
+        await connector.run_sync()
+
+        checkpoints.sync_points.clear()
+        await connector.run_sync()
+
+        (after,) = [r for r in store.messages() if r.external_record_group_id == thread]
+        assert block_ts(store, thread) == [parent, early, late]
+        # Same record, new messages: its revision changes so it is indexed again.
+        assert after.external_record_id == before.external_record_id
+        assert after.external_revision_id != before.external_revision_id
+
+    async def test_a_burst_read_again_with_a_newer_message_keeps_its_record(self, workspace, store, checkpoints) -> None:
+        first, reply, second, third = (ts_minutes_ago(m) for m in (10, 9.8, 9.5, 8))
+        workspace.post(GENERAL, first, BOB, "deploying")
+        workspace.reply(GENERAL, first, reply, ALICE, "ok")
+        workspace.post(GENERAL, second, ALICE, "watching")
+        # An unread thread holds the channel checkpoint back, so the next sync reads the burst again.
+        workspace.fail("conversations.replies", SlackError("internal_error"), times=None)
+        connector, _ = await personal_connector(store, checkpoints)
+        await connector.run_sync()
+        (before,) = [r for r in store.messages() if r.external_record_group_id == GENERAL]
+
+        workspace._faults.clear()
+        workspace.post(GENERAL, third, BOB, "done")
+        await connector.run_sync()
+
+        (after,) = [r for r in store.messages() if r.external_record_group_id == GENERAL]
+        assert block_ts(store, GENERAL) == [first, second, third]
+        assert after.external_record_id == before.external_record_id
+
+    async def test_a_reply_regrouped_into_an_earlier_burst_is_stored_once(self, workspace, store, checkpoints) -> None:
+        # 4.5 minutes from each side, so the time between reading the clock for each ts cannot split the burst.
+        parent, answer, late, between = (ts_minutes_ago(m) for m in (30, 29, 20, 24.5))
+        thread = f"thread_{GENERAL}_{parent}"
+        workspace.post(GENERAL, parent, BOB, "question")
+        workspace.reply(GENERAL, parent, answer, ALICE, "answer")
+        workspace.reply(GENERAL, parent, late, BOB, "later")
+        connector, _ = await personal_connector(store, checkpoints)
+        await connector.run_sync()
+        assert len([r for r in store.messages() if r.external_record_group_id == thread]) == 2
+
+        # Fills the gap, so the thread is now one burst.
+        workspace.reply(GENERAL, parent, between, ALICE, "in between")
+        checkpoints.sync_points.clear()
+        await connector.run_sync()
+
+        assert len([r for r in store.messages() if r.external_record_group_id == thread]) == 1
+        assert block_ts(store, thread) == [parent, answer, between, late]
+
+    async def test_a_regrouped_burst_the_schema_rejects_keeps_the_records_it_would_replace(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        parent, answer, late, between = (ts_minutes_ago(m) for m in (30, 29, 20, 24.5))
+        thread = f"thread_{GENERAL}_{parent}"
+        workspace.post(GENERAL, parent, BOB, "question")
+        workspace.reply(GENERAL, parent, answer, ALICE, "answer")
+        workspace.reply(GENERAL, parent, late, BOB, "later")
+        connector, _ = await personal_connector(store, checkpoints)
+        await connector.run_sync()
+
+        workspace.reply(GENERAL, parent, between, ALICE, "in between")
+        # The one burst the thread now is: written, it would replace the record holding `late`.
+        store.leaves_unwritten = lambda r: isinstance(r, MessageRecord) and between in block_ts_of(r)
+        checkpoints.sync_points.clear()
+        await connector.run_sync()
+
+        assert block_ts(store, thread) == [parent, answer, late]
+
+    async def test_a_burst_whose_later_messages_went_unsaved_on_another_page_is_kept(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        first, second, third = (ts_minutes_ago(m) for m in (10, 9, 8))
+        for ts, who in ((first, BOB), (second, ALICE), (third, BOB)):
+            workspace.post(GENERAL, ts, who, f"message {ts}")
+        connector, _ = await personal_connector(store, checkpoints)
+        await connector.run_sync()
+        assert block_ts(store, GENERAL) == [first, second, third]
+
+        # Read newest-first two at a time: the page holding the later two saves nothing, the
+        # page holding the first saves it alone, named as the stored burst's first message.
+        workspace.page_size["conversations.history"] = 2
+        store.leaves_unwritten = lambda r: isinstance(r, MessageRecord) and second in block_ts_of(r)
+        checkpoints.sync_points.clear()
+        await connector.run_sync()
+
+        assert {second, third} <= set(block_ts(store, GENERAL))
+
+    async def test_a_burst_is_not_overwritten_by_a_shorter_read_while_its_tail_is_saved_nowhere(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        stamps = [ts_minutes_ago(m) for m in (10, 9, 8, 7)]
+        for ts in stamps:
+            workspace.post(GENERAL, ts, BOB, f"message {ts}")
+        connector, _ = await personal_connector(store, checkpoints)
+        await connector.run_sync()
+        assert block_ts(store, GENERAL) == stamps
+
+        # Read newest-first two at a time: the page holding the last two saves nothing, and the
+        # older page builds the first two under the stored burst's id.
+        workspace.page_size["conversations.history"] = 2
+        store.leaves_unwritten = lambda r: isinstance(r, MessageRecord) and stamps[2] in block_ts_of(r)
+        checkpoints.sync_points.clear()
+        await connector.run_sync()
+
+        assert block_ts(store, GENERAL) == stamps
+
+    async def test_a_thread_whose_new_replies_are_read_only_in_part_keeps_what_an_earlier_part_stored(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        parent, answer = ts_minutes_ago(300), ts_minutes_ago(290)
+        new = [ts_minutes_ago(m) for m in (5, 4, 3, 2)]
+        thread = f"thread_{GENERAL}_{parent}"
+        workspace.post(GENERAL, parent, BOB, "question")
+        workspace.reply(GENERAL, parent, answer, ALICE, "answer")
+        connector, _ = await personal_connector(store, checkpoints)
+        await connector.run_sync()
+
+        for i, ts in enumerate(new):
+            workspace.reply(GENERAL, parent, ts, ALICE if i % 2 else BOB, f"reply {i}")
+        workspace.fail("conversations.replies", SlackError("internal_error"), times=None,
+                       when=lambda p: bool(p.get("cursor")))
+
+        async def read_the_new_replies() -> None:
+            # Only the thread's sync point stays: the channel is read again, and with it the
+            # replies after the thread's sync point.
+            checkpoints.sync_points = {k: v for k, v in checkpoints.sync_points.items() if "slack_thread/" in k}
+            await connector.run_sync()
+
+        stored = []
+        for read_first in (4, 3):  # the parent and three new replies, then two
+            workspace.page_size["conversations.replies"] = read_first
+            await read_the_new_replies()
+            stored.append(set(block_ts(store, thread)))
+        assert stored[0] <= stored[1]
+
+        workspace._faults.clear()
+        workspace.page_size.pop("conversations.replies")
+        await read_the_new_replies()
+        assert block_ts(store, thread) == [parent, answer, *new]
+
+    @pytest.mark.parametrize("read_first", [3, 4], ids=["cut_inside_a_burst", "cut_after_its_first_reply"])
+    async def test_a_thread_read_only_in_part_keeps_the_replies_it_did_not_read(
+        self, workspace, store, checkpoints, read_first,
+    ) -> None:
+        parent, answer, before, follow, last = (ts_minutes_ago(m) for m in (60, 59, 12, 10, 9))
+        thread = f"thread_{GENERAL}_{parent}"
+        workspace.post(GENERAL, parent, BOB, "question")
+        workspace.reply(GENERAL, parent, answer, ALICE, "answer")
+        workspace.reply(GENERAL, parent, follow, ALICE, "follow-up")
+        workspace.reply(GENERAL, parent, last, BOB, "last word")
+        connector, _ = await personal_connector(store, checkpoints)
+        await connector.run_sync()
+        assert block_ts(store, thread) == [parent, answer, follow, last]
+
+        if read_first == 4:
+            # Joins the follow-up's burst, so the read below ends one reply into it.
+            workspace.reply(GENERAL, parent, before, BOB, "one more")
+        workspace.page_size["conversations.replies"] = read_first
+        workspace.fail("conversations.replies", SlackError("internal_error"), times=None,
+                       when=lambda p: bool(p.get("cursor")))
+        checkpoints.sync_points.clear()
+        await connector.run_sync()
+
+        assert block_ts(store, thread).count(last) == 1
 
 
 class TestTokenScopes:

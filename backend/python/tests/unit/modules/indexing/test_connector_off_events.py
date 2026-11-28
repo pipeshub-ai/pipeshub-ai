@@ -536,7 +536,7 @@ def test_a_connector_being_deleted_is_its_own_state_and_is_never_settled_at_read
 
 
 # A type that is not reconciled block by block: its update deletes the embeddings before the connector check.
-_CLEARS_EMBEDDINGS_FIRST = {"mimeType": "text/csv", "extension": "csv"}
+_CLEARS_EMBEDDINGS_FIRST = {"mimeType": "application/vnd.openxmlformats-officedocument.presentationml.presentation", "extension": "pptx"}
 
 
 def _deleting_graph(**record_fields: object) -> FakeConnectorGraph:

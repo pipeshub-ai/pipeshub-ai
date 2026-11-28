@@ -90,7 +90,8 @@ test.describe('Deleting an artifact from the gallery', () => {
     await dialog.getByRole('button', { name: 'Delete' }).click();
 
     await expect(row(page, OWNED.name)).toBeHidden();
-    await expect(page.getByText(`"${OWNED.name}" deleted`)).toBeVisible();
+    // The toast itself: the screen-reader announcer outside the toast region repeats its words.
+    await expect(page.locator('[data-ph-toast-region]').getByText(`"${OWNED.name}" deleted`)).toBeVisible();
   });
 
   test('a refused delete keeps the artifact', async ({ page }) => {

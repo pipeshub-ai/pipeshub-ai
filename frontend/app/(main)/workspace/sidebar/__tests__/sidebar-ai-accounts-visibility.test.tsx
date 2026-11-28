@@ -5,8 +5,12 @@ import { Theme } from '@radix-ui/themes';
 
 import en from '@/lib/i18n/locales/en-US.json';
 
+// An admin sees their own pages in Personal settings and the org's in Workspace settings.
+const WORKSPACE_PATH = '/workspace/general';
+const PERSONAL_PATH = '/workspace/profile';
+let currentPath = WORKSPACE_PATH;
 vi.mock('next/navigation', () => ({
-  usePathname: () => '/workspace/general',
+  usePathname: () => currentPath,
 }));
 
 let userState = { profile: { isAdmin: false } as { isAdmin: boolean } | null };
@@ -54,7 +58,9 @@ afterEach(() => {
   cleanup();
 });
 
-function renderSidebar() {
+function renderSidebar(path = WORKSPACE_PATH) {
+  cleanup();
+  currentPath = path;
   return render(
     <Theme>
       <WorkspaceSidebar />
@@ -71,8 +77,9 @@ describe('WorkspaceSidebar — AI accounts', () => {
     engineRunsOn = false;
     userState = { profile: { isAdmin: true } };
     flagsState = { flags: {} };
-    renderSidebar();
+    renderSidebar(PERSONAL_PATH);
     expect(screen.queryByText(PERSONAL_LABEL)).toBeNull();
+    renderSidebar(WORKSPACE_PATH);
     expect(screen.getByText(ADMIN_LABEL)).toBeTruthy();
     engineRunsOn = true;
   });
@@ -82,9 +89,11 @@ describe('WorkspaceSidebar — AI accounts', () => {
     engineRunsOn = false;
     userState = { profile: { isAdmin: true } };
     flagsState = { flags: {} };
-    renderSidebar();
-    expect(screen.queryByText(PERSONAL_LABEL)).toBeNull();
-    expect(screen.queryByText(ADMIN_LABEL)).toBeNull();
+    for (const path of [PERSONAL_PATH, WORKSPACE_PATH]) {
+      renderSidebar(path);
+      expect(screen.queryByText(PERSONAL_LABEL)).toBeNull();
+      expect(screen.queryByText(ADMIN_LABEL)).toBeNull();
+    }
     harnessOn = true;
     engineRunsOn = true;
   });
@@ -92,8 +101,11 @@ describe('WorkspaceSidebar — AI accounts', () => {
   it('shows "AI accounts" to everyone and "AI settings" to an administrator', () => {
     userState = { profile: { isAdmin: true } };
     flagsState = { flags: {} };
-    renderSidebar();
+    renderSidebar(PERSONAL_PATH);
     expect(screen.getByText(PERSONAL_LABEL).closest('a')?.getAttribute('href')).toMatch(/^\/workspace\/ai-accounts\/?$/);
+    expect(screen.queryByText(ADMIN_LABEL)).toBeNull();
+    renderSidebar(WORKSPACE_PATH);
+    expect(screen.queryByText(PERSONAL_LABEL)).toBeNull();
     expect(screen.getByText(ADMIN_LABEL).closest('a')?.getAttribute('href')).toMatch(/^\/workspace\/ai-access\/?$/);
   });
 

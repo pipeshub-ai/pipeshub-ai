@@ -77,6 +77,22 @@ describe('client_metadata_document', () => {
     expect(doc.logo_uri).to.equal('https://client.example.com/logo.png')
   })
 
+  it('drops a client, logo, policy or terms URI that is not http(s)', async () => {
+    serve({
+      client_id: ID,
+      redirect_uris: ['http://localhost/callback'],
+      client_uri: 'javascript:alert(1)',
+      logo_uri: 'data:image/svg+xml,<svg/>',
+      policy_uri: 'JavaScript:alert(1)',
+      tos_uri: 'http://client.example.com/tos',
+    })
+    const doc = await fetchClientMetadataDocument(ID)
+    expect(doc.client_uri).to.equal(undefined)
+    expect(doc.logo_uri).to.equal(undefined)
+    expect(doc.policy_uri).to.equal(undefined)
+    expect(doc.tos_uri).to.equal('http://client.example.com/tos')
+  })
+
   it('rejects documents that do not identify the client or ask for a secret', async () => {
     const cases: Array<[unknown, string]> = [
       ['not json', 'not JSON'],

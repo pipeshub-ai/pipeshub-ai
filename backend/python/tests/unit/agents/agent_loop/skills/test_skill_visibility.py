@@ -18,6 +18,7 @@ from app.agent_loop_lib.core.exceptions import RegistryError
 from app.agent_loop_lib.modules.providers.skills.base import SkillSource
 from app.agent_loop_lib.transport.registry import TransportRegistry
 from app.agents.agent_loop.context import AgentContext
+from app.agents.agent_loop.skills.builtin_seeder import SEED_IDENTITY
 from app.agents.agent_loop.skills.graph_store import GraphSkillStore, SkillVisibility
 from app.agents.agent_loop.skills.manager_factory import (
     get_builtin_seeder,
@@ -28,6 +29,7 @@ from app.agents.agent_loop.skills_wiring import build_skill_manager
 from app.config.constants.arangodb import CollectionNames
 from app.harness.assembly.tool_sources import SkillsSource
 from harness_core.tools.registry import ToolRegistry
+from tests.support.bound_org import another_request
 from tests.support.config_service import FakeConfigurationService
 from tests.support.edition_defaults import create_skill_edges
 from tests.unit.agents.adapter.test_skills_graph_store import FakeGraphProvider
@@ -167,9 +169,11 @@ class TestTheRule:
             ({"b"}, set(), _doc("a", "x"), False),
             ({"b"}, {"x"}, _doc("a", "x"), True),
             ({"b"}, {"y"}, _doc("a", "x"), False),
-            ({"b"}, set(), _doc("seed", "x", SkillSource.BUILTIN.value), True),
+            ({"b"}, set(), _doc(SEED_IDENTITY, "x", SkillSource.BUILTIN.value), True),
             (set(), set(), _doc("a", "x"), False),
-            (set(), set(), _doc("seed", "x", SkillSource.BUILTIN.value), True),
+            # A member's skill that only says it is builtin is that member's.
+            ({"b"}, set(), _doc("a", "x", SkillSource.BUILTIN.value), False),
+            (set(), set(), _doc(SEED_IDENTITY, "x", SkillSource.BUILTIN.value), True),
         ],
     )
     def test_sk4_visible_iff_builtin_owned_or_shared(
@@ -201,9 +205,10 @@ class TestAssignment:
         await _seed(graph)
         logger = logging.getLogger(__name__)
 
-        linked = await create_skill_edges(
-            "agent-1", ["bob-notes", "alice-report"], ORG, BOB.key, graph, logger  # type: ignore[arg-type]
-        )
+        with another_request(ORG, BOB.user_id):
+            linked = await create_skill_edges(
+                "agent-1", ["bob-notes", "alice-report"], BOB.key, graph, logger  # type: ignore[arg-type]
+            )
 
         assert linked == ["bob-notes"]
         edges = graph._edges.get(CollectionNames.AGENT_HAS_SKILL.value, [])

@@ -309,6 +309,8 @@ class UsersSync:
             else:
                 total_projects_skipped += 1
 
+        # A walk cut short by dead credentials is not the membership.
+        c.run_state.raise_if_rejected()
         creator_added = self._inject_creator_member_into(dict_member)
         all_failed = bool(group_paths or project_paths) and not any_success
         if all_failed and not creator_added:
@@ -402,6 +404,8 @@ class UsersSync:
         if projects_failed:
             self.logger.error("Error in fetching projects: %s", projects_res.error)
 
+        # A walk cut short by dead credentials is not the membership.
+        c.run_state.raise_if_rejected()
         creator_added = self._inject_creator_member_into(dict_member)
         if groups_failed and projects_failed and not creator_added:
             raise RuntimeError(
@@ -420,6 +424,8 @@ class UsersSync:
             projects = projects_res.data
             total = len(projects)
             for i, project in enumerate(projects, start=1):
+                # Dead credentials: the rest would be refused too, and a partial walk is not the membership.
+                c.run_state.raise_if_rejected()
                 try:
                     project_id = getattr(project, "id", None)
                     if project_id is None:
@@ -486,6 +492,8 @@ class UsersSync:
                 # profile is still read: with an admin token it holds the private email.
                 return member_id, member
             async with sem:
+                if c.run_state.rejected is not None:
+                    return member_id, member  # signed out: the rest would be refused too
                 try:
                     user_res = await c.runtime.ds_call(
                         c.data_source.get_user,
@@ -574,6 +582,8 @@ class UsersSync:
         bypass the creator becomes a pseudo-group keyed by a numeric id their
         PipesHub identity never matches.
         """
+        # A later read may have found the sign-in dead; what it missed must not be saved as the members.
+        self.c.run_state.raise_if_rejected()
         c = self.c
         total_users_synced = total_users_skipped = 0
         app_users: list[AppUser] = []

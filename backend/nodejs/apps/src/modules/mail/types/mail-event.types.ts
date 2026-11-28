@@ -33,6 +33,30 @@ export interface MailEventPayload {
   eventId?: string;
 }
 
+/** What the mail topic carries: the job itself (unsigned), or the job under `payload` (the shape a signed envelope needs). */
+export type MailEventMessage =
+  MailEventPayload | { eventId?: string; payload: MailEventPayload };
+
+/**
+ * The job in a consumed mail message. The signed shape (the job under `payload`) wins whenever `payload` is an object:
+ * a signature covers only `payload`, so top-level fields of a signed message are never read. A flat job (the unsigned
+ * shape) is read only when the message was not signed (`signed` false); a signed message carrying one beside or
+ * instead of its payload is refused (undefined).
+ */
+export function mailJobOf(
+  value: unknown,
+  signed = false,
+): MailEventPayload | undefined {
+  if (value === null || typeof value !== 'object') return undefined;
+  const v = value as Record<string, unknown>;
+  const inner = v.payload;
+  if (inner !== null && typeof inner === 'object' && !Array.isArray(inner)) {
+    return 'mail' in inner ? (inner as MailEventPayload) : undefined;
+  }
+  if (signed) return undefined;
+  return 'mail' in v ? (v as unknown as MailEventPayload) : undefined;
+}
+
 export interface PasswordResetLinkTarget {
   userId: string;
   orgId: string;

@@ -54,6 +54,7 @@ _PROVIDER_BUILDERS: dict[str, Callable[[MultimodalProviderConfig], IMultimodalEm
         model_name=config.model_name,
         logger=config.logger,
         sdk_retries=config.sdk_retries,
+        allow_ambient=config.allow_ambient_credentials,
     ),
     EmbeddingProvider.VOYAGE.value: lambda config: VoyageMultimodalProvider(
         dense_embeddings=config.dense_embeddings,
@@ -64,6 +65,7 @@ _PROVIDER_BUILDERS: dict[str, Callable[[MultimodalProviderConfig], IMultimodalEm
         region_name=config.region_name,
         aws_access_key_id=config.aws_access_key_id,
         aws_secret_access_key=config.aws_secret_access_key,
+        allow_ambient=config.allow_ambient_credentials,
         embedding_size=config.embedding_size,
         normalize_fn=config.normalize_fn,
         logger=config.logger,
@@ -81,6 +83,7 @@ _PROVIDER_BUILDERS: dict[str, Callable[[MultimodalProviderConfig], IMultimodalEm
         normalize_fn=config.normalize_fn,
         logger=config.logger,
         sdk_retries=config.sdk_retries,
+        allow_ambient=config.allow_ambient_credentials,
     ),
     EmbeddingProvider.OLLAMA.value: lambda config: OllamaMultimodalProvider(
         base_url=config.base_url,

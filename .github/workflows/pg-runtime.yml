@@ -8,6 +8,8 @@ name: pg-runtime
 # suites skip only when a service is missing, which in CI means the workflow is broken.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    # Heavy: on a pull request its jobs run only with the ci:full or ci:db label (CONTRIBUTING.md).
     branches:
       - 'main'
     paths:
@@ -51,6 +53,7 @@ on:
       - 'backend/python/tests/integration/graph_db/test_accessible_containers_real_backends.py'
       - 'backend/python/tests/integration/graph_db/test_stage_states_it.py'
       - 'backend/python/tests/integration/graph_db/fresh_org_support.py'
+      - 'backend/python/tests/integration/graph_db/sync_point_contract.py'
       # The shared drivers of the record diagnostics tests that run on every store (their PostgreSQL files are in postgres/).
       - 'backend/python/tests/integration/graph_db/record_diagnostics_*.py'
       - 'backend/python/app/modules/indexing/record_diagnostics.py'
@@ -87,16 +90,23 @@ on:
       - 'backend/python/app/connectors/core/base/data_processor/data_source_entities_processor.py'
       - '.github/workflows/pg-runtime.yml'
   workflow_dispatch:
+  schedule:
+    - cron: '10 11 * * *'
 
 permissions:
   contents: read
 
 concurrency:
-  group: pg-runtime-${{ github.ref }}
+  group: pg-runtime-${{ github.event_name == 'pull_request' && format('pr-{0}-{1}', github.event.pull_request.number, (contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))) && 'heavy' || format('other-{0}', github.run_id)) || format('{0}-{1}-{2}', github.event_name, github.ref, github.run_id) }}
   cancel-in-progress: true
 
 jobs:
   python:
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))
     runs-on: ubuntu-latest
     # shard 1 is one test case of ~22-26 min serial (the not-current adversarial worlds), which no split can shorten
     timeout-minutes: ${{ matrix.shard == 1 && 60 || 45 }}
@@ -108,9 +118,9 @@ jobs:
         # are the pytest paths; graph_k splits one file by -k into sets that together hold each of its tests once. Shard 5 runs
         # the folder minus what the others name (--ignore for a file, --deselect for a test), so a new test file runs there.
         # scripts/test_pg_runtime_shards.py checks that every case runs exactly once; each shard checks its run against its own
-        # collection, so no count is written here. The shards are sized to about 20 min of the 45 min limit (shard 1: 25-35 of
+        # collection, so no count is written here. The jobs are sized to about 25 min of the 45 min limit (shard 1: 30-40 of
         # 60); --durations in the graph step prints the per-test times to rebalance by.
-        shard: [1, 2, 3, 4, 5, 6, 7]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
         include:
           # test_conformance_kh_pg.py alone is longer than a shard should be: its two slowest cases run on their own, and the
           # rest is split by the state of the copy
@@ -132,7 +142,6 @@ jobs:
           - shard: 4
             graph_tests: >-
               tests/integration/graph_db/postgres/test_accessible_scope_differential.py
-              tests/integration/graph_db/postgres/test_conformance.py
               tests/integration/graph_db/postgres/test_kg_service.py
               tests/integration/graph_db/postgres/test_kg_stamps.py
               tests/integration/graph_db/postgres/test_kh_browse.py
@@ -148,6 +157,14 @@ jobs:
               tests/integration/graph_db/postgres/test_kg_hierarchy.py::test_the_corpus_read_from_kg_equals_the_walk
               tests/integration/graph_db/postgres/test_kg_hierarchy.py::test_generated_worlds_read_from_kg_equal_the_walk
               tests/integration/graph_db/postgres/test_kg_trash.py::test_after_every_mutation_the_trash_from_kg_equals_the_walk
+          # from shard 5, by test, as shard 7: the corpus and generated worlds of test_kg_read.py (8-10 min) and the mutation
+          # worlds of test_kg_kb_root.py (3 min), with test_conformance.py from shard 4 (7 min)
+          - shard: 8
+            graph_tests: >-
+              tests/integration/graph_db/postgres/test_conformance.py
+              tests/integration/graph_db/postgres/test_kg_read.py::test_the_corpus_answered_from_kg_equals_the_walk_and_the_oracle
+              tests/integration/graph_db/postgres/test_kg_read.py::test_generated_worlds_answered_from_kg_equal_the_walk_and_the_oracle
+              tests/integration/graph_db/postgres/test_kg_kb_root.py::test_after_every_mutation_the_root_from_kg_equals_the_walk
           - shard: 5
             graph_tests: >-
               tests/integration/graph_db/postgres
@@ -165,6 +182,9 @@ jobs:
               --deselect=tests/integration/graph_db/postgres/test_kg_hierarchy.py::test_the_corpus_read_from_kg_equals_the_walk
               --deselect=tests/integration/graph_db/postgres/test_kg_hierarchy.py::test_generated_worlds_read_from_kg_equal_the_walk
               --deselect=tests/integration/graph_db/postgres/test_kg_trash.py::test_after_every_mutation_the_trash_from_kg_equals_the_walk
+              --deselect=tests/integration/graph_db/postgres/test_kg_read.py::test_the_corpus_answered_from_kg_equals_the_walk_and_the_oracle
+              --deselect=tests/integration/graph_db/postgres/test_kg_read.py::test_generated_worlds_answered_from_kg_equal_the_walk_and_the_oracle
+              --deselect=tests/integration/graph_db/postgres/test_kg_kb_root.py::test_after_every_mutation_the_root_from_kg_equals_the_walk
     services:
       redis:
         image: redis:7.4.12-bookworm@sha256:2e3eb11462c4e3759e6972678dd051d150ff54b1e60714b3c33b701260172a90
@@ -312,6 +332,11 @@ jobs:
   # throwaway cluster, so it runs in a job of its own. The `chaos` cases of tests/integration/pg_runtime (a consumer killed
   # mid-message, a LISTEN connection gone silent or terminated) run here too.
   faults:
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -377,6 +402,11 @@ jobs:
             --collected "$RUNNER_TEMP/py-fault.collected" --collected "$RUNNER_TEMP/py-chaos.collected"
 
   node:
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:

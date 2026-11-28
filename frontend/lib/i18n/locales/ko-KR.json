@@ -747,8 +747,9 @@
     "moreOptions": "추가 옵션",
     "docs": "문서",
     "enterprise": {
-      "label": "EE에서 제공",
-      "tooltip": "PipesHub Enterprise Edition의 기능입니다"
+      "label": "Enterprise에서 제공",
+      "tooltip": "PipesHub Enterprise Edition에 포함",
+      "short": "EE"
     },
     "errorBoundary": {
       "title": "문제가 발생했습니다",
@@ -1133,6 +1134,7 @@
     "agentSidebarLabel": "에이전트",
     "agentNameLoading": "불러오는 중…",
     "sharedAgentChat": "공유된 에이전트 채팅",
+    "sharedAgentChatNotice": "이 채팅을 공유받은 사람은 채팅을 읽을 수 있지만, 에이전트도 함께 공유하지 않으면 에이전트를 열 수 없습니다.",
     "myAgents": "내 에이전트",
     "moreAgents": "더 많은 에이전트",
     "agentHeaderMenuAria": "에이전트 옵션",
@@ -1955,6 +1957,7 @@
   "workspaceMenu": {
     "appearance": "화면 모드",
     "language": "언어",
+    "personalSettings": "개인 설정",
     "workspaceSettings": "워크스페이스 설정",
     "logOut": "로그아웃",
     "system": "시스템",
@@ -2142,7 +2145,7 @@
       "title": "그룹",
       "subtitle": "그룹을 생성하고 관리하여 접근 및 권한을 제어합니다",
       "enterpriseTitle": "그룹 권한은 Enterprise Edition에서 사용할 수 있습니다",
-      "enterpriseMessage": "그룹 권한을 사용하려면 Enterprise Edition으로 업그레이드하세요.",
+      "enterpriseMessage": "그룹 기반 접근 제어: 그룹 전체에 한 번에 접근 권한을 부여합니다.",
       "createGroup": "그룹 생성",
       "searchPlaceholder": "검색...",
       "emptyTitle": "아직 생성된 그룹이 없습니다",
@@ -2226,18 +2229,168 @@
       }
     },
     "enterprise": {
-      "contact": "영업팀과 상담하기",
+      "contact": "문의하기",
       "scim": {
         "heading": "SCIM 프로비저닝은 Enterprise Edition에서 사용할 수 있습니다",
-        "message": "Okta 또는 Microsoft Entra ID가 워크스페이스 사용자를 자동으로 추가, 업데이트, 비활성화하도록 하세요."
+        "message": "Okta 또는 Microsoft Entra ID에서 사용자 프로비저닝과 프로비저닝 해제를 자동화합니다.",
+        "benefits": {
+          "providers": "SCIM 2.0으로 Okta 및 Microsoft Entra ID와 연동",
+          "offboarding": "프로비저닝이 해제된 사용자는 자동으로 접근 권한을 잃습니다",
+          "noManualWork": "더 이상 사용자를 직접 초대하거나 제거하지 않아도 됩니다"
+        }
       },
       "auditLogs": {
         "heading": "감사 로그는 Enterprise Edition에서 사용할 수 있습니다",
-        "message": "워크스페이스에서 누가 언제 무엇을 했는지 확인하세요."
+        "message": "워크스페이스에서 누가 언제 무엇을 했는지 확인하세요.",
+        "benefits": {
+          "everyEvent": "모든 작업의 행위자, 시간, IP 주소, 대상, 결과",
+          "filters": "사용자, 작업, 결과별로 필터링",
+          "alerts": "알림을 설정하고 규정 준수 검토용으로 로그 내보내기"
+        }
       },
       "usage": {
-        "heading": "사용량, 크레딧 및 결제는 Enterprise Edition에서 사용할 수 있습니다",
-        "message": "사람, 에이전트, 커넥터, 모델별 AI 비용을 확인하고, 크레딧과 요금제, 청구서를 관리하며, 사용량 설정에서 지출 알림을 설정하세요."
+        "heading": "사용량 및 결제는 Enterprise Edition에서 사용할 수 있습니다",
+        "message": "AI 지출을 확인하고 제어하세요. 사용자, 에이전트, 커넥터, 모델별로 추적하고, 사용자마다 쓸 수 있는 금액을 정하고, 크레딧과 청구서를 관리합니다.",
+        "benefits": {
+          "breakdown": "사용자, 에이전트, 커넥터, 모델별 AI 지출",
+          "billing": "크레딧과 청구서를 한곳에서",
+          "alerts": "AI 지출이 한도를 넘으면 알림"
+        }
+      },
+      "benefitsTitle": "포함 항목",
+      "relatedTitle": "Enterprise의 다른 기능",
+      "tenants": {
+        "heading": "멀티 테넌시는 Enterprise Edition에서 사용할 수 있습니다",
+        "message": "팀, 지역, 고객마다 별도의 조직을 하나의 배포에서 제공하세요.",
+        "benefits": {
+          "separate": "테넌트마다 사용자, 그룹, 커넥터, 컬렉션, 에이전트가 따로 있습니다",
+          "inherit": "테넌트가 상속할 설정을 선택합니다. 예: AI 모델, 이메일, 로그인",
+          "manage": "모든 테넌트를 한곳에서 만들고 관리"
+        }
+      },
+      "groups": {
+        "benefits": {
+          "grantOnce": "그룹 전체에 한 번에 접근 권한 부여",
+          "teams": "팀 전체나 개별 사용자를 그룹에 추가",
+          "builtIn": "기본 제공되는 관리자 및 전체 그룹으로 시작"
+        }
+      },
+      "seeWhatsInEnterprise": "Enterprise 기능 보기",
+      "sidebarCard": {
+        "title": "Enterprise Edition",
+        "body": "멀티 테넌시, SSO, SCIM 프로비저닝, 감사 로그 등.",
+        "action": "포함된 기능 보기",
+        "dismiss": "Enterprise Edition 카드 숨기기"
+      },
+      "overview": {
+        "currentEdition": "현재 에디션: Community Edition",
+        "title": "Enterprise Edition",
+        "subtitle": "Community Edition의 모든 기능에 멀티 테넌시, SSO, SCIM 프로비저닝, 감사 로그, 비용 관리를 더합니다.",
+        "seePreview": "미리 보기",
+        "seePreviewLabel": "{{name}} 미리 보기",
+        "plans": {
+          "community": {
+            "name": "Community Edition",
+            "yourPlan": "현재 에디션",
+            "summary": "무료 오픈 소스, 직접 호스팅",
+            "lead": "Community에 포함",
+            "items": {
+              "search": "연결된 앱 전체에서 검색과 채팅",
+              "agents": "AI 에이전트, 작업, MCP 서버",
+              "people": "사용자와 팀",
+              "signIn": "비밀번호, 이메일 일회용 코드, Google, Microsoft 로그인"
+            },
+            "current": "현재 사용 중인 에디션"
+          },
+          "enterprise": {
+            "name": "Enterprise Edition",
+            "summary": "규모가 큰 조직용. 가격은 문의해 주세요.",
+            "lead": "Community의 모든 기능에 더해:",
+            "seeAll": "모든 기능 보기"
+          }
+        },
+        "compare": {
+          "title": "에디션 비교",
+          "feature": "기능",
+          "community": "Community",
+          "enterprise": "Enterprise",
+          "pricing": "가격 문의",
+          "included": "포함",
+          "notIncluded": "포함되지 않음",
+          "communityHas": {
+            "scim": "수동 사용자 관리",
+            "collaborativeChat": "읽기용 채팅 공유",
+            "groups": "팀",
+            "sso": "비밀번호, 이메일 일회용 코드, Google, Microsoft"
+          }
+        },
+        "faq": {
+          "title": "자주 묻는 질문",
+          "free": {
+            "question": "Community Edition은 계속 무료인가요?",
+            "answer": "네. 계속 오픈 소스이며 무료입니다."
+          },
+          "preview": {
+            "question": "기능을 먼저 미리 볼 수 있나요?",
+            "answer": "네. \"{{label}}\" 표시가 있는 기능은 해당 기능이 있을 페이지를 화면 미리 보기와 함께 엽니다."
+          },
+          "get": {
+            "question": "Enterprise Edition은 어떻게 받나요?",
+            "answer": "{{contact}}를 눌러 주세요. 조직에 필요한 것과 설정 방법을 함께 살펴봅니다."
+          }
+        },
+        "groups": {
+          "scale": "확장",
+          "governance": "접근 및 거버넌스",
+          "security": "보안 및 규정 준수",
+          "cost": "비용 및 인덱싱"
+        },
+        "items": {
+          "tenants": {
+            "name": "멀티 테넌시",
+            "description": "하나의 배포에서 팀, 지역, 고객마다 별도의 조직."
+          },
+          "scim": {
+            "name": "SCIM 프로비저닝",
+            "description": "Okta 또는 Microsoft Entra ID에서 사용자 프로비저닝과 해제를 자동화합니다."
+          },
+          "collaborativeChat": {
+            "name": "협업 채팅",
+            "description": "한 대화에서 함께 채팅하고, 팀 및 그룹과 공유합니다."
+          },
+          "groups": {
+            "name": "그룹 권한",
+            "description": "그룹 기반 접근 제어: 그룹 전체에 한 번에 접근 권한을 부여합니다."
+          },
+          "toolApprovals": {
+            "name": "도구 승인 정책",
+            "description": "에이전트 도구마다 조직 전체 규칙을 정합니다: 실행, 승인 요청, 차단."
+          },
+          "actOnBehalf": {
+            "name": "다른 사람을 대신해 작업",
+            "description": "서비스 계정이 특정 사용자로 작업합니다(위임된 액세스). 모든 시도가 기록됩니다."
+          },
+          "peoplesOwnApps": {
+            "name": "사용자 앱 거버넌스",
+            "description": "사용자가 연결한 OAuth 앱, 작업, MCP 서버를 검토하고 제거합니다."
+          },
+          "sso": {
+            "name": "SSO(싱글 사인온)",
+            "description": "Okta, OneLogin 또는 SAML 2.0·OpenID Connect(OIDC) 공급자로 로그인합니다."
+          },
+          "auditLogs": {
+            "name": "감사 로그",
+            "description": "모든 작업을 행위자, 시간, IP 주소, 결과별로 추적합니다. 필터, 알림, 내보내기."
+          },
+          "usage": {
+            "name": "사용량 및 결제",
+            "description": "AI 지출의 가시성과 제어: 사용자, 에이전트, 커넥터, 모델별로 추적하고 사용자마다 쓸 수 있는 금액을 정합니다."
+          },
+          "indexingPriority": {
+            "name": "인덱싱 우선순위",
+            "description": "먼저 인덱싱할 레코드, 컬렉션, 업로드를 고릅니다."
+          }
+        }
       }
     },
     "teams": {
@@ -2607,6 +2760,8 @@
       "configSaveErrorFallback": "모델 구성을 저장하지 못했습니다",
       "configSaveOutboundError": "PipesHub가 컨테이너 내부에서 이 모델 제공자에 연결할 수 없습니다. 클라우드 제공자에는 아웃바운드 인터넷이 필요합니다 — deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity를 참조하세요.",
       "configSaveTimeoutError": "모델을 검증하는 동안 요청 시간이 초과되었습니다. 클라우드 제공자에는 PipesHub 컨테이너에서 나가는 아웃바운드 인터넷이 필요합니다 — deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity를 참조하세요.",
+      "configSaveCredentialReentry": "이 새 엔드포인트를 사용하려면 자격 증명을 다시 입력하세요.",
+      "configForwardingCredentialsCleared": "엔드포인트가 변경되어 전달 자격 증명이 제거되었습니다. ID 전달에서 다시 추가하세요.",
       "configNoConfigRequired": "이 제공업체에는 구성이 필요하지 않습니다.",
       "configDefaultModelNotice": "시스템에서 기본적으로 \"{{modelName}}\"을(를) 사용합니다.",
       "configSectionModelConfiguration": "모델 구성",
@@ -2722,6 +2877,7 @@
       "rotateCredentialsPlaceholder": "새 API 키",
       "rotateCredentialsSave": "키 업데이트",
       "rotateCredentialsFailed": "키를 업데이트하지 못했습니다",
+      "connectionEndpointsDiffer": "이 연결의 다음 모델은 {{reference}}와(과) 다른 엔드포인트를 사용합니다: {{models}}. 연결의 모든 모델이 같은 엔드포인트를 사용하도록 설정한 후 다시 시도하세요.",
       "identity": {
         "menuItem": "ID 전달",
         "title": "ID 전달",
@@ -2836,7 +2992,10 @@
       "sections": {
         "overview": "개요",
         "workspace": "워크스페이스",
-        "usageAndCredits": "사용량 및 크레딧",
+        "ai": "AI",
+        "integrations": "통합",
+        "system": "시스템",
+        "usageAndCredits": "사용량 및 결제",
         "security": "보안",
         "personal": "개인",
         "people": "구성원",
@@ -2870,13 +3029,14 @@
         "groups": "그룹",
         "scim": "SCIM",
         "auditLogs": "감사 로그",
-        "usage": "사용량 및 크레딧",
+        "usage": "사용량 및 결제",
         "teams": "팀",
         "webSearch": "웹 검색",
         "tenants": "테넌트",
         "superOrgs": "조직",
         "oauthApps": "커넥터 OAuth 앱",
         "serviceAccounts": "서비스 계정",
+        "enterprise": "Enterprise Edition",
         "aiAccounts": "AI 계정",
         "schedules": "스케줄",
         "memories": "메모리",
@@ -3147,6 +3307,11 @@
         "message": "취소하면 편집 내용이 저장되지 않습니다",
         "confirm": "취소",
         "cancel": "계속 편집"
+      },
+      "edition": {
+        "title": "에디션",
+        "name": "Community Edition",
+        "description": "오픈 소스이며 직접 호스팅합니다. Enterprise Edition은 멀티 테넌시, SSO, SCIM 프로비저닝, 감사 로그 등을 더합니다."
       }
     },
     "mcpAccess": {
@@ -3490,7 +3655,14 @@
         "createError": "커넥터를 생성하지 못했습니다",
         "createSuccess": "커넥터 인스턴스 '{{name}}'이(가) 생성되었습니다",
         "authSaveError": "인증 설정을 저장하지 못했습니다",
-        "configSaveError": "설정을 저장하지 못했습니다"
+        "configSaveError": "설정을 저장하지 못했습니다",
+        "syncTurningOn": "{{name}}의 동기화를 켜는 중",
+        "syncTurningOnDescription": "{{source}} 연결을 확인하는 중입니다. 몇 초 정도 걸릴 수 있습니다.",
+        "syncTurningOff": "{{name}}의 동기화를 끄는 중",
+        "syncTurnedOn": "{{name}}의 동기화가 켜졌습니다",
+        "syncTurnedOff": "{{name}}의 동기화가 꺼졌습니다",
+        "syncToggleFailed": "{{name}}의 동기화를 변경할 수 없습니다",
+        "syncToggleFailedDescription": "다시 시도하세요. 계속 실패하면 커넥터 설정을 확인하세요."
       },
       "tabs": {
         "authenticate": "인스턴스 인증",
@@ -3790,7 +3962,9 @@
         "removing": "이 커넥터를 제거하는 중입니다.",
         "configureFirst": "동기화를 사용하려면 먼저 구성을 완료하세요.",
         "authenticateFirst": "동기화를 사용하려면 먼저 이 커넥터를 인증하세요.",
-        "selected": "{{field}} 선택됨"
+        "selected": "{{field}} 선택됨",
+        "turningOn": "켜는 중…",
+        "turningOff": "끄는 중…"
       },
       "instanceStatus": {
         "setup": {
@@ -4879,6 +5053,7 @@
         "deleteTitle": "\"{{name}}\"을(를) 삭제하시겠습니까?",
         "deleteBody": "정말 이 스킬을 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
         "cannotDeleteTitle": "이 스킬을 삭제할 수 없습니다",
+        "notVisibleCount": "볼 수 없는 항목 {{count}}개",
         "requiredBy": "이 스킬은 다른 스킬에서 필요로 합니다: {{names}}. 의존 스킬이 계속 작동하도록 삭제 대신 사용 중단하세요.",
         "usedByAgents": "이 스킬은 다음에 할당되어 있습니다: {{names}}. 삭제하면 해당 항목에서 할당이 해제됩니다."
       },
@@ -5402,7 +5577,7 @@
     },
     "tenants": {
       "title": "테넌트",
-      "subtitle": "워크스페이스 내에서 테넌트 조직을 생성하고 관리합니다",
+      "subtitle": "이 배포에서 테넌트 조직을 만들고 관리합니다",
       "createTenant": "테넌트 생성",
       "searchPlaceholder": "테넌트 검색...",
       "emptyTitle": "아직 생성된 테넌트가 없습니다",
@@ -6927,6 +7102,13 @@
       "hidden": "일부 문자는 보이지 않거나 텍스트 순서를 바꿀 수 있어 ⟨U+202E⟩ 같은 코드로 표시됩니다. 보내려는 내용이 맞는지 확인하세요.",
       "host": "{{ascii}}은(는) 여러 문자 체계가 섞여 있어 {{unicode}}처럼 보입니다. 보이는 사이트가 아닐 수 있어 실제 형태로 표시합니다.",
       "markerTitle": "그대로 두면 보이지 않거나 텍스트 순서를 바꾸는 문자"
+    },
+    "schedule": {
+      "name": "이름",
+      "when": "언제",
+      "ask": "각 실행에서 요청할 내용",
+      "notify": "알림 받을 곳",
+      "where": "각 실행은 별도의 대화를 시작합니다. Workspace > 일정에서 언제든 일시 중지하거나 삭제하세요."
     }
   },
   "codeTaskCard": {
@@ -6987,6 +7169,9 @@
     "appLimited_other": "{{appName}}은(는) 작성자가 선택한 {{count}}개 항목 중 회원님이 볼 수 있는 항목만 볼 수 있습니다."
   },
   "errorToast": {
+    "reconnecting": "다시 연결하는 중…",
+    "reconnectingDescription": "지금은 세션을 확인할 수 없습니다. 로그인 상태는 유지됩니다. 몇 분 동안 다시 시도하고, 그 후에는 돌아오거나 다시 연결될 때 다시 시도합니다.",
+    "sessionUnavailable": "지금은 세션을 확인할 수 없습니다. 다시 연결하는 중…",
     "accessDenied": "액세스 거부됨",
     "invalidRequest": "잘못된 요청",
     "notFound": "찾을 수 없음",
@@ -7756,7 +7941,8 @@
     "status": {
       "active": "활성",
       "paused": "일시중지됨",
-      "disabled": "꺼짐"
+      "disabled": "꺼짐",
+      "ranOnce": "한 번 실행됨"
     },
     "trigger": {
       "cron": "Cron",
@@ -7779,7 +7965,8 @@
         "cron": "예약됨",
         "manual": "지금 실행",
         "event": "트리거됨",
-        "cronCaughtUp": "예약됨 (밀린 실행)"
+        "cronCaughtUp": "예약됨 (밀린 실행)",
+        "once": "한 번"
       },
       "openConversation": "대화 열기",
       "admitted": "시작됨",
@@ -7832,7 +8019,13 @@
       "notifyUnknown": "지금은 사용할 수 없습니다.",
       "notifyCheckFailed": "사용할 수 있는 채널을 확인하지 못해 PipesHub만 제공합니다.",
       "webhookCantSign": "호출하는 쪽에서 서명할 수 없습니다. 대신 헤더에 토큰 사용",
-      "webhookCantSignHint": "토큰을 본 사람은 누구나 호출할 수 있습니다. 서명이 더 안전합니다."
+      "webhookCantSignHint": "토큰을 본 사람은 누구나 호출할 수 있습니다. 서명이 더 안전합니다.",
+      "kindOnce": "한 번, 지정한 날짜와 시간에",
+      "onceAt": "날짜와 시간",
+      "onceAtHint": "내 시간대({{timeZone}}) 기준. 지금부터 최소 1분 후, 최대 1년 이내.",
+      "onceNotExisting": "내 시간대에서 그날에는 이 시간이 없습니다(시계가 건너뜁니다). 다른 시간을 고르세요.",
+      "onceTooSoon": "지금부터 최소 1분 후의 시간을 고르세요.",
+      "onceTooFar": "최대 1년 이내의 시간을 고르세요."
     },
     "webhook": {
       "title": "내 웹훅",
@@ -7858,7 +8051,10 @@
       "limit": "허용된 스케줄 수에 도달했습니다. 먼저 하나를 삭제하세요.",
       "budgetCeiling": "실행당 예산이 너무 높습니다.",
       "unavailable": "예약 실행에는 지속형 에이전트 채팅이 필요하지만 조직에서 꺼져 있습니다.",
-      "triggerTokenInvalid": "웹훅의 트리거 토큰이 일치하지 않습니다. 일정에서 현재 토큰을 복사해 다시 시도하세요."
+      "triggerTokenInvalid": "웹훅의 트리거 토큰이 일치하지 않습니다. 일정에서 현재 토큰을 복사해 다시 시도하세요.",
+      "ranOnce": "이 일정은 이미 한 번 실행되었습니다. 다시 실행되지 않으며 삭제할 수 있습니다.",
+      "notApproved": "이 일정은 승인되지 않아 만들어지지 않았습니다.",
+      "approvalUsed": "이 승인으로 이미 만든 일정이 삭제되었습니다. 새 일정을 만들려면 다시 요청하세요."
     },
     "reason": {
       "scheduledRunsDisabled": "조직에서 예약 실행이 꺼졌습니다",
@@ -7894,6 +8090,21 @@
       "latest": "항상 사용 중인 버전 사용",
       "latestHint": "각 실행은 마지막으로 게시된 버전을 사용합니다.",
       "save": "저장"
+    },
+    "ranOnce": "한 번 실행되었습니다. 다시 실행되지 않습니다.",
+    "when": {
+      "cron": "{{cron}} (cron)",
+      "everyMinute": "매분",
+      "everyMinutes": "{{count}}분마다",
+      "hourly": "매시 {{minute}}분",
+      "daily": "매일 {{time}}",
+      "weekdays": "평일마다 {{time}}",
+      "weekly": "매주 {{day}} {{time}}",
+      "monthly": "매월 {{day}}일 {{time}}",
+      "onceToday": "한 번, 오늘 {{time}}",
+      "onceTomorrow": "한 번, 내일 {{time}}",
+      "onceOn": "한 번, {{date}}",
+      "withZone": "{{when}} ({{timeZone}})"
     }
   },
   "unknownEffectCard": {
@@ -8678,7 +8889,9 @@
       "generic_one": "{{action}}",
       "generic_other": "{{action}} ({{count}}회 호출)",
       "install_packages_one": "패키지 설치",
-      "install_packages_other": "패키지 {{count}}회 설치"
+      "install_packages_other": "패키지 {{count}}회 설치",
+      "scheduleCreate_one": "일정 만들기",
+      "scheduleCreate_other": "일정 {{count}}개 만들기"
     },
     "engineWants": "{{engine}}이(가) 하려는 작업:",
     "childWants": "코드 작업이 하려는 작업:",
@@ -8746,7 +8959,8 @@
     "waitingForOwner_one": "대화 소유자가 한 단계를 결정하기를 기다리는 중",
     "waitingForOwner_other": "대화 소유자가 {{count}}개 단계를 결정하기를 기다리는 중",
     "denyAllLabel": "모두 거부: {{title}}",
-    "titleSiteUpload": "이 실행에서 {{destination}}(으)로 업로드를 허용하시겠습니까?"
+    "titleSiteUpload": "이 실행에서 {{destination}}(으)로 업로드를 허용하시겠습니까?",
+    "titleSchedule": "일정 만들기"
   },
   "engineSignIn": {
     "title": "코딩 엔진 로그인",

@@ -82,12 +82,12 @@ def skill_candidates_are_their_learners_alone() -> bool:
 
 
 async def create_skill_edges(
-    agent_key: str, skill_names: list[str], org_id: str, user_key: str, graph_provider: object, logger: object,
+    agent_key: str, skill_names: list[str], user_key: str, graph_provider: object, logger: object,
 ) -> list[str]:
-    """``app.api.routes.agent._create_skill_edges`` for ``org_id``, as an agent create or update calls it."""
+    """``app.api.routes.agent._create_skill_edges`` in the bound org, as an agent create or update calls it."""
     from app.api.routes.agent import _create_skill_edges
 
-    return await _create_skill_edges(agent_key, skill_names, org_id, user_key, graph_provider, logger)  # type: ignore[arg-type]
+    return await _create_skill_edges(agent_key, skill_names, user_key, graph_provider, logger)  # type: ignore[arg-type]
 
 
 def neo4j_untouched_writers_extra() -> dict[str, str]:

@@ -466,7 +466,7 @@ class FakeEntitiesProcessor:
     async def get_all_active_users(self) -> list[Any]:
         return list(self.active_users)
 
-    async def get_user_by_user_id(self, user_id: str) -> object | None:
+    async def get_user_by_user_id(self, user_id: str, **_: object) -> object | None:
         return next((u for u in self.active_users if getattr(u, "id", None) == user_id), None)
 
     async def get_users_with_permission_to_node(

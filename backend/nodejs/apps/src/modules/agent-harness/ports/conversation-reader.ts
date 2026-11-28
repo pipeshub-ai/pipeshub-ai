@@ -10,3 +10,19 @@ export interface ConversationReader {
     run: Pick<HarnessRun, 'orgId' | 'sessionId' | 'actorId' | 'agentKey'>,
   ): Promise<Record<string, unknown> | null>;
 }
+
+/**
+ * A finished run's conversation as the person watching the run may read it:
+ * the rows of other people's turns lose what that person cannot read, and a
+ * hidden answer carries `answerHidden`, as a fetch of the conversation answers.
+ */
+export type RunConversationView = (
+  viewer: { userId: string; orgId: string },
+  conversation: Record<string, unknown>,
+  /** `ownAnswer`: the run whose answer the watcher's own turn just produced. */
+  opts: {
+    ownAnswer?: string;
+    citationsDecided: boolean;
+    checkFailed: boolean;
+  },
+) => Promise<Record<string, unknown>>;

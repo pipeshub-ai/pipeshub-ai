@@ -13,6 +13,8 @@ name: Storage backends
 # needs is secret; the emulators use throwaway or published development keys.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    # Heavy: on a pull request its jobs run only with the ci:full or ci:db label (CONTRIBUTING.md).
     branches:
       - 'main'
     paths:
@@ -38,7 +40,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: storage-backends-${{ github.event.pull_request.number || github.run_id }}
+  group: storage-backends-${{ github.event_name == 'pull_request' && format('pr-{0}-{1}', github.event.pull_request.number, (contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))) && 'heavy' || format('other-{0}', github.run_id)) || format('{0}-{1}-{2}', github.event_name, github.ref, github.run_id) }}
   cancel-in-progress: true
 
 env:
@@ -51,6 +53,11 @@ env:
 jobs:
   file-storage:
     name: File storage (${{ matrix.backend }})
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -115,6 +122,11 @@ jobs:
 
   mongodb:
     name: MongoDB (${{ matrix.topology }})
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:

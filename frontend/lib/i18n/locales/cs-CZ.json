@@ -794,8 +794,9 @@
     "moreOptions": "Další možnosti",
     "docs": "Dokumentace",
     "enterprise": {
-      "label": "K dispozici v EE",
-      "tooltip": "Součást edice PipesHub Enterprise"
+      "label": "K dispozici v Enterprise",
+      "tooltip": "Součástí edice PipesHub Enterprise",
+      "short": "EE"
     },
     "errorBoundary": {
       "title": "Něco se pokazilo",
@@ -1192,6 +1193,7 @@
     "agentSidebarLabel": "Agent",
     "agentNameLoading": "Načítání…",
     "sharedAgentChat": "Sdílený chat s agentem",
+    "sharedAgentChatNotice": "Lidé, se kterými tento chat sdílíte, ho mohou číst, ale agenta neotevřou, pokud s nimi nesdílíte i agenta.",
     "myAgents": "Moji agenti",
     "moreAgents": "Další agenti",
     "agentHeaderMenuAria": "Možnosti agenta",
@@ -2056,6 +2058,7 @@
   "workspaceMenu": {
     "appearance": "Vzhled",
     "language": "Jazyk",
+    "personalSettings": "Osobní nastavení",
     "workspaceSettings": "Nastavení pracovního prostoru",
     "logOut": "Odhlásit se",
     "system": "Systém",
@@ -2279,7 +2282,7 @@
       "title": "Skupiny",
       "subtitle": "Vytvářejte a spravujte skupiny pro řízení přístupu a oprávnění",
       "enterpriseTitle": "Oprávnění skupin jsou k dispozici v edici Enterprise",
-      "enterpriseMessage": "Chcete-li používat oprávnění skupin, přejděte na edici Enterprise.",
+      "enterpriseMessage": "Řízení přístupu podle skupin: přístup celé skupině najednou.",
       "createGroup": "Vytvořit skupinu",
       "searchPlaceholder": "Hledat...",
       "emptyTitle": "Zatím jste nevytvořili žádné skupiny",
@@ -2363,18 +2366,168 @@
       }
     },
     "enterprise": {
-      "contact": "Promluvit s obchodem",
+      "contact": "Napište nám",
       "scim": {
-        "heading": "Zřizování SCIM je k dispozici v edici Enterprise",
-        "message": "Nechte Okta nebo Microsoft Entra ID automaticky přidávat, aktualizovat a vypínat lidi ve vašem pracovním prostoru."
+        "heading": "SCIM provisioning je k dispozici v edici Enterprise",
+        "message": "Automatické zřizování a rušení uživatelů z Okta nebo Microsoft Entra ID.",
+        "benefits": {
+          "providers": "Funguje s Okta a Microsoft Entra ID přes SCIM 2.0",
+          "offboarding": "Zrušení uživatelé automaticky ztratí přístup",
+          "noManualWork": "Žádné ruční zvaní a odebírání uživatelů"
+        }
       },
       "auditLogs": {
         "heading": "Protokoly auditu jsou k dispozici v edici Enterprise",
-        "message": "Podívejte se, kdo co ve vašem pracovním prostoru udělal a kdy."
+        "message": "Podívejte se, kdo co ve vašem pracovním prostoru udělal a kdy.",
+        "benefits": {
+          "everyEvent": "Každá akce s aktérem, časem, IP adresou, cílem a výsledkem",
+          "filters": "Filtrování podle uživatele, akce nebo výsledku",
+          "alerts": "Nastavení upozornění a export protokolů pro kontroly souladu"
+        }
       },
       "usage": {
-        "heading": "Využití, kredity a fakturace jsou k dispozici v edici Enterprise",
-        "message": "Zjistěte náklady na AI podle osob, agentů, konektorů a modelů, spravujte kredity, tarif a faktury a v Nastavení kreditů nastavte upozornění na útratu."
+        "heading": "Využití a fakturace jsou k dispozici v edici Enterprise",
+        "message": "Sledujte a řiďte útratu za AI. Sledujte ji podle uživatele, agenta, konektoru a modelu, určete, kolik může každý uživatel utratit, a spravujte kredity a faktury.",
+        "benefits": {
+          "breakdown": "Útrata za AI podle uživatele, agenta, konektoru a modelu",
+          "billing": "Kredity a faktury na jednom místě",
+          "alerts": "Upozornění, když útrata za AI překročí váš limit"
+        }
+      },
+      "benefitsTitle": "Co je součástí",
+      "relatedTitle": "V edici Enterprise také",
+      "tenants": {
+        "heading": "Multitenance je k dispozici v edici Enterprise",
+        "message": "Každý tým, region nebo zákazník dostane vlastní organizaci, vše v jedné instalaci.",
+        "benefits": {
+          "separate": "Každý tenant má vlastní uživatele, skupiny, konektory, kolekce a agenty",
+          "inherit": "Vyberte, která nastavení tenanti zdědí, třeba modely AI, e-mail a přihlašování",
+          "manage": "Všechny tenanty vytvoříte a spravujete na jednom místě"
+        }
+      },
+      "groups": {
+        "benefits": {
+          "grantOnce": "Přístup celé skupině najednou",
+          "teams": "Do skupiny přidáte celé týmy i jednotlivé uživatele",
+          "builtIn": "Začněte s vestavěnými skupinami Admin a Všichni"
+        }
+      },
+      "seeWhatsInEnterprise": "Co nabízí edice Enterprise",
+      "sidebarCard": {
+        "title": "Edice Enterprise",
+        "body": "Multitenance, SSO, SCIM provisioning, protokoly auditu a další.",
+        "action": "Zobrazit, co obsahuje",
+        "dismiss": "Skrýt kartu edice Enterprise"
+      },
+      "overview": {
+        "currentEdition": "Aktuální edice: Community",
+        "title": "Edice Enterprise",
+        "subtitle": "Vše z edice Community a navíc multitenance, SSO, SCIM provisioning, protokoly auditu a kontrola nákladů.",
+        "seePreview": "Náhled",
+        "seePreviewLabel": "Náhled: {{name}}",
+        "plans": {
+          "community": {
+            "name": "Edice Community",
+            "yourPlan": "Aktuální edice",
+            "summary": "Zdarma, open source, na vlastním serveru",
+            "lead": "Součástí edice Community",
+            "items": {
+              "search": "Hledání a chat napříč propojenými aplikacemi",
+              "agents": "AI agenti, akce a servery MCP",
+              "people": "Uživatelé a týmy",
+              "signIn": "Přihlášení heslem, jednorázovým kódem e-mailem, přes Google a Microsoft"
+            },
+            "current": "Vaše aktuální edice"
+          },
+          "enterprise": {
+            "name": "Edice Enterprise",
+            "summary": "Pro větší organizace. Cena na vyžádání.",
+            "lead": "Vše z edice Community a navíc:",
+            "seeAll": "Zobrazit všechny funkce"
+          }
+        },
+        "compare": {
+          "title": "Srovnání edic",
+          "feature": "Funkce",
+          "community": "Community",
+          "enterprise": "Enterprise",
+          "pricing": "Cena na vyžádání",
+          "included": "Součástí",
+          "notIncluded": "Není součástí",
+          "communityHas": {
+            "scim": "Ruční správa uživatelů",
+            "collaborativeChat": "Sdílení chatu ke čtení",
+            "groups": "Týmy",
+            "sso": "Heslo, jednorázový kód e-mailem, Google a Microsoft"
+          }
+        },
+        "faq": {
+          "title": "Otázky",
+          "free": {
+            "question": "Zůstane edice Community zdarma?",
+            "answer": "Ano. Zůstane open source a zdarma."
+          },
+          "preview": {
+            "question": "Můžu si funkci nejdřív prohlédnout?",
+            "answer": "Ano. Funkce označené „{{label}}“ otevřou stránku, kde by byly, s náhledem obrazovky."
+          },
+          "get": {
+            "question": "Jak získám edici Enterprise?",
+            "answer": "{{contact}}. Probereme, co vaše organizace potřebuje a jak vše nastavit."
+          }
+        },
+        "groups": {
+          "scale": "Škálování",
+          "governance": "Přístup a správa",
+          "security": "Zabezpečení a soulad",
+          "cost": "Náklady a indexování"
+        },
+        "items": {
+          "tenants": {
+            "name": "Multitenance",
+            "description": "Oddělené organizace pro každý tým, region nebo zákazníka v jedné instalaci."
+          },
+          "scim": {
+            "name": "Zřizování SCIM",
+            "description": "Automatické zřizování a rušení uživatelů z Okta nebo Microsoft Entra ID."
+          },
+          "collaborativeChat": {
+            "name": "Společný chat",
+            "description": "Chatujte společně v jedné konverzaci a sdílejte ji s týmy a skupinami."
+          },
+          "groups": {
+            "name": "Oprávnění skupin",
+            "description": "Řízení přístupu podle skupin: přístup celé skupině najednou."
+          },
+          "toolApprovals": {
+            "name": "Zásady schvalování nástrojů",
+            "description": "Nastavte pro každý nástroj agentů pravidla pro celou organizaci: spustit, žádat o schválení, nebo blokovat."
+          },
+          "actOnBehalf": {
+            "name": "Jednání jménem osoby",
+            "description": "Servisní účet jedná jako konkrétní uživatel (delegovaný přístup). Každý pokus se zaznamená."
+          },
+          "peoplesOwnApps": {
+            "name": "Správa uživatelských aplikací",
+            "description": "Kontrolujte a odebírejte aplikace OAuth, akce a servery MCP, které uživatelé připojí."
+          },
+          "sso": {
+            "name": "Jednotné přihlašování (SSO)",
+            "description": "Přihlašování přes Okta, OneLogin nebo jiného poskytovatele SAML 2.0 či OpenID Connect (OIDC)."
+          },
+          "auditLogs": {
+            "name": "Protokoly auditu",
+            "description": "Sledujte každou akci podle aktéra, času, IP adresy a výsledku. Filtrování, upozornění a export."
+          },
+          "usage": {
+            "name": "Využití a fakturace",
+            "description": "Přehled a kontrola nad útratou za AI: sledujte ji podle uživatele, agenta, konektoru a modelu a určete, kolik může každý uživatel utratit."
+          },
+          "indexingPriority": {
+            "name": "Priorita indexování",
+            "description": "Vyberte, které záznamy, kolekce a nahrané soubory se indexují jako první."
+          }
+        }
       }
     },
     "teams": {
@@ -2750,6 +2903,8 @@
       "configSaveErrorFallback": "Nepodařilo se uložit konfiguraci modelu",
       "configSaveOutboundError": "PipesHub se k tomuto poskytovateli modelů nedostane zevnitř kontejneru. Cloudoví poskytovatelé vyžadují odchozí připojení k internetu — viz deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity.",
       "configSaveTimeoutError": "Během ověřování modelu vypršel časový limit požadavku. Cloudoví poskytovatelé vyžadují odchozí připojení k internetu z kontejneru PipesHub — viz deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity.",
+      "configSaveCredentialReentry": "Zadejte přihlašovací údaje znovu, abyste mohli použít tento nový koncový bod.",
+      "configForwardingCredentialsCleared": "Přihlašovací údaje pro přeposílání byly odstraněny, protože se změnil koncový bod. Znovu je přidejte v části Předávání identity.",
       "configNoConfigRequired": "Tento poskytovatel nevyžaduje žádnou konfiguraci.",
       "configDefaultModelNotice": "Systém bude ve výchozím nastavení používat \"{{modelName}}\".",
       "configSectionModelConfiguration": "Konfigurace modelu",
@@ -2865,6 +3020,7 @@
       "rotateCredentialsPlaceholder": "Nový API klíč",
       "rotateCredentialsSave": "Aktualizovat klíč",
       "rotateCredentialsFailed": "Klíč se nepodařilo aktualizovat",
+      "connectionEndpointsDiffer": "Tyto modely v připojení používají jiný koncový bod než {{reference}}: {{models}}. Nastavte všem modelům připojení stejný koncový bod a zkuste to znovu.",
       "batchStatus": {
         "pending": "Čeká",
         "checking": "Kontrola",
@@ -2984,7 +3140,10 @@
       "sections": {
         "overview": "Přehled",
         "workspace": "Pracovní prostor",
-        "usageAndCredits": "Využití a kredity",
+        "ai": "AI",
+        "integrations": "Integrace",
+        "system": "Systém",
+        "usageAndCredits": "Využití a fakturace",
         "security": "Zabezpečení",
         "personal": "Osobní",
         "people": "Lidé",
@@ -3018,13 +3177,14 @@
         "groups": "Skupiny",
         "scim": "SCIM",
         "auditLogs": "Protokoly auditu",
-        "usage": "Využití a kredity",
+        "usage": "Využití a fakturace",
         "teams": "Týmy",
         "webSearch": "Vyhledávání na webu",
         "tenants": "Tenanti",
         "superOrgs": "Organizace",
         "oauthApps": "OAuth aplikace konektorů",
         "serviceAccounts": "Servisní účty",
+        "enterprise": "Edice Enterprise",
         "aiAccounts": "Účty AI",
         "schedules": "Plány",
         "memories": "Vzpomínky",
@@ -3295,6 +3455,11 @@
         "message": "Pokud změny zahodíte, vaše úpravy nebudou uloženy",
         "confirm": "Zahodit",
         "cancel": "Pokračovat v úpravách"
+      },
+      "edition": {
+        "title": "Edice",
+        "name": "Edice Community",
+        "description": "Open source a na vlastním serveru. Edice Enterprise přidává multitenanci, SSO, SCIM provisioning, protokoly auditu a další."
       }
     },
     "mcpAccess": {
@@ -3641,7 +3806,14 @@
         "createError": "Konektor se nepodařilo vytvořit",
         "createSuccess": "Instance konektoru '{{name}}' byla úspěšně vytvořena",
         "authSaveError": "Konfiguraci ověřování se nepodařilo uložit",
-        "configSaveError": "Konfiguraci se nepodařilo uložit"
+        "configSaveError": "Konfiguraci se nepodařilo uložit",
+        "syncTurningOn": "Zapínání synchronizace pro {{name}}",
+        "syncTurningOnDescription": "Kontroluje se připojení k {{source}}. Může to trvat několik sekund.",
+        "syncTurningOff": "Vypínání synchronizace pro {{name}}",
+        "syncTurnedOn": "Synchronizace pro {{name}} je zapnutá",
+        "syncTurnedOff": "Synchronizace pro {{name}} je vypnutá",
+        "syncToggleFailed": "Synchronizaci pro {{name}} se nepodařilo změnit",
+        "syncToggleFailedDescription": "Zkuste to znovu. Pokud to stále selhává, zkontrolujte nastavení konektoru."
       },
       "tabs": {
         "authenticate": "Ověřit instanci",
@@ -3943,7 +4115,9 @@
         "removing": "Tento konektor se odebírá.",
         "configureFirst": "Před povolením synchronizace dokončete konfiguraci.",
         "authenticateFirst": "Před povolením synchronizace tento konektor ověřte.",
-        "selected": "Vybráno: {{field}}"
+        "selected": "Vybráno: {{field}}",
+        "turningOn": "Zapínání…",
+        "turningOff": "Vypínání…"
       },
       "instanceStatus": {
         "setup": {
@@ -5069,6 +5243,7 @@
         "deleteTitle": "Smazat \"{{name}}\"?",
         "deleteBody": "Opravdu chcete tuto dovednost smazat? Tuto akci nelze vrátit zpět.",
         "cannotDeleteTitle": "Tuto dovednost nelze smazat",
+        "notVisibleCount": "{{count}}, které nevidíte",
         "requiredBy": "Tuto dovednost vyžadují jiné dovednosti: {{names}}. Místo toho ji označte jako zastaralou, aby se závislé dovednosti stále daly vyhodnotit.",
         "usedByAgents": "Tato dovednost je přiřazena: {{names}}. Smazáním jim bude odebrána."
       },
@@ -5592,7 +5767,7 @@
     },
     "tenants": {
       "title": "Tenanti",
-      "subtitle": "Vytvářejte a spravujte organizace tenantů v rámci pracovního prostoru",
+      "subtitle": "Vytvářejte a spravujte organizace tenantů v této instalaci",
       "createTenant": "Vytvořit tenanta",
       "searchPlaceholder": "Hledat tenanty...",
       "emptyTitle": "Zatím nebyli vytvořeni žádní tenanti",
@@ -7062,6 +7237,9 @@
     }
   },
   "errorToast": {
+    "reconnecting": "Znovu se připojuje…",
+    "reconnectingDescription": "Právě nemůžeme zkontrolovat vaše přihlášení. Zůstáváte přihlášeni. Několik minut to budeme zkoušet znovu, potom až se vrátíte nebo znovu připojíte.",
+    "sessionUnavailable": "Právě nemůžeme zkontrolovat vaše přihlášení. Znovu se připojuje…",
     "accessDenied": "Přístup odepřen",
     "invalidRequest": "Neplatný požadavek",
     "notFound": "Nenalezeno",
@@ -7204,6 +7382,13 @@
       "hidden": "Některé znaky by zde byly neviditelné nebo by změnily pořadí textu, proto se zobrazují jako kódy, například ⟨U+202E⟩. Zkontrolujte, že chcete odeslat právě toto.",
       "host": "{{ascii}} míchá abecedy a vypadá jako {{unicode}}. Zobrazuje se ve skutečné podobě, protože to nemusí být web, kterým se zdá být.",
       "markerTitle": "Znak, který by jinak byl neviditelný nebo by změnil pořadí textu"
+    },
+    "schedule": {
+      "name": "Název",
+      "when": "Kdy",
+      "ask": "Na co se každý běh zeptá",
+      "notify": "Upozornit přes",
+      "where": "Každý běh zahájí vlastní konverzaci. Kdykoli ho pozastavte nebo smažte v části Workspace > Plány."
     }
   },
   "codeTaskCard": {
@@ -8006,7 +8191,8 @@
     "status": {
       "active": "Aktivní",
       "paused": "Pozastaveno",
-      "disabled": "Vypnuto"
+      "disabled": "Vypnuto",
+      "ranOnce": "Proběhl jednou"
     },
     "trigger": {
       "cron": "Cron",
@@ -8029,7 +8215,8 @@
         "cron": "Naplánováno",
         "manual": "Spustit nyní",
         "event": "Vyvoláno událostí",
-        "cronCaughtUp": "Plánované (dohnané)"
+        "cronCaughtUp": "Plánované (dohnané)",
+        "once": "Jednorázově"
       },
       "openConversation": "Otevřít konverzaci",
       "admitted": "Spuštěno",
@@ -8082,7 +8269,13 @@
       "notifyUnknown": "Momentálně nedostupné.",
       "notifyCheckFailed": "Nepodařilo se ověřit, které kanály můžete použít, proto je nabízen jen PipesHub.",
       "webhookCantSign": "Volající nemůže podepisovat. Použít místo toho token v hlavičce",
-      "webhookCantSignHint": "Kdokoli, kdo token uvidí, ho může zavolat. Podepisování je bezpečnější."
+      "webhookCantSignHint": "Kdokoli, kdo token uvidí, ho může zavolat. Podepisování je bezpečnější.",
+      "kindOnce": "Jednou, v zadané datum a čas",
+      "onceAt": "Datum a čas",
+      "onceAtHint": "Ve vašem časovém pásmu ({{timeZone}}). Nejdříve za minutu, nejpozději za rok.",
+      "onceNotExisting": "Tento čas ve vašem časovém pásmu v ten den neexistuje: hodiny ho přeskočí. Vyberte jiný čas.",
+      "onceTooSoon": "Vyberte čas nejdříve za minutu.",
+      "onceTooFar": "Vyberte čas nejpozději za rok."
     },
     "webhook": {
       "title": "Váš webhook",
@@ -8108,7 +8301,10 @@
       "limit": "Dosáhli jste povoleného počtu plánů. Nejprve jeden smažte.",
       "budgetCeiling": "Rozpočet na jedno spuštění je příliš vysoký.",
       "unavailable": "Plánované běhy vyžadují trvalý chat s agentem, který je ve vaší organizaci vypnutý.",
-      "triggerTokenInvalid": "Spouštěcí token webhooku nesouhlasí. Zkopírujte aktuální token z plánu a zkuste to znovu."
+      "triggerTokenInvalid": "Spouštěcí token webhooku nesouhlasí. Zkopírujte aktuální token z plánu a zkuste to znovu.",
+      "ranOnce": "Tento plán už jednou proběhl. Znovu neproběhne; můžete ho smazat.",
+      "notApproved": "Tento plán nebyl schválen, proto nebyl vytvořen.",
+      "approvalUsed": "Toto schválení už vytvořilo plán, který byl smazán. Požádejte znovu a nastavte nový."
     },
     "reason": {
       "scheduledRunsDisabled": "plánované běhy byly pro organizaci vypnuty",
@@ -8144,6 +8340,21 @@
       "latest": "Vždy používat aktivní verzi",
       "latestHint": "Každé spuštění použije to, co bylo publikováno naposledy.",
       "save": "Uložit"
+    },
+    "ranOnce": "Proběhl jednou. Znovu už neproběhne.",
+    "when": {
+      "cron": "{{cron}} (cron)",
+      "everyMinute": "Každou minutu",
+      "everyMinutes": "Každých {{count}} minut",
+      "hourly": "Každou hodinu v :{{minute}}",
+      "daily": "Každý den v {{time}}",
+      "weekdays": "Každý pracovní den v {{time}}",
+      "weekly": "Každý {{day}} v {{time}}",
+      "monthly": "Každý měsíc {{day}}. dne v {{time}}",
+      "onceToday": "Jednou, dnes v {{time}}",
+      "onceTomorrow": "Jednou, zítra v {{time}}",
+      "onceOn": "Jednou, {{date}}",
+      "withZone": "{{when}} ({{timeZone}})"
     }
   },
   "unknownEffectCard": {
@@ -8998,7 +9209,11 @@
       "install_packages_one": "Nainstalovat balíčky",
       "install_packages_few": "Nainstalovat balíčky {{count}}krát",
       "install_packages_many": "Nainstalovat balíčky {{count}}krát",
-      "install_packages_other": "Nainstalovat balíčky {{count}}krát"
+      "install_packages_other": "Nainstalovat balíčky {{count}}krát",
+      "scheduleCreate_one": "Nastavit plán",
+      "scheduleCreate_few": "Nastavit {{count}} plány",
+      "scheduleCreate_many": "Nastavit {{count}} plánů",
+      "scheduleCreate_other": "Nastavit {{count}} plánů"
     },
     "engineWants": "{{engine}} chce:",
     "childWants": "Programovací úloha chce:",
@@ -9096,7 +9311,8 @@
     "waitingForOwner_many": "Čeká se, až vlastník konverzace rozhodne o {{count}} kroku",
     "waitingForOwner_other": "Čeká se, až vlastník konverzace rozhodne o {{count}} krocích",
     "denyAllLabel": "Zamítnout vše: {{title}}",
-    "titleSiteUpload": "Povolit v tomto běhu nahrávání na {{destination}}?"
+    "titleSiteUpload": "Povolit v tomto běhu nahrávání na {{destination}}?",
+    "titleSchedule": "Nastavit plán"
   },
   "engineSignIn": {
     "title": "Přihlášení do programovacích enginů",

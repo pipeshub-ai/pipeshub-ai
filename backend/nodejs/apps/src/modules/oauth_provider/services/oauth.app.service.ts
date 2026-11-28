@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { Logger } from '../../../libs/services/logger.service';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { ScopeValidatorService } from './scope.validator.service';
+import { withoutRetiredScopes } from '../config/scopes.config';
 import { OAuthTokenService } from './oauth_token.service';
 import {
   getOAuthAppRepository,
@@ -64,6 +65,34 @@ export function isAppUsableInOrg(app: OAuthAppDto, orgId: string): boolean {
 }
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/** Schemes that run script or read local files. Never honoured, even when already stored. */
+const SCRIPT_CAPABLE_REDIRECT_SCHEMES = new Set([
+  'javascript:',
+  'data:',
+  'file:',
+  'vbscript:',
+  'blob:',
+  'about:',
+  'filesystem:',
+]);
+
+/** Refused for new registrations: the script-capable schemes and network schemes that are never an app's callback. */
+const BLOCKED_REDIRECT_SCHEMES = new Set([
+  ...SCRIPT_CAPABLE_REDIRECT_SCHEMES,
+  'ftp:',
+  'ws:',
+  'wss:',
+]);
+
+/** True for a script-capable scheme, and for a URI that does not parse: its scheme cannot be checked. */
+function isScriptCapableRedirectUri(uri: string): boolean {
+  try {
+    return SCRIPT_CAPABLE_REDIRECT_SCHEMES.has(new URL(uri).protocol);
+  } catch {
+    return true;
+  }
+}
 
 /**
  * RFC 8252 §7.3: a native app listens on a port it picks at run time, so a loopback redirect URI
@@ -541,6 +570,15 @@ export class OAuthAppService {
       throw new NotFoundError('OAuth app not found');
     }
 
+    // An app saved before config:write was retired may send it back; it is dropped
+    // rather than refused, so the app can still be edited.
+    if (data.allowedScopes) {
+      data = {
+        ...data,
+        allowedScopes: withoutRetiredScopes(data.allowedScopes),
+      };
+    }
+
     // Validate scopes if provided
     if (data.allowedScopes) {
       this.scopeValidatorService.validateRequestedScopes(
@@ -551,7 +589,7 @@ export class OAuthAppService {
 
     // Validate redirect URIs if provided
     if (data.redirectUris) {
-      this.validateRedirectUris(data.redirectUris);
+      this.validateRedirectUris(data.redirectUris, app.redirectUris);
     }
 
     // Validate grant types if provided
@@ -619,8 +657,15 @@ export class OAuthAppService {
     if (data.allowedGrantTypes !== undefined) {
       patch.allowedGrantTypes = data.allowedGrantTypes;
     }
-    if (data.allowedScopes !== undefined)
+    if (data.allowedScopes !== undefined) {
       patch.allowedScopes = data.allowedScopes;
+    } else if (
+      withoutRetiredScopes(app.allowedScopes).length !==
+      app.allowedScopes.length
+    ) {
+      const kept = withoutRetiredScopes(app.allowedScopes);
+      if (kept.length > 0) patch.allowedScopes = kept;
+    }
     if (data.homepageUrl !== undefined) {
       patch.homepageUrl = data.homepageUrl ?? undefined;
     }
@@ -680,7 +725,8 @@ export class OAuthAppService {
     // Tokens carry their scopes in the claim, and neither Node nor the Python
     // services compare that claim with the app on each request. Removing a
     // scope therefore only takes effect for tokens issued after the change.
-    const removedScopes = previousScopes.filter(
+    // Dropping a retired scope does not revoke tokens: they lose it when used.
+    const removedScopes = withoutRetiredScopes(previousScopes).filter(
       (scope) => !updated.allowedScopes.includes(scope),
     );
     if (removedScopes.length > 0 || limitNarrowed) {
@@ -921,6 +967,12 @@ export class OAuthAppService {
    * Validate redirect URI for an app
    */
   validateRedirectUriForApp(app: OAuthAppDto, redirectUri: string): void {
+    // An app may keep what it already has registered, so only refuse what must never run.
+    if (isScriptCapableRedirectUri(redirectUri)) {
+      throw new InvalidRedirectUriError('redirect_uri scheme is not allowed', {
+        providedUri: redirectUri,
+      });
+    }
     if (
       !app.redirectUris.includes(redirectUri) &&
       !app.redirectUris.some((r) => loopbackMatchesAnyPort(r, redirectUri))
@@ -948,20 +1000,29 @@ export class OAuthAppService {
     return crypto.randomBytes(CLIENT_SECRET_LENGTH).toString('hex');
   }
 
-  private validateRedirectUris(uris: string[]): void {
+  private validateRedirectUris(
+    uris: string[],
+    storedUris: string[] = [],
+  ): void {
     for (const uri of uris) {
       if (ALLOWED_CUSTOM_REDIRECT_URIS.includes(uri)) {
+        continue;
+      }
+      // Tightened rules apply to new values; an update must not lose a URI the app already has.
+      if (storedUris.includes(uri) && !isScriptCapableRedirectUri(uri)) {
         continue;
       }
       try {
         const parsed = new URL(uri);
         if (
           parsed.protocol !== 'https:' &&
-          parsed.hostname !== 'localhost' &&
-          parsed.hostname !== '127.0.0.1'
+          !(
+            LOOPBACK_HOSTS.has(parsed.hostname) &&
+            !BLOCKED_REDIRECT_SCHEMES.has(parsed.protocol)
+          )
         ) {
           throw new InvalidRedirectUriError(
-            `Redirect URI must use HTTPS (except localhost): ${uri}`,
+            `Redirect URI must use HTTPS (HTTP or an app scheme only on loopback): ${uri}`,
           );
         }
         // Disallow fragments
@@ -984,19 +1045,6 @@ export class OAuthAppService {
    * and the like, where the code would be handed to something that is not the client.
    */
   validateDcrRedirectUris(uris: string[]): void {
-    // Browser and network schemes that are never an app's callback, though they can look like one.
-    const blocked = new Set([
-      'javascript:',
-      'data:',
-      'file:',
-      'vbscript:',
-      'blob:',
-      'about:',
-      'filesystem:',
-      'ftp:',
-      'ws:',
-      'wss:',
-    ]);
     for (const uri of uris) {
       let parsed: URL;
       try {
@@ -1012,7 +1060,7 @@ export class OAuthAppService {
       const appScheme =
         parsed.protocol !== 'https:' && parsed.protocol !== 'http:';
       if (
-        blocked.has(parsed.protocol) ||
+        BLOCKED_REDIRECT_SCHEMES.has(parsed.protocol) ||
         (appScheme &&
           !parsed.protocol.includes('.') &&
           !uri.startsWith(`${parsed.protocol}//`))
@@ -1080,7 +1128,7 @@ export class OAuthAppService {
       description: app.description,
       redirectUris: app.redirectUris,
       allowedGrantTypes: app.allowedGrantTypes,
-      allowedScopes: app.allowedScopes,
+      allowedScopes: withoutRetiredScopes(app.allowedScopes),
       status: app.status,
       logoUrl: app.logoUrl,
       homepageUrl: app.homepageUrl,

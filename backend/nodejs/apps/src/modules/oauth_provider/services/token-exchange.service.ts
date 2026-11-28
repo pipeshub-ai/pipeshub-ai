@@ -12,6 +12,7 @@ import {
   SERVICE_TOKEN_PREFIX,
 } from '../constants/constants';
 import { TokenResponse } from '../types/oauth.types';
+import { withoutRetiredScopes } from '../config/scopes.config';
 
 /**
  * How long a delegated token lives.
@@ -341,7 +342,9 @@ export class TokenExchangeService {
       serviceAccountId: payload.userId,
       orgId: payload.orgId,
       clientId: payload.client_id,
-      scopes: payload.scope.split(' ').filter((s) => s !== ''),
+      scopes: withoutRetiredScopes(
+        payload.scope.split(' ').filter((s) => s !== ''),
+      ),
     };
   }
 

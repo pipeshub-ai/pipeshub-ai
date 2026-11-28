@@ -309,7 +309,8 @@ _KNOWLEDGE_PUBLICATIONS = "/api/v1/knowledge/publications"
 _NOT_THE_OWNER = "only an owner of the container or an org admin"
 
 
-_HIDE_SECRETS = os.getenv("HIDE_SECRET_CONFIG") == "true"
+# Masked unless the stack sets HIDE_SECRET_CONFIG=false, as the product defaults.
+_HIDE_SECRETS = os.getenv("HIDE_SECRET_CONFIG") != "false"
 
 
 def _secrets(name: str, module: str, path: str, shown: str, hidden: tuple[str, ...], *,
@@ -463,7 +464,7 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
              params={"search": "{toolset_name}"}),
     _secrets("get_toolset_instance", "api/routes/toolsets.py", f"{_TOOLSETS}/instances/{{toolset}}",
              "{toolset_name}", ('"auth":', "{toolset_key}"), admin_sees='"auth":'),
-    # The admin is shown the client id, and the secret too unless HIDE_SECRET_CONFIG=true.
+    # The admin is shown the client id, and the secret too only when HIDE_SECRET_CONFIG=false.
     # Compose passes the same shell variable to the stack, and no test dotenv file sets it.
     _secrets("list_toolset_oauth_configs", "api/routes/toolsets.py",
              f"{_TOOLSETS}/oauth-configs/{OAUTH_TOOLSET_TYPE}", "{toolset_oauth_name}",
@@ -892,18 +893,6 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
         ),
         body={},
         same_for_everyone="only a service agent's binding needs an admin, and these tests make none",
-    ),
-    # Never asks who is calling: it is found because it calls the skills manager's
-    # write_resource, which the reader takes for the route of that name. A package with no
-    # name is refused alike, and nothing is made.
-    ConditionalRoute(
-        "api/routes/skills.py::finalize_import", "POST", f"{_SKILLS}/import/finalize",
-        cases=(
-            Case("org", MEMBER, True, 400, "missing a 'name' field"),
-            Case("org", ADMIN, True, 400, "missing a 'name' field"),
-        ),
-        body={"content": "Made by the conditional-admin tests, with no frontmatter."},
-        same_for_everyone="it never asks; the reader matches the manager's write_resource to the route",
     ),
     # A knowledge base is published, and its publications listed or revoked, by an owner of
     # it or an org admin. The gateway serves these under the harness and forwards them to

@@ -73,7 +73,12 @@ from app.agents.mcp.url_guard import (
     private_network_allowed,
 )
 from app.agents.mcp.www_authenticate import challenge_scopes
-from app.api.middlewares.auth import require_scopes
+from app.api.middlewares.auth import (
+    refuse_delegated_caller,
+    require_interactive_session,
+    require_interactive_session_except,
+    require_scopes,
+)
 from app.api.middlewares.caller_role import CallerRoleStatus, fetch_caller_role
 from app.api.middlewares.request_log import (
     add_request_log_fields,
@@ -723,15 +728,38 @@ def _without_connection_details(instance: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in instance.items() if k not in _ADMIN_ONLY_CONNECTION_FIELDS}
 
 
+def _refuse_delegated_stdio(request: Request, payload: MCPServerInstanceConfig) -> None:
+    """A STDIO server runs a command on the PipesHub host; setting one up takes an
+    interactive session, so a token cannot, whatever its scopes."""
+    if payload.transport == MCPTransport.STDIO:
+        refuse_delegated_caller(request)
+
+
+# What a token may send when it adds a server. Everything else (``url``,
+# ``authorizationUrl``, ``tokenUrl``, ``headerName``, the STDIO command fields, and any key added
+# later) sets where credentials are sent or what runs, so it takes an interactive session; a
+# catalog server takes those from its template. Allowed keys, and why each is safe:
+#   name, description: labels.
+#   typeId: which catalog server; its template fixes the URLs.
+#   scope: whose server it is (the handler checks the caller may use it).
+#   transport, authMode, useAdminAuth: how it connects and signs in; credentials are elsewhere.
+#   scopes: the OAuth scopes asked of the server's own sign-in.
+_MCP_INSTANCE_ALLOWED: dict[str, Any] = {
+    "name": True, "description": True, "typeId": True, "scope": True,
+    "transport": True, "authMode": True, "useAdminAuth": True, "scopes": True,
+}
+
+
 @router.post(
     "/instances",
     status_code=HttpStatusCode.CREATED.value,
-    dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))],
+    dependencies=[Depends(require_interactive_session_except(_MCP_INSTANCE_ALLOWED)), Depends(require_scopes(OAuthScopes.MCP_WRITE))],
 )
 async def create_instance(
     request: Request,
     payload: MCPServerInstanceConfig,
 ) -> dict[str, Any]:
+    _refuse_delegated_stdio(request, payload)
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
     org_id = user_context["org_id"]
@@ -793,12 +821,15 @@ async def get_instance(request: Request, instance_id: str) -> dict[str, Any]:
     return instance
 
 
-@router.put("/instances/{instance_id}", dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))])
+# An edit replaces the whole record, so any body can change where credentials are sent or clear
+# the shared one; it takes an interactive session.
+@router.put("/instances/{instance_id}", dependencies=[Depends(require_interactive_session), Depends(require_scopes(OAuthScopes.MCP_WRITE))])
 async def update_instance(
     request: Request,
     instance_id: str,
     payload: MCPServerInstanceConfig,
 ) -> dict[str, Any]:
+    _refuse_delegated_stdio(request, payload)
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
     org_id = user_context["org_id"]
@@ -834,7 +865,7 @@ async def update_instance(
     # confirmed leaves the old target in place (503 for an outage, 500 otherwise).
     credentials_reset = _connection_target_changed(existing, record)
     if credentials_reset:
-        await await_or_503(_purge_instance_credentials(config_service, instance_id))
+        await await_or_503(_purge_instance_credentials(config_service, existing, user_context["user_id"]))
     else:
         credentials_reset = await _settle_shared_credential(config_service, existing, record)
 
@@ -890,8 +921,10 @@ def _connection_target_changed(existing: dict[str, Any], record: dict[str, Any])
     return any((existing.get(field) or None) != (record.get(field) or None) for field in fields)
 
 
-async def _purge_instance_credentials(config_service: ConfigurationService, instance_id: str) -> None:
-    await mcp_lifecycle.purge_instance_credentials(config_service, instance_id)
+async def _purge_instance_credentials(
+    config_service: ConfigurationService, existing: dict[str, Any], user_id: str,
+) -> None:
+    await mcp_lifecycle.purge_instance_credentials(config_service, existing, user_id=user_id)
 
 
 async def _assert_instance_not_in_use(request: Request, instance: dict[str, Any]) -> None:
@@ -2038,7 +2071,8 @@ def _mask_secret(value: Optional[str]) -> Optional[str]:
 
 @router.put(
     "/instances/{instance_id}/oauth-config",
-    dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))],
+    # An OAuth app holds a client secret, so setting one takes an interactive session.
+    dependencies=[Depends(require_interactive_session), Depends(require_scopes(OAuthScopes.MCP_WRITE))],
 )
 async def update_oauth_config(
     request: Request,

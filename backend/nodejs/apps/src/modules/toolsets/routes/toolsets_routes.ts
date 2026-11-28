@@ -14,6 +14,11 @@ import { z } from 'zod';
 import { AuthMiddleware } from '../../../config';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
+import {
+  DelegatedAllowlist,
+  requireSessionAuth,
+  requireSessionAuthExcept,
+} from '../../../libs/middlewares/require-session-auth.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { AppConfig } from '../../tokens_manager/config/config';
 import {
@@ -131,6 +136,37 @@ const toolsetIdParamSchema = z.object({
     toolsetId: z.string().min(1, 'Toolset ID is required'),
   }),
 });
+
+/**
+ * What a token may send when it creates or renames a toolset instance. Everything else the
+ * handlers read (`authConfig`, `baseUrl`, `oauthConfigId`, `oauthInstanceName`, top-level
+ * `clientId`/`clientSecret`, and any key added later) holds a credential, creates or links an
+ * OAuth app, or names the host credentials are sent to, so it takes an interactive session.
+ * Allowed keys, and why each is safe:
+ *  - `instanceName`: a label.
+ *  - `toolsetType`, `authType`: which toolset and which sign-in form; credentials are elsewhere.
+ *  - `scope`: whose instance it is (the handler checks the caller may use it).
+ */
+const TOOLSET_INSTANCE_CREATE_ALLOWED: DelegatedAllowlist = {
+  instanceName: true,
+  toolsetType: true,
+  authType: true,
+  scope: true,
+};
+const TOOLSET_INSTANCE_UPDATE_ALLOWED: DelegatedAllowlist = {
+  instanceName: true,
+};
+
+/**
+ * The older toolset routes carry the credentials in a required `auth` block, so a token can
+ * send only the display fields beside it, which makes them session-only in practice.
+ */
+const TOOLSET_LEGACY_CREATE_ALLOWED: DelegatedAllowlist = {
+  name: true,
+  displayName: true,
+  type: true,
+};
+const TOOLSET_LEGACY_CONFIG_ALLOWED: DelegatedAllowlist = {};
 
 /**
  * Schema for creating a toolset instance
@@ -369,6 +405,7 @@ export function createToolsetsRouter(container: Container): Router {
   router.post(
     '/',
     authMiddleware.authenticate,
+    requireSessionAuthExcept(TOOLSET_LEGACY_CREATE_ALLOWED),
     requireScopes(OAuthScopeNames.TOOLSET_WRITE),
     ValidationMiddleware.validate(createToolsetSchema),
     createToolset(config)
@@ -418,6 +455,7 @@ export function createToolsetsRouter(container: Container): Router {
   router.post(
     '/:toolsetId/config',
     authMiddleware.authenticate,
+    requireSessionAuthExcept(TOOLSET_LEGACY_CONFIG_ALLOWED),
     requireScopes(OAuthScopeNames.TOOLSET_WRITE),
     ValidationMiddleware.validate(saveToolsetConfigSchema),
     saveToolsetConfig(config)
@@ -430,6 +468,7 @@ export function createToolsetsRouter(container: Container): Router {
   router.put(
     '/:toolsetId/config',
     authMiddleware.authenticate,
+    requireSessionAuthExcept(TOOLSET_LEGACY_CONFIG_ALLOWED),
     requireScopes(OAuthScopeNames.TOOLSET_WRITE),
     ValidationMiddleware.validate(saveToolsetConfigSchema),
     updateToolsetConfig(config)
@@ -521,6 +560,7 @@ export function createToolsetsRouter(container: Container): Router {
   router.post(
     '/instances',
     authMiddleware.authenticate,
+    requireSessionAuthExcept(TOOLSET_INSTANCE_CREATE_ALLOWED),
     requireScopes(OAuthScopeNames.TOOLSET_WRITE),
     ValidationMiddleware.validate(createToolsetInstanceSchema),
     createToolsetInstance(config)
@@ -544,6 +584,7 @@ export function createToolsetsRouter(container: Container): Router {
   router.put(
     '/instances/:instanceId',
     authMiddleware.authenticate,
+    requireSessionAuthExcept(TOOLSET_INSTANCE_UPDATE_ALLOWED),
     requireScopes(OAuthScopeNames.TOOLSET_WRITE),
     updateToolsetInstance(config)
   );
@@ -690,6 +731,7 @@ export function createToolsetsRouter(container: Container): Router {
   router.put(
     '/oauth-configs/:toolsetType/:oauthConfigId',
     authMiddleware.authenticate,
+    requireSessionAuth,
     requireScopes(OAuthScopeNames.TOOLSET_WRITE),
     updateToolsetOAuthConfig(config)
   );
@@ -701,6 +743,7 @@ export function createToolsetsRouter(container: Container): Router {
   router.delete(
     '/oauth-configs/:toolsetType/:oauthConfigId',
     authMiddleware.authenticate,
+    requireSessionAuth,
     requireScopes(OAuthScopeNames.TOOLSET_DELETE),
     deleteToolsetOAuthConfig(config)
   );

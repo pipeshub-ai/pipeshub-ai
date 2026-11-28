@@ -768,14 +768,14 @@ class TestUpdateAttachments:
     def test_skills_link_only_to_the_callers_own_or_builtin_active_skills(self, client, graph) -> None:
         skills = [
             {"_key": "org-1_mine", "orgId": "org-1", "createdBy": user_key("alice")},
-            {"_key": "org-1_builtin", "orgId": "org-1", "source": "builtin"},
+            {"_key": "org-1_builtin", "orgId": "org-1", "source": "builtin", "createdBy": "system:builtin-seeder"},
             {"_key": "org-1_bobs", "orgId": "org-1", "createdBy": user_key("bob")},
             {"_key": "org-1_old", "orgId": "org-1", "createdBy": user_key("alice"), "status": "deprecated"},
         ]
         for s in skills:
             graph.add_node("agentSkills", s)
         # Another org's skill stored under a key that looks like ours.
-        graph.add_node("agentSkills", {"_key": "org-1_foreign", "orgId": "org-2", "source": "builtin"})
+        graph.add_node("agentSkills", {"_key": "org-1_foreign", "orgId": "org-2", "source": "builtin", "createdBy": "system:builtin-seeder"})
         response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={
             "skills": [{"name": "mine"}, "builtin", "bobs", "old", "foreign", "missing", "mine", 7],
         })

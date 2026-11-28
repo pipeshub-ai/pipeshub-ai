@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from app.agents.agent_loop.skills.graph_store import is_seeded_builtin
 from app.agents.constants.mcp_server_constants import get_mcp_instances_prefix
 from app.agents.constants.toolset_constants import (
     get_toolset_org_user_instances_prefix,
@@ -100,6 +101,14 @@ def _effect(entry: object) -> str | None:
     if not hints:
         return None
     return next((tag.value for tag in hint_tags(hints) if tag.key == EFFECT_TAG_KEY), None)
+
+
+def _same_creation(read: Document, now: Document | None) -> bool:
+    """Whether ``now`` is still the creation ``read`` saw. Any change of generation counts as another creation, a
+    legacy skill given its first generation meanwhile too: that fact is left out of this read only, never mixed."""
+    if now is None or (read.get("createdBy"), read.get("createdAtTimestamp")) != (now.get("createdBy"), now.get("createdAtTimestamp")):
+        return False
+    return read.get("generation") == now.get("generation")
 
 
 class LegacyCapabilityReader:
@@ -306,14 +315,16 @@ class LegacyCapabilityReader:
                 continue
             name, version, tenant = _text(skill, "name"), _text(skill, "version"), _text(skill, "orgId")
             digest = await self._skill_digest(tenant, name, version) if name and version else None
-            if digest is None:
+            if digest is None or not _same_creation(skill, await self._graph.get_document(_target_key(edge), _SKILLS, raise_on_error=True)):
+                # The digest is resolved by name and version: one read for a skill deleted and created again since
+                # would pair this creation's facts with the next one's content.
                 continue
             skills.append(
                 {
                     "name": name,
                     "version": version,
-                    "builtin": _text(skill, "source") == "builtin",
-                    "createdBy": None if _text(skill, "source") == "builtin" else await self._person(_text(skill, "createdBy")),
+                    "builtin": is_seeded_builtin(skill),
+                    "createdBy": None if is_seeded_builtin(skill) else await self._person(_text(skill, "createdBy")),
                     "bundleDigest": digest,
                 }
             )

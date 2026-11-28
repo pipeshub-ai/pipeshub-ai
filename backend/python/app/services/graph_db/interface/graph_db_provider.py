@@ -1166,15 +1166,18 @@ class IGraphDBProvider(ABC):
         match_field: str,
         match_value: Any,
         transaction: str | None = None,
+        *,
+        expected: dict[str, Any] | None = None,
     ) -> bool:
         """Write `node` over the existing document only while `match_field`
-        still equals `match_value`. One round-trip.
+        still equals `match_value`, and every field in `expected` still holds
+        its value (``None`` means absent). One round-trip.
 
         Used for optimistic concurrency: a caller that last observed
         `updatedAtTimestamp=T` must not clobber a write that already moved
         the timestamp. `batch_upsert_nodes` / `update_node` are unconditional
         and cannot express that. Returns True iff the write applied; False
-        if the document is missing or the field no longer matches (the
+        if the document is missing or a field no longer matches (the
         document is left unchanged). Does not insert a new document.
         """
         pass
@@ -3751,6 +3754,7 @@ class IGraphDBProvider(ABC):
         user_id: str,
         *,
         raise_on_error: bool = False,
+        org_id: str | None = None,
     ) -> dict | None:
         """
         Get a user by their internal user ID.
@@ -3759,6 +3763,8 @@ class IGraphDBProvider(ABC):
             user_id (str): Internal user ID
             raise_on_error: raise when the lookup fails. Without it a failed
                 lookup returns None, the same as a user that does not exist.
+            org_id: when given, only a user of this organisation matches;
+                an empty string matches no user.
 
         Returns:
             Optional[Dict]: User data if found, None otherwise
@@ -5627,6 +5633,9 @@ class IGraphDBProvider(ABC):
         """
         Upsert a sync point.
 
+        Fields merge into the stored point. A field given as None is removed, so it reads back absent on
+        every store (not stored as null).
+
         Args:
             sync_point_key (str): Sync point key
             sync_point_data (Dict): Sync point data
@@ -5656,7 +5665,8 @@ class IGraphDBProvider(ABC):
     ) -> bool:
         """Update an existing sync point only if every ``expected`` field still holds its value.
 
-        A compare-and-set: ``None`` matches a missing or null field. Returns
+        A compare-and-set: ``None`` matches a missing or null field, and a None in
+        ``sync_point_data`` removes that field, as in ``upsert_sync_point``. Returns
         whether the update was applied; False when the sync point is missing
         or any expected field has changed since the caller read it.
         """

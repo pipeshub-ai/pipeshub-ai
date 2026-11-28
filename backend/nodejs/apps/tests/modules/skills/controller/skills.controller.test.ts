@@ -13,6 +13,7 @@ import {
   deleteSkill,
   searchSkills,
   getSkillCategories,
+  listOrgSkills,
   patchSkillBody,
   deprecateSkill,
   getSkillUsage,
@@ -217,6 +218,18 @@ describe('SkillsController', () => {
 
       expect(stub.firstCall.args[0].url).to.include('/categories')
       expect(res.json.calledWith(['email', 'slack'])).to.be.true
+    })
+  })
+
+  describe('listOrgSkills', () => {
+    it('should GET /admin/skills', async () => {
+      const stub = sinon.stub(axios, 'request').resolves({ status: 200, data: { skills: [] } })
+      const res = makeRes()
+
+      await listOrgSkills(appConfig)(makeReq(), res, sinon.stub<unknown[]>())
+
+      expect(stub.firstCall.args[0].url).to.equal('http://ai:8000/api/v1/skills/admin/skills')
+      expect(res.json.calledWith({ skills: [] })).to.be.true
     })
   })
 

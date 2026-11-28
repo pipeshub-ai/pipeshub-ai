@@ -1,7 +1,7 @@
 import { NextFunction, Request, Response, Router } from 'express';
 import type { Container, interfaces } from 'inversify';
 import { z, type ZodType } from 'zod';
-import type { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
+import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import type { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import {
   BadRequestError,
@@ -9,6 +9,7 @@ import {
 } from '../../../libs/errors/http.errors';
 import { ValidationError } from '../../../libs/errors/validation.error';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
+import { requireSessionAuth } from '../../../libs/middlewares/require-session-auth.middleware';
 import { ValidationUtils } from '../../../libs/utils/validation.utils';
 import { ADMIN_ACCESS_REQUIRED_MESSAGE } from '../../user_management/services/user-admin.service';
 import type { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
@@ -306,7 +307,7 @@ export function createCpRouter(
 
 /**
  * Registers each route of `table` on `router` (CPD-11 §2): for every route,
- * in this order, `authenticate` → `requireScopes` → parse params, query and
+ * in this order, `authenticate` → an interactive session for `config:write` → `requireScopes` → parse params, query and
  * body → `If-Match` → Authorizer (actor from the token only) → handler →
  * `ETag`. Objects are read in the caller's org only, so another org's id is
  * 404, never 403.
@@ -328,6 +329,10 @@ export function registerCpRoutes(
     router[spec.method](
       spec.path,
       authenticate,
+      // Configuration writes take an interactive session, as the platform's own do.
+      ...(spec.scopes.includes(OAuthScopeNames.CONFIG_WRITE)
+        ? [requireSessionAuth]
+        : []),
       requireScopes(...spec.scopes),
       async (req: Request, res: Response, next: NextFunction) => {
         const requestId =

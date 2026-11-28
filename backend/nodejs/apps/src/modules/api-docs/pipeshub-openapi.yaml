@@ -24,7 +24,11 @@ info:
 
     **OAuth scopes.** On an operation whose `security` names `oauth2` scopes, an OAuth access token holding none of them gets `403 HTTP_FORBIDDEN` ("Insufficient scope. Required: ...") right after authentication. Session tokens are never scope-checked.
 
+    **Uploads.** A `multipart/form-data` upload past one of its route's limits (a file too large, too many files, form fields or parts, or the whole request over its byte cap) is answered `413 HTTP_PAYLOAD_TOO_LARGE`, and one that cannot be read (cut short, without a boundary, or a file under a part name the route does not expect) `400 HTTP_BAD_REQUEST`. Both are refused while the body is read, before the route's handler runs. The agent-harness workspace upload (`POST .../workspace/files` on a conversation or agent conversation) keeps its own mapping: a file too large or too many files is `413` with code `WORKSPACE_TOO_LARGE`, and every other refused limit (form fields or parts) is `400 HTTP_BAD_REQUEST`.
+
     **No such route.** A method and path that no route handles get Express's own `404` page, `text/html`, reading `Cannot <METHOD> <path>`. Such pairs are not listed as operations.
+
+    **Relayed failures.** A route that calls another PipesHub service answers that service's failure with the service's status. A `4xx` keeps its status, the service's own message and, when the service sent one, `error.reasonCode`; a `4xx` about the gateway's own request or its hop to the service (`405`, `406`, `407`, `411`, `414`, `417`, `421`, `426`, `431`) is a `500`, and a `408` (the gateway's call timed out) is a `504`. A `5xx` is a `502 HTTP_BAD_GATEWAY` with a generic sentence, while the service's own words stay in its log under the same request id. A `501 HTTP_NOT_IMPLEMENTED` stays `501`, and a `503` or `504` (a `408` included) is transient and keeps the service's `Retry-After`. Of the `5xx` answered `502`, only a `502` from the service carries `error.reasonCode`; a `503` or `504` (and a `408`) carry it too. An error answer that is not JSON (a proxy's HTML page, a plain-text error) goes through the same status mapping; where the mapping keeps the service's words, the message is the status text, or the standard reason phrase. The local-repositories routes (`/local-repos`) are the exception: a `4xx` whose body is a JSON object is passed on with its status and body unchanged, so quota details reach the client. An operation lists these codes only where it is known to answer them (see `UpstreamFailure`).
 
     ## Base URLs
     All endpoints use the `/api/v1` prefix unless otherwise noted.
@@ -889,7 +893,6 @@ components:
             code:read: Read indexed code repositories and their code graph
             code:write: Push local repositories to be indexed into the code graph
             config:read: Read system configuration
-            config:write: Update system configuration
             crawl:read: Read crawling jobs
             crawl:write: Create and manage crawling jobs
             crawl:delete: Delete crawling jobs
@@ -942,7 +945,6 @@ components:
             code:read: Read indexed code repositories and their code graph
             code:write: Push local repositories to be indexed into the code graph
             config:read: Read system configuration
-            config:write: Update system configuration
             crawl:read: Read crawling jobs
             crawl:write: Create and manage crawling jobs
             skill:read: Read custom agent skills
@@ -2458,8 +2460,15 @@ components:
         modelAccountId: { type: string, maxLength: 300, description: "A model account of the schedule's user (A1); engine runs only" }
 
     AgentScheduleTrigger:
-      description: When a schedule fires. A cron is evaluated in its IANA time zone and fires at most every 5 minutes; webhook and connector events are coalesced to one firing per `coalesceS` window.
+      description: When a schedule fires. A cron is evaluated in its IANA time zone and fires at most every 5 minutes; a one-time schedule (`once`) fires once at its instant and is then disabled (`statusReason` `ran_once`); webhook and connector events are coalesced to one firing per `coalesceS` window.
       oneOf:
+        - type: object
+          additionalProperties: false
+          required: [kind, at, timeZone]
+          properties:
+            kind: { type: string, enum: [once] }
+            at: { type: string, format: date-time, description: "ISO 8601 with its offset, e.g. `2026-11-26T15:47:00-08:00`; answered in UTC. On create at least 60 seconds and at most 366 days ahead. A slot missed while PipesHub was down fires up to 24 hours late; later it is skipped (`once_too_late`) and its person told" }
+            timeZone: { type: string, description: "IANA name the person thinks in, e.g. `America/Los_Angeles`: for wording and the run's clock" }
         - type: object
           additionalProperties: false
           required: [kind, cron, timeZone]
@@ -2571,8 +2580,17 @@ components:
         statusReason:
           type: string
           nullable: true
-          description: "`by_actor`, `by_admin`, or the firing refusal that paused or disabled it (`actor_disabled`, `agent_forbidden`, `actor_deleted`, ...)"
+          description: "`by_actor`, `by_admin`, `ran_once` (a one-time schedule whose slot was claimed: resume and run now answer `SCHEDULE_RAN_ONCE`), or the firing refusal that paused or disabled it (`actor_disabled`, `agent_forbidden`, `actor_deleted`, ...)"
         nextFireAt: { type: string, format: date-time, nullable: true }
+        origin:
+          type: object
+          additionalProperties: false
+          required: [conversationId, runId, interactionId]
+          description: "Absent unless made in a harness chat on its person's approval (ADR-SCH-01): the conversation, run and approval it came from"
+          properties:
+            conversationId: { type: string }
+            runId: { type: string }
+            interactionId: { type: string }
         overlap: { $ref: '#/components/schemas/AgentScheduleOverlap' }
         notify:
           type: array
@@ -2591,6 +2609,53 @@ components:
           minimum: 1
           nullable: true
           description: "List answers only (ADR-UI-03): the agent's latest published version, from the same lookup; a pinned schedule below it can be moved. Null for the assistant, an agent with no version yet, or when the lookup failed"
+
+    AgentHarnessScheduleCreateArguments:
+      type: object
+      additionalProperties: false
+      required: [name, ask, when]
+      description: "The `schedule_create` tool's arguments: exactly `contracts/harness/ext/pipeshub/api/schedule-create-arguments.schema.json` (lengths in code points, as sent), which the worker validates by before it asks the person, and which a test holds this component to; vectors in `contracts/harness/vectors/schedule-create-arguments.json`"
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120, pattern: '\S' }
+        ask: { type: string, minLength: 1, maxLength: 10000, pattern: '\S', description: What each run is asked }
+        when:
+          anyOf:
+            - type: object
+              additionalProperties: false
+              required: [kind, at, timeZone]
+              properties:
+                kind: { type: string, enum: [once] }
+                at: { type: string, maxLength: 40, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]{1,3})?)?(Z|[+-][0-9]{2}:[0-9]{2})$' }
+                timeZone: { type: string, minLength: 1, maxLength: 64 }
+            - type: object
+              additionalProperties: false
+              required: [kind, cron, timeZone]
+              properties:
+                kind: { type: string, enum: [cron] }
+                cron: { type: string, minLength: 9, maxLength: 120 }
+                timeZone: { type: string, minLength: 1, maxLength: 64 }
+        notify:
+          type: array
+          minItems: 1
+          maxItems: 3
+          uniqueItems: true
+          items: { type: string, enum: [in_app, email, slack] }
+    AgentHarnessChatSchedule:
+      type: object
+      additionalProperties: false
+      required: [schedule, created]
+      properties:
+        created: { type: boolean, description: "False: this decision made it before" }
+        schedule:
+          type: object
+          additionalProperties: false
+          required: [id, name, status, trigger, nextFireAt]
+          properties:
+            id: { type: string }
+            name: { type: string }
+            status: { type: string, enum: [active, paused, disabled] }
+            trigger: { $ref: '#/components/schemas/AgentScheduleTrigger' }
+            nextFireAt: { type: string, format: date-time, nullable: true }
 
     AgentVersionPin:
       description: "A published version of an agent (from 1), or `latest` to follow every publish (OWD-14)"
@@ -2720,10 +2785,10 @@ components:
       required: [id, kind, slotAt, status, reason, runId, conversationId, missed, attempts, createdAt, settledAt]
       properties:
         id: { type: string }
-        kind: { type: string, enum: [cron, manual, event] }
+        kind: { type: string, enum: [cron, once, manual, event] }
         slotAt: { type: string, format: date-time }
         status: { type: string, enum: [pending, admitted, refused, skipped] }
-        reason: { type: string, nullable: true, description: "Why refused or skipped: `scheduled_runs_disabled`, `actor_disabled`, `agent_forbidden`, `rollout_legacy`, `unavailable`, `catch_up_skip`, an admission code" }
+        reason: { type: string, nullable: true, description: "Why refused or skipped: `scheduled_runs_disabled`, `actor_disabled`, `agent_forbidden`, `rollout_legacy`, `unavailable`, `catch_up_skip`, `once_too_late` (a one-time slot more than 24 hours late), an admission code" }
         runId: { type: string, nullable: true }
         conversationId: { type: string, nullable: true, description: Each firing runs in a new conversation of the schedule's user }
         missed: { type: integer, description: Slots before this one that never fired (an outage) }
@@ -6979,18 +7044,22 @@ components:
           items:
             type: string
             format: uri
-            pattern: '^(?:cursor://anysphere\.cursor-mcp/oauth/callback|[\x00-\x20]*(?:[Hh][Tt][Tt][Pp][Ss]:[/\\]*[^/\\?#\x00-\x20][^#]*#?|[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#@]*@)?(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127\.0\.0\.1)(?::[0-9]*)?(?:[/?][^#]*)?#?)[\x00-\x20]*)$'
+            pattern: '^(?:cursor://anysphere\.cursor-mcp/oauth/callback|[\x00-\x20]*(?:[Hh][Tt][Tt][Pp][Ss]:[/\\]*[^/\\?#\x00-\x20][^#]*#?|(?!(?:[Jj][Aa][Vv][Aa][Ss][Cc][Rr][Ii][Pp][Tt]|[Dd][Aa][Tt][Aa]|[Ff][Ii][Ll][Ee]|[Vv][Bb][Ss][Cc][Rr][Ii][Pp][Tt]|[Bb][Ll][Oo][Bb]|[Aa][Bb][Oo][Uu][Tt]|[Ff][Ii][Ll][Ee][Ss][Yy][Ss][Tt][Ee][Mm]|[Ff][Tt][Pp]|[Ww][Ss][Ss]?)://)[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#@]*@)?(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127\.0\.0\.1|\[::1\])(?::[0-9]*)?(?:[/?][^#]*)?#?)[\x00-\x20]*)$'
           description: |
             Allowed redirect URIs (max 10). Required when an effective grant list includes `authorization_code`
             (including the default when `allowedGrantTypes` is omitted).
             Each URI must parse as a URL (`VALIDATION_ERROR` otherwise), and the service then refuses with
-            `400 OAUTH_INVALID_REDIRECT_URI` any URI that is not `https:` and whose host is not `localhost` or
-            `127.0.0.1` (any scheme is let through on those two hosts), or that carries a fragment.
+            `400 OAUTH_INVALID_REDIRECT_URI` any URI that is not `https:` and whose host is not `localhost`,
+            `127.0.0.1` or `[::1]`, or that carries a fragment. On those loopback hosts `http:` and an app's own
+            scheme are accepted, but never `javascript:`, `data:`, `file:`, `vbscript:`, `blob:`, `about:`,
+            `filesystem:`, `ftp:`, `ws:` or `wss:`.
             The one exception is the literal `cursor://anysphere.cursor-mcp/oauth/callback`.
             Both checks use WHATWG `new URL()`, so the scheme and a `localhost` host match in any case,
             `https:` may be followed by any number of `/` or `\` (or none), and surrounding whitespace is
             allowed and trimmed before the URI is stored; the URI is otherwise stored as sent. `https://`
-            with no host does not parse. The pattern approximates these rules.
+            with no host does not parse. The pattern approximates these rules. It does not see a tab or
+            newline inside the scheme, which `new URL()` removes (`java<TAB>script://localhost/x` matches
+            the pattern and is still refused by the service).
           maxItems: 10
           example: ["https://myapp.com/callback", "http://localhost:3000/callback"]
         allowedGrantTypes:
@@ -7074,18 +7143,27 @@ components:
           items:
             type: string
             format: uri
-            pattern: '^(?:cursor://anysphere\.cursor-mcp/oauth/callback|[\x00-\x20]*(?:[Hh][Tt][Tt][Pp][Ss]:[/\\]*[^/\\?#\x00-\x20][^#]*#?|[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#@]*@)?(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127\.0\.0\.1)(?::[0-9]*)?(?:[/?][^#]*)?#?)[\x00-\x20]*)$'
+            pattern: '^(?:cursor://anysphere\.cursor-mcp/oauth/callback|[\x00-\x20]*(?:[Hh][Tt][Tt][Pp][Ss]:[/\\]*[^/\\?#\x00-\x20][^#]*#?|(?!(?:[Jj][Aa][Vv][Aa][Ss][Cc][Rr][Ii][Pp][Tt]|[Dd][Aa][Tt][Aa]|[Ff][Ii][Ll][Ee]|[Vv][Bb][Ss][Cc][Rr][Ii][Pp][Tt]|[Bb][Ll][Oo][Bb]|[Aa][Bb][Oo][Uu][Tt]|[Ff][Ii][Ll][Ee][Ss][Yy][Ss][Tt][Ee][Mm]|[Ff][Tt][Pp]|[Ww][Ss][Ss]?)://)[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#@]*@)?(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127\.0\.0\.1|\[::1\])(?::[0-9]*)?(?:[/?][^#]*)?#?)[\x00-\x20]*)$'
           description: |
             Allowed redirect URIs (up to 10). Required when `authorization_code` grant type is enabled.
             Preserved in the database even if `authorization_code` is removed from grant types.
             Each URI must parse as a URL (`VALIDATION_ERROR` otherwise), and the service then refuses with
-            `400 OAUTH_INVALID_REDIRECT_URI` any URI that is not `https:` and whose host is not `localhost` or
-            `127.0.0.1` (any scheme is let through on those two hosts), or that carries a fragment.
+            `400 OAUTH_INVALID_REDIRECT_URI` any URI that is not `https:` and whose host is not `localhost`,
+            `127.0.0.1` or `[::1]`, or that carries a fragment. On those loopback hosts `http:` and an app's own
+            scheme are accepted, but never `javascript:`, `data:`, `file:`, `vbscript:`, `blob:`, `about:`,
+            `filesystem:`, `ftp:`, `ws:` or `wss:`.
             The one exception is the literal `cursor://anysphere.cursor-mcp/oauth/callback`.
+            A URI the app already has stored is kept on update even when these rules would refuse it as new
+            (for example an `http:` URI on a non-loopback host registered earlier), unless its scheme is one
+            that can run script (`javascript:`, `data:`, `file:`, `vbscript:`, `blob:`, `about:`,
+            `filesystem:`) or it does not parse. The authorize endpoint also refuses a `redirect_uri` with such
+            a scheme, or one that does not parse, even when it is stored (`redirect_uri scheme is not allowed`).
             Both checks use WHATWG `new URL()`, so the scheme and a `localhost` host match in any case,
             `https:` may be followed by any number of `/` or `\` (or none), and surrounding whitespace is
             allowed and trimmed before the URI is stored; the URI is otherwise stored as sent. `https://`
-            with no host does not parse. The pattern approximates these rules.
+            with no host does not parse. The pattern approximates these rules. It does not see a tab or
+            newline inside the scheme, which `new URL()` removes (`java<TAB>script://localhost/x` matches
+            the pattern and is still refused by the service).
           maxItems: 10
         allowedGrantTypes:
           type: array
@@ -14628,7 +14706,9 @@ components:
         a citation, reference, filter node or search hit with no id, name, link or
         text. Only the owner of a conversation or search sees every source. An
         assistant answer that used a record its reader cannot read is withheld as
-        a whole (`HiddenAnswer`), the owner's included.
+        a whole (`HiddenAnswer`), the owner's included. A viewer never receives
+        the reasoning, tool steps or tool results of another user's message, nor
+        the text the model wrote between its steps.
       required:
         - redacted
         - reason
@@ -21862,8 +21942,8 @@ components:
           additionalProperties: true
     OAuthConfig:
       type: object
-      description: A saved OAuth app for a connector type. Admins also get `config` (secrets masked when HIDE_SECRET_CONFIG
-        is on) and, in lists, the provider endpoints, for the organization's apps only.
+      description: A saved OAuth app for a connector type. Admins also get `config` (secrets masked unless the server sets
+        HIDE_SECRET_CONFIG=false) and, in lists, the provider endpoints, for the organization's apps only.
       properties:
         personal:
           type: boolean
@@ -21957,7 +22037,7 @@ components:
               example: "123456789-abc.apps.googleusercontent.com"
             clientSecret:
               type: string
-              description: OAuth client secret; never in the create response, and returned by GET only to admins (masked when HIDE_SECRET_CONFIG is on)
+              description: OAuth client secret; never in the create response, and returned by GET only to admins (masked unless the server sets HIDE_SECRET_CONFIG=false)
               example: "GOCSPX-xxxxxxxxxxxxx"
             tenantId:
               type: string
@@ -23453,19 +23533,32 @@ components:
           type: string
     SkillUsage:
       type: object
-      description: Referential-integrity snapshot used to gate `DELETE /skills/{name}`.
-      required: [usedByAgents, requiredBySkills]
+      description: |
+        Referential-integrity snapshot used to gate `DELETE /skills/{name}`, as the caller may
+        see it. Only agents the caller can open are named, and only skills the caller can see;
+        the others are counted in `otherAgentCount` and `otherSkillCount`, without ids or names.
+      required: [usedByAgents, requiredBySkills, otherAgentCount, otherSkillCount]
       properties:
         usedByAgents:
           type: array
           items:
             $ref: '#/components/schemas/SkillUsageReference'
-          description: Agents this skill is currently assigned to via Agent Builder.
+          description: Agents this skill is currently assigned to via Agent Builder that the caller can open.
         requiredBySkills:
           type: array
           items:
             type: string
-          description: Other skill names whose frontmatter declares `requires` on this one — these can NEVER be force-deleted, only deprecated.
+          description: Other skill names, among those the caller can see, whose frontmatter declares `requires` on this one — these can NEVER be force-deleted, only deprecated.
+        otherAgentCount:
+          type: integer
+          minimum: 0
+          description: Agents the skill is assigned to that the caller cannot open. `detach=true` unassigns these too.
+          example: 0
+        otherSkillCount:
+          type: integer
+          minimum: 0
+          description: Skills the caller cannot see that declare `requires` on this one. While it is not 0 the skill cannot be deleted, even with `detach=true`.
+          example: 0
     CustomSystemPrompt:
       type: object
       description: Custom system prompt configuration
@@ -23793,6 +23886,69 @@ components:
           example: "LLM provider added successfully"
         details:
           $ref: '#/components/schemas/AIModelProviderAddedDetails'
+    CredentialReentryRequiredError:
+      type: object
+      additionalProperties: false
+      description: |
+        A save that would send a saved secret (sent back as the mask) to a different server
+        address. Nothing is stored; send the secret again in full with the new address.
+      required: [status, error_code, message]
+      properties:
+        status:
+          type: string
+          enum: [error]
+        error_code:
+          type: string
+          enum: [credential_reentry_required]
+        message:
+          type: string
+          example: Enter the credentials again to use this new endpoint.
+    ConnectionEndpointsDifferError:
+      type: object
+      additionalProperties: false
+      description: |
+        A new secret for a connection whose models use more than one endpoint or baseUrl. Nothing is
+        checked or stored. `models` lists the models whose endpoint differs from `reference`, the
+        connection's first stored model. That order does not mark an intended endpoint: put every model
+        in the connection on one endpoint, then save again.
+      required: [status, error_code, message, models, reference]
+      properties:
+        status:
+          type: string
+          enum: [error]
+        error_code:
+          type: string
+          enum: [credential_reentry_required]
+        message:
+          type: string
+          description: Names the models on another endpoint.
+        models:
+          type: array
+          description: The connection's models whose endpoint differs from its first model's.
+          items:
+            type: object
+            additionalProperties: false
+            required: [modelKey, modelType, name]
+            properties:
+              modelKey:
+                type: string
+              modelType:
+                type: string
+              name:
+                type: string
+                description: The model's display name, else its model id, else its key.
+        reference:
+          type: object
+          additionalProperties: false
+          description: The model the others were compared with.
+          required: [modelKey, modelType, name]
+          properties:
+            modelKey:
+              type: string
+            modelType:
+              type: string
+            name:
+              type: string
     AIModelProviderSimpleError:
       type: object
       additionalProperties: false
@@ -23806,6 +23962,10 @@ components:
         status:
           type: string
           enum: [error]
+        error_code:
+          type: string
+          enum: [credential_reentry_required]
+          description: Set when a changed endpoint needs its credentials entered again.
         message:
           type: string
     PrepareEmbeddingModelRequest:
@@ -24065,6 +24225,10 @@ components:
         isReasoning:
           type: boolean
           description: Whether this is a reasoning model
+        forwardingCredentialsCleared:
+          type: boolean
+          enum: [true]
+          description: Present when the update moved the model to a new endpoint and removed its saved identity forwarding service key and credential headers.
     UpdateAIModelProviderResponse:
       type: object
       additionalProperties: false
@@ -26569,7 +26733,7 @@ components:
         detail:
           type: object
           additionalProperties: false
-          required: [message, usedByAgents, requiredBySkills]
+          required: [message, usedByAgents, requiredBySkills, otherAgentCount, otherSkillCount]
           properties:
             message:
               type: string
@@ -26578,12 +26742,20 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/SkillUsageReference'
-              description: Agents the skill is assigned to. `detach=true` unassigns them and deletes.
+              description: Agents the skill is assigned to that the caller can open. `detach=true` unassigns them and deletes.
             requiredBySkills:
               type: array
               items:
                 type: string
-              description: Skills that declare `requires` on this one. While this list is not empty the skill cannot be deleted, even with `detach=true`.
+              description: Skills the caller can see that declare `requires` on this one. While this list is not empty the skill cannot be deleted, even with `detach=true`.
+            otherAgentCount:
+              type: integer
+              minimum: 0
+              description: Agents the skill is assigned to that the caller cannot open, counted without ids or names. `detach=true` unassigns them too.
+            otherSkillCount:
+              type: integer
+              minimum: 0
+              description: Skills the caller cannot see that declare `requires` on this one. While it is not 0 the skill cannot be deleted, even with `detach=true`.
 
     # Custom System Prompt Schema
     AIModelProviderErrorEnvelope:
@@ -27145,8 +27317,8 @@ components:
             toolset's credential form. Returned to administrators, and to the owner of a personal
             instance, and only when not empty; nested objects are always masked, a non-empty client
             secret or field the toolset's form marks secret or types as a password (an API token, for
-            one) is masked (`••••••••`) when the server sets `HIDE_SECRET_CONFIG=true` and
-            `reveal=true` is not sent, and every other value is returned as stored. An organization
+            one) is masked (`••••••••`) unless the server sets `HIDE_SECRET_CONFIG=false` or
+            `reveal=true` is sent, and every other value is returned as stored. An organization
             OAuth instance stores none (its client is in the linked OAuth configuration); a personal
             OAuth instance holds its owner's own `clientId` and `clientSecret` here.
           additionalProperties: true
@@ -27155,8 +27327,8 @@ components:
       description: |
         An OAuth client configuration of a toolset type. Administrators also get the
         stored configuration fields (from `clientId` down); the client secret is masked
-        (`••••••••`) only when the server sets `HIDE_SECRET_CONFIG=true` and `reveal=true`
-        is not sent. Other fields the toolset's OAuth form declares (for example `tenantId`)
+        (`••••••••`) unless the server sets `HIDE_SECRET_CONFIG=false` or `reveal=true`
+        is sent. Other fields the toolset's OAuth form declares (for example `tenantId`)
         are returned under their own names.
       properties:
         _id:
@@ -27477,22 +27649,22 @@ components:
           type: string
     StoredAtlassianConfig:
       type: object
-      description: Atlassian OAuth client, as stored. Empty when nothing has been saved.
+      description: Atlassian OAuth client. Empty when nothing has been saved.
       properties:
         clientId:
           type: string
         clientSecret:
           type: string
-          description: Returned unmasked
+          description: Masked unless revealed (see the operation)
     StoredOneDriveConfig:
       type: object
-      description: Microsoft app credentials for OneDrive, as stored. Empty when nothing has been saved.
+      description: Microsoft app credentials for OneDrive. Empty when nothing has been saved.
       properties:
         clientId:
           type: string
         clientSecret:
           type: string
-          description: Returned unmasked
+          description: Masked unless revealed (see the operation)
         tenantId:
           type: string
         hasAdminConsent:
@@ -27501,13 +27673,13 @@ components:
           description: Confirms tenant admin consent was granted; only `true` is accepted
     StoredSharePointConfig:
       type: object
-      description: Microsoft app credentials for SharePoint, as stored. Empty when nothing has been saved.
+      description: Microsoft app credentials for SharePoint. Empty when nothing has been saved.
       properties:
         clientId:
           type: string
         clientSecret:
           type: string
-          description: Returned unmasked
+          description: Masked unless revealed (see the operation)
         tenantId:
           type: string
         sharepointDomain:
@@ -27520,7 +27692,7 @@ components:
     StoredGoogleWorkspaceOAuthConfig:
       type: object
       description: |
-        Google Workspace OAuth client and Gmail real-time update settings, as stored. Every
+        Google Workspace OAuth client and Gmail real-time update settings. Every
         field is present once something has been saved; empty when nothing has been saved.
       additionalProperties: false
       properties:
@@ -27528,7 +27700,7 @@ components:
           type: string
         clientSecret:
           type: string
-          description: Returned unmasked
+          description: Masked unless revealed (see the operation)
         enableRealTimeUpdates:
           type: boolean
         topicName:
@@ -27537,7 +27709,7 @@ components:
     StoredGoogleWorkspaceCredentials:
       type: object
       description: |
-        Google Workspace credentials, as stored. A business organization gets the
+        Google Workspace credentials. A business organization gets the
         service-account key fields with `adminEmail`; an individual one gets the caller's
         OAuth tokens merged with the OAuth client (`clientId`, `clientSecret`). Empty when
         nothing has been saved.
@@ -27553,7 +27725,7 @@ components:
           type: string
         private_key:
           type: string
-          description: Returned unmasked
+          description: Masked unless revealed (see the operation)
         client_email:
           type: string
         client_id:
@@ -27586,7 +27758,7 @@ components:
           x-speakeasy-name-override: oauthClientId
         clientSecret:
           type: string
-          description: OAuth client secret, returned unmasked (individual)
+          description: OAuth client secret (individual); masked unless revealed
         enableRealTimeUpdates:
           type: boolean
         topicName:
@@ -30129,6 +30301,24 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+    UpstreamFailure:
+      description: >-
+        A PipesHub service this route depends on failed (`HTTP_BAD_GATEWAY`). The message is generic;
+        the service's own words are in its log under the same request id. See Relayed failures in the
+        introduction.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UploadTooLarge:
+      description: >-
+        The upload is past one of this route's limits (`HTTP_PAYLOAD_TOO_LARGE`): a file over the size
+        limit, more files than allowed, too many form fields or parts, or the whole request over its byte
+        cap. Refused while the body is read, before the handler runs (see Uploads in the introduction).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
     InsufficientScope:
       description: >-
         The bearer token is an OAuth access token without the scope this route requires
@@ -31012,6 +31202,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OpenAIModelError'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
   /openai/files/{fileId}:
     get:
       tags:
@@ -34263,7 +34455,7 @@ paths:
       description: |
         Returns the OAuth scopes the signed-in user is permitted to register on new or updated apps, grouped by category. Use this to populate scope-picker UIs and to validate `allowedScopes` client-side before submitting to `createOAuthApp` / `updateOAuthApp`.
 
-        The result is role-aware. Org admins (members of an admin user group) receive every registered scope; everyone else is filtered to exclude admin-only scopes: `org:write`, `org:admin`, `user:invite`, `user:delete`, `usergroup:write`, `team:write`, `config:write`, `crawl:write`, `crawl:delete`.
+        The result is role-aware. Org admins (members of an admin user group) receive every registered scope; everyone else is filtered to exclude admin-only scopes: `org:write`, `org:admin`, `user:invite`, `user:delete`, `usergroup:write`, `team:write`, `crawl:write`, `crawl:delete`. `config:write` is not offered to anyone: organization configuration changes only from an interactive session.
 
         Each key in the `scopes` map matches the `category` field on the `OAuthScopeInfo` entries it contains. A category may appear with an empty array when every scope it contains is restricted for the caller — treat empty buckets as "no permitted scopes in this group", not as a missing category.
 
@@ -37351,6 +37543,8 @@ paths:
             The caller is not an admin of this organization (`You need admin access to do this...`).
             An OAuth access token without the `user:invite` scope is also refused with `403`
             (`Insufficient scope. Required: user:invite`), before the request is validated.
+
+            Also returned when the bearer token is an OAuth access token or a personal access token and `role` is `admin` (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted").
           content:
             application/json:
               schema:
@@ -37725,6 +37919,8 @@ paths:
 
             An OAuth access token without the `user:write` scope is also refused with `403`
             (`Insufficient scope. Required: user:write`), before the request is validated.
+
+            Also returned when the bearer token is an OAuth access token or a personal access token and the body sets `email` or sets `role` to anything other than the user's current role, which includes taking `admin` away (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"). Other fields stay open to tokens, and a `role` equal to the current one is accepted but not written.
           content:
             application/json:
               schema:
@@ -37996,7 +38192,6 @@ paths:
       operationId: updateEmail
       security:
         - bearerAuth: []
-        - oauth2: [user:write]
       parameters:
         - name: id
           in: path
@@ -38072,16 +38267,11 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Only the account owner can change its email address: the request's `email`
-            differs from the stored address and the caller isn't that user. Checked after
-            the user is loaded, so a missing id is `404`.
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted").
 
-            A caller who is neither an org admin nor that user is refused earlier, before the
-            lookup (so a member gets it for an unknown id too), by the admin-or-self check
-            (`You don't have admin access and can't change other users`).
+            An admin is refused with `403` when the address is another user's: only the account owner can change its email address (checked after the user is loaded, so a missing id is `404`).
 
-            An OAuth access token without the `user:write` scope is also refused with `403`
-            (`Insufficient scope. Required: user:write`), before the request is validated.
+            A caller who is neither an org admin nor that user is refused earlier, before the lookup, by the admin-or-self check (`You don't have admin access and can't change other users`).
           content:
             application/json:
               schema:
@@ -38171,9 +38361,8 @@ paths:
             - A multipart form with no file part (`File upload required but no files were received`)
             - Declared file type not allowed (`Invalid file type. Allowed types: ...`)
             - File bytes are not a PNG, JPEG, WebP or GIF image (`Profile photo must be a PNG, JPEG, WebP or GIF image`)
-            - File exceeds the 1 MB limit (`This file is larger than the 1 MB limit...`)
-            - The file is sent under a field name other than `file`, or more than one file is sent
-              (`The files weren't sent the way this page expects...` or `You can upload up to 1 files at a time...`)
+            - The file is sent under a field name other than `file`
+              (`The files weren't sent the way this page expects...`)
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
@@ -38188,9 +38377,10 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '413':
           description: |
-            The image is still larger than 100 KB after JPEG compression down to quality 10
-            (`HTTP_PAYLOAD_TOO_LARGE`). The message says `File too large , limit:1MB` although the
-            limit that was exceeded is the 100 KB one.
+            The file is over the 1 MB limit (`This file is larger than the 1 MB limit...`), more than one
+            file is sent (`You can upload up to 1 files at a time...`), or the image is still larger than
+            100 KB after JPEG compression down to quality 10 (`HTTP_PAYLOAD_TOO_LARGE`). For the last one the
+            message says `File too large , limit:1MB` although the limit that was exceeded is the 100 KB one.
           content:
             application/json:
               schema:
@@ -38539,6 +38729,8 @@ paths:
 
             An OAuth access token without the `user:invite` scope is also refused with `403`
             (`Insufficient scope. Required: user:invite`), before the request is validated.
+
+            Also returned when the bearer token is an OAuth access token or a personal access token and `role` is `admin` (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted").
           content:
             application/json:
               schema:
@@ -38657,10 +38849,8 @@ paths:
 
             - No body, or a body that is not multipart (`No files available for processing`)
             - A form with no file part (`File upload required but no files were received`)
-            - The file under another field name, or more than one file (`The files weren't sent the way
-              this page expects...`, `You can upload up to 1 files at a time...`)
+            - The file under another field name (`The files weren't sent the way this page expects...`)
             - A declared type that is not allowed (`Invalid file type. Allowed types: ...`)
-            - A file over 5 MB (`This file is larger than the 5 MB limit...`)
             - A spreadsheet that cannot be parsed (`Could not read the file. Upload a valid CSV or Excel file.`)
             - No cell containing `@`, including an empty file (`No email addresses found in the file`)
             - More than 1000 addresses (`File exceeds the 1000-user limit`)
@@ -38673,6 +38863,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Unauthorized - Valid bearer token required
           content:
@@ -39059,7 +39251,6 @@ paths:
       operationId: unblockUser
       security:
         - bearerAuth: []
-        - oauth2: [user:write]
       parameters:
         - name: id
           in: path
@@ -39104,9 +39295,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
             The caller is not an admin of this organization (`You need admin access to do this...`).
-            An OAuth access token without the `user:write` scope is also refused with `403`
-            (`Insufficient scope. Required: user:write`), before the request is validated.
           content:
             application/json:
               schema:
@@ -40290,7 +40481,6 @@ paths:
       operationId: createServiceAccount
       security:
         - bearerAuth: []
-        - oauth2: [user:invite]
       requestBody:
         required: true
         content:
@@ -40326,7 +40516,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Token lacks the required scope, or the caller is not an admin of this organization
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -40421,7 +40614,6 @@ paths:
       operationId: updateServiceAccount
       security:
         - bearerAuth: []
-        - oauth2: [user:write]
       requestBody:
         required: true
         content:
@@ -40455,7 +40647,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Token lacks the required scope, or the caller is not an admin of this organization
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -40622,7 +40817,6 @@ paths:
       operationId: createServiceToken
       security:
         - bearerAuth: []
-        - oauth2: [user:invite]
       requestBody:
         required: true
         content:
@@ -40664,7 +40858,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Token lacks the required scope, or the caller is not an admin of this organization
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -42104,7 +42301,6 @@ paths:
       operationId: deleteOrganization
       security:
         - bearerAuth: []
-        - oauth2: [org:admin]
       requestBody:
         required: false
         content:
@@ -42146,7 +42342,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: "The caller is not an admin of this organization, or an OAuth access token lacks the `org:admin` scope (`Insufficient scope. Required: org:admin`)."
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            The caller is not an admin of this organization.
           content:
             application/json:
               schema:
@@ -42243,10 +42442,9 @@ paths:
             Invalid request. Possible reasons:
 
             - No file provided: a multipart body without a `file` part, or a body that is not multipart at all
-            - The file is sent under a field other than `file`, or more than one file is sent
+            - The file is sent under a field other than `file`
             - File type not allowed (must be PNG, JPEG, WebP, GIF, or SVG)
             - File bytes are not a PNG, JPEG, WebP, GIF, or SVG image (`Organisation logo must be a PNG, JPEG, WebP, GIF or SVG image`)
-            - File exceeds 2MB size limit
             - SVG contains dangerous content (script tags, event handlers, javascript: protocols, iframe/object/embed tags)
 
             The upload is checked before the admin check, so a non-admin also gets this 400 for a bad upload.
@@ -42256,6 +42454,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Unauthorized - Valid bearer token required
           content:
@@ -43722,6 +43922,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: The storage scoped token was missing or invalid.
         '500':
@@ -45997,6 +46199,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -46052,6 +46256,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -46439,6 +46645,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '502':
+          $ref: '#/components/responses/UpstreamFailure'
         '503':
           description: Storage could not delete the artifact's files; nothing was changed, retry
           content:
@@ -47584,7 +47792,7 @@ paths:
             - JSON body: `recordName` is not a string, or the body is not an object (`VALIDATION_ERROR`)
             - `recordName` contains HTML, an inline event handler or a format specifier such as `%s`
             - Multipart `recordName` is only whitespace (`Record name cannot be empty`)
-            - More than one file, or a file sent under a field name other than `file`
+            - A file sent under a field name other than `file`
             - `recordId` holds a character that cannot stand in a URL path segment
               (`/`, `\`, `?`, `#`, `%`, a control character) or is `.` or `..` (`HTTP_BAD_REQUEST`)
 
@@ -47593,6 +47801,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Missing, invalid, expired, or revoked authentication
           content:
@@ -49046,9 +49256,8 @@ paths:
             - `kbId` not a UUID, `folderId` empty, `recordName`/`recordType`/`origin` empty, or a
               `files_metadata` entry without a string `file_path` or a numeric `last_modified`
               (`VALIDATION_ERROR`)
-            - No `files` part (`No files available for processing`), files sent under another
-              field name (`The files weren't sent the way this page expects. ...`), more than
-              1000 files, or more than 1 GB in total (`HTTP_BAD_REQUEST`)
+            - No `files` part (`No files available for processing`), or files sent under another
+              field name (`The files weren't sent the way this page expects. ...`) (`HTTP_BAD_REQUEST`)
             - `files_metadata` is not JSON (`Invalid files_metadata format. Expected JSON array.`)
               or has another length than the files (`Metadata count mismatch: ...`)
             - `recordName` holds a format specifier, or any field holds HTML (the HTML check runs
@@ -49061,6 +49270,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Unauthorized
           content:
@@ -51821,7 +52032,7 @@ paths:
                 $ref: '#/components/schemas/ChatAttachmentUploadResponse'
         '400':
           description: |
-            Invalid `conversationId` (`VALIDATION_ERROR`), no files, or an unsupported MIME type (`HTTP_BAD_REQUEST`). Size and count limits are not answered here but with `500`.
+            Invalid `conversationId` (`VALIDATION_ERROR`), no files, a file under a part name other than `files`, or an unsupported MIME type (`HTTP_BAD_REQUEST`).
 
             An image that is not a valid JPEG, PNG or WebP (`<name> is not a valid JPEG, PNG or WebP
             image`), or one over 50 megapixels (`<name> is too large to attach: images can be at most 50
@@ -51830,6 +52041,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '422':
           description: |
             A PDF that could not be read within the upload's 50-second budget, or
@@ -51857,9 +52070,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            `INTERNAL_ERROR`. The upload parser's own refusals land here
-            although they are caller mistakes: a file over 5 MiB, more than
-            10 files, or a file under any part name other than `files`.
+            `INTERNAL_ERROR`.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -51913,7 +52124,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ChatAttachmentUploadResponse'
         '400':
-          description: Invalid `conversationId`, no files, an unsupported type, or a file too large.
+          description: Invalid `conversationId`, no files, a file under a part name other than `files`, or an unsupported type.
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: The scoped token is missing, invalid, expired or not for `conversation:create`.
 
@@ -55916,6 +56129,12 @@ paths:
         Only the conversation's initiator can unshare. A missing, deleted or
         agent conversation, or one the caller did not start (even one
         shared with them at `write` access), is `404`.
+
+        The users' access to the conversation's attachments and artifacts is
+        revoked first; the list changes only after both revokes succeed. If
+        either is refused, the users stay listed and the answer is `503`,
+        `500` or `504`: try again. Their access to the attachments may already
+        be gone then (that revoke runs first), and the retry revokes the rest.
       operationId: unshareConversationById
       security:
         - bearerAuth: []
@@ -56053,9 +56272,34 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Persistence layer failed to update the conversation document.
+            The users' access to the attachments or artifacts could not be
+            revoked (the query service refused it), or the persistence layer
+            failed to update the conversation document. When the revoke was
+            refused, the users stay listed; their attachment access may already
+            be revoked.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The query service is unreachable or briefly unavailable, so the users'
+            access could not be revoked. The users stay listed (their attachment
+            access may already be revoked); retry after `Retry-After` seconds
+            when it is sent.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying, when the query service sent it.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: The query service did not answer the revoke in time. The users stay listed; their attachment access may already be revoked.
           content:
             application/json:
               schema:
@@ -57624,6 +57868,8 @@ paths:
                   - $ref: '#/components/schemas/SpeechMissingAudioError'
                   - $ref: '#/components/schemas/SpeechProxyError'
                   - $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Unauthorized — valid bearer token required.
           content:
@@ -60207,7 +60453,7 @@ paths:
                 $ref: '#/components/schemas/ChatAttachmentUploadResponse'
         '400':
           description: |
-            Invalid `conversationId` (`VALIDATION_ERROR`), no file part, or an unsupported MIME type (`HTTP_BAD_REQUEST`). The `agentKey` is not looked up. Multer's own rejections are not a 400: see 500.
+            Invalid `conversationId` (`VALIDATION_ERROR`), no file part, a file under a part name other than `files`, or an unsupported MIME type (`HTTP_BAD_REQUEST`). The `agentKey` is not looked up.
 
             An image that is not a valid JPEG, PNG or WebP (`<name> is not a valid JPEG, PNG or WebP
             image`), or one over 50 megapixels (`<name> is too large to attach: images can be at most 50
@@ -60216,6 +60462,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '422':
           description: |
             A PDF that could not be read within the upload's 50-second budget, or
@@ -60243,7 +60491,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Gateway fallback when the upstream call does not return a status (implementation default). Also returned (`INTERNAL_ERROR`) for every Multer rejection, which is not mapped to a 400: more than 10 files, a file over 5 MiB, or a file part not named `files`.
+            Gateway fallback when the upstream call does not return a status (implementation default).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -60305,7 +60553,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ChatAttachmentUploadResponse'
         '400':
-          description: Invalid `conversationId`, no files, an unsupported type, or a file too large.
+          description: Invalid `conversationId`, no files, a file under a part name other than `files`, or an unsupported type.
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: The scoped token is missing, invalid, expired or not for `conversation:create`.
 
@@ -61685,8 +61935,15 @@ paths:
         Remove specific users from an agent conversation's recipient list and
         revoke their access to its artifacts and attachments. **Owner only.**
         When the last recipient is removed the conversation becomes private
-        again (`isShared: false`). Removing a user who is not a recipient is a
-        no-op.
+        again (`isShared: false`). Removing a user who is not a recipient
+        leaves the list unchanged, but their access is still revoked, so that
+        request can fail the same way as below.
+
+        The users' access to the conversation's attachments and artifacts is
+        revoked first; the list changes only after both revokes succeed. If
+        either is refused, the users stay listed and the answer is `503`,
+        `500` or `504`: try again. Their access to the attachments may already
+        be gone then (that revoke runs first), and the retry revokes the rest.
       operationId: unshareAgentConversation
       x-pipeshub-sdk: false
       security:
@@ -61746,6 +62003,37 @@ paths:
           description: |
             Conversation not found, deleted, belongs to a different agent, or
             the caller is not its owner.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            The users' access to the attachments or artifacts could not be
+            revoked (the query service refused it), or the share list could not
+            be saved. When the revoke was refused, the users stay listed; their
+            attachment access may already be revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The query service is unreachable or briefly unavailable, so the users'
+            access could not be revoked. The users stay listed (their attachment
+            access may already be revoked); retry after `Retry-After` seconds
+            when it is sent.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying, when the query service sent it.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: The query service did not answer the revoke in time. The users stay listed; their attachment access may already be revoked.
           content:
             application/json:
               schema:
@@ -62973,6 +63261,8 @@ paths:
             `Beta connectors are not enabled. The connector '<type>' is a beta connector and cannot be accessed. ...`
             Also returned to a non-admin for a connector type that only supports team
             scope, with the message `Only administrators can set up <type> connectors`.
+
+            Also returned when the bearer token is an OAuth access token, a personal access token or a service token and the body contains any key other than `authType` and `connectorId`, even with an empty value; `auth` may be sent only when empty, so the check runs against the stored settings (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"). An interactive user session is not restricted.
           content:
             application/json:
               schema:
@@ -63349,7 +63639,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Team scope needs an admin, or a missing scope
+          description: |-
+            Team scope needs an admin, or a missing scope.
+
+            Also returned when the bearer token is an OAuth access token, a personal access token or a service token and the body contains any key other than `connectorType`, `instanceName`, `scope`, `authType` and `config` holding only `sync` and `filters`, even with an empty value; `config.auth` may be sent only when empty (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"). An interactive user session is not restricted.
           content:
             application/json:
               schema:
@@ -66397,7 +66690,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The token lacks a required scope, or the caller may not use this connector
+          description: |
+            The token lacks a required scope, or the caller may not use this connector
+
+            Also returned when the bearer token is an OAuth access token, a personal access token or a service token and the body contains any key other than `sync` and `filters`, even with an empty value (so `auth`, `baseUrl` and `oauthConfigId` are refused, an empty `auth` included) (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"). An interactive user session is not restricted.
           content:
             application/json:
               schema:
@@ -66509,7 +66805,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The token lacks a required scope, or the caller may not use this connector
+          description: |
+            The token lacks a required scope, or the caller may not use this connector
+
+            Also returned when the bearer token is an OAuth access token, a personal access token or a service token and the body contains any key, even with an empty value (this route changes only the connector's `auth`, and an empty `auth` clears the stored credentials, so a token has nothing it may send here) (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"). An interactive user session is not restricted.
           content:
             application/json:
               schema:
@@ -69524,6 +69823,8 @@ paths:
             The caller's OAuth access token does not carry the `toolset:write` scope (`Insufficient scope.
             Required: toolset:write`). Session tokens are not scope-checked. Not being an administrator
             is not refused: the instance is created as personal.
+
+            Also returned when the bearer token is an OAuth access token, a personal access token or a service token and the body contains any key other than `instanceName`, `toolsetType`, `authType` and `scope`, even with an empty value (so `authConfig`, `baseUrl`, `oauthConfigId`, `oauthInstanceName` and credential keys such as `clientId` are refused) (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"). An interactive user session is not restricted.
           content:
             application/json:
               schema:
@@ -69764,6 +70065,8 @@ paths:
             is looked up, so an unknown id or another user's personal instance also gets 403), or the
             caller's OAuth access token does not carry the `toolset:write` scope (`Insufficient scope.
             Required: toolset:write`). Session tokens are not scope-checked.
+
+            Also returned when the bearer token is an OAuth access token, a personal access token or a service token and the body contains any key other than `instanceName`, even with an empty value (so `authConfig`, `baseUrl` and `oauthConfigId` are refused) (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"). An interactive user session is not restricted.
           content:
             application/json:
               schema:
@@ -70714,7 +71017,7 @@ paths:
         List the organization's OAuth client configurations of a toolset type (the type is matched
         case-insensitively and is not checked against the registry, so an unknown type is an empty
         list). Any member may call it: administrators also get the stored client fields (the
-        client secret masked only under `HIDE_SECRET_CONFIG=true`), other members only the
+        client secret masked unless the server sets `HIDE_SECRET_CONFIG=false`), other members only the
         metadata. The query string is not read.
       operationId: listToolsetOAuthConfigs
       security:
@@ -70870,6 +71173,8 @@ paths:
             The caller is not an administrator (`Only administrators can update OAuth configurations.`,
             checked before the configuration is looked up), or the caller's OAuth access token does not
             carry the `toolset:write` scope (`Insufficient scope. Required: toolset:write`).
+
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
           content:
             application/json:
               schema:
@@ -70943,6 +71248,8 @@ paths:
             The caller is not an administrator (`Only administrators can delete OAuth configurations.`), or
             the caller's OAuth access token does not carry the `toolset:delete` scope (`Insufficient
             scope. Required: toolset:delete`).
+
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
           content:
             application/json:
               schema:
@@ -71068,7 +71375,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71128,7 +71435,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71209,7 +71516,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71292,7 +71599,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71348,7 +71655,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: Unexpected failure in the gateway or in the connectors service.
+          description: Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
           content:
             application/json:
               schema:
@@ -71399,7 +71706,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71466,6 +71773,7 @@ paths:
           description: |
             Forbidden — one of:
             - the OAuth token lacks the `mcp:write` scope
+            - the bearer token is an OAuth access token, a personal access token or a service token and the body sets a key other than `name`, `description`, `typeId`, `scope`, `transport`, `authMode`, `useAdminAuth` or `scopes`, or sets `transport` to `stdio` (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds
             - an org server requested by a non-administrator, or a custom `stdio` server while the deployment does not allow them (`MCP_ALLOW_CUSTOM_STDIO`)
             - MCP servers are disabled for this organization (`ENABLE_MCP` feature flag is off)
           content:
@@ -71491,7 +71799,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71551,7 +71859,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71569,8 +71877,10 @@ paths:
         removed first and the response has `credentialsReset: true`: the old credentials were
         given for the old target. A catalog server's target is its template's, so for one only
         a change of auth mode or catalog type counts, and of URL when the template lets it be
-        typed (Okta). When a credential can't be confirmed removed, nothing is saved: a store
-        that kept it or could not answer gives 503 with `Retry-After`, any other failure 500.
+        typed (Okta). With `CONTROL_PLANE_CREDENTIALS` on, every connection made on the instance
+        is revoked too. When a credential can't be confirmed removed, nothing is saved: a store
+        or credential service that kept it or could not answer gives 503 with `Retry-After`, any
+        other failure 500.
       operationId: updateMcpInstance
       security:
         - bearerAuth: []
@@ -71623,6 +71933,7 @@ paths:
           description: |
             Forbidden — one of:
             - the OAuth token lacks the `mcp:write` scope
+            - the bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds
             - the caller may not manage this instance, or a custom `stdio` server was requested and the deployment does not allow them (`MCP_ALLOW_CUSTOM_STDIO`)
             - MCP servers are disabled for this organization (`ENABLE_MCP` feature flag is off)
           content:
@@ -71652,7 +71963,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71664,8 +71975,8 @@ paths:
             A new connection target (URL, token URL, transport, command, args, auth mode, egress hosts or type; for a
             catalog server whose template lets the URL be typed, such as Okta, its URL) removes every stored credential
             of the instance first, and switching `useAdminAuth` removes the shared admin credential first. The config
-            store kept one of them or could not answer: the instance was not changed, though some credentials may
-            already be removed. Retry after `Retry-After` seconds. The body's detail is "We couldn't reach PipesHub's
+            store (or, with `CONTROL_PLANE_CREDENTIALS` on, the credential service) kept one of them or could not
+            answer: the instance was not changed, though some credentials may already be removed. Retry after `Retry-After` seconds. The body's detail is "We couldn't reach PipesHub's
             database just now. Please try again in a few seconds."
           headers:
             Retry-After:
@@ -71682,7 +71993,11 @@ paths:
       summary: Delete an MCP server instance
       description: |
         Organization instances are deleted by administrators, a personal instance by its owner.
-        Removes every stored credential and the OAuth app configuration too.
+        Also removes the instance's stored credentials and OAuth app configuration, and with
+        `CONTROL_PLANE_CREDENTIALS` on revokes every connection made on the instance. That
+        clean-up is best effort: when a credential delete or the revoke can't be confirmed, the
+        instance is still deleted and the failure is only logged, so those credentials or
+        connections can stay stored, with no instance left to use them.
       operationId: deleteMcpInstance
       security:
         - bearerAuth: []
@@ -71988,12 +72303,18 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service, including an MCP server that
-            could not be reached or answered with an error other than a sign-in request, or a sign-in that
-            couldn't be renewed because its provider is down, rate-limiting or busy (the connectors
-            service answers `502`, which the gateway reports as `500`).
+            Unexpected failure in the gateway or in the connectors service.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: |
+            An MCP server that could not be reached or answered with an error other than a sign-in request,
+            or a sign-in that couldn't be renewed because its provider is down, rate-limiting or busy
+            (`HTTP_BAD_GATEWAY`; see Relayed failures in the introduction).
           content:
             application/json:
               schema:
@@ -72049,7 +72370,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72118,7 +72439,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72197,7 +72518,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72274,7 +72595,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72337,7 +72658,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72417,7 +72738,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72480,7 +72801,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72574,8 +72895,14 @@ paths:
             Unexpected failure in the gateway or in the connectors service, including a failed dynamic client registration with the OAuth provider.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-
-            The MCP server could not be reached or refused the connection: the connectors service answers `502`, which the gateway reports as `500`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: |
+            The MCP server could not be reached or refused the connection (`HTTP_BAD_GATEWAY`; see Relayed
+            failures in the introduction).
           content:
             application/json:
               schema:
@@ -72645,11 +72972,17 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service, including a token endpoint
-            that could not be reached or that answered with an error other than a rejected refresh token
-            (the connectors service answers 502, which the gateway reports as 500).
+            Unexpected failure in the gateway or in the connectors service.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: |
+            A token endpoint that could not be reached or that answered with an error other than a rejected
+            refresh token (`HTTP_BAD_GATEWAY`; see Relayed failures in the introduction).
           content:
             application/json:
               schema:
@@ -72722,7 +73055,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72805,6 +73138,7 @@ paths:
           description: |
             Forbidden — one of:
             - the OAuth token lacks the `mcp:write` scope
+            - the bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds
             - the caller may not manage this instance
             - MCP servers are disabled for this organization (`ENABLE_MCP` feature flag is off)
           content:
@@ -72826,7 +73160,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72913,7 +73247,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -73056,7 +73390,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -73136,7 +73470,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -73219,7 +73553,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -73283,7 +73617,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -73364,7 +73698,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -73928,6 +74262,7 @@ paths:
           description: |
             Forbidden — one of:
             - the OAuth token lacks the `connector:write` scope (`Insufficient scope. Required: connector:write`)
+            - the bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds
             - the caller is not an administrator, or API Toolsets are disabled
           content:
             application/json:
@@ -74033,6 +74368,7 @@ paths:
           description: |
             Forbidden — one of:
             - the OAuth token lacks the `connector:write` scope (`Insufficient scope. Required: connector:write`)
+            - the bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds
             - the caller is not an administrator
           content:
             application/json:
@@ -74561,15 +74897,20 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            One of:
+            Unexpected failure in the gateway or in the connectors service.
+
+            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: |
+            One of (`HTTP_BAD_GATEWAY`; see Relayed failures in the introduction):
             - the API could not be reached, or answered with something that is not HTTP;
             - for an OAuth scheme (a person's sign-in or client credentials), the OAuth server is down
               or rate-limiting (5xx or 429) when an access token is needed: before the call, or when
               refreshing after the API answered `401`. The call, or its retry, was not sent.
-
-            The connectors service answers `502`, which the gateway reports as `500 INTERNAL_ERROR`.
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
             application/json:
               schema:
@@ -74935,6 +75276,68 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The skills service could not be reached
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /skills/admin/skills:
+    get:
+      tags:
+        - Skills
+      summary: List every skill in the organization (admin)
+      description: |
+        For an organization admin to find the skills they may disable (`POST /skills/{name}/disable`)
+        or delete (`DELETE /skills/{name}`), including custom skills of other members. Metadata
+        only: no body and no resources. The role is checked on every request; any other caller
+        gets `403`.
+      operationId: listOrgSkills
+      security:
+        - bearerAuth: []
+        - oauth2: [skill:read]
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, deprecated, disabled]
+        - name: source
+          in: query
+          schema:
+            type: string
+        - name: q
+          in: query
+          description: Free-text filter on name and description.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Every skill in the organization
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [skills]
+                properties:
+                  skills:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SkillMetadata'
+        '401':
+          description: Missing, malformed or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: "The caller is not an organization admin, skills are disabled for this organization, or the OAuth token lacks the `skill:read` scope."
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/SkillsServiceError'
         '503':
           description: The skills service could not be reached
           content:
@@ -75428,6 +75831,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SkillsServiceError'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Missing, malformed or expired bearer token
           content:
@@ -75739,7 +76144,9 @@ paths:
         force-deleted — deprecate it instead so dependents still resolve.
         `detach=true` unassigns the skill from any agents (removing the
         `agentHasSkill` edges) before deleting; call `GET /skills/{name}/usage`
-        first to show the user which agents will be affected.
+        first to show the user which agents will be affected. The creator,
+        or an organization admin, can delete a custom skill; a built-in
+        skill cannot be deleted.
       operationId: deleteSkill
       security:
         - bearerAuth: []
@@ -75793,11 +76200,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/SkillsServiceError'
         '409':
-          description: "Skill is in use: agents are assigned to it and `detach` is not `true`, or another skill requires it"
+          description: "Skill is in use: agents are assigned to it and `detach` is not `true`, or another skill requires it; or it changed, or was deleted and created again, while the request was handled"
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SkillInUseError'
+                oneOf:
+                  - $ref: '#/components/schemas/SkillInUseError'
+                  - $ref: '#/components/schemas/SkillEditConflictError'
         '422':
           description: "The `detach` query parameter is not a boolean, or is empty (failed validation in the skills service)"
           content:
@@ -76145,6 +76554,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SkillsServiceError'
+        '409':
+          description: "The skill changed, or was deleted and created again, while the request was handled; nothing was written."
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SkillEditConflictError'
+                  - $ref: '#/components/schemas/SkillsServiceError'
         '422':
           description: The request body failed validation in the skills service
           content:
@@ -76178,9 +76595,10 @@ paths:
         judgment (no reason, no replacement) and is undone with `POST
         /skills/{name}/enable`.
 
-        Custom skills: only the creator can disable (a non-owner gets 404,
-        matching GET). Builtin skills: only an organization admin; members
-        get 403. Content edits of builtins remain 403.
+        Custom skills: the creator, or an organization admin (any other
+        non-owner gets 404, matching GET). Builtin skills: only an
+        organization admin; members get 403. Content edits of builtins
+        remain 403.
       operationId: disableSkill
       security:
         - bearerAuth: []
@@ -76254,7 +76672,8 @@ paths:
         Reverses `POST /skills/{name}/disable` — restores catalog/search
         visibility and loadability. Only valid from `disabled`; does not
         undeprecate a deprecated skill. Same authorization as disable:
-        creator for custom skills, organization admin for builtins.
+        creator or organization admin for custom skills, organization
+        admin for builtins.
       operationId: enableSkill
       security:
         - bearerAuth: []
@@ -76324,7 +76743,10 @@ paths:
       tags:
         - Skills
       summary: Get a skill's usage
-      description: Referential-integrity snapshot (agents it's assigned to, skills that require it) — call before a safe delete to show the user what will be affected.
+      description: |
+        Referential-integrity snapshot (agents it's assigned to, skills that require it) — call before a safe delete to show the user what will be affected.
+
+        The skill is looked up as `GET /skills/{name}` looks it up: the caller's own custom skills and the organization's built-in ones. Another user's custom skill is answered exactly as a missing one (404, same body). Agents the caller cannot open and skills the caller cannot see are only counted (`otherAgentCount`, `otherSkillCount`).
       operationId: getSkillUsage
       security:
         - bearerAuth: []
@@ -76337,7 +76759,7 @@ paths:
             type: string
       responses:
         '200':
-          description: Usage retrieved. A name that matches no skill yields two empty lists, not a 404. The lookup is by name across the org and is not creator-scoped, so a member also sees the usage of another user's custom skill.
+          description: Usage retrieved, as the caller may see it.
           content:
             application/json:
               schema:
@@ -76365,6 +76787,12 @@ paths:
                 oneOf:
                   - $ref: '#/components/schemas/ErrorResponse'
                   - $ref: '#/components/schemas/SkillsServiceError'
+        '404':
+          description: No skill with this name, or one the caller cannot see (the same answer for both)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillsServiceError'
         '500':
           description: |
             Internal server error.
@@ -76588,6 +77016,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SkillsServiceError'
+        '409':
+          description: "The skill changed, or was deleted and created again, while the request was handled; nothing was written."
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SkillEditConflictError'
+                  - $ref: '#/components/schemas/SkillsServiceError'
         '422':
           description: The request body failed validation in the skills service
           content:
@@ -76759,7 +77195,14 @@ paths:
           description: The caller does not govern the command or the scope
         '404':
           description: Skill or team not found
-
+        '409':
+          description: "The skill changed, or was deleted and created again, while the request was handled; nothing was written."
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SkillEditConflictError'
+                  - $ref: '#/components/schemas/SkillsServiceError'
   /skills/{name}/resource:
     get:
       tags:
@@ -76923,6 +77366,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SkillsServiceError'
+        '409':
+          description: "The skill changed, or was deleted and created again, while the request was handled; nothing was written."
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SkillEditConflictError'
+                  - $ref: '#/components/schemas/SkillsServiceError'
         '422':
           description: The request body failed validation in the skills service
           content:
@@ -77005,6 +77456,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SkillsServiceError'
+        '409':
+          description: "The skill changed, or was deleted and created again, while the request was handled; nothing was written."
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SkillEditConflictError'
+                  - $ref: '#/components/schemas/SkillsServiceError'
         '422':
           description: "The `path` query parameter is missing, empty, or sent more than once (failed validation in the skills service)"
           content:
@@ -77491,6 +77950,8 @@ paths:
             Forbidden — one of:
             - the OAuth token lacks the `connector:write` scope
             - the token lacks `connector:write`, or the caller is not an admin
+
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
           content:
             application/json:
               schema:
@@ -77687,6 +78148,8 @@ paths:
             Forbidden — one of:
             - the OAuth token lacks the `connector:write` scope
             - the token lacks `connector:write`, or the caller is not an admin
+
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
           content:
             application/json:
               schema:
@@ -77763,6 +78226,8 @@ paths:
             Forbidden — one of:
             - the OAuth token lacks the `connector:delete` scope
             - the token lacks `connector:delete`, or the caller is not an admin
+
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
           content:
             application/json:
               schema:
@@ -77876,7 +78341,6 @@ paths:
       operationId: createStorageConfig
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: Storage configuration payload (discriminated by storageType)
@@ -78176,9 +78640,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -78224,7 +78688,6 @@ paths:
       operationId: createSMTPConfig
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Create or update SMTP configuration"
@@ -78297,9 +78760,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Admin access required
-
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), or the caller is not an admin.
           content:
             application/json:
               schema:
@@ -78376,7 +78837,6 @@ paths:
       operationId: deleteSMTPConfig
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       responses:
         '200':
           description: SMTP configuration deleted
@@ -78400,9 +78860,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization
-
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), or the caller is not an admin.
           content:
             application/json:
               schema:
@@ -78427,7 +78885,6 @@ paths:
       operationId: setSMTPConfigEnabled
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         content:
@@ -78468,9 +78925,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization
-
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), or the caller is not an admin.
           content:
             application/json:
               schema:
@@ -78552,7 +79007,6 @@ paths:
       operationId: setMicrosoftAuthConfig
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Configure Microsoft authentication"
@@ -78592,9 +79046,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Admin access required
-
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), or the caller is not an admin.
           content:
             application/json:
               schema:
@@ -78673,7 +79125,6 @@ paths:
       operationId: setGoogleAuthConfig
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Configure Google authentication"
@@ -78713,9 +79164,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Admin access required
-
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), or the caller is not an admin.
           content:
             application/json:
               schema:
@@ -79097,7 +79546,6 @@ paths:
       operationId: discoverAIModels
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         content:
@@ -79141,9 +79589,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Admin access required
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            Admin access required
           content:
             application/json:
               schema:
@@ -79172,7 +79620,6 @@ paths:
       operationId: batchAddAIModels
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         content:
@@ -79192,7 +79639,13 @@ paths:
                 connectionId:
                   type: string
                   format: uuid
-                  description: Join an existing connection of the same provider, e.g. when retrying models that failed. Unknown ids return 400.
+                  description: |
+                    Join an existing connection of the same provider, e.g. when retrying models that failed. Unknown ids return 400.
+                    The shared `endpoint` and `baseUrl` must match the connection's. They are compared by scheme, host,
+                    port, path, query string and userinfo; only the scheme and host ignore case, a default port and a
+                    trailing slash on the path are ignored, and the path keeps its case (`/Tenant` and `/tenant` differ).
+                    A connection shares one key, so a different endpoint is refused
+                    with 400 `credential_reentry_required` before any model is checked or saved.
                 defaultModel:
                   type: string
                   description: Model to make default. If the type has no models yet, the first saved model becomes default even when this one fails.
@@ -79237,13 +79690,19 @@ paths:
                 $ref: '#/components/schemas/AIModelBatchSSEEvent'
         '400':
           description: |
-            Invalid body, or connectionId does not match a saved connection for this provider
+            Invalid body, or connectionId does not match a saved connection for this provider.
+            `error_code: credential_reentry_required` when connectionId names a connection whose
+            endpoint differs from the one sent. No credential changes that: use the connection's endpoint, or add
+            the models as a new connection. If the connection moves or is deleted while a model is checked, that
+            model is not saved and its progress event reports `failed`.
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/CredentialReentryRequiredError'
         '401':
           description: Missing, invalid or expired bearer token.
           content:
@@ -79252,9 +79711,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Forbidden.
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            Forbidden.
           content:
             application/json:
               schema:
@@ -79273,11 +79732,15 @@ paths:
       tags:
         - AI Models Providers
       summary: Rotate credentials for every model in a connection
-      description: Replaces credential fields only. Endpoint, model id, and other settings on each entry are left as stored.
+      description: |
+        Replaces credential fields only. Endpoint, model id, and other settings on each entry are left as stored.
+        The new credentials are health-checked against the connection's first model and written to every
+        model of the connection. When the connection's models do not all share one endpoint and baseUrl
+        (a model was moved to another endpoint), the request is refused with 400
+        `credential_reentry_required` before any health check, and nothing is stored.
       operationId: rotateConnectionCredentials
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       parameters:
         - name: connectionId
           in: path
@@ -79307,15 +79770,32 @@ paths:
       responses:
         '200':
           description: Credentials updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  connectionId:
+                    type: string
+                  updated:
+                    type: integer
+                    description: Models whose credentials were replaced.
         '400':
           description: |
-            Health check rejected the new credentials, or the body included a non-credential field
+            Health check rejected the new credentials, or the body included a non-credential field.
+
+            Also returned as `ConnectionEndpointsDifferError` (`credential_reentry_required`) when the connection's models use more than one endpoint; nothing is checked or stored.
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/ConnectionEndpointsDifferError'
         '401':
           description: Missing, invalid or expired bearer token.
           content:
@@ -79324,9 +79804,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Forbidden.
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            Forbidden.
           content:
             application/json:
               schema:
@@ -79351,11 +79831,12 @@ paths:
       tags:
         - AI Models Providers
       summary: Set identity forwarding for every model in a connection
-      description: Writes the same forwarding settings to every entry of the connection in one compare-and-set, so its models never disagree. Credentials, endpoint and model id are left as stored. serviceApiKey is never returned; a read lists it under configuredFields.
+      description: |
+        Writes the same forwarding settings to every entry of the connection in one compare-and-set, so its models never disagree. Credentials, endpoint and model id are left as stored. serviceApiKey is never returned; a read lists it under configuredFields.
+        A save carrying a new secret (a non-empty `serviceApiKey`, or a typed value for a credential header such as `Authorization`) is refused with 400 `credential_reentry_required` when the connection's models do not all share one endpoint and baseUrl; nothing is stored. A save without a new secret applies to every entry whatever its endpoint.
       operationId: setConnectionIdentityForwarding
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       parameters:
         - name: connectionId
           in: path
@@ -79415,11 +79896,20 @@ paths:
                   updated:
                     type: integer
         '400':
-          description: Invalid settings
+          description: Invalid settings, or a new secret for a connection whose models use more than one endpoint (`ConnectionEndpointsDifferError`; nothing is stored).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/ConnectionEndpointsDifferError'
         '401':
           description: Authentication required
         '403':
-          description: Admin access required
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            Admin access required
         '404':
           description: Connection not found
   /configurationManager/ai-models/identity-policy:
@@ -79459,7 +79949,6 @@ paths:
       operationId: putAIGatewayIdentityPolicy
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         content:
@@ -79483,7 +79972,10 @@ paths:
         '401':
           description: Authentication required
         '403':
-          description: Admin access required
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            Admin access required
         '409':
           description: The policy changed while saving
   /configurationManager/ai-models/identity/preview:
@@ -79574,7 +80066,6 @@ paths:
       operationId: addAIModelProvider
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Add new AI model provider"
@@ -79610,9 +80101,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Admin access required, or the OAuth token does not carry `config:write`
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            Admin access required
           content:
             application/json:
               schema:
@@ -79650,7 +80141,6 @@ paths:
       operationId: updateAIModelProvider
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       parameters:
         - name: modelType
           in: path
@@ -79685,6 +80175,14 @@ paths:
             of these settings: it rejected the API key, could not find the model, or its
             endpoint could not be reached, or `contextLength` is outside 1,024 to 20,000,000.
 
+            Also returned, with no `error_code`, when `provider` differs (ignoring case) from the
+            saved model: a model's provider cannot be changed here.
+
+            Also returned with `error_code: credential_reentry_required` when `configuration.endpoint`
+            or `configuration.baseUrl` changes and a saved credential is left out of the request.
+            Saved credentials are only reused for the endpoint they were saved with; sending a
+            credential key blank clears it.
+
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
             application/json:
@@ -79698,9 +80196,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization, or the OAuth token does not carry `config:write`
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -79709,6 +80207,15 @@ paths:
           description: |
             No AI models configuration is stored (`No AI models configuration found`), or no
             model has the given `modelKey` (`Model with key '<modelKey>' not found or model type not found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelProviderSimpleError'
+        '409':
+          description: |
+            Another save moved the model to a different endpoint or baseUrl while this request's health
+            check ran, whether or not this request sends one. Nothing is stored; reload the model and
+            enter the credentials again.
           content:
             application/json:
               schema:
@@ -79743,7 +80250,6 @@ paths:
       operationId: deleteAIModelProvider
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       parameters:
         - name: modelType
           in: path
@@ -79825,9 +80331,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Admin access required, or the OAuth token does not carry `config:write`
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            Admin access required
           content:
             application/json:
               schema:
@@ -79896,7 +80402,6 @@ paths:
       operationId: setDefaultAIModel
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       parameters:
         - name: modelType
           in: path
@@ -79969,9 +80474,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization, or the OAuth token does not carry `config:write`
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -80023,7 +80528,6 @@ paths:
       operationId: prepareEmbeddingModel
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         content:
@@ -80079,12 +80583,13 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization, the caller's
-            OAuth token lacks the `config:write` scope, or the embedding
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            The caller is not an admin of this organization, or the embedding
             server rejected the request under its own policy: `model` is not
             in `EMBEDDING_SERVER_ALLOWED_MODELS`, or `trustRemoteCode: true`
             was requested while `EMBEDDING_SERVER_ALLOW_REMOTE_CODE` is
-            disabled on the server. The admin and scope refusals use the
+            disabled on the server. The admin and session refusals use the
             Node.js `ErrorResponse` shape. Only the embedding-server
             rejection is proxied verbatim in FastAPI's `{"detail": ...}`
             envelope.
@@ -80213,8 +80718,8 @@ paths:
 
         **API keys:** for anyone who isn't an org admin, each provider's `configuration.apiKey`
         comes back as the placeholder `****************`, and so does `configuration.baseUrl`
-        (admins always get the stored address). Admins get the stored key, unless the
-        server hides secrets from everyone (`HIDE_SECRET_CONFIG=true`). When updating a provider,
+        (admins always get the stored address). Admins get the stored key masked too,
+        unless the server sets `HIDE_SECRET_CONFIG=false` or they reveal it. When updating a provider,
         sending the placeholder back keeps the stored key.
 
         Only stored providers are listed. `configured` is true when a stored provider that can
@@ -80270,12 +80775,11 @@ paths:
         are kept. When `maxImages` is left out, the stored value (default 3) is kept. Body
         fields other than the two settings are dropped by the validator.
 
-        This route has no OAuth scope check: a token without `config:write` is accepted
-        (only the admin check applies).
+        Takes an interactive session: an OAuth access token, a personal access token or a
+        service token is refused, whatever its scopes.
       operationId: updateWebSearchSettings
       security:
         - bearerAuth: []
-        - oauth2: []
       requestBody:
         required: true
         content:
@@ -80320,7 +80824,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Admin access required
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            Admin access required
           content:
             application/json:
               schema:
@@ -80348,12 +80855,11 @@ paths:
         only reads pages (crawl4ai) cannot be the default and never becomes it on its own. Body
         fields other than the three below are dropped by the validator.
 
-        This route has no OAuth scope check: a token without `config:write` is accepted
-        (only the admin check applies).
+        Takes an interactive session: an OAuth access token, a personal access token or a
+        service token is refused, whatever its scopes.
       operationId: addWebSearchProvider
       security:
         - bearerAuth: []
-        - oauth2: []
       requestBody:
         required: true
         content:
@@ -80424,7 +80930,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Admin access required
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            Admin access required
           content:
             application/json:
               schema:
@@ -80455,12 +80964,11 @@ paths:
         provider is made the default then). Body fields other than the three below are dropped
         by the validator.
 
-        This route has no OAuth scope check: a token without `config:write` is accepted
-        (only the admin check applies).
+        Takes an interactive session: an OAuth access token, a personal access token or a
+        service token is refused, whatever its scopes.
       operationId: updateWebSearchProvider
       security:
         - bearerAuth: []
-        - oauth2: []
       parameters:
         - name: providerKey
           in: path
@@ -80533,7 +81041,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Admin access required
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            Admin access required
           content:
             application/json:
               schema:
@@ -80573,12 +81084,11 @@ paths:
         none, web search is not set up until an admin chooses a provider). Refused with 409 while any agent of the organization uses a web search
         provider of the same type (`provider`), whichever stored entry it was set up with.
 
-        This route has no OAuth scope check: a token without `config:write` is accepted
-        (only the admin check applies).
+        Takes an interactive session: an OAuth access token, a personal access token or a
+        service token is refused, whatever its scopes.
       operationId: deleteWebSearchProvider
       security:
         - bearerAuth: []
-        - oauth2: []
       parameters:
         - name: providerKey
           in: path
@@ -80623,7 +81133,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Admin access required
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            Admin access required
           content:
             application/json:
               schema:
@@ -80694,12 +81207,11 @@ paths:
         check; if DuckDuckGo blocks or rate limits the test search it is still chosen and the answer carries a `warning`. It is stored with an empty
         `configuration`, and becomes the default.
 
-        This route has no OAuth scope check: a token without `config:write` is accepted
-        (only the admin check applies).
+        Takes an interactive session: an OAuth access token, a personal access token or a
+        service token is refused, whatever its scopes.
       operationId: updateDefaultWebSearchProvider
       security:
         - bearerAuth: []
-        - oauth2: []
       parameters:
         - name: providerKey
           in: path
@@ -80768,7 +81280,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Admin access required
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            Admin access required
           content:
             application/json:
               schema:
@@ -80810,7 +81325,6 @@ paths:
       operationId: setFrontendPublicUrl
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Set frontend public URL"
@@ -80853,9 +81367,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Admin access required, or the OAuth token does not carry `config:write`
-
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), or the caller is not an admin.
           content:
             application/json:
               schema:
@@ -81010,7 +81522,6 @@ paths:
       operationId: setConnectorPublicUrl
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Set connector public URL"
@@ -81053,9 +81564,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Admin access required, or the OAuth token does not carry `config:write`
-
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), or the caller is not an admin.
           content:
             application/json:
               schema:
@@ -81166,7 +81675,6 @@ paths:
       operationId: putMcpAccessPolicy
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         content:
@@ -81193,7 +81701,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Admin access required
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            Admin access required
           content:
             application/json:
               schema:
@@ -81285,7 +81796,6 @@ paths:
       operationId: setPlatformSettings
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Update platform settings"
@@ -81380,9 +81890,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Admin access required
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            Admin access required
           content:
             application/json:
               schema:
@@ -81604,7 +82114,7 @@ paths:
         is available, an admin can add `?reveal=true` to a configuration GET (SMTP, AI
         models by type, web search, Slack bot, sign-in providers under `authConfig/*`,
         connector and action OAuth apps, action credentials) to receive the stored values
-        instead of placeholders. Secrets are masked by default when `HIDE_SECRET_CONFIG=true`.
+        instead of placeholders. Secrets are masked by default; a server that sets `HIDE_SECRET_CONFIG=false` returns them.
         The flag is ignored for OAuth-app tokens. Admin only.
       operationId: getSecretRevealStatus
       security:
@@ -81668,7 +82178,6 @@ paths:
       operationId: setCustomSystemPrompt
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Update custom system prompt"
@@ -81741,9 +82250,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Admin access required
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            Admin access required
           content:
             application/json:
               schema:
@@ -81890,7 +82399,6 @@ paths:
       operationId: toggleMetricsCollection
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -81946,9 +82454,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Forbidden - Admin access required
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            Forbidden - Admin access required
           content:
             application/json:
               schema:
@@ -81974,6 +82482,7 @@ paths:
       operationId: getSlackBotConfigs
       security:
         - bearerAuth: []
+        - oauth2: [config:read]
       parameters:
         - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
@@ -82073,7 +82582,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden - Admin access required
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            Forbidden - Admin access required
           content:
             application/json:
               schema:
@@ -82543,7 +83055,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden - Admin access required
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            Forbidden - Admin access required
           content:
             application/json:
               schema:
@@ -82603,7 +83118,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden - Admin access required
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            Forbidden - Admin access required
           content:
             application/json:
               schema:
@@ -82637,7 +83155,6 @@ paths:
       operationId: setMetricsCollectionPushInterval
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -82681,9 +83198,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Forbidden - Admin access required
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            Forbidden - Admin access required
           content:
             application/json:
               schema:
@@ -82709,7 +83226,6 @@ paths:
       operationId: setMetricsCollectionRemoteServer
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -82770,9 +83286,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Forbidden - Admin access required
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            Forbidden - Admin access required
           content:
             application/json:
               schema:
@@ -82850,7 +83366,6 @@ paths:
       operationId: createAIModelsConfig
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: The model entries, one list per model type
@@ -82891,9 +83406,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization, or the OAuth token does not carry `config:write`
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -83039,7 +83554,6 @@ paths:
       operationId: updateModelRoles
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         content:
@@ -83098,9 +83612,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization, or the OAuth token does not carry `config:write`
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -83933,7 +84447,6 @@ paths:
       operationId: removeAllCrawlingJob
       security:
         - bearerAuth: []
-        - oauth2: [crawl:delete]
       responses:
         '200':
           description: All crawling jobs removed successfully
@@ -83957,7 +84470,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Token lacks the required scope, or the caller is not an admin of this organization
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -88354,7 +88870,6 @@ paths:
         Applies to turns admitted after the change. Org admins only.
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         content:
@@ -89556,6 +90071,41 @@ paths:
         '400': { description: A malformed body }
         '401': { description: "No service token, or one without scope control-plane:bindings" }
         '403': { description: "CP_FORBIDDEN: the token names no org" }
+        '409': { description: "CP_REVISION_CONFLICT: the binding changed while it was being revoked; repeat the call" }
+  /control-plane/internal/bindings/revoke-installation:
+    post:
+      tags: [Connections]
+      summary: Revoke every binding of an installation (internal)
+      operationId: revokeInstallationBindings
+      description: An MCP server's connection target changed or the server was removed, with `CONTROL_PLANE_CREDENTIALS` on. Revokes each binding not revoked yet; safe to repeat. Audited as the token's user when it names one.
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [installation]
+              properties:
+                installation: { type: string, minLength: 1, maxLength: 256 }
+      responses:
+        '200':
+          description: The bindings this call revoked (empty when none was live)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [bindings]
+                properties:
+                  bindings: { type: array, items: { $ref: '#/components/schemas/BindingRecord' } }
+        '400': { description: A malformed body }
+        '401': { description: "No service token, or one without scope control-plane:bindings" }
+        '403': { description: "CP_FORBIDDEN: the token names no org" }
+        '409': { description: "CP_REVISION_CONFLICT: a binding changed while it was being revoked; repeat the call" }
+        '503': { description: Connections are not configured on this deployment }
   /control-plane/internal/bindings/due:
     get:
       tags: [Connections]
@@ -89725,6 +90275,67 @@ paths:
         '403': { description: "CP_FORBIDDEN: the token names no org" }
         '404': { description: No such binding in the token's org }
         '409': { description: "CP_REVISION_CONFLICT" }
+  /agent-harness/internal/runs/{runId}/schedules:
+    post:
+      tags: [Agent Harness Internal]
+      summary: Make a schedule the run's person approved in chat
+      operationId: internalAgentHarnessCreateChatSchedule
+      x-internal: true
+      description: |
+        Requires the attempt token (ADR-SCH-01 D3). The worker sends the `schedule_create`
+        call (`pipeshub@schedules/create`) its run's person approved. Node makes the schedule only
+        when the run's own journal holds that person's own `approved` decision
+        (`interaction.resolved`, not one Node applied for a held grant) of `interactionId`, the
+        run's `interaction.requested` of that id asked about this tool with the call's arguments
+        (its `bindingDigest`, in the loop's form `ix.approve.<invocationId>` or an engine's
+        `ix.approve.k<hash>`), and the digest of `arguments` is the call's own, or the edited
+        arguments' (AP-06) when the person edited it; then `callArgsDigest` names the call's own
+        digest. A one-time `at` the person approved after it came is accepted up to 24 hours
+        late and fires at the next tick. The schedule is the
+        run's person's, made with every check of `POST /agent-harness/schedules` (Labs
+        `ENABLE_SCHEDULED_RUNS`, durable chat, limits, the 5-minute cron floor, notice channels)
+        with the agent, model and chat mode the run used, and records its origin. One decision
+        makes one schedule, once: its id derives from the decision, a repeat answers the same
+        schedule with `created: false` while it exists, and deleting it leaves a tombstone under that
+        id in the schedule store, so a repeat after its person deleted it is refused. Node also
+        journals `x.pipeshub.schedule.created`, an audit fact.
+      security:
+        - harnessAttemptToken: []
+      parameters:
+        - { name: runId, in: path, required: true, schema: { type: string, maxLength: 128 } }
+      requestBody:
+        required: true
+        description: The approved call
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [attemptId, fence, interactionId, toolId, arguments]
+              properties:
+                attemptId: { type: string, maxLength: 128 }
+                fence: { type: integer, minimum: 0 }
+                interactionId: { type: string, maxLength: 256 }
+                toolId: { type: string, enum: ['pipeshub@schedules/create'] }
+                callArgsDigest: { type: string, pattern: '^sha256:[0-9a-f]{64}$', description: "The call's own arguments digest; needed only when the person edited the call" }
+                arguments: { $ref: '#/components/schemas/AgentHarnessScheduleCreateArguments' }
+      responses:
+        '201':
+          description: The schedule, made now
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AgentHarnessChatSchedule' }
+        '200':
+          description: The schedule this decision already made
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AgentHarnessChatSchedule' }
+        '400': { description: "Malformed body, or `HTTP_AGENT_HARNESS_SCHEDULE_INVALID` / `HTTP_AGENT_HARNESS_SCHEDULE_BUDGET_EXCEEDS_CEILING` as for a create" }
+        '401': { description: "Missing, invalid, expired or superseded attempt token, or one for another run or attempt" }
+        '403': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_NOT_APPROVED`: no approval of this call by the run's person in its journal, a denial, another call or other arguments; `HTTP_AGENT_HARNESS_SCHEDULE_FORBIDDEN`: the person can no longer make schedules" }
+        '404': { description: "Run not found in the token tenant; `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED`" }
+        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_LIMIT`; `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_UNAVAILABLE`; `HTTP_AGENT_HARNESS_SCHEDULE_APPROVAL_USED`: this approval already made its schedule and its person deleted it (its tombstone holds the id), so nothing is made again" }
+        '429': { description: "More than 30 schedule requests for this run in a minute" }
   /agent-harness/internal/runs/{runId}/gateway-token:
     post:
       tags: [Agent Harness Internal]
@@ -90483,7 +91094,7 @@ paths:
       operationId: createAgentSchedule
       description: |
         A schedule (P8a) runs an agent (or the assistant) with a fixed input on a cron in a
-        time zone, or when a webhook or a connector event arrives. Every run acts as the
+        time zone, once at a given time (`once`), or when a webhook or a connector event arrives. Every run acts as the
         caller, who is checked again at each firing (deleted, disabled, still allowed to run
         the agent); each slot fires once across every server, and each firing starts a new
         conversation of the caller's. A webhook schedule answers its secret once, here:
@@ -90527,7 +91138,7 @@ paths:
                   schedule: { $ref: '#/components/schemas/AgentSchedule' }
                   webhookToken: { type: string, description: "`auth: token`: sent in `X-PipesHub-Trigger-Token`; shown only now" }
                   webhookSecret: { type: string, description: "`auth: signature`: the key a caller signs with (`X-PipesHub-Signature`); shown only now" }
-        '400': { description: "Malformed body; `HTTP_AGENT_HARNESS_SCHEDULE_INVALID` naming the field (a cron that does not parse, fires more often than every 5 minutes or never; an unknown time zone; a notice channel the org does not allow); `HTTP_AGENT_HARNESS_SCHEDULE_BUDGET_EXCEEDS_CEILING` (a budget per run above 5 USD, or above a further ceiling the deployment holds its runs to, which the message names)" }
+        '400': { description: "Malformed body; `HTTP_AGENT_HARNESS_SCHEDULE_INVALID` naming the field (a cron that does not parse, fires more often than every 5 minutes or never; a one-time `at` without its offset, less than 60 seconds or more than 366 days ahead; an unknown time zone; a notice channel the org does not allow); `HTTP_AGENT_HARNESS_SCHEDULE_BUDGET_EXCEEDS_CEILING` (a budget per run above 5 USD, or above a further ceiling the deployment holds its runs to, which the message names)" }
         '401': { description: Not authenticated }
         '403': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_FORBIDDEN`: a service account, or a connector trigger by a non-admin; or the token lacks agent:execute" }
         '404': { description: "`HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED`: the org's Labs flag is off" }
@@ -90638,7 +91249,7 @@ paths:
       tags: [Agents]
       summary: Delete a schedule
       operationId: deleteAgentSchedule
-      description: Deletes the schedule and its firing records; runs it already started keep their conversations. Its user; allowed while the Labs flag is off.
+      description: Deletes the schedule and its firing records; runs it already started keep their conversations. Its user; allowed while the Labs flag is off. A schedule made in chat (`origin`) leaves a tombstone of ids only, which nothing lists or counts, so the approval that made it cannot make it again.
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
@@ -90698,14 +91309,14 @@ paths:
         '401': { description: Not authenticated }
         '403': { description: The token lacks agent:execute }
         '404': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_NOT_FOUND` or `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED`" }
-        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_DISABLED`" }
+        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_DISABLED`; `HTTP_AGENT_HARNESS_SCHEDULE_RAN_ONCE`: a one-time schedule that already ran or whose time passed (its slot was skipped)" }
         '503': { description: "`HTTP_CP_UNAVAILABLE`: the change could not be recorded in the audit chain, so it was not made" }
   /agent-harness/schedules/{scheduleId}/resume:
     post:
       tags: [Agents]
       summary: Resume a schedule
       operationId: resumeAgentSchedule
-      description: Fires again from the next slot; slots of the paused period never fire. Its user. A disabled schedule (its user was deleted) cannot be resumed.
+      description: Fires again from the next slot; slots of the paused period never fire. Its user. A disabled schedule (its user was deleted) cannot be resumed, nor a one-time schedule that ran.
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
@@ -90717,10 +91328,11 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AgentSchedule' }
+        '400': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_INVALID` (field `trigger`): a one-time schedule paused past its time; create a new schedule" }
         '401': { description: Not authenticated }
         '403': { description: The token lacks agent:execute }
         '404': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_NOT_FOUND` or `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED`" }
-        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_DISABLED`" }
+        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_DISABLED`; `HTTP_AGENT_HARNESS_SCHEDULE_RAN_ONCE`: a one-time schedule that already ran or whose time passed (its slot was skipped)" }
         '503': { description: "`HTTP_CP_UNAVAILABLE`: the change could not be recorded in the audit chain, so it was not made" }
   /agent-harness/schedules/{scheduleId}/agent-version:
     put:
@@ -90757,7 +91369,7 @@ paths:
         '401': { description: Not authenticated }
         '403': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_FORBIDDEN` for anyone but the schedule's user, or the token lacks agent:execute" }
         '404': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_NOT_FOUND` or `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED`" }
-        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_DISABLED`" }
+        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_DISABLED`; `HTTP_AGENT_HARNESS_SCHEDULE_RAN_ONCE`: a one-time schedule that already ran or whose time passed (its slot was skipped)" }
         '503': { description: "`HTTP_CP_UNAVAILABLE`: the change could not be recorded in the audit chain, so it was not made" }
   /agent-harness/schedules/{scheduleId}/run:
     post:
@@ -90784,7 +91396,7 @@ paths:
         '401': { description: Not authenticated }
         '403': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_FORBIDDEN` for anyone but the schedule's user, or the token lacks agent:execute" }
         '404': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_NOT_FOUND` or `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED`" }
-        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_DISABLED`" }
+        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_DISABLED`; `HTTP_AGENT_HARNESS_SCHEDULE_RAN_ONCE`: a one-time schedule that already ran or whose time passed (its slot was skipped)" }
   /agent-harness/triggers/{scheduleId}/webhook:
     post:
       tags: [Agents]
@@ -92823,7 +93435,8 @@ paths:
             (`(a{2}){3}`); nests groups deeper than 20; or uses a `(?` form other
             than a plain group, look-around, a named group or `(?i)` (so flags
             other than `(?i)`, comments and scoped flags are refused). The message
-            says which.
+            says which. Also returned when the folders and files named in
+            `filters` are too many to search.
           content:
             application/json:
               schema:
@@ -92832,6 +93445,8 @@ paths:
           description: Missing or invalid bearer token.
         '403':
           description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '422':
+          description: The connected app's knowledge limit is too large to resolve.
         '501':
           description: This deployment does not keep records on local file storage. Use `POST /search`.
         '500':
@@ -93711,14 +94326,16 @@ paths:
       description: |
         **Deprecated:** this endpoint is kept for older clients and will be removed in a future release.
 
-        Returns the Atlassian OAuth client stored for the caller's organization, decrypted and
-        as stored: the client secret is not masked. An empty object when none has been saved.
-
-        The request carries no parameters: the query string is not read.
+        Returns the Atlassian OAuth client stored for the caller's organization.
+        `clientId` and `clientSecret` are masked (`****************`) unless the server sets
+        `HIDE_SECRET_CONFIG=false` or the caller sends `reveal=true` where the deployment allows it.
+        An empty object when none has been saved.
 
         **Admin Access Required.**
       deprecated: true
       operationId: getAtlassianOauthConfig
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -93775,7 +94392,6 @@ paths:
       operationId: setAtlassianOauthConfig
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: Atlassian OAuth client to store
@@ -93815,9 +94431,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization, or the OAuth token lacks `config:write`
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -93840,14 +94456,15 @@ paths:
         **Deprecated:** this endpoint is kept for older clients and will be removed in a future release.
 
         Returns the Microsoft app credentials stored for OneDrive for the caller's
-        organization, decrypted and as stored: the client secret is not masked. An empty
-        object when none have been saved.
-
-        The request carries no parameters: the query string is not read.
+        organization. `clientId`, `clientSecret` and `tenantId` are masked (`****************`) unless the server sets
+        `HIDE_SECRET_CONFIG=false` or the caller sends `reveal=true` where the deployment allows it.
+        An empty object when none have been saved.
 
         **Admin Access Required.**
       deprecated: true
       operationId: getOneDriveCredentials
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -93904,7 +94521,6 @@ paths:
       operationId: setOneDriveCredentials
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: Microsoft app credentials to store for OneDrive
@@ -93941,9 +94557,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization, or the OAuth token lacks `config:write`
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -93966,14 +94582,15 @@ paths:
         **Deprecated:** this endpoint is kept for older clients and will be removed in a future release.
 
         Returns the Microsoft app credentials stored for SharePoint for the caller's
-        organization, decrypted and as stored: the client secret is not masked. An empty
-        object when none have been saved.
-
-        The request carries no parameters: the query string is not read.
+        organization. `clientId`, `clientSecret` and `tenantId` are masked (`****************`) unless the server sets
+        `HIDE_SECRET_CONFIG=false` or the caller sends `reveal=true` where the deployment allows it.
+        An empty object when none have been saved.
 
         **Admin Access Required.**
       deprecated: true
       operationId: getSharePointCredentials
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -94030,7 +94647,6 @@ paths:
       operationId: setSharePointCredentials
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: Microsoft app credentials to store for SharePoint
@@ -94067,9 +94683,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization, or the OAuth token lacks `config:write`
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -94091,13 +94707,16 @@ paths:
       description: |
         **Deprecated:** this endpoint is kept for older clients and will be removed in a future release.
 
-        Returns the Google Workspace OAuth client and Gmail real-time update settings,
-        decrypted and as stored: the client secret is not masked. An empty object when none
-        has been saved. The query string is not read.
+        Returns the Google Workspace OAuth client and Gmail real-time update settings.
+        `clientId` and `clientSecret` are masked (`****************`) unless the server sets
+        `HIDE_SECRET_CONFIG=false` or the caller sends `reveal=true` where the deployment allows it.
+        An empty object when none has been saved.
 
         **Admin Access Required.**
       deprecated: true
       operationId: getGoogleWorkspaceOauthConfig
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -94152,7 +94771,6 @@ paths:
       operationId: setGoogleWorkspaceOauthConfig
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: Google Workspace OAuth client and Gmail real-time update settings to store
@@ -94226,9 +94844,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization, or the OAuth token lacks `config:write`
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -94248,21 +94866,26 @@ paths:
         - Configuration Manager
       summary: Get Google Workspace credentials
       description: |
-        Returns the stored Google Workspace credentials, decrypted and as stored (nothing is
-        masked). What is read depends on the organization's account type:
+        Returns the stored Google Workspace credentials. What is read depends on the
+        organization's account type:
 
         - **business**: the service-account key saved for the organization, with the admin
           email and real-time update settings.
         - **individual**: the caller's own OAuth tokens merged with the Google Workspace
           OAuth client configuration. Both must be stored, otherwise the answer is empty.
 
-        An empty object when nothing is stored. The query string is not read.
+        `clientId`, `clientSecret`, `access_token`, `refresh_token`, `private_key`
+        and `private_key_id` are masked (`****************`) unless the server sets
+        `HIDE_SECRET_CONFIG=false` or the caller sends `reveal=true` where the deployment allows it.
+        An empty object when nothing is stored.
 
         **Deprecated:** this endpoint is kept for older clients and will be removed in a future release.
 
         **Admin Access Required.**
       deprecated: true
       operationId: getGoogleWorkspaceCredentials
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -94334,7 +94957,6 @@ paths:
       operationId: createGoogleWorkspaceCredentials
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: A multipart key-file upload (business organization) or a JSON token body (individual organization)
@@ -94482,6 +95104,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Unauthorized
           content:
@@ -94490,9 +95114,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization, or the OAuth token lacks `config:write`
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -95036,11 +95660,13 @@ paths:
                     type: string
                     format: email
         '400':
-          description: Validation error, an unsupported file type, or attachments over the size limits
+          description: Validation error, or an unsupported file type
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Missing or invalid token
           content:
@@ -95120,11 +95746,13 @@ paths:
                       - failed
                       - no_smtp
         '400':
-          description: Validation error, an unsupported file type, or attachments over the size limits
+          description: Validation error, or an unsupported file type
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Missing or invalid token
           content:

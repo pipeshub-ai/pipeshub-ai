@@ -2,7 +2,6 @@ import { test, expect } from '../fixtures/base.fixture';
 
 const SIDEBAR_ITEMS = [
   { label: 'General', url: '/workspace/general/' },
-  { label: 'Profile', url: '/workspace/profile/' },
   { label: 'Authentication', url: '/workspace/authentication/' },
   { label: 'AI models', url: '/workspace/ai-models/' },
   { label: 'Users', url: '/workspace/users/' },
@@ -40,9 +39,20 @@ test.describe('Workspace Sidebar Navigation', () => {
     await expect(page).toHaveURL(/\/workspace\/groups\//);
     await expect(
       page.getByRole('heading', {
-        name: /Group permissions are available in the Enterprise Edition/i,
+        name: /Group permissions are available in Enterprise Edition/i,
       })
     ).toBeVisible({ timeout: 10_000 });
+  });
+
+  test('switches to personal settings and back', async ({ page }) => {
+    const link = (label: string) => page.getByRole('link', { name: new RegExp(`^(\\S+ )?${label}$`) }).first();
+    await link('Personal settings').click();
+    await page.waitForURL('**/workspace/profile/', { timeout: 5_000 });
+    await expect(link('Profile')).toBeVisible();
+    await expect(link('AI models')).toHaveCount(0);
+    await link('Workspace settings').click();
+    await page.waitForURL('**/workspace/general/', { timeout: 5_000 });
+    await expect(link('AI models')).toBeVisible();
   });
 
   for (const item of SIDEBAR_ITEMS) {

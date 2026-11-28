@@ -153,6 +153,18 @@ class TestNotifications:
         assert landed["type"] == "syncFailed"
         assert landed["key"].startswith("syncFailed-")
 
+    async def test_a_signed_shape_notification_is_keyed_by_its_type(self, service, provider) -> None:
+        message = {"payload": {"notification": {"type": "syncFailed", "orgId": "org-a"}, "orgId": "org-a"}}
+        assert await service.publish_notification(message) is True
+        [landed] = await _read(provider, Topic.NOTIFICATION.value)
+        assert landed["key"].startswith("syncFailed-")
+
+    async def test_details_holding_a_non_object_notification_are_keyed_by_the_top_level_type(self, service, provider) -> None:
+        message = {"type": "syncFailed", "orgId": "org-a", "payload": {"notification": ["detail"]}}
+        assert await service.publish_notification(message) is True
+        [landed] = await _read(provider, Topic.NOTIFICATION.value)
+        assert landed["key"].startswith("syncFailed-")
+
     async def test_a_failed_notification_raises_so_the_caller_knows(self, provider) -> None:
         producer = MagicMock(spec=IMessagingProducer)
         producer.send_message.side_effect = ConnectionError("broker unreachable")

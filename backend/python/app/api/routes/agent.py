@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from app import edition
+from app.agent_loop_lib.modules.providers.skills.base import SkillStatus
 from app.agents.agent_environment import AgentEnvironmentRefused, agent_environment
 from app.agents.agent_gates import (
     GATED_AGENT_NEEDS_HARNESS,
@@ -29,7 +30,7 @@ from app.agents.agent_loop.cancellation.validation import validate_run_id
 from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.protocol import resolve_protocol
 from app.agents.agent_loop.protocol.stream_collector import collect_stream_outcome
-from app.agents.agent_loop.skills.graph_store import SkillVisibility
+from app.agents.agent_loop.skills.graph_store import GraphSkillStore, SkillVisibility
 from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
 from app.agents.agent_loop.turn_log import log_turn_end
 from app.agents.capability_sync import CapabilitySync
@@ -186,7 +187,12 @@ from app.utils.llm import LLM_MISSING_FOR_CHAT
 from app.utils.logging_fields import log_event
 from app.utils.stage_timer import StageTimer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_lookup import get_caller_user, get_org_or_503, get_user_or_503
+from app.utils.user_lookup import (
+    get_caller_user,
+    get_org_or_503,
+    get_user_or_503,
+    is_live_identity,
+)
 from app.utils.user_messages import action_failed
 from app.web.config import resolve_web_search
 from app.web.search import PROVIDERS as WEB_SEARCH_PROVIDERS
@@ -633,24 +639,7 @@ async def _owner_user_id(agent: dict[str, Any], graph_provider: IGraphDBProvider
     return user_id if isinstance(user_id, str) and user_id else None
 
 
-def _is_live_identity(node: dict[str, Any]) -> bool:
-    """False once an account has been removed or switched off.
-
-    Two separate signals, because they are written by different things.
-    Soft-delete leaves the user node and clears `isActive`
-    (`entity.py` `_handle_user_deleted`). Disabling is its own field, carried
-    from user management on the update event, and deliberately not stored in
-    `isActive` — a rename sets that one back to true, so a disable kept there
-    would not survive one.
-
-    Absence is read as live for both. Nodes written before these fields
-    existed carry neither, and treating those as dead would cut off agents
-    that work today.
-    """
-    return (
-        node.get("isActive", True) is not False
-        and node.get("isDisabled", False) is not True
-    )
+_is_live_identity = is_live_identity
 
 
 async def _resolve_service_account_binding(
@@ -2555,10 +2544,41 @@ def _parse_skills(raw_skills: list[Any]) -> list[str]:
     return names
 
 
+# What an agent shows of a skill on it that the caller cannot see: which skill it runs, and
+# whether that skill still works (the builder warns on a disabled or replaced one). The skill's
+# content, resources, usage and the rest of its metadata stay with its owner.
+_SKILL_FIELDS_SHOWN_WITH_AN_AGENT = ("name", "description", "status", "replacedBy")
+
+
+async def _skills_as_the_caller_may_see_them(
+    skills: list[dict[str, Any]],
+    user_key: str,
+    graph_provider: IGraphDBProvider,
+) -> list[dict[str, Any]]:
+    """The agent's skill entries, each skill the caller cannot see (the skill store's read in
+    the bound org, scoped to the caller, or no longer readable) cut to
+    `_SKILL_FIELDS_SHOWN_WITH_AN_AGENT`."""
+    if not skills:
+        return []
+    org_id = current_org_id()
+    try:
+        teams = [str(r["teamId"]) for r in await graph_provider.get_user_team_roles(user_key, org_id) or []]
+    except Exception:
+        teams = []  # an unreadable membership shows no team's skill
+    store = GraphSkillStore(graph_provider, org_id, user_key, visibility=SkillVisibility.of([user_key], teams=teams))
+    shown: list[dict[str, Any]] = []
+    for skill in skills:
+        name = skill.get("name")
+        if name and await store.exists(name):
+            shown.append(skill)
+        else:
+            shown.append({field: skill.get(field) for field in _SKILL_FIELDS_SHOWN_WITH_AN_AGENT})
+    return shown
+
+
 async def _create_skill_edges(
     agent_key: str,
     skill_names: list[str],
-    org_id: str,
     user_key: str,
     graph_provider: IGraphDBProvider,
     logger: Logger,
@@ -2569,9 +2589,8 @@ async def _create_skill_edges(
     never creates a skill node: skills are owned by the Skills management
     API, this only links to ones that already exist.
 
-    A name is only linked when it resolves to an existing skill in this org
-    that the acting user's own `SkillVisibility` allows (their skill or a
-    builtin): assignment is how a custom skill is shared, so only its owner
+    A name is only linked when the skill store, scoped to the acting user in
+    the bound org, reads it as theirs or a builtin: assignment is how a custom skill is shared, so only its owner
     can share it. Any name that doesn't resolve is logged
     and skipped rather than failing the whole create/update — a stale
     skill reference in the payload should never block agent creation.
@@ -2579,22 +2598,19 @@ async def _create_skill_edges(
     if not skill_names:
         return []
 
-    assignable = SkillVisibility.of([user_key])
+    org_id = current_org_id()
+    store = GraphSkillStore(graph_provider, org_id, user_key)
     skills_collection = CollectionNames.AGENT_SKILLS.value
     time = get_epoch_timestamp_in_ms()
     edges: list[dict[str, Any]] = []
     linked_names: list[str] = []
 
     for name in skill_names:
-        skill_key = f"{org_id}_{name}"
-        skill_doc = await graph_provider.get_document(skill_key, skills_collection, transaction=transaction)
-        if not skill_doc or skill_doc.get("orgId") != org_id:
-            log_event(logger, "agent.skill.skipped", reason="unknown", skill=name)
+        status = await store.get_status(name, transaction=transaction)
+        if status is None:
+            log_event(logger, "agent.skill.skipped", reason=await store.hidden_reason(name, transaction=transaction), skill=name)
             continue
-        if not assignable.allows(skill_doc):
-            log_event(logger, "agent.skill.skipped", reason="not_owned", skill=name)
-            continue
-        if (skill_doc.get("status") or "active") != "active":
+        if status != SkillStatus.ACTIVE.value:
             # Mirrors the picker (`GET /skills?status=active`, see
             # `SkillsApi.listAssignableSkills`) — closes the gap where a
             # direct API call could still newly assign a disabled or
@@ -2603,7 +2619,7 @@ async def _create_skill_edges(
             continue
         edges.append({
             "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
-            "_to": f"{skills_collection}/{skill_key}",
+            "_to": f"{skills_collection}/{org_id}_{name}",
             "skillName": name,
             "createdAtTimestamp": time,
             "updatedAtTimestamp": time,
@@ -3406,7 +3422,7 @@ async def _create_agent(request: Request, planned: dict[str, Any] | None) -> dic
                 # skill node, only edges to skills that already exist.
                 if skill_names:
                     linked_skills = await _create_skill_edges(
-                        agent_key, skill_names, org_key, user_key, graph_provider, logger,
+                        agent_key, skill_names, user_key, graph_provider, logger,
                         transaction=transaction_id,
                     )
 
@@ -3614,6 +3630,9 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
             versioning = None
 
         agent.update(perm)
+        agent["skills"] = await _skills_as_the_caller_may_see_them(
+            agent.get("skills") or [], user_doc["_key"], services["graph_provider"],
+        )
         if versioning is not None:
             agent["versioning"] = versioning
 
@@ -3723,7 +3742,15 @@ async def get_agent_version(request: Request, agent_id: str, version: int) -> JS
         found = await AgentVersionStore(services["graph_provider"]).get(current_org_id(), agent_id, version)
         if found is None:
             raise HTTPException(status_code=404, detail="This agent has no such version")
-        return JSONResponse(status_code=200, content={"version": found.wire()})
+        wire = found.wire()
+        if wire["definition"].get("skills"):
+            graph = services["graph_provider"]
+            user_doc = await _get_user_document(user_context["userId"], graph, services["logger"])
+            wire["definition"]["skills"] = await _skills_as_the_caller_may_see_them(
+                [s for s in wire["definition"]["skills"] if isinstance(s, dict)],
+                user_doc["_key"], graph,
+            )
+        return JSONResponse(status_code=200, content={"version": wire})
     except HTTPException:
         raise
     except Exception as e:
@@ -5005,7 +5032,7 @@ async def _write_draft(
             )
             if skill_names:
                 await _create_skill_edges(
-                    agent_id, skill_names, org_key, user_key, graph_provider, logger,
+                    agent_id, skill_names, user_key, graph_provider, logger,
                     transaction=transaction_id,
                 )
             await graph_provider.commit_transaction(transaction_id)

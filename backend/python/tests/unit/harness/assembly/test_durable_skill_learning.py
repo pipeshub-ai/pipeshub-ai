@@ -118,15 +118,13 @@ async def _post_run(services: w.Services, **spec: Any) -> list[str]:  # noqa: AN
 
 
 @pytest.mark.usefixtures("_deployment")
-async def test_dur2_s3_the_assembled_run_learns_with_skills_and_not_without(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PIPESHUB_ENABLE_SKILLS", "true")
+async def test_dur2_s3_the_assembled_run_learns_with_skills_and_not_without() -> None:
     assert await _post_run(_skills_on(w.Services())) == [SKILL_LEARNING_STEP]
     assert await _post_run(w.Services()) == []
 
 
 @pytest.mark.usefixtures("_deployment")
-async def test_cleanup_g7_the_assembled_runs_learning_names_its_conversation(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PIPESHUB_ENABLE_SKILLS", "true")
+async def test_cleanup_g7_the_assembled_runs_learning_names_its_conversation() -> None:
     port = ScriptedModelPort(ScriptedModel(ModelScript(id="t", turns=[Turn(reply=Reply(text="ok"))])))
     runtime = await PipesHubRuntimeAssembler(_skills_on(w.Services()), model_factory=w.model_factory(port)).build(
         w.claim(w.pinned_spec(tool_ids=[]))  # type: ignore[arg-type]
@@ -139,5 +137,5 @@ async def test_cleanup_g7_the_assembled_runs_learning_names_its_conversation(mon
 
 @pytest.fixture
 def _deployment() -> Any:  # noqa: ANN401
-    with w.deployment():
+    with w.deployment(skills=True):
         yield

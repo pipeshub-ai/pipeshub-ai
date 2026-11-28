@@ -45,7 +45,7 @@ class TestCreateBedrockClient:
         with patch("boto3.Session") as mock_session_cls:
             mock_session = MagicMock()
             mock_session_cls.return_value = mock_session
-            _create_bedrock_client(config)
+            _create_bedrock_client(config, allow_ambient=True)
             mock_session_cls.assert_called_once_with(
                 aws_access_key_id="AKIAIOSFODNN7EXAMPLE",
                 aws_secret_access_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
@@ -63,7 +63,7 @@ class TestCreateBedrockClient:
         with patch("boto3.Session") as mock_session_cls:
             mock_session = MagicMock()
             mock_session_cls.return_value = mock_session
-            _create_bedrock_client(config)
+            _create_bedrock_client(config, allow_ambient=True)
             mock_session_cls.assert_called_once_with(region_name="us-west-2")
 
 

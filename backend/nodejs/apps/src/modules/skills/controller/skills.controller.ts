@@ -150,6 +150,11 @@ const encParam = (value: string | undefined) => encodeURIComponent(String(value 
 export const listSkills = forwardJson(HttpMethod.GET, () => `${SKILLS_BASE}/`, 'List Skills');
 export const getSkillCategories = forwardJson(HttpMethod.GET, () => `${SKILLS_BASE}/categories`, 'Get Skill Categories');
 export const searchSkills = forwardJson(HttpMethod.GET, () => `${SKILLS_BASE}/search`, 'Search Skills');
+export const listOrgSkills = forwardJson(
+  HttpMethod.GET,
+  () => `${SKILLS_BASE}/admin/skills`,
+  'List Organization Skills',
+);
 export const getSkill = forwardJson(HttpMethod.GET, (req) => `${SKILLS_BASE}/${encName(req)}`, 'Get Skill');
 
 // ---- CRUD ---------------------------------------------------------------

@@ -87,6 +87,19 @@ class TestCheckUrlAllowed:
         with patch("socket.getaddrinfo", _dns({})), pytest.raises(AddressNotAllowedError):
             check_url_allowed("https://nowhere.example/")
 
+    def test_behind_a_proxy_a_name_that_does_not_resolve_needs_to_be_listed(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from app.agents.mcp.url_guard import PROXY_ALLOWED_HOSTS_ENV
+
+        monkeypatch.setattr("urllib.request.getproxies", lambda: {"https": "http://proxy.corp:3128"})
+        monkeypatch.setattr("urllib.request.proxy_bypass", lambda _host: False)
+        with patch("socket.getaddrinfo", _dns({})):
+            with pytest.raises(AddressNotAllowedError, match=PROXY_ALLOWED_HOSTS_ENV):
+                check_url_allowed("https://sdk.example/")
+            monkeypatch.setenv(PROXY_ALLOWED_HOSTS_ENV, "*.example")
+            check_url_allowed("https://sdk.example/")
+
 
 class TestAiohttpSessions:
     """Signed download URLs (stream_content) and OAuth token requests."""

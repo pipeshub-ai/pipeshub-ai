@@ -57,10 +57,8 @@ def skill_md(name: str, body: str) -> str:
 
 
 @pytest.fixture(autouse=True)
-def _deployment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    with w.deployment():
-        # After the world's own environment, which turns skills off.
-        monkeypatch.setenv("PIPESHUB_ENABLE_SKILLS", "true")
+def _deployment() -> Iterator[None]:
+    with w.deployment(skills=True):
         yield
 
 

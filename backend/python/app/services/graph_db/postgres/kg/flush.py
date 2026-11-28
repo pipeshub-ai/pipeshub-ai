@@ -15,6 +15,7 @@ import os
 import time
 from typing import TYPE_CHECKING
 
+from app.core.db import notify
 from app.services.graph_db.postgres.kg import guard, stamp
 from app.services.graph_db.postgres.kg.project import decode, grant_only, project
 from app.services.graph_db.postgres.kg.writers import KgWriter
@@ -94,7 +95,7 @@ async def wake(tx: Tx) -> None:
     now = time.monotonic()
     if now - _last_wake >= WAKE_GAP_S:
         _last_wake = now
-        await tx.execute("/* pipeshub:kg.wake */ SELECT pg_notify('pipeshub_kg_changes', '')")      # no payload: any role may LISTEN, and the worker reads the log itself
+        await notify(tx, "pipeshub_kg_changes")      # no payload: any role may LISTEN, and the worker reads the log itself
 
 
 async def _wrote(tx: Tx) -> bool:

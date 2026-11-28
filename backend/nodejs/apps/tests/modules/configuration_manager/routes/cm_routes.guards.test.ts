@@ -20,6 +20,11 @@ import { configPaths } from '../../../../src/modules/configuration_manager/paths
 import { CONFIG_SECRET_PLACEHOLDER } from '../../../../src/modules/configuration_manager/utils/maskConfigSecrets';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema';
+import {
+  CONFIG_ROUTER_SPEC,
+  identityControlViolations,
+  routeChains,
+} from '../../../helpers/session-only-routes';
 
 // Every configuration route has to say who may call it. A route added without
 // userAdminCheck would let any signed-in member read or change workspace
@@ -74,6 +79,7 @@ describe('Configuration manager routes: who may call them', () => {
     next();
   };
   let routes: InspectedRoute[];
+  let router: ReturnType<typeof createConfigurationManagerRouter>;
 
   before(() => {
     const container = new Container();
@@ -89,7 +95,7 @@ describe('Configuration manager routes: who may call them', () => {
       scopedTokenValidator: () => serviceTokenCheck,
     });
 
-    const router = createConfigurationManagerRouter(container);
+    router = createConfigurationManagerRouter(container);
     routes = (router.stack as unknown as RouteLayer[]).flatMap((layer) => {
       const route = layer.route;
       if (!route) return [];
@@ -146,6 +152,16 @@ describe('Configuration manager routes: who may call them', () => {
       .map((r) => r.id);
 
     expect(missingAdmin).to.deep.equal([]);
+  });
+
+  it('takes an interactive session only on every route in the identity-control class', () => {
+    expect(
+      identityControlViolations(
+        routeChains(router),
+        CONFIG_ROUTER_SPEC,
+        authenticate,
+      ),
+    ).to.deep.equal([]);
   });
 
   it('checks for an admin before the handler that does the work', () => {
@@ -225,7 +241,7 @@ describe('GET /configurationManager/web-search over HTTP', () => {
     savedSecretKey = process.env.SECRET_KEY;
     savedHideSecrets = process.env.HIDE_SECRET_CONFIG;
     process.env.SECRET_KEY = process.env.SECRET_KEY || 'bebe4bcfae5282d8e801761bb8acf01feb1080daa1d12f0fb516bb12861487e6';
-    delete process.env.HIDE_SECRET_CONFIG;
+    process.env.HIDE_SECRET_CONFIG = 'false';
 
     const cmConfig = loadConfigurationManagerConfig();
     const sealed = EncryptionService.getInstance(cmConfig.algorithm, cmConfig.secretKey).encrypt(

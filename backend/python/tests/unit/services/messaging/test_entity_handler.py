@@ -655,6 +655,17 @@ class TestUserDeleted:
         assert (written["id"], written["email"], written["isActive"]) == ("key-old", "old@test.com", False)
 
     @pytest.mark.asyncio
+    async def test_a_failed_skill_erasure_fails_the_event_so_it_is_redelivered(self) -> None:
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "key-1", "orgId": "org-1", "email": "a@test.com"})
+        svc = _make_entity_service(graph_provider=graph_provider)
+        with patch(
+            "app.services.messaging.kafka.handlers.entity.erase_skill_author",
+            AsyncMock(side_effect=RuntimeError("store unavailable")),
+        ), pytest.raises(RuntimeError):
+            await svc.process_event("userDeleted", {"orgId": "org-1", "userId": "u-1", "email": "a@test.com"})
+
+    @pytest.mark.asyncio
     async def test_a_delete_never_deactivates_a_user_of_another_user_id_found_by_address(self) -> None:
         graph_provider = AsyncMock()
         graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
@@ -1054,7 +1065,9 @@ class _KbGraph:
         self.lookup_fails = lookup_fails
         self.user_lookup_fails = user_lookup_fails
 
-    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> dict | None:
+    async def get_user_by_user_id(
+        self, user_id: str, *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> dict | None:
         if self.user_lookup_fails:  # As both providers do: raise only when asked, else answer "nobody".
             if raise_on_error:
                 raise RuntimeError("LockAcquisitionTimeout")

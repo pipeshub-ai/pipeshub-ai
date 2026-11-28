@@ -304,4 +304,33 @@ describe('CPD-8 binding routes (MC, IN)', () => {
     expect(revoked.json.binding).to.deep.include({ id: native.id, status: 'revoked' });
     expect(JSON.stringify(await world.configEntries(ORG_A))).to.include('user:u3');
   });
+  it('IN-3: revoke-installation revokes every live binding of the installation in the token\'s org only, idempotently', async () => {
+    const path = `${CONTROL_PLANE_INTERNAL_BINDINGS_PREFIX}/revoke-installation`;
+    const user = await bind('user:u3');
+    const agent = await bind('agent:a1');
+    const elsewhere = await bind('user:u4', instId(2));
+    const otherOrg = (
+      await world.binder.begin({ orgId: ORG_B, actor: 'user:u9' }, anInstallation({ id: instId(1) }), 'user:u9', 'api_key', {
+        kind: 'api_key',
+        value: { apiKey: ACCESS },
+      })
+    ).binding;
+    const body = { installation: instId(1) };
+    expect((await call('POST', path, { body })).status).to.equal(401);
+    expect((await call('POST', path, { body, token: serviceToken({}) })).status).to.equal(403);
+    expect((await call('POST', path, { body: { ...body, orgId: ORG_B }, token: serviceToken({ orgId: ORG_A }) })).status).to.equal(400);
+    const token = serviceToken({ orgId: ORG_A, userId: 'admin-1' });
+    const swept = await call('POST', path, { body, token });
+    expect(swept.status).to.equal(200);
+    expect(swept.json.bindings.map((b: any) => [b.id, b.status]).sort()).to.deep.equal(
+      [[user.id, 'revoked'], [agent.id, 'revoked']].sort(),
+    );
+    assertNoCanary('revoke-installation answer', swept.json, { secrets: [ACCESS], shapes: 'vendor' });
+    expect((await world.bindings.get(ORG_A, elsewhere.id))?.status).to.equal('active');
+    expect((await world.bindings.get(ORG_B, otherOrg.id))?.status).to.equal('active');
+    expect(JSON.stringify(await world.configEntries(ORG_A))).to.include('user:admin-1');
+    const again = await call('POST', path, { body, token });
+    expect(again.status).to.equal(200);
+    expect(again.json.bindings).to.deep.equal([]);
+  });
 });

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { TFunction } from 'i18next';
-import { AxiosError, AxiosHeaders } from 'axios';
+import { AxiosError, AxiosHeaders, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios';
 import { ErrorType, processError, type ProcessedError } from '@/lib/api/api-error';
 import {
   extractErrorCode,
@@ -121,6 +121,35 @@ describe('resolveModelConfigSaveError', () => {
   it('uses the fallback key for unknown errors', () => {
     expect(resolveModelConfigSaveError(new Error('boom'), t)).toBe(
       'workspace.aiModels.configSaveErrorFallback'
+    );
+  });
+
+  it('maps credential_reentry_required to the re-entry i18n key', () => {
+    const err = processed({
+      type: ErrorType.VALIDATION_ERROR,
+      message: 'Enter the credentials again to use this new endpoint.',
+      details: { error_code: 'credential_reentry_required' },
+    });
+    expect(resolveModelConfigSaveError(err, t)).toBe(
+      'workspace.aiModels.configSaveCredentialReentry'
+    );
+  });
+
+  it('maps credential_reentry_required from a real HTTP 400 body after processError', () => {
+    const body = {
+      status: 'error',
+      error_code: 'credential_reentry_required',
+      message: 'Enter the credentials again to use this new endpoint.',
+    };
+    const axiosErr = new AxiosError(
+      'Request failed with status code 400',
+      'ERR_BAD_REQUEST',
+      { headers: {} } as InternalAxiosRequestConfig,
+      {},
+      { status: 400, data: body, statusText: 'Bad Request', headers: {}, config: {} } as AxiosResponse
+    );
+    expect(resolveModelConfigSaveError(processError(axiosErr), t)).toBe(
+      'workspace.aiModels.configSaveCredentialReentry'
     );
   });
 });

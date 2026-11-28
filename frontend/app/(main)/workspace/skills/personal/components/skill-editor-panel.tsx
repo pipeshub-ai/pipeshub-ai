@@ -34,6 +34,7 @@ import type {
   SkillWritePayload,
 } from '../types';
 import { canToggleSkillAvailability } from '../skill-availability';
+import { isAssignedToAgents, isRequiredByOtherSkills, namesWithHidden } from '../usage';
 import { MarkdownEditor } from './markdown-editor';
 import { SkillCommandTab, commandProblem } from './skill-command-tab';
 import { useCommandCatalog } from '@/chat/commands';
@@ -591,7 +592,7 @@ function AvailabilityRow({
 // Danger zone: deprecate / delete
 // ========================================
 
-function DangerZone({
+export function DangerZone({
   skillName,
   onDone,
   nestedHost,
@@ -639,7 +640,7 @@ function DangerZone({
     if (busy) return;
     setBusy(true);
     try {
-      const detach = !!usage?.usedByAgents?.length;
+      const detach = isAssignedToAgents(usage);
       await SkillsApi.deleteSkill(skillName, detach);
       toast.success(t('workspace.skills.toasts.deleted', { name: skillName }));
       setShowDelete(false);
@@ -653,7 +654,8 @@ function DangerZone({
     }
   }, [busy, usage, skillName, onDone, t]);
 
-  const requiredByOthers = !!usage?.requiredBySkills?.length;
+  const requiredByOthers = isRequiredByOtherSkills(usage);
+  const hiddenLabel = (count: number) => t('workspace.skills.dangerZone.notVisibleCount', { count });
 
   return (
     <Flex direction="column" gap="2" style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid var(--olive-3)' }}>
@@ -709,7 +711,9 @@ function DangerZone({
           container={nestedHost}
           message={
             <Text size="2">
-              {t('workspace.skills.dangerZone.requiredBy', { names: usage?.requiredBySkills.join(', ') })}
+              {t('workspace.skills.dangerZone.requiredBy', {
+                names: namesWithHidden(usage?.requiredBySkills ?? [], usage?.otherSkillCount, hiddenLabel),
+              })}
             </Text>
           }
         />
@@ -723,10 +727,10 @@ function DangerZone({
               <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: '20px' }}>
                 {t('workspace.skills.dangerZone.deleteBody')}
               </Text>
-              {!!usage?.usedByAgents?.length && (
+              {usage && isAssignedToAgents(usage) && (
                 <Text size="2" style={{ color: 'var(--amber-a11)', lineHeight: '20px' }}>
                   {t('workspace.skills.dangerZone.usedByAgents', {
-                    names: usage.usedByAgents.map((a) => a.name).join(', '),
+                    names: namesWithHidden(usage.usedByAgents.map((a) => a.name), usage.otherAgentCount, hiddenLabel),
                   })}
                 </Text>
               )}

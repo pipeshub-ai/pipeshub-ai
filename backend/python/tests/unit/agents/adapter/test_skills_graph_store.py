@@ -8,7 +8,8 @@ docstrings).
 Uses a minimal in-memory `FakeGraphProvider` implementing only the
 `IGraphDBProvider` surface `GraphSkillStore`/`GraphUsageTracker` actually
 call (`get_document`, `get_nodes_by_filters`, `batch_upsert_nodes`,
-`update_node`, `update_node_if_match`, `delete_nodes`, `delete_nodes_and_edges`,
+`create_node_if_absent`, `update_node`, `update_node_if_match`, `update_node_fields_if_match`,
+`delete_node_if_match`, `delete_nodes`, `delete_nodes_and_edges`,
 `batch_create_edges`, `delete_edges_from`) — not the full interface.
 """
 
@@ -54,6 +55,19 @@ def _assert_neo4j_safe(doc: dict[str, Any], context: str) -> None:
             )
 
 
+def _holds(doc: dict[str, Any], expected: dict[str, Any]) -> bool:
+    """The providers' expectation rule: every field equals its value; `None` means absent."""
+    return all(doc.get(field) is None if value is None else doc.get(field) == value for field, value in expected.items())
+
+
+def _edge_ends(edge: dict[str, Any]) -> set[str]:
+    """The bare node keys an edge touches, in either shape the stores write."""
+    ends = {str(edge.get("from_id") or ""), str(edge.get("to_id") or "")}
+    ends |= {str(edge.get(f) or "").split("/", 1)[-1] for f in ("_from", "_to")}
+    ends.discard("")
+    return ends
+
+
 class FakeGraphProvider:
     """In-memory stand-in for `IGraphDBProvider` — only the methods this
     adapter layer's stores actually use."""
@@ -78,7 +92,7 @@ class FakeGraphProvider:
 
     async def get_nodes_by_filters(
         self, collection: str, filters: dict[str, Any],
-        return_fields: list[str] | None = None, transaction: str | None = None,
+        return_fields: list[str] | None = None, transaction: str | None = None, *, raise_on_error: bool = False,
     ) -> list[dict[str, Any]]:
         return [
             dict(doc) for doc in self._col(collection).values()
@@ -91,6 +105,16 @@ class FakeGraphProvider:
             _assert_neo4j_safe(node, f"batch_upsert_nodes({collection})")
             key = str(node.get("id") or node.get("_key"))
             col[key] = dict(node)
+        return True
+
+    async def create_node_if_absent(
+        self, key: str, collection: str, node: dict[str, Any], transaction: str | None = None,
+    ) -> bool:
+        _assert_neo4j_safe(node, f"create_node_if_absent({collection})")
+        col = self._col(collection)
+        if key in col:
+            return False
+        col[key] = {**node, "id": key}
         return True
 
     async def update_node(self, key: str, collection: str, node_updates: dict[str, Any], transaction: str | None = None) -> bool:
@@ -109,23 +133,27 @@ class FakeGraphProvider:
         match_field: str,
         match_value: object,
         transaction: str | None = None,
+        *,
+        expected: dict[str, Any] | None = None,
     ) -> bool:
         _assert_neo4j_safe(node, f"update_node_if_match({collection})")
         col = self._col(collection)
         existing = col.get(key)
-        if existing is None or existing.get(match_field) != match_value:
+        if existing is None or existing.get(match_field) != match_value or not _holds(existing, expected or {}):
             return False
         col[key] = dict(node)
         return True
 
-    async def create_node_if_absent(
-        self, key: str, collection: str, node: dict[str, Any], transaction: str | None = None,
+    async def update_node_fields_if_match(
+        self, key: str, collection: str, updates: dict[str, Any], expected: dict[str, Any],
+        transaction: str | None = None,
     ) -> bool:
-        _assert_neo4j_safe(node, f"create_node_if_absent({collection})")
-        col = self._col(collection)
-        if key in col:
+        assert expected, "update_node_fields_if_match needs an expectation"
+        _assert_neo4j_safe(updates, f"update_node_fields_if_match({collection})")
+        existing = self._col(collection).get(key)
+        if existing is None or not _holds(existing, expected):
             return False
-        col[key] = {**node, "id": key}
+        existing.update(updates)
         return True
 
     async def delete_node_if_match(
@@ -135,9 +163,11 @@ class FakeGraphProvider:
         assert expected, "delete_node_if_match needs an expectation"
         col = self._col(collection)
         existing = col.get(key)
-        if existing is None or any(existing.get(field) != value for field, value in expected.items()):
+        if existing is None or not _holds(existing, expected):
             return False
         del col[key]
+        for name, edges in self._edges.items():
+            self._edges[name] = [e for e in edges if key not in _edge_ends(e)]
         return True
 
     async def delete_nodes(self, keys: list[str], collection: str, transaction: str | None = None) -> bool:
@@ -193,6 +223,33 @@ class FakeGraphProvider:
             target = str(edge.get("to_id") or edge.get("_to") or "").split("/", 1)[-1]
             if (source, target) == (from_id, to_id):
                 return dict(edge)
+        return None
+
+    def add_agent(self, agent_id: str, name: str, *, owner: str | None = None, org: str | None = None) -> None:
+        """An agent, with the grants the agent routes write: OWNER to `owner`, and to the org when shared with it."""
+        self._col("agentInstances")[agent_id] = {"id": agent_id, "name": name, "isDeleted": False}
+        if owner is not None:
+            self._edges.setdefault("permission", []).append({
+                "from_id": owner, "from_collection": "users", "to_id": agent_id,
+                "to_collection": "agentInstances", "type": "USER", "role": "OWNER",
+            })
+        if org is not None:
+            self._edges.setdefault("permission", []).append({
+                "from_id": org, "from_collection": "organizations", "to_id": agent_id,
+                "to_collection": "agentInstances", "type": "ORG", "role": "READER",
+            })
+
+    async def check_agent_permission(self, agent_id: str, user_id: str, org_id: str) -> dict | None:
+        """A USER grant to the user, else an ORG grant to the org; None for a deleted agent."""
+        agent = self._col("agentInstances").get(agent_id)
+        if agent is None or agent.get("isDeleted"):
+            return None
+        for kind, who, coll in (("USER", user_id, "users"), ("ORG", org_id, "organizations")):
+            for edge in self._edges.get("permission", []):
+                frm = edge.get("_from") or f"{edge.get('from_collection')}/{edge.get('from_id')}"
+                to = edge.get("_to") or f"{edge.get('to_collection')}/{edge.get('to_id')}"
+                if edge.get("type") == kind and frm == f"{coll}/{who}" and to == f"agentInstances/{agent_id}":
+                    return {"access_type": "INDIVIDUAL" if kind == "USER" else "ORG", "user_role": edge.get("role"), "can_view": True}
         return None
 
     async def batch_delete_edges(
@@ -554,10 +611,11 @@ class TestCreatorScoping:
 
     async def test_builtin_skill_stays_visible_regardless_of_scope(self) -> None:
         graph = FakeGraphProvider()
-        creator_store = GraphSkillStore(graph, "org-1", "seed-identity")
+        creator_store = GraphSkillStore(graph, "org-1", "system:builtin-seeder")
         await creator_store.create_skill("deploy-service", _SKILL_MD)
         doc = graph._col("agentSkills")["org-1_deploy-service"]
         doc["source"] = "builtin"
+        doc["createdBy"] = "system:builtin-seeder"
 
         someone_elses_view = GraphSkillStore(graph, "org-1", "user-2", visibility=SkillVisibility.of(["user-2"]))
         assert await someone_elses_view.get_skill("deploy-service") is not None
@@ -741,9 +799,10 @@ class TestOptimisticConcurrency:
             match_field: str,
             match_value: object,
             transaction: str | None = None,
+            **kwargs: object,
         ) -> bool:
             graph._col(collection)[key][match_field] = int(match_value) + 1
-            return await inner(key, collection, node, match_field, match_value, transaction)
+            return await inner(key, collection, node, match_field, match_value, transaction, **kwargs)
 
         graph.update_node_if_match = concurrent_writer  # type: ignore[method-assign]
 
@@ -851,21 +910,20 @@ class TestSetSkillStatus:
         graph = FakeGraphProvider()
         store = _store(graph)
         await store.create_skill("deploy-service", _SKILL_MD)
-        inner = graph.update_node_if_match
+        inner = graph.update_node_fields_if_match
 
         async def concurrent_writer(
             key: str,
             collection: str,
-            node: dict[str, Any],
-            match_field: str,
-            match_value: object,
+            updates: dict[str, Any],
+            expected: dict[str, Any],
             transaction: str | None = None,
         ) -> bool:
-            graph._col(collection)[key][match_field] = int(match_value) + 1
+            graph._col(collection)[key]["updatedAtTimestamp"] += 1
             graph._col(collection)[key]["status"] = "deprecated"
-            return await inner(key, collection, node, match_field, match_value, transaction)
+            return await inner(key, collection, updates, expected, transaction)
 
-        graph.update_node_if_match = concurrent_writer  # type: ignore[method-assign]
+        graph.update_node_fields_if_match = concurrent_writer  # type: ignore[method-assign]
 
         ok = await store.set_skill_status(
             "deploy-service", SkillStatus.DISABLED, from_status=SkillStatus.ACTIVE,
@@ -875,11 +933,11 @@ class TestSetSkillStatus:
 
 
 class TestReferentialUsage:
-    async def test_reports_assigned_agents_and_detach_removes_edges(self) -> None:
+    async def test_reports_assigned_agents_and_the_delete_removes_their_edges(self) -> None:
         graph = FakeGraphProvider()
         store = _store(graph)
         await store.create_skill("deploy-service", _SKILL_MD)
-        graph._col("agentInstances")["agent-1"] = {"id": "agent-1", "name": "Support Bot"}
+        graph.add_agent("agent-1", "Support Bot", owner="user-1")
         graph._edges.setdefault("agentHasSkill", []).append({
             "from_id": "agent-1",
             "from_collection": "agentInstances",
@@ -891,7 +949,11 @@ class TestReferentialUsage:
         assert usage.used_by_agents == [{"id": "agent-1", "name": "Support Bot"}]
         assert usage.required_by_skills == []
 
+        # Detach only checks the caller; the edges go with the skill, in the one
+        # write bound to the doc that was read.
         await store.detach_from_agents("deploy-service")
+        assert len(graph._edges["agentHasSkill"]) == 1
+        assert await store.delete_skill("deploy-service")
         after = await store.get_referential_usage("deploy-service")
         assert after.used_by_agents == []
         assert graph._edges["agentHasSkill"] == []

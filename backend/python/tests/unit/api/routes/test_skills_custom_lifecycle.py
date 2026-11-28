@@ -43,6 +43,7 @@ from app.api.routes.skills import (
     write_resource,
 )
 from app.config.constants.arangodb import CollectionNames
+from app.core.org_context import OrgContext, bind
 from tests.support.bound_org import another_request, bind_test_org
 from tests.unit.agents.adapter.test_skills_graph_store import FakeGraphProvider
 
@@ -51,7 +52,6 @@ if TYPE_CHECKING:
 
 _SKILLS = CollectionNames.AGENT_SKILLS.value
 _AGENT_HAS_SKILL = CollectionNames.AGENT_HAS_SKILL.value
-_AGENT_INSTANCES = CollectionNames.AGENT_INSTANCES.value
 
 _logger = logging.getLogger("test_skills_custom_lifecycle")
 
@@ -78,7 +78,7 @@ class _LifecycleGraphProvider(FakeGraphProvider):
     def add_user(self, user_id: str, user_key: str) -> None:
         self._users[user_id] = {"_key": user_key, "userId": user_id}
 
-    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> dict[str, Any] | None:
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False, **_: object) -> dict[str, Any] | None:
         return self._users.get(user_id)
 
     @staticmethod
@@ -141,7 +141,9 @@ async def _seed_builtin(req: MagicMock, name: str = "seeded-builtin") -> None:
     await create_skill(req, SkillWriteRequest(name=name, description="d", body="body"))
     graph = req.app.container.graph_provider.return_value
     org_id = req.state.user["orgId"]
-    graph._col("agentSkills")[f"{org_id}_{name}"]["source"] = "builtin"
+    seeded = graph._col("agentSkills")[f"{org_id}_{name}"]
+    seeded["source"] = "builtin"
+    seeded["createdBy"] = "system:builtin-seeder"
 
 
 _SKILL_MD = """---
@@ -181,12 +183,9 @@ class TestFullLifecycle:
 
         # 3. assign to an agent (agent.py's edge-creation helper)
         agent_key = "agent-1"
-        await graph.batch_upsert_nodes(
-            [{"id": agent_key, "name": "Deploy Bot"}], _AGENT_INSTANCES,
-        )
-        linked = await _create_skill_edges(
-            agent_key, ["deploy-runbook"], "org-1", "user-a-key", graph, _logger,
-        )
+        graph.add_agent(agent_key, "Deploy Bot", owner="user-a-key")
+        with bind(OrgContext(org_id="org-1", user_id="user-a", kind="user", source="jwt", request_id="-")):
+            linked = await _create_skill_edges(agent_key, ["deploy-runbook"], "user-a-key", graph, _logger)
         assert linked == ["deploy-runbook"]
 
         # 4. usage shows the agent
@@ -239,26 +238,25 @@ class TestCrossUserAndCrossOrgIsolation:
             await update_skill(req_b, "private-skill", SkillWriteRequest(description="hijacked", body="new body"))
         assert exc.value.status_code in (404, 409)
 
-    async def test_user_b_cannot_disable_user_as_skill(self, graph: _LifecycleGraphProvider) -> None:
-        """Custom-skill mute is creator-only: the management store's
-        `visibility_scope` hides user-a's skill from user-b, so disable
-        404s the same way GET would — it must not succeed as a co-worker
-        or as an org admin acting on someone else's custom skill."""
+    async def test_user_b_cannot_disable_user_as_skill_but_an_org_admin_can(
+        self, graph: _LifecycleGraphProvider,
+    ) -> None:
+        """A co-worker's custom skill is invisible to a member (404, as GET).
+        An org admin, whose role the route checks, may mute it."""
         req_a = _request("user-a", "org-1", graph)
         req_b = _request("user-b", "org-1", graph)
         await create_skill(req_a, SkillWriteRequest(name="private-skill", description="d", body="body"))
 
-        with pytest.raises(HTTPException) as exc:
-            await disable_skill(req_b, "private-skill")
+        with _as_role("member"):
+            with pytest.raises(HTTPException) as exc:
+                await disable_skill(req_b, "private-skill")
         assert exc.value.status_code == 404
+        assert json.loads((await get_skill(req_a, "private-skill")).body)["status"] == "active"
 
         with _as_role("admin"):
-            with pytest.raises(HTTPException) as admin_exc:
-                await disable_skill(req_b, "private-skill")
-        assert admin_exc.value.status_code == 404
-
-        skill = json.loads((await get_skill(req_a, "private-skill")).body)
-        assert skill["status"] == "active"
+            resp = await disable_skill(req_b, "private-skill")
+        assert resp.status_code == 200
+        assert json.loads((await get_skill(req_a, "private-skill")).body)["status"] == "disabled"
 
     async def test_org_b_never_sees_org_as_skill_doc(self, graph: _LifecycleGraphProvider) -> None:
         graph.add_user("user-c", "user-c-key")

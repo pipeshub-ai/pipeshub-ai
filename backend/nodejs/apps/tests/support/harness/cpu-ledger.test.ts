@@ -59,10 +59,12 @@ describe('PERF-D: CpuLedger', () => {
     await turn();
     ledger.reset();
 
+    // heavy and background work far more than light's fixed cost of being timed in each of its callbacks, so a slow runner
+    // cannot turn the order around (light measured 2.6 ms against 1.2 ms of background work(40) on a loaded CI runner)
     const heavy = serve('/heavy', async () => {
       for (let i = 0; i < 5; i += 1) {
         await turn();
-        work(40);
+        work(200);
       }
     });
     // A request arrives in a callback of its own.
@@ -75,7 +77,7 @@ describe('PERF-D: CpuLedger', () => {
     });
     await Promise.all([heavy, light]);
     await turn();
-    work(40);
+    work(400);
     await turn();
 
     const { tickUs, requests } = ledger.snapshot();

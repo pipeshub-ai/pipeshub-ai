@@ -88,7 +88,7 @@ class _Graph:
         self.error = error
         self.asked: list[str | None] = []
 
-    async def get_user_by_user_id(self, user_id: str | None, raise_on_error: bool = False) -> dict[str, Any] | None:
+    async def get_user_by_user_id(self, user_id: str | None, raise_on_error: bool = False, **_: object) -> dict[str, Any] | None:
         self.asked.append(user_id)
         if self.error is not None:
             raise self.error

@@ -5,7 +5,7 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from app.config.configuration_service import ConfigurationService
-from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
+from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.config.constants.arangodb import AppGroups, CollectionNames, Connectors, PermissionModel
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -264,6 +264,8 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
                     self.site_url,
                 )
 
+            await self._stop_if_signed_out()
+
             # Force a fresh ConnectorGroup upsert each run so re-runs after the
             # creator email is rotated pick up the new identity instead of
             # reusing a stale cached permission.
@@ -387,6 +389,7 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
                     "⚠️ Jira DC Personal sync: %s/%s project(s) failed to sync issues: %s",
                     len(failed_keys), len(projects), preview,
                 )
+                await self._stop_if_signed_out()
                 await self.notify(
                     type=NotificationType.CONNECTOR_SYNC_ERROR,
                     severity=NotificationSeverity.ERROR,
@@ -410,7 +413,7 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
 
         except Exception as e:
             self.logger.error("Error during Jira DC Personal sync: %s", e, exc_info=True)
-            if not isinstance(e, ConnectorInitError):
+            if not await self._notify_if_signed_out(e):
                 await self.notify(
                     type=NotificationType.CONNECTOR_SYNC_ERROR,
                     severity=NotificationSeverity.ERROR,

@@ -62,7 +62,8 @@ export const EXTRA_AI_PUBLIC_CONFIG_KEYS: readonly string[] = [];
  * `carriers` map what would otherwise stay held: each is a docstore-migrate `Carrier` (scripts/docstore-migrate/carry/types.ts)
  * that copies, follows, verifies, rolls back and resets its collections and fields, so a held collection or field it carries
  * (this build's or the edition's) is no longer held. Typed `unknown` so this file stays import-free; the migrator checks each
- * one's shape, and what it may carry, when it loads.
+ * one's shape, and what it may carry, when it loads. `replaced` names collections this build maps whose documents the edition stores in
+ * another shape: the generic copy leaves them alone, and they are held until one of the edition's carriers carries them.
  */
 export interface EditionDocstoreCoverage {
   held: ReadonlyArray<{
@@ -81,6 +82,9 @@ export interface EditionDocstoreCoverage {
     reason: string;
   }>;
   carriers: readonly unknown[];
+  replaced: ReadonlyArray<{ collection: string; reason: string }>;
+  /** Tables of the document-store schemas only this edition creates that hold no collection's data (none to move), with why. */
+  unmappedTables: Readonly<Record<string, string>>;
 }
 
 export const EDITION_DOCSTORE_COVERAGE: EditionDocstoreCoverage = {
@@ -88,6 +92,8 @@ export const EDITION_DOCSTORE_COVERAGE: EditionDocstoreCoverage = {
   ignored: [],
   heldFields: [],
   carriers: [],
+  replaced: [],
+  unmappedTables: {},
 };
 
 /**
@@ -98,4 +104,19 @@ export const EDITION_DOCSTORE_COVERAGE: EditionDocstoreCoverage = {
  */
 export function checkStartup(): void {
   return;
+}
+
+/**
+ * How the key-value store turns a string value into the string it keeps, and back, given the value's key
+ * (`KeyValueStoreService`): `encode` on every write of a string, `decode` on every read and watch of one; any other value is
+ * kept and compared as given. `decode(encode(v))` must be `v`, and one stored string must always decode to the same string
+ * (a compare-and-set compares decoded strings). OSS: none, every value is kept as given.
+ */
+export interface KvValueCodec {
+  encode(key: string, value: string): string;
+  decode(key: string, stored: string): string;
+}
+
+export function kvValueCodec(): KvValueCodec | null {
+  return null;
 }

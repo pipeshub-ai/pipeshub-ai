@@ -115,9 +115,10 @@ async def _world() -> FakeGraphProvider:
     return graph
 
 
-async def _disable(graph: FakeGraphProvider, name: str) -> None:
+async def _disable(graph: FakeGraphProvider, name: str, by: str = SEED_IDENTITY) -> None:
+    """Disables ``name`` as ``by``: the seeder for a built-in, the creator for a custom skill (the only one who may)."""
     store = GraphSkillStore(  # type: ignore[arg-type]
-        graph, ORG, SEED_IDENTITY, visibility=SkillVisibility.everyone(), allow_builtin_writes=True
+        graph, ORG, by, visibility=SkillVisibility.everyone(), allow_builtin_writes=True
     )
     assert await store.set_skill_status(name, SkillStatus.DISABLED, from_status=SkillStatus.ACTIVE)
 
@@ -190,7 +191,7 @@ class TestTheOffer:
         self,
     ) -> None:
         graph = await _world()
-        await _disable(graph, "col-secret")
+        await _disable(graph, "col-secret", by=COLLEAGUE.key)
         agent = AgentRunDefinition(
             agentKey="a", definitionVersion=1,
             skills=(RunDefinitionSkill(name="col-secret"), RunDefinitionSkill(name="never-written")),

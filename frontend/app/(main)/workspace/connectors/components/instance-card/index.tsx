@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text, IconButton, Avatar, Switch, Tooltip } from '@radix-ui/themes';
+import { Spinner } from '@/app/components/ui/spinner';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { formatRelativeTime, shortUserName } from '@/lib/utils/formatters';
@@ -24,6 +25,7 @@ import {
 import { deriveSyncStatusState, getSyncStrategyLabel, getSyncIntervalLabel, lastSyncedAt } from './utils';
 import { CONNECTOR_INSTANCE_STATUS } from '../../constants';
 import { usePollInstanceWhileSyncing } from '../../utils/use-poll-instance-while-syncing';
+import { useConnectorsStore } from '../../store';
 import type { ConnectorInstance, ConnectorConfig } from '../../types';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { PermissionLockIcon, useUserPermission } from '@/config';
@@ -66,6 +68,10 @@ export function InstanceCard({
   const { t } = useTranslation();
   const [syncToggleBusy, setSyncToggleBusy] = useState(false);
   const [disableConfirmOpen, setDisableConfirmOpen] = useState(false);
+  // Set by whichever surface started the change (this switch or the setup dialog).
+  const syncTogglePending = useConnectorsStore((s) =>
+    instance._key ? s.syncTogglePending[instance._key] : undefined
+  );
   const canConfigureConnector = useUserPermission('configureConnector');
   const canManageConnectorSync = useUserPermission('manageConnectorSync');
 
@@ -104,8 +110,15 @@ export function InstanceCard({
           ? t('workspace.connectors.instanceCard.authenticateFirst')
           : null;
 
-  const syncSwitchDisabled =
-    !canToggleSync || syncToggleBusy || !onToggleSyncActive || !canManageConnectorSync;
+  const syncToggleInFlight = syncToggleBusy || Boolean(syncTogglePending);
+  const syncToggleDirection = syncTogglePending ?? (instance.isActive ? 'off' : 'on');
+  const syncToggleLabel = t(
+    syncToggleDirection === 'on'
+      ? 'workspace.connectors.instanceCard.turningOn'
+      : 'workspace.connectors.instanceCard.turningOff'
+  );
+  // In flight the switch is busy, not disabled: a disabled control drops keyboard focus.
+  const syncSwitchDisabled = !canToggleSync || !onToggleSyncActive || !canManageConnectorSync;
 
   const showIndexingActions =
     Boolean(instance._key) &&
@@ -115,7 +128,7 @@ export function InstanceCard({
     instance.status !== CONNECTOR_INSTANCE_STATUS.DELETING;
 
   const runSyncToggle = async () => {
-    if (!onToggleSyncActive || !instance._key || syncToggleBusy) return;
+    if (!onToggleSyncActive || !instance._key || syncToggleInFlight) return;
     setSyncToggleBusy(true);
     try {
       await onToggleSyncActive(instance);
@@ -130,9 +143,12 @@ export function InstanceCard({
       size="1"
       checked={instance.isActive}
       disabled={syncSwitchDisabled}
+      aria-busy={syncToggleInFlight || undefined}
+      aria-disabled={syncToggleInFlight || undefined}
       onCheckedChange={() => {
+        if (syncToggleInFlight) return;
         if (instance.isActive) {
-          if (onToggleSyncActive && instance._key && !syncToggleBusy) setDisableConfirmOpen(true);
+          if (onToggleSyncActive && instance._key && !syncToggleInFlight) setDisableConfirmOpen(true);
           return;
         }
         void runSyncToggle();
@@ -317,6 +333,17 @@ export function InstanceCard({
                 </Tooltip>
               ) : (
                 syncSwitchControl
+              )}
+              {syncToggleInFlight && (
+                // The toast announces the change; this is the visible cue on the card itself.
+                <Flex align="center" gap="1" style={{ marginLeft: 'var(--space-1)' }}>
+                  <span aria-hidden="true" style={{ display: 'inline-flex' }}>
+                    <Spinner size={12} color="var(--gray-11)" />
+                  </span>
+                  <Text size="1" style={{ color: 'var(--gray-11)', whiteSpace: 'nowrap' }}>
+                    {syncToggleLabel}
+                  </Text>
+                </Flex>
               )}
               {!canManageConnectorSync && <PermissionLockIcon />}
             </Flex>

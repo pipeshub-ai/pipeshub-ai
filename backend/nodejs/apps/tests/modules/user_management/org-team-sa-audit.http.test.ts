@@ -123,7 +123,8 @@ describe('org, team and service-account audit lines (HTTP)', function () {
 
   async function send(method: string, path: string, who: Row, init: { body?: unknown; form?: FormData } = {}) {
     records.length = 0;
-    const headers: Record<string, string> = { 'x-request-id': `${OUR_REQUESTS}-${++seq}`, authorization: `Bearer ${token(who)}` };
+    const requestId = `${OUR_REQUESTS}-${++seq}`;
+    const headers: Record<string, string> = { 'x-request-id': requestId, authorization: `Bearer ${token(who)}` };
     if (init.body !== undefined) headers['content-type'] = 'application/json';
     const res = await fetch(`${baseUrl}${path}`, {
       method,
@@ -134,12 +135,15 @@ describe('org, team and service-account audit lines (HTTP)', function () {
     const text = await res.text();
     let parsed: any = text;
     try { parsed = text ? JSON.parse(text) : undefined; } catch { /* plain text */ }
-    // The access line is written on 'close'; wait for it, bounded, so every test sees whole requests.
+    // The access line is written on 'close', which can land after the next request has started: wait for this
+    // request's own, bounded, and keep only its lines, so a late line of the one before can neither end the wait
+    // early nor be counted here.
     const deadline = Date.now() + 2000;
-    while (!records.some((r) => r.message === 'http.request.end')) {
+    while (!records.some((r) => r.message === 'http.request.end' && r.request_id === requestId)) {
       if (Date.now() > deadline) expect.fail(`no http.request.end; saw ${records.map((r) => r.message).join(', ')}`);
       await new Promise((resolve) => setImmediate(resolve));
     }
+    records.splice(0, records.length, ...records.filter((r) => r.request_id === requestId));
     return { status: res.status, body: parsed };
   }
   const call = (method: string, path: string, who: Row, body?: unknown) => send(method, path, who, { body });
@@ -349,9 +353,9 @@ describe('org, team and service-account audit lines (HTTP)', function () {
       expect(audits()).to.deep.equal([{ event: 'team.create', outcome: 'success', reason: 'no_team_id', actor: ada._id }]);
     });
 
-    it('T1b [guard] the team service fails → 500, no line', async () => {
+    it('T1b [guard] the team service fails → 502, no line', async () => {
       reply('POST', '/api/v1/entity/team', refused(500, 'Failed to create team'));
-      expect((await call('POST', '/api/v1/teams', ada, { name: TEAM_NAME, userIds: [max._id] })).status).to.equal(500);
+      expect((await call('POST', '/api/v1/teams', ada, { name: TEAM_NAME, userIds: [max._id] })).status).to.equal(502);
       expect(audits()).to.deep.equal([]);
     });
 

@@ -11,6 +11,17 @@ export function isSecretRevealRequested(req: Request): boolean {
 }
 
 /**
+ * True when the caller holds a PAT or an OAuth access token rather than an
+ * interactive session. Sign-in settings are never shown to such a caller, even
+ * on an install that turned secret masking off for its own admins.
+ */
+export function isDelegatedClient(req: Request): boolean {
+  const user = (req as (Request & { user?: { isOAuth?: boolean } }) | undefined)
+    ?.user;
+  return user?.isOAuth === true;
+}
+
+/**
  * Query string for a gateway call to a Python service. The gateway only passes
  * the request on; the service decides whether to honour it.
  */

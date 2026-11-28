@@ -537,7 +537,7 @@ describe('McpServerPage', () => {
       expect(groups).toEqual(['tool-group-destructive', 'tool-group-write', 'tool-group-read']);
       const notice = screen.getByTestId('enterprise-feature-notice');
       expect(notice.textContent).toContain('Organization approval rules');
-      expect(notice.textContent).toContain('Available in EE');
+      expect(notice.textContent).toContain('Available in Enterprise');
       expect(mcpApi.getInstanceTools).toHaveBeenCalledWith('inst-1', { cached: true });
       expect(mcpApi.getMyToolRules).not.toHaveBeenCalled();
       expect(screen.queryByTestId('mcp-rules-footer')).toBeNull();

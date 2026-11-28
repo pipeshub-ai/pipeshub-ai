@@ -3194,6 +3194,21 @@ def _on_worker_loop(worker: WorkerLoop, work: Callable[[], Awaitable[object]]) -
     return run
 
 
+async def _send_hold_notice(producer: Any, document: dict[str, Any]) -> bool:  # noqa: ANN401
+    """Publish a provider hold notice in its own org, so it can be signed (and is not dropped where the envelope is
+    enforced), in the shape a signature covers whole."""
+    from app.core.org_context import for_org
+    from app.services.notification.notification_service import notification_message
+
+    org = document.get("orgId")
+    if not org:
+        # A hold re-indexed without its org cannot be told to anyone (no consumer delivers it): handled, not retried.
+        return True
+    key = f"{document.get('type')}-{get_epoch_timestamp_in_ms()}"
+    with for_org(org, job="provider_hold_notice"):
+        return bool(await producer.send_message(topic=Topic.NOTIFICATION.value, message=notification_message(document, org), key=key))
+
+
 async def _run_provider_hold_leader(
     fleet: FleetRedis,
     concurrency_manager: IDistributedLeaseManager | None,
@@ -3207,8 +3222,7 @@ async def _run_provider_hold_leader(
     owner = f"provider_hold:{uuid4().hex}"
 
     async def send(document: dict[str, Any]) -> bool:
-        key = f"{document.get('type')}-{get_epoch_timestamp_in_ms()}"
-        return bool(await producer.send_message(topic=Topic.NOTIFICATION.value, message=document, key=key))
+        return await _send_hold_notice(producer, document)
 
     keeper = HoldKeeper(fleet, FleetBreaker(fleet), sender=send, logger=logger)
 

@@ -105,10 +105,13 @@ async def test_an_unknown_ai_model_provider_is_not_named(monkeypatch: pytest.Mon
 def _skills_manager(monkeypatch: pytest.MonkeyPatch, **methods) -> SimpleNamespace:
     manager = SimpleNamespace(**{name: AsyncMock(**spec) for name, spec in methods.items()})
     monkeypatch.setattr(skills, "_build_manager", AsyncMock(return_value=(manager, {})))
-    # A route whose test stubs get_skill runs its real pre-write lookup (_reject_if_builtin_skill), so the stub's miss
-    # is what answers; the others skip it.
-    if "get_skill" not in methods:
+    # A route whose test stubs get_skill runs its real lookup (_reject_if_builtin_skill, or for a delete
+    # _moderation_manager, as a caller who is no admin), so the stub's miss is what answers; the others skip it.
+    if "get_skill" in methods:
+        monkeypatch.setattr(skills, "_is_admin", AsyncMock(return_value=False))
+    else:
         monkeypatch.setattr(skills, "_reject_if_builtin_skill", AsyncMock())
+        monkeypatch.setattr(skills, "_moderation_manager", AsyncMock(return_value=(manager, SimpleNamespace(source=None))))
     return manager
 
 

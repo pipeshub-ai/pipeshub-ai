@@ -116,7 +116,8 @@ class BuiltinSkillSeeder:
                 settled = await self._create(store, skill) and settled
             elif current.pack_version != skill.metadata.pack_version:
                 settled = await self._maybe_upgrade(store, skill, current) and settled
-            # else: already at the current pack version — nothing to do.
+            else:
+                settled = await self._finish(store, current) and settled
         return settled
 
     @property
@@ -148,6 +149,16 @@ class BuiltinSkillSeeder:
             return True
         except Exception:
             logger.exception("builtin_seeder: failed to seed builtin skill %r", skill.metadata.name)
+            return False
+
+    async def _finish(self, store: "GraphSkillStore", current: SkillMetadata) -> bool:
+        """A builtin already at its pack version gets its relation edges rewritten: a create that stored it but
+        failed to write them, and could not be undone, is finished here."""
+        try:
+            await store.finish_relations(current)
+            return True
+        except Exception:
+            logger.exception("builtin_seeder: failed to write the edges of builtin skill %r", current.name)
             return False
 
     async def _maybe_upgrade(self, store: "GraphSkillStore", skill: Skill, current: SkillMetadata) -> bool:

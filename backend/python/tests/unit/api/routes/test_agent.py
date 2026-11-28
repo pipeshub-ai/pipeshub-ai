@@ -2165,12 +2165,18 @@ class TestParseSkills:
 # ---------------------------------------------------------------------------
 
 class TestCreateSkillEdges:
+    @pytest.fixture(autouse=True)
+    def _caller_in_org1(self):  # noqa: ANN202
+        from app.core.org_context import OrgContext, bind
+        with bind(OrgContext(org_id="org1", user_id="u1", kind="user", source="jwt", request_id="-")):
+            yield
+
     @pytest.mark.asyncio
     async def test_empty_names_returns_empty_without_db_calls(self) -> None:
         from app.api.routes.agent import _create_skill_edges
         graph_provider = AsyncMock()
         result = await _create_skill_edges(
-            "agent1", [], "org1", "uk1", graph_provider, logging.getLogger("test")
+            "agent1", [], "uk1", graph_provider, logging.getLogger("test")
         )
         assert result == []
         graph_provider.get_document.assert_not_called()
@@ -2185,7 +2191,7 @@ class TestCreateSkillEdges:
         )
         graph_provider.batch_create_edges = AsyncMock(return_value=True)
         result = await _create_skill_edges(
-            "agent1", ["pdf-extractor"], "org1", "uk1", graph_provider, logging.getLogger("test")
+            "agent1", ["pdf-extractor"], "uk1", graph_provider, logging.getLogger("test")
         )
         assert result == ["pdf-extractor"]
         graph_provider.batch_create_edges.assert_awaited_once()
@@ -2194,15 +2200,16 @@ class TestCreateSkillEdges:
         assert edges[0]["_from"] == "agentInstances/agent1"
 
     @pytest.mark.asyncio
-    async def test_links_builtin_skill_regardless_of_creator(self) -> None:
+    async def test_links_a_seeded_builtin_skill_whoever_the_caller_is(self) -> None:
+        """A builtin the seeder wrote; one that only says builtin is not linked (test_agent_skill_edges.py)."""
         from app.api.routes.agent import _create_skill_edges
         graph_provider = AsyncMock()
         graph_provider.get_document = AsyncMock(
-            return_value={"orgId": "org1", "createdBy": "someone-else", "source": "builtin"}
+            return_value={"orgId": "org1", "createdBy": "system:builtin-seeder", "source": "builtin"}
         )
         graph_provider.batch_create_edges = AsyncMock(return_value=True)
         result = await _create_skill_edges(
-            "agent1", ["web-search"], "org1", "uk1", graph_provider, logging.getLogger("test")
+            "agent1", ["web-search"], "uk1", graph_provider, logging.getLogger("test")
         )
         assert result == ["web-search"]
 
@@ -2212,7 +2219,7 @@ class TestCreateSkillEdges:
         graph_provider = AsyncMock()
         graph_provider.get_document = AsyncMock(return_value=None)
         result = await _create_skill_edges(
-            "agent1", ["missing-skill"], "org1", "uk1", graph_provider, logging.getLogger("test")
+            "agent1", ["missing-skill"], "uk1", graph_provider, logging.getLogger("test")
         )
         assert result == []
         graph_provider.batch_create_edges.assert_not_called()
@@ -2223,7 +2230,7 @@ class TestCreateSkillEdges:
         graph_provider = AsyncMock()
         graph_provider.get_document = AsyncMock(return_value={"orgId": "org-other", "createdBy": "uk1"})
         result = await _create_skill_edges(
-            "agent1", ["cross-org-skill"], "org1", "uk1", graph_provider, logging.getLogger("test")
+            "agent1", ["cross-org-skill"], "uk1", graph_provider, logging.getLogger("test")
         )
         assert result == []
 
@@ -2235,7 +2242,7 @@ class TestCreateSkillEdges:
             return_value={"orgId": "org1", "createdBy": "someone-else", "source": "custom"}
         )
         result = await _create_skill_edges(
-            "agent1", ["colleagues-skill"], "org1", "uk1", graph_provider, logging.getLogger("test")
+            "agent1", ["colleagues-skill"], "uk1", graph_provider, logging.getLogger("test")
         )
         assert result == []
         graph_provider.batch_create_edges.assert_not_called()
@@ -2253,7 +2260,7 @@ class TestCreateSkillEdges:
         graph_provider.get_document = AsyncMock(side_effect=fake_get_document)
         graph_provider.batch_create_edges = AsyncMock(return_value=True)
         result = await _create_skill_edges(
-            "agent1", ["good-skill", "bad-skill"], "org1", "uk1", graph_provider, logging.getLogger("test")
+            "agent1", ["good-skill", "bad-skill"], "uk1", graph_provider, logging.getLogger("test")
         )
         assert result == ["good-skill"]
         edges = graph_provider.batch_create_edges.await_args.args[0]

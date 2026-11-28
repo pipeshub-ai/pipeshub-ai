@@ -6,6 +6,7 @@ for every viewer, the same rows and arrows as one that hands the walk every gran
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 import pytest
@@ -399,10 +400,20 @@ async def test_the_roots_chain_top_reads_are_seeks_with_no_statistics_and_analys
                 chain = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + grant_marks.ROOT_CHAIN, org, sks, app)
                 keyed = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + kgl.KEYS_OF, org, sks)
             await tx.fetchval(kg_read.PROFILE)
+            judges = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + grant_marks.JUDGES, org, sks)
+            js = await tx.fetch("SELECT id, coll FROM kg.records WHERE org_id = $1 AND sk = ANY($2::bigint[])", org, sks)
+            shared = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + grant_marks.JUDGE_SHARED_IDS, org, [r["id"] for r in js], [r["coll"] for r in js])
+            apps = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + grant_marks.JUDGE_APPS, org, [app])
             cands = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + grant_marks.CANDIDATES, org, "u2", app)
-            return n, *((json.loads(x) if isinstance(x, str) else x)[0] for x in (chain, keyed, cands))
+            return n, *((json.loads(x) if isinstance(x, str) else x)[0] for x in (chain, keyed, cands, judges, apps, shared))
         with ctx(org):
-            n, chain, keyed, cands = await pg_db.run(go, custom_plan=True)
+            n, chain, keyed, cands, judges, apps, shared = await pg_db.run(go, custom_plan=True)
+        got = [(n.get("Index Name"), n.get("Index Cond", "")) for n in plan_gate.scans(shared, ("records",))]
+        assert got and all(i == "records_id" and "id >= " in c for i, c in got), f"{state} judge ids: {got}"      # a seek of the id's key in each other collection
+        # the judges by their keys (kg.root_judges) and their connectors (kg.root_judge_apps), under kg.read's profile: a seek of each table's key per key, one row each
+        for name, plan, table, index in (("judges", judges, "records", "records_pkey"), ("judge apps", apps, "node_keys", "node_keys_org_id_sk_key")):
+            got = [(n.get("Index Name"), n.get("Index Cond", ""), n.get("Actual Rows", 0)) for n in plan_gate.scans(plan, (table,))]
+            assert got and all(i == index and "org_id = " in c and "sk >= " in c and r <= 1 for i, c, r in got), f"{state} {name}: {got}"
         assert n > 0, f"{state}: the read found nothing, so the gate judged no probe"
         assert not (bad := _not_seeks(chain)), f"{state} root chain: not a seek per key: {bad}"
         # the keys of the grants' nodes (KEYS_OF): a seek of node_keys' unique sk index per key, one row each
@@ -410,3 +421,104 @@ async def test_the_roots_chain_top_reads_are_seeks_with_no_statistics_and_analys
         assert nk and all(i == "node_keys_org_id_sk_key" and "org_id = " in c and "sk >= " in c and r <= 1 for i, c, r in nk), f"{state} keys: {nk}"
         members = [b for node in plan_gate.scans(cands, ("scope_members",)) for b in plan_gate.bounds(node)]
         assert members and all(i == "scope_members_tops" and "org_id = " in c and "principal_sk >= " in c and "app_sk = " in c for i, c in members), f"{state} candidates: {members}"
+
+
+async def _folders_world(p, db, org: str, n: int, *, shared: str | None = None) -> None:
+    """In g2 (closed), ``n`` folders each with one file that u1 holds alone: ``n`` chain-tops under the App, each with its own folder (and g2) to judge. ``shared``: a record
+    group of that id too, so the id is in two collections."""
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": org, "name": "Org"}], "organizations")
+        await p.batch_upsert_nodes([{"_key": "g2", "groupName": "g2", "connectorId": "app1", "orgId": org},
+                                    *([{"_key": shared, "groupName": shared, "connectorId": "app1", "orgId": org}] if shared else [])], "recordGroups")
+        await p.batch_upsert_nodes([*(_rec(org, f"f{i}", folder=True) for i in range(n)), *(_rec(org, f"k{i}") for i in range(n))], "records")
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u1@example.com"}], "users")
+        await p.batch_create_edges([edge("app1", "apps", "g2", "recordGroups", relationshipType="PARENT_CHILD"),
+                                    *(edge("g2", "recordGroups", f"f{i}", "records", relationshipType="PARENT_CHILD") for i in range(n)),
+                                    *(edge(f"f{i}", "records", f"k{i}", "records", relationshipType="PARENT_CHILD") for i in range(n))], "nodeRelations")
+        await p.batch_create_edges([*(edge(k, "records", "g2", "recordGroups") for i in range(n) for k in (f"f{i}", f"k{i}")), edge("g2", "recordGroups", "app1", "apps"),
+                                    edge("u1", "users", org, "organizations")], "belongsTo")
+        await p.batch_create_edges([edge("u1", "users", f"k{i}", "records", type="USER", role="READER") for i in range(n)], "permission")
+        await p.batch_create_edges([edge("u1", "users", "app1", "apps")], "userAppRelation")
+    assert (await flip(db, org))[0] == 1
+
+
+ROOT_SITES = ("kg.keys_of", "kg.read_rows", "kg.root_judges", "kg.root_judge_shared_ids", "kg.root_judge_apps", "kg.root_chain", "kg.chain_by_sk")
+# The planner settings the browse sets around these statements (kg.reader.seeks, kg.read.PROFILE), as each ran under them.
+PLANNER = ("enable_sort", "enable_incremental_sort", "enable_bitmapscan", "enable_seqscan", "jit", "plan_cache_mode")
+
+
+async def _root_seeks(p, org: str, monkeypatch: pytest.MonkeyPatch) -> tuple[int, int]:
+    """The viewer's root (its chain-tops), and the index seeks of kg.records and kg.node_keys the chain-top statements of its two browses (the page and the sidebar) make
+    (``ROOT_SITES``: EXPLAIN ANALYZE of each, the loops of every index scan of the two tables; any other scan of them fails)."""
+    import asyncpg
+
+    import app.core.db.uow as uow
+    ran: list[tuple[str, tuple, tuple]] = []
+    real = uow.Tx._run
+
+    async def spy(self, op, sql, *args, internal=False) -> object:
+        if any(f"pipeshub:{s} " in sql[:80] or f"pipeshub:{s}*" in sql[:80] for s in ROOT_SITES):
+            ran.append((sql, args, tuple(await self._con.fetchrow("SELECT " + ", ".join(f"current_setting('{s}')" for s in PLANNER)))))
+        return await real(self, op, sql, *args, internal=internal)
+    monkeypatch.setattr(uow.Tx, "_run", spy)
+    page = (await _roots(p, org, "u1"))[False]
+    monkeypatch.setattr(uow.Tx, "_run", real)
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    loops = 0
+    try:
+        assert ran
+        for sql, args, settings in ran:
+            async with con.transaction():
+                await con.execute("SELECT set_config('app.org_id', $1, true)", org)
+                for name, value in zip(PLANNER, settings, strict=True):      # planned as the browse planned it
+                    await con.execute("SELECT set_config($1, $2, true)", name, value)
+                plan = json.loads(await con.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *args))
+            scans = [x for x in plan_gate.nodes(plan) if x.get("Relation Name") in ("records", "node_keys")]
+            # a scan that is no index search reads the table whatever the judges: never counted as a seek, it fails the test
+            assert not (whole := [x["Node Type"] for x in scans if "Index" not in x.get("Node Type", "")]), (sql[:60], whole)
+            loops += sum(int(x.get("Actual Loops", 1)) for x in scans)
+    finally:
+        await con.close()
+    return len(page[0]), loops
+
+
+async def test_the_roots_chain_tops_read_about_one_seek_per_judge_whatever_their_number(pg_provider, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reads per candidate: a root of 200 and of 2,000 chain-tops, each judged by its own folder. Its judges are read by their keys once each (kg.root_judges) and the connector of
+    them once, not mapped to ids and then sought once per collection (kg.keys_of, then kg.read_rows): at either size, about four seeks of kg's rows and keys per
+    chain-top and browse (its judge's row, its id in each of the two other collections, since kg cannot decide an id held in two, and its own key, which the grants it is
+    checked against are named by), whatever their number."""
+    per = {}
+    for n in (200, 2000):
+        p, org = pg_provider, new_org()
+        await _folders_world(p, pg_db, org, n)
+        tops, loops = await _root_seeks(p, org, monkeypatch)
+        assert tops == min(n, 50)
+        per[n] = loops / (2 * n)      # two browses
+    assert all(v <= 4.5 for v in per.values()), per
+
+
+@pytest.mark.parametrize("why", ["hidden", "two collections"])
+async def test_a_judge_kg_cannot_decide_is_asked_of_the_check_and_the_root_is_the_walks(pg_provider, pg_db, monkeypatch: pytest.MonkeyPatch, why: str) -> None:
+    """Among the root's judges one kg cannot decide: a folder a restamp has hidden (``fence_job``), or one whose id is a record group's too (kg.read.decide leaves an id
+    in two collections to the walk, whose answer is by id). It alone is asked of the access check, by its id, as every judge was, and the root lists what it lists when the
+    check decides every judge."""
+    p, org = pg_provider, new_org()
+    await _folders_world(p, pg_db, org, 40, shared="f7" if why == "two collections" else None)
+    if why == "hidden":
+        await _admin("UPDATE kg.records SET fence_job = 1 WHERE org_id = $1 AND coll = 3 AND id = 'f7'", org)
+    asked: list[set[str]] = []
+    real = type(p).check_access
+
+    async def spy(self, user_key, org_id, **kw) -> object:
+        asked.append(set(kw.get("node_ids") or ()))
+        return await real(self, user_key, org_id, **kw)
+    monkeypatch.setattr(type(p), "check_access", spy)
+    by_class = await _roots(p, org, "u1")
+    judges = {f"f{i}" for i in range(40)}
+    assert any("f7" in a for a in asked) and not any(a & (judges - {"f7"}) for a in asked), asked
+
+    async def walk_all(tx, org_, sks, access) -> grant_marks.Judged:
+        return grant_marks.Judged()      # no row read: every judge is the check's, as before
+    monkeypatch.setattr(grant_marks, "decide_sks", walk_all)
+    assert await _roots(p, org, "u1") == by_class

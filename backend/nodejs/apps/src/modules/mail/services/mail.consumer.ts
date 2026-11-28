@@ -5,10 +5,13 @@ import {
 } from '../../../libs/types/messaging.types';
 import {
   getCurrentOrgId,
+  orgContextStorage,
   makeOrgContext,
   runWithOrgContext,
 } from '../../../libs/context/orgContext';
 import { Logger } from '../../../libs/services/logger.service';
+import { getUserRepository } from '../../../libs/repositories/user';
+import { isRetryableStoreError } from '../../../libs/repositories/errors';
 import {
   NotificationProducer,
   EventType as NotificationEventType,
@@ -26,6 +29,7 @@ import {
   MAIL_MESSAGE_BUDGET_MS,
   MailEventPayload,
   MailSendResult,
+  mailJobOf,
 } from '../types/mail-event.types';
 import {
   classifyError,
@@ -90,6 +94,73 @@ interface SuppressedFailures {
  * redelivery: the consumer base auto-commits offsets and swallows handler
  * errors, so throwing would drop the job instead of replaying it.
  */
+/** Every recipient list a mail can carry besides `sendEmailTo` (a link may go to no one else). */
+const MAIL_RECIPIENT_LISTS = ['sendCcTo', 'sendBccTo', 'replyTo'] as const;
+
+/** The template a set-password link may be minted into. */
+const LINK_TEMPLATE = 'appuserInvite';
+
+/**
+ * The live user the link is for. A store that is briefly away is asked again (three tries over about three seconds)
+ * before the job fails, so a short outage does not lose an invite.
+ */
+type LiveUser = Awaited<
+  ReturnType<ReturnType<typeof getUserRepository>['getLive']>
+>;
+
+async function liveUserWithRetry(
+  orgId: string,
+  userId: string,
+): Promise<LiveUser> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await getUserRepository().getLive(orgId, userId);
+    } catch (error) {
+      if (attempt >= 3 || !storeBrieflyAway(error))
+        throw new LinkUserUnavailable();
+      await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+    }
+  }
+}
+
+/** MongoDB driver errors that mean the server could not be reached for a moment (the driver returns them as is). */
+const MONGO_TRANSIENT = new Set([
+  'MongoNetworkError',
+  'MongoNetworkTimeoutError',
+  'MongoServerSelectionError',
+  'MongoPoolClearedError',
+]);
+
+/** A store failure that passes by itself: the store's own retryable errors, or a MongoDB connection blip. */
+function storeBrieflyAway(error: unknown): boolean {
+  if (isRetryableStoreError(error)) return true;
+  const name = (error as { name?: unknown } | null)?.name;
+  return typeof name === 'string' && MONGO_TRANSIENT.has(name);
+}
+
+/** The user store could not be read for the link: the mail is not sent, and the reason given is fixed text. */
+class LinkUserUnavailable extends Error {
+  constructor() {
+    super(
+      'the invited user could not be read to prepare the set-password link',
+    );
+  }
+}
+
+/** A job asked for a set-password link it may not have (another org, or other recipients): nothing is sent. */
+class PasswordLinkRefused extends Error {
+  constructor() {
+    super(
+      'set-password link refused: the job names another org or other recipients',
+    );
+  }
+}
+
+/** Whether this delivery was opened from a verified signed envelope. */
+function signedDelivery(): boolean {
+  return orgContextStorage.getStore()?.source === 'envelope';
+}
+
 @injectable()
 export class MailConsumer {
   // Presence means a notification went out for this org in the current window;
@@ -143,7 +214,8 @@ export class MailConsumer {
     }
 
     await this.consumer.consume(async (message: StreamMessage<T>) => {
-      const payload = message.value as MailEventPayload | undefined;
+      // Under a verified signature only the signed job is read (a top-level job beside it is a writer's, not the producer's).
+      const payload = mailJobOf(message.value, signedDelivery());
       const job = newMailJob(payload);
       try {
         if (!payload?.mail?.emailTemplateType) {
@@ -273,8 +345,16 @@ export class MailConsumer {
 
     let mail: MailBody;
     try {
-      mail = this.withPasswordResetLink(payload);
+      mail = await this.withPasswordResetLink(payload);
     } catch (error) {
+      if (error instanceof PasswordLinkRefused) {
+        this.end(job, 'failure', {
+          reason: 'link_refused',
+          errorClass: 'forbidden',
+          error,
+        });
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       this.end(job, 'failure', {
         reason: 'link_failed',
@@ -359,16 +439,61 @@ export class MailConsumer {
     await this.notifyFailure(payload, failure.error);
   }
 
-  private withPasswordResetLink(payload: MailEventPayload): MailBody {
-    const target = payload.passwordResetLinkFor;
+  private async withPasswordResetLink(
+    payload: MailEventPayload,
+  ): Promise<MailBody> {
+    let target = payload.passwordResetLinkFor;
     if (!target) {
       return payload.mail;
     }
+    // A set-password link is a credential. It is minted only for a live user of the org this delivery is bound to,
+    // into a mail addressed to that user's stored address alone, and with that stored address: never with anything
+    // the job says (a job is not proof of who the user is). With no org bound, no link.
+    const bound = getCurrentOrgId();
+    // Only the invite carries a link (the one mail our producers put one in): a job cannot wrap it in other text.
+    if (
+      bound === undefined ||
+      target.orgId !== bound ||
+      payload.mail.emailTemplateType !== LINK_TEMPLATE
+    ) {
+      throw new PasswordLinkRefused();
+    }
+    const user = await liveUserWithRetry(bound, target.userId);
+    const stored =
+      typeof user?.email === 'string' ? user.email.trim().toLowerCase() : '';
+    const to: unknown = payload.mail.sendEmailTo;
+    const onlyTheUser =
+      stored !== '' &&
+      !/[,;<>\s]/.test(stored) &&
+      Array.isArray(to) &&
+      to.length === 1 &&
+      typeof to[0] === 'string' &&
+      to[0].trim().toLowerCase() === stored;
+    // No copy to anyone else, in whatever form a job gives it (a list, or a bare string the transport would also take).
+    const otherRecipients = MAIL_RECIPIENT_LISTS.some((field) => {
+      const value = (payload.mail as unknown as Record<string, unknown>)[field];
+      return !(
+        value === undefined ||
+        value === null ||
+        (Array.isArray(value) && value.length === 0)
+      );
+    });
+    if (!onlyTheUser || otherRecipients) {
+      throw new PasswordLinkRefused();
+    }
+    target = { ...target, email: stored };
+    // The mail that carries the link is rebuilt to reach the stored address alone, whatever else the job carried.
+    const linkMail: MailBody = {
+      ...payload.mail,
+      sendEmailTo: [stored],
+      sendCcTo: undefined,
+      replyTo: undefined,
+    };
     const config = this.getAppConfig();
     return {
-      ...payload.mail,
+      ...linkMail,
       templateData: {
-        ...payload.mail.templateData,
+        ...linkMail.templateData,
         link: newAccountPasswordLink(
           config.frontendUrl,
           target.email,
