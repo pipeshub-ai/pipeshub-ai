@@ -47,3 +47,15 @@ export const licenseGrants = (
   payload: { features?: readonly string[] },
   feature: string,
 ): boolean => (payload.features ?? LEGACY_FEATURES).includes(feature);
+
+/**
+ * Whether an install with no license in force is held to the free edition.
+ * Off until the release that turns the license check on: until then such an
+ * install keeps every feature, as before licenses existed. Read in one place,
+ * `publishPermissionSync`.
+ */
+export const LICENSE_ENFORCED: boolean = false;
+
+/** Once enforcement is on, an install already using paid features keeps them this long from its first start on that version. */
+export const UPGRADE_GRACE_DAYS = 21;
+export const UPGRADE_GRACE_MS = UPGRADE_GRACE_DAYS * DAY_MS;
