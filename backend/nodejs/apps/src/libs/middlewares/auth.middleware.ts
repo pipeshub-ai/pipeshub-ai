@@ -461,17 +461,12 @@ export class AuthMiddleware {
           (scope === TokenScopes.PASSWORD_RESET ||
             scope === TokenScopes.VALIDATE_EMAIL)
         ) {
-          let userActivity: Pick<ActivityDto, 'createdAt'> | null = null;
-          try {
-            userActivity = await this.asVerified(
-              orgId,
-              userId,
-              'scoped_jwt',
-              () => getActivityRepository().latestPasswordChange(userId, orgId),
+          // A failed lookup propagates to next(error): treating it as no password
+          // change would let a used reset link through.
+          const userActivity: Pick<ActivityDto, 'createdAt'> | null =
+            await this.asVerified(orgId, userId, 'scoped_jwt', () =>
+              getActivityRepository().latestPasswordChange(userId, orgId),
             );
-          } catch (activityError) {
-            this.logger.error('Failed to fetch user activity', activityError);
-          }
 
           if (userActivity) {
             const tokenIssuedAt = decoded.iat ? decoded.iat * 1000 : 0;
