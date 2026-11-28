@@ -1626,39 +1626,21 @@ export const searchShareParamsSchema = searchIdParamsSchema.extend({
 // Conversation list / archive query schemas
 // ---------------------------------------------------------------------------
 
-/**
- * A list's `search` with `conversationId` would be a search inside that one chat: whether it holds
- * the words, even where its messages are not the caller's to read. A list searches by title, and
- * message text only in the caller's own chats (`findSessionIdsMatchingContent`).
- */
-const notWithinOneChat = {
-  check: (query: { conversationId?: string; search?: string }): boolean =>
-    query.conversationId === undefined ||
-    query.search === undefined ||
-    query.search === '',
-  refusal: {
-    message: "'search' can't be combined with 'conversationId'",
-    path: ['search'],
-  },
-};
-
 /** Schema for GET /conversations — list all conversations with filters. */
 export const getAllConversationsQuerySchema = z.object({
-  query: z
-    .object({
-      source: z.enum(['owned', 'shared']).optional().default('owned'),
-      page: pageSchema,
-      limit: limitSchema,
-      sortBy: z.enum(['createdAt', 'lastActivityAt', 'title']).optional(),
-      sortOrder: z.enum(['asc', 'desc']).optional(),
-      conversationId: objectId('conversation ID').optional(),
-      search: z.string().max(1000).optional(),
-      startDate: z.string().check(datetimeWithOffsetCheck()).optional(),
-      endDate: z.string().check(datetimeWithOffsetCheck()).optional(),
-      shared: z.enum(['true', 'false', '1', '0']).optional(),
-      projectId: projectIdQuerySchema,
-    })
-    .refine(notWithinOneChat.check, notWithinOneChat.refusal),
+  query: z.object({
+    source: z.enum(['owned', 'shared']).optional().default('owned'),
+    page: pageSchema,
+    limit: limitSchema,
+    sortBy: z.enum(['createdAt', 'lastActivityAt', 'title']).optional(),
+    sortOrder: z.enum(['asc', 'desc']).optional(),
+    conversationId: objectId('conversation ID').optional(),
+    search: z.string().max(1000).optional(),
+    startDate: z.string().check(datetimeWithOffsetCheck()).optional(),
+    endDate: z.string().check(datetimeWithOffsetCheck()).optional(),
+    shared: z.enum(['true', 'false', '1', '0']).optional(),
+    projectId: projectIdQuerySchema,
+  }),
 });
 
 /** Schema for GET /:agentKey/conversations — list agent conversations with filters. */
@@ -1817,22 +1799,20 @@ export const listAllArchivesAgentConversationQuerySchema = z.object({
 
 /** Schema for GET /conversations/show/archives — list archived conversations. */
 export const listAllArchivesConversationQuerySchema = z.object({
-  query: z
-    .object({
-      page: archivePageSchema,
-      limit: archiveLimitSchema,
-      sortBy: z
-        .enum(['createdAt', 'lastActivityAt', 'title'])
-        .optional()
-        .default('lastActivityAt'),
-      sortOrder: z.enum(['asc', 'desc']).optional().default('desc'),
-      search: z.string().max(1000).optional(),
-      shared: z.enum(['true', 'false', '1', '0']).optional(),
-      startDate: z.string().check(datetimeWithOffsetCheck()).optional(),
-      endDate: z.string().check(datetimeWithOffsetCheck()).optional(),
-      conversationId: objectId('conversation ID').optional(),
-    })
-    .refine(notWithinOneChat.check, notWithinOneChat.refusal),
+  query: z.object({
+    page: archivePageSchema,
+    limit: archiveLimitSchema,
+    sortBy: z
+      .enum(['createdAt', 'lastActivityAt', 'title'])
+      .optional()
+      .default('lastActivityAt'),
+    sortOrder: z.enum(['asc', 'desc']).optional().default('desc'),
+    search: z.string().max(1000).optional(),
+    shared: z.enum(['true', 'false', '1', '0']).optional(),
+    startDate: z.string().check(datetimeWithOffsetCheck()).optional(),
+    endDate: z.string().check(datetimeWithOffsetCheck()).optional(),
+    conversationId: objectId('conversation ID').optional(),
+  }),
 });
 
 /** Schema for GET /agents/conversations/show/archives — grouped archived agent conversations. */

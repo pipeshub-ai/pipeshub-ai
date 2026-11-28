@@ -17,7 +17,8 @@ import { chatArchivesScope, chatListScope, ListScopeEnv, withListScope } from '.
  * caller's own questions and answers (never tool output): another member's answer, or any
  * message of a chat shared with the caller or visible through a project, can be one hidden from
  * them, and a match on its text tells whether it holds the words searched for. Those chats match
- * by title alone. A search inside one chat of the list (`conversationId` with `search`) is refused.
+ * by title alone. A list's search may name one chat (`conversationId` with `search`), as on main: that chat is
+ * listed when it matches, by the same rule.
  */
 
 const ORG = oid()
@@ -130,6 +131,13 @@ describe('chat search matches message text only in the caller’s own chats', ()
     expect((await call(list(), DANA, { search: 'toolneedle' })).titles).to.deep.equal([])
   })
 
+  it('the one-chat list form lists the owner’s chat when her own words match, as on main', async () => {
+    const { shared } = seed()
+    expect((await call(list(), DANA, { conversationId: String(shared), search: 'needle figure' })).titles).to.deep.equal(['board deck'])
+    expect((await call(list(), DANA, { conversationId: String(shared), search: 'nowhere' })).titles).to.deep.equal([])
+    expect((await call(list(), DANA, { conversationId: String(shared), search: 'board' })).titles).to.deep.equal(['board deck'])
+  })
+
   it('the one-chat list form tells Bob nothing about a message', async () => {
     const { shared } = seed()
     const out = await call(list(), BOB, { source: 'shared', conversationId: String(shared), search: 'needle figure is 42' })
@@ -150,15 +158,15 @@ describe('chat search matches message text only in the caller’s own chats', ()
   })
 })
 
-describe('a search inside one chat of a list is refused', () => {
+describe('a list’s search may name one chat, as main took it', () => {
   const id = String(oid())
 
   for (const [name, schema] of [
     ['GET /conversations', getAllConversationsQuerySchema],
     ['GET /conversations/show/archives', listAllArchivesConversationQuerySchema],
   ] as const) {
-    it(`${name} refuses conversationId with search`, () => {
-      expect(schema.safeParse({ query: { conversationId: id, search: 'needle' } }).success).to.equal(false)
+    it(`${name} takes conversationId with search`, () => {
+      expect(schema.safeParse({ query: { conversationId: id, search: 'needle' } }).success).to.equal(true)
     })
 
     it(`${name} takes each one alone`, () => {

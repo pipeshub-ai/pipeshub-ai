@@ -52594,7 +52594,7 @@ paths:
           required: false
           description: |
             When set, restricts results to that conversation ID (if visible under the chosen `source`).
-            Can't be combined with `search` (`400 VALIDATION_ERROR`).
+            With `search`, that conversation is listed when it matches.
           schema:
             type: string
             pattern: ^[0-9a-fA-F]{24}$
@@ -52605,7 +52605,7 @@ paths:
             Case-insensitive match (max 1000 characters) on the title of every listed conversation, and
             on message content only in the caller's own conversations: their own questions and answers,
             never tool output. A conversation shared with the caller or visible through a project
-            matches by title alone. Can't be combined with `conversationId` (`400 VALIDATION_ERROR`).
+            matches by title alone.
           schema:
             type: string
             maxLength: 1000
@@ -53100,7 +53100,6 @@ paths:
             their own questions and answers, never tool output. A conversation
             shared with the caller matches by title alone. A value holding
             markup is refused by the controller with `400 HTTP_BAD_REQUEST`.
-            Can't be combined with `conversationId` (`400 VALIDATION_ERROR`).
           schema:
             type: string
             maxLength: 1000
@@ -53139,8 +53138,8 @@ paths:
           in: query
           required: false
           description: |
-            Restrict results to a single conversation by identifier. Can't be combined with
-            `search` (`400 VALIDATION_ERROR`).
+            Restrict results to a single conversation by identifier. With `search`, that
+            conversation is listed when it matches.
           schema:
             type: string
             format: objectId
