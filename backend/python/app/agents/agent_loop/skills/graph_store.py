@@ -1680,8 +1680,12 @@ async def erase_skill_author(
     ids = {i for i in author_ids if i}
     if not ids:
         return 0, 0
-    skills = [d for d in await graph.get_nodes_by_filters(_SKILLS, {"orgId": org_id}) if _doc_id(d) is not None]
-    versions = await graph.get_nodes_by_filters(_VERSIONS, {"orgId": org_id})
+    # raise_on_error: a failed read must fail the event (it is redelivered), never read as "nothing there" and be acted on.
+    skills = [
+        d for d in await graph.get_nodes_by_filters(_SKILLS, {"orgId": org_id}, raise_on_error=True)
+        if _doc_id(d) is not None
+    ]
+    versions = await graph.get_nodes_by_filters(_VERSIONS, {"orgId": org_id}, raise_on_error=True)
     reader = GraphSkillStore(graph, org_id, "")  # only to match revisions to a live skill (`_belongs_to`)
     live = {d["name"]: d for d in skills}
 
