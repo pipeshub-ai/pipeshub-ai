@@ -1033,6 +1033,86 @@ for (const bin of pgBins()) {
         ).map((r) => r.dto.content);
         expect(left).to.deep.equal(['first', 'One.']);
       });
+
+      it("regenerate: a failed run's error row is its answer, and Try again takes its turn back", async () => {
+        const org = hexOrg(),
+          owner = hexOrg();
+        const sessionId = await newSession(org, owner);
+        const ref = { orgId: org, sessionId };
+        await transactAs(
+          (tx) =>
+            lean.appendUserTurn(
+              ref,
+              { query: 'first', chatMode: 'quick', attachments: [] },
+              tx,
+            ),
+          org,
+        );
+        await transactAs(
+          (tx) =>
+            lean.saveRunTranscript(
+              runOf(org, sessionId, owner),
+              answer('One.'),
+              tx,
+            ),
+          org,
+        );
+        await transactAs(
+          (tx) =>
+            lean.appendUserTurn(
+              ref,
+              { query: 'second', chatMode: 'quick', attachments: [] },
+              tx,
+            ),
+          org,
+        );
+        await transactAs(
+          (tx) =>
+            lean.saveRunTranscript(
+              runOf(org, sessionId, owner),
+              {
+                kind: 'failure',
+                code: 'model_failed',
+                message: 'The model did not answer.',
+              } as RunTranscript,
+              tx,
+            ),
+          org,
+        );
+        const rows = (
+          await conversations.listMessages(sessionId, { orgId: org })
+        ).map((r) => [r.dto._id, r.dto.messageType]);
+        expect(rows.map(([, type]) => type)).to.deep.equal([
+          'user_query',
+          'bot_response',
+          'user_query',
+          'error',
+        ]);
+        const failed = rows[3]![0]!;
+        const earlier = rows[1]![0]!;
+        expect(
+          await transactAs((tx) => lean.hasAnswer(ref, failed, tx), org),
+        ).to.equal(true);
+        expect(
+          await transactAs(
+            (tx) => lean.retractLastAnswer(ref, earlier, tx),
+            org,
+          ),
+          'not the last answer',
+        ).to.equal(null);
+        const question = await transactAs(
+          (tx) => lean.retractLastAnswer(ref, failed, tx),
+          org,
+        );
+        expect(question).to.deep.include({
+          query: 'second',
+          chatMode: 'quick',
+        });
+        const left = (
+          await conversations.listMessages(sessionId, { orgId: org })
+        ).map((r) => r.dto.content);
+        expect(left).to.deep.equal(['first', 'One.']);
+      });
     },
   );
 }

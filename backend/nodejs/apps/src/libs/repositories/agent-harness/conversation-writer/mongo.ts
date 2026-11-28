@@ -43,6 +43,7 @@ import {
   RunTranscript,
   UserTurn,
 } from '../../../../modules/agent-harness/ports/conversation-writer';
+import { ANSWER_ROW_TYPES, isAnswerRow } from './answer-rows';
 
 type FailureTranscript = Extract<RunTranscript, { kind: 'failure' }>;
 
@@ -110,7 +111,7 @@ export class HarnessConversationWriter implements ConversationWriter<Tx> {
       _id: answerId,
       sessionId: ref.sessionId,
       orgId: ref.orgId,
-      messageType: 'bot_response',
+      messageType: { $in: [...ANSWER_ROW_TYPES] },
     }).session(tx);
     return found !== null;
   }
@@ -127,7 +128,7 @@ export class HarnessConversationWriter implements ConversationWriter<Tx> {
       { orgId: ref.orgId, limit: REGENERATE_TAIL_MESSAGES, sort: -1 },
       new MongoTx(tx),
     )) as Array<IMessage & { _id: Types.ObjectId; seq: number }>;
-    const answerAt = tail.findIndex((m) => m.messageType === 'bot_response');
+    const answerAt = tail.findIndex((m) => isAnswerRow(m.messageType));
     if (answerAt < 0 || String(tail[answerAt]?._id) !== answerId) return null;
     const question = tail
       .slice(answerAt + 1)
