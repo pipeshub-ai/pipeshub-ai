@@ -10,6 +10,7 @@ import {
   createAuthIpRateLimiter,
   createAuthRateLimiter,
   createGlobalRateLimiter,
+  createInitAuthRateLimiter,
   createKeyedRateLimiter,
   createOAuthClientRateLimiter,
   createSkillsImportRateLimiter,
@@ -727,6 +728,57 @@ describe('Rate Limit Middleware', () => {
       expect(await hit(mutate, 'u-1')).to.equal(200)
       expect(await hit(feed, 'u-1')).to.equal(429)
       expect([...cache.ttls.values()].every((t) => t >= 60)).to.equal(true)
+    })
+
+    describe('the sign-in and other strict limiters count across replicas', () => {
+      /** An anonymous request from `ip` naming `email`, as the sign-in routes get them. */
+      const anonymous = (limiter: any, ip: string, email?: string): Promise<number> =>
+        new Promise((resolve) => {
+          const res = createMockResponse()
+          res.json.callsFake(() => { resolve(res.statusCode); return res })
+          // A limiter that fails passes its error on: that is no 200.
+          limiter(createMockRequest({ ip, socket: { remoteAddress: ip }, body: email ? { email } : {}, method: 'POST', path: '/login' }), res, (error?: unknown) =>
+            resolve(error === undefined ? 200 : 500),
+          )
+        })
+      // Read when each case runs: the stub is made before each one.
+      let logger: Logger
+      beforeEach(() => {
+        logger = loggerStub as unknown as Logger
+      })
+
+      it('ten wrong sign-ins for one account over two replicas, then the eleventh is refused', async () => {
+        useRateLimitCache(new FakeCache())
+        const replicas = [createAuthRateLimiter(logger), createAuthRateLimiter(logger)]
+        const statuses: number[] = []
+        for (let i = 0; i < 11; i += 1) statuses.push(await anonymous(replicas[i % 2], '10.0.9.1', 'someone@example.com'))
+        expect(statuses.slice(0, 10).every((s) => s === 200)).to.equal(true)
+        expect(statuses[10]).to.equal(429)
+      })
+
+      it('so do the per-address and sign-in page limits, and OAuth client and skill import writes', async () => {
+        useRateLimitCache(new FakeCache())
+        const cases: Array<[string, () => any, number]> = [
+          ['auth-ip', () => createAuthIpRateLimiter(logger, 1), 6],
+          ['auth-init', () => createInitAuthRateLimiter(logger, 1), 6],
+          ['oauth-client', () => createOAuthClientRateLimiter(logger, 2), 2],
+          ['skills-import', () => createSkillsImportRateLimiter(logger, 2), 2],
+        ]
+        for (const [name, make, max] of cases) {
+          const replicas = [make(), make()]
+          const statuses: number[] = []
+          for (let i = 0; i <= max; i += 1) statuses.push(await anonymous(replicas[i % 2], `10.0.9.${String(2 + cases.findIndex((c) => c[0] === name))}`, `${name}@example.com`))
+          expect(statuses.slice(0, max).every((s) => s === 200), name).to.equal(true)
+          expect(statuses[max], name).to.equal(429)
+        }
+      })
+
+      it('Slack deliveries stay counted in each process: only failures count, and a shared window cannot give a hit back', async () => {
+        const cache = new FakeCache()
+        useRateLimitCache(cache)
+        await anonymous(createSlackEventsRateLimiter(logger, 5), '10.0.9.20')
+        expect(cache.counts.size).to.equal(0)
+      })
     })
 
     it('without a cache each instance counts on its own', async () => {

@@ -324,6 +324,7 @@ export function createOAuthClientRateLimiter(
     prefix: 'oauth-client',
     maxRequestsPerMinute,
     message: 'Too many OAuth client requests. Please try again later.',
+    shared: true,
   });
 }
 
@@ -340,6 +341,7 @@ export function createSkillsImportRateLimiter(
     prefix: 'skills-import',
     maxRequestsPerMinute,
     message: 'Too many skill import requests. Please try again later.',
+    shared: true,
   });
 }
 
@@ -379,8 +381,9 @@ function signInAccountKey(req: Request): string | undefined {
  * Pair it with createAuthIpRateLimiter on anonymous routes: on its own it
  * would let one address try every account. Mount it after any middleware
  * that sets req.user or req.sessionInfo, or it falls back to the shared
- * per-IP key. The limit is per replica (in-process store), so N pods admit
- * up to N × maxRequestsPerMinute until a shared store is wired.
+ * per-IP key. Every replica counts in the shared cache (`SharedRateLimitStore`),
+ * so N pods admit maxRequestsPerMinute, not N times it; while the cache cannot
+ * answer, each counts in-process.
  */
 export function createAuthRateLimiter(
   logger: Logger,
@@ -391,6 +394,7 @@ export function createAuthRateLimiter(
     maxRequestsPerMinute,
     message: 'Too many authentication requests. Please try again later.',
     anonymousSubKey: signInAccountKey,
+    shared: true,
   });
 }
 
@@ -407,6 +411,7 @@ export function createAuthIpRateLimiter(
     prefix: 'auth-ip',
     maxRequestsPerMinute: maxAuthRequestsPerMinute * AUTH_PER_IP_MULTIPLIER,
     message: 'Too many authentication requests. Please try again later.',
+    shared: true,
   });
 }
 
@@ -424,6 +429,7 @@ export function createInitAuthRateLimiter(
     prefix: 'auth-init',
     maxRequestsPerMinute: maxAuthRequestsPerMinute * AUTH_PER_IP_MULTIPLIER,
     message: 'Too many sign-in requests. Please try again later.',
+    shared: true,
   });
 }
 
@@ -436,7 +442,8 @@ export function createInitAuthRateLimiter(
  * Only responses of 400 or above count. Every org's real deliveries arrive from
  * Slack's few egress addresses, so counting them would let one busy workspace
  * throttle all the others, and a 429 makes Slack redeliver and add more load.
- * Bad signatures (the bot's 401) still fill the bucket.
+ * Bad signatures (the bot's 401) still fill the bucket. It counts in-process: a
+ * shared fixed window cannot give back the hit of a delivery that succeeded.
  */
 export function createSlackEventsRateLimiter(
   logger: Logger,
