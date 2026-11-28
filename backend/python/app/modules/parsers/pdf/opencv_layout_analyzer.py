@@ -34,6 +34,8 @@ from pdfminer.pdfinterp import PDFPageInterpreter
 from pdfplumber import utils as pdfplumber_utils
 from PIL import Image
 
+from app.modules.parsers.pdf.table_rows import band_lines, split_band_records
+
 if TYPE_CHECKING:
     from pdfplumber.page import Page
     from pdfplumber.table import Row, Table
@@ -2883,6 +2885,89 @@ def _detect_model_boxes(
         return None
 
 
+_MODEL_AGREES_IOU = 0.9
+# A table is ruled when the page draws at least this many distinct vertical
+# rules in it (left, between and right edge of a two-column grid). Tables ruled
+# only horizontally get their columns from text alignment, which the model's
+# re-extraction does better.
+_RULED_MIN_VERTICAL_RULES = 3
+_RULED_MIN_VERTICAL_LEN = 10.0
+# pdfplumber's default snap distance for table edges: vertical edges closer than this are one rule.
+_RULE_SNAP = 3.0
+
+
+def _vertical_rule_count(page: "Page", bbox: tuple[float, float, float, float]) -> int:
+    """Distinct vertical rules the page draws in ``bbox``. A filled rectangle yields an edge on
+    each side; edges closer than the table finder's snap distance are one rule."""
+    try:
+        xs = sorted(
+            float(e["x0"])
+            for e in page.vertical_edges
+            if float(e["bottom"]) - float(e["top"]) >= _RULED_MIN_VERTICAL_LEN
+            and bbox[0] - _RULE_TOLERANCE <= float(e["x0"]) <= bbox[2] + _RULE_TOLERANCE
+            and float(e["top"]) < bbox[3] and float(e["bottom"]) > bbox[1]
+        )
+    except Exception:
+        return 0
+    return sum(1 for i, x in enumerate(xs) if i == 0 or x - xs[i - 1] > _RULE_SNAP)
+
+
+def _has_vertical_rules(page: "Page", bbox: tuple[float, float, float, float]) -> bool:
+    return _vertical_rule_count(page, bbox) >= _RULED_MIN_VERTICAL_RULES
+
+
+def _is_ruled_grid(page: "Page", bbox: tuple[float, float, float, float], grid: list[list[Optional[str]]]) -> bool:
+    """A grid is the table's ruled grid when the page draws at least three vertical
+    rules in it and the grid has no more columns than those rules cut (a grid with
+    more columns was cut by text positions: fragments)."""
+    n = _vertical_rule_count(page, bbox)
+    return n >= _RULED_MIN_VERTICAL_RULES and max(len(row) for row in grid) <= n - 1
+
+
+def _region_bbox(
+    own: Optional[tuple[float, float, float, float]],
+    box: tuple[float, float, float, float],
+    others: Optional[list[tuple[float, float, float, float]]] = None,
+) -> tuple[float, float, float, float]:
+    """The table region for a ruled grid: the grid's own bbox, reaching up to the
+    box's top so that a caption line above the grid stays in the region.
+
+    The region is re-extracted later from this box, and the grid's own outer rules
+    (which stick out half their thickness) must fall inside it, so it is padded by
+    the rule tolerance. Toward a neighbouring box the padding takes at most a third
+    of the distance beyond the proximity merge gap: when both sides pad, the two
+    regions are still farther apart than that gap, so two tables the merge would
+    keep apart unpadded stay apart."""
+    if own is None:
+        return box
+    x0, y0, x1, y1 = own[0], min(own[1], box[1]), own[2], own[3]
+    pad = [_RULE_TOLERANCE, 0.0, _RULE_TOLERANCE, _RULE_TOLERANCE]  # left, top, right, bottom (top reaches the box)
+
+    def room(d: float) -> float:
+        return max(0.0, (d - _PROXIMITY_MERGE_GAP) / 3.0)
+
+    for ox0, oy0, ox1, oy1 in others or []:
+        v_overlap = ox0 < x1 and ox1 > x0
+        h_overlap = oy0 < y1 and oy1 > y0
+        if h_overlap and ox1 <= x0:
+            pad[0] = min(pad[0], room(x0 - ox1))
+        if h_overlap and ox0 >= x1:
+            pad[2] = min(pad[2], room(ox0 - x1))
+        if v_overlap and oy0 >= y1:
+            pad[3] = min(pad[3], room(oy0 - y1))
+    return (x0 - pad[0], y0 - pad[1], x1 + pad[2], y1 + pad[3])
+
+
+def _may_hold_record_lines(grid: list[list[Optional[str]]]) -> bool:
+    """True when the key (first non-empty) cell of a row has two or more text
+    lines: ``split_band_records`` may split that row into records."""
+    for row in grid:
+        key = next((c for c in row if c and c.strip()), None)
+        if key is not None and len(key.split("\n")) >= 2:
+            return True
+    return False
+
+
 def _prefer_model_tables(
     page: "Page",
     page_w: float,
@@ -2894,7 +2979,11 @@ def _prefer_model_tables(
     """Learned table boxes win over the rule-based tables they overlap: the
     rules find tables by pdfplumber's line and text heuristics and often get the
     extent wrong, while the model sees the page. Rule tables the model doesn't
-    cover stay; cells always come from the PDF text layer."""
+    cover stay; cells always come from the PDF text layer. A rule table with the
+    model box's extent (IoU >= ``_MODEL_AGREES_IOU``) whose grid is the page's ruled
+    grid, has no row that may hold several records and keeps the box's words is
+    used as it is, its own bounds included: the rules already give the cells and
+    the extent. Any other box is re-extracted."""
     if not boxes:
         return rule_tables
     boxes = sorted(boxes, key=lambda b: -b[1])
@@ -2905,21 +2994,38 @@ def _prefer_model_tables(
         if sum(1 for o in boxes if o is not b and _overlap_ratio(o[0], b[0]) >= 0.9) < 2
     ]
     model: list[LayoutRegion] = []
+    pixel_boxes = [
+        _clamp_bbox((fx0 * page_w, fy0 * page_h, fx1 * page_w, fy1 * page_h), page_w, page_h)
+        for (fx0, fy0, fx1, fy1), _score in boxes
+    ]
     for (fx0, fy0, fx1, fy1), _score in boxes:
         bbox = _clamp_bbox((fx0 * page_w, fy0 * page_h, fx1 * page_w, fy1 * page_h), page_w, page_h)
         if not _valid_bbox(bbox) or any(_boxes_overlap(bbox, m.bbox) for m in model):
             continue
-        grid = _reextract_grid_for_bbox(page, bbox, page_w, page_h)
         words = [w for w in all_words if _word_center_in_bbox(w, bbox)]
+        agreed = next((
+            r for r in rule_tables
+            if r.table_grid and len(r.table_grid) >= 2 and max(len(row) for row in r.table_grid) >= 2
+            and _iou(r.bbox, bbox) >= _MODEL_AGREES_IOU
+            and _is_ruled_grid(page, r.bbox, r.table_grid)
+            and not _may_hold_record_lines(r.table_grid)
+            and _grid_char_coverage(r.table_grid, words) >= _GRID_MIN_WORD_COVERAGE
+        ), None)
+        if agreed is not None:
+            model.append(agreed)
+            continue
+        grid, own_bbox = _reextract_grid_and_bbox(page, bbox, page_w, page_h)
+        # A ruled grid was already checked against the words of its own table.
         if (not grid or max(len(r) for r in grid) < 2
-                or _grid_char_coverage(grid, words) < _GRID_MIN_WORD_COVERAGE):
+                or (own_bbox is None and _grid_char_coverage(grid, words) < _GRID_MIN_WORD_COVERAGE)):
             # pdfplumber's finders cover only part of the box, or find one column
             # in an unruled table; split it by whitespace instead.
             grid = _trim_empty_rows_cols(_grid_by_projection(words))
+            own_bbox = None
         if not grid or len(grid) < 2 or max(len(r) for r in grid) < 2:
             continue
         model.append(LayoutRegion(
-            type=LayoutRegionType.TABLE, bbox=bbox, text=_grid_to_text(grid), table_grid=grid,
+            type=LayoutRegionType.TABLE, bbox=_region_bbox(own_bbox, bbox, [b for b in pixel_boxes if b != bbox]), text=_grid_to_text(grid), table_grid=grid,
         ))
     kept = [r for r in rule_tables if not any(_boxes_overlap(r.bbox, m.bbox) for m in model)]
     return kept + model
@@ -2972,19 +3078,27 @@ _CELL_WORD_X_TOLERANCE = 1.0
 
 
 def _table_grid_by_words(
-    table: "Table", region: Optional["Page"] = None,
+    table: "Table",
+    region: Optional["Page"] = None,
+    within: Optional[tuple[float, float, float, float]] = None,
+    *,
+    split_rows: bool = False,
 ) -> list[list[Optional[str]]]:
     """``Table.extract()``, but with whole words assigned to the cell holding
     their centre, and the header lines of row 0 in rows of their own.
 
     See ``_table_grid_and_band``.
     """
-    band, grid = _table_grid_and_band(table, region)
+    band, grid = _table_grid_and_band(table, region, within, split_rows=split_rows)
     return [*band, *grid]
 
 
 def _table_grid_and_band(
-    table: "Table", region: Optional["Page"] = None,
+    table: "Table",
+    region: Optional["Page"] = None,
+    within: Optional[tuple[float, float, float, float]] = None,
+    *,
+    split_rows: bool = False,
 ) -> tuple[list[list[str | None]], list[list[str | None]]]:
     """The header rows taken out of row 0, and a grid with one row per ``table.rows`` entry.
 
@@ -2998,8 +3112,18 @@ def _table_grid_and_band(
     hold; pass the cropped page when re-extracting a region whose bbox is wider
     than the grid pdfplumber finds in it, e.g. after a header was merged in.
 
+    ``within`` limits the cell text to words whose centre is in that box and in
+    the table's own bbox (or on a line above it), for a region that was widened
+    to keep the table's own rules: a note below the grid or text beside it is
+    never put into its cells.
+
+    ``split_rows`` splits a row band into one row per text line when the rules
+    draw no lines between the records (see ``split_band_records``).
+
     The grid stays aligned with ``table.rows`` so that callers can still pick
     rows by index (``_split_stacked_table``); the header rows go above row 0.
+    ``split_rows`` breaks that alignment, so only callers that read the whole
+    grid pass it.
     """
     try:
         if region is None:
@@ -3013,11 +3137,27 @@ def _table_grid_and_band(
             {**c, "chars": [c]} for c in region.chars if not c["text"].strip()
         ]
         page_order = {id(c): i for i, c in enumerate(region.chars)}
+        if within is not None:
+            tb = tuple(float(v) for v in table.bbox)
+            # A line above the table (its caption or title) is attached to the table by
+            # the overlap resolution and goes to the nearest header cell; text left,
+            # right of or below it (a note, a neighbour) is not part of the grid.
+            words = [
+                w for w in words
+                if _word_center_in_bbox(w, within) and (
+                    _word_center_in_bbox(w, tb)
+                    or (tb[0] <= (float(w["x0"]) + float(w["x1"])) / 2.0 <= tb[2]
+                        and (float(w["top"]) + float(w["bottom"])) / 2.0 < tb[1])
+                )
+            ]
     except Exception:
-        return [], table.extract()
+        # A targeted read cannot be limited to its target without the words: no grid, so the caller tries
+        # its next strategy instead of taking text from outside the target.
+        return [], ([] if within is not None else table.extract())
 
     rows = list(table.rows)
     buckets = [[[] for _ in row.cells] for row in rows]
+    word_buckets: list[list[list[dict[str, Any]]]] = [[[] for _ in row.cells] for row in rows]
 
     def _gap(lo: float, hi: float, v: float) -> float:
         return 0.0 if lo <= v <= hi else min(abs(v - lo), abs(v - hi))
@@ -3047,19 +3187,28 @@ def _table_grid_and_band(
                 for cell, ri, ci in cells
             )
         buckets[home[0]][home[1]].extend(w["chars"])
+        word_buckets[home[0]][home[1]].append(w)
         placed.append((w, home[0], home[1]))
 
     grid: list[list[Optional[str]]] = []
-    for row, row_buckets in zip(rows, buckets):
+    for ri, (row, row_buckets) in enumerate(zip(rows, buckets)):
         cells = list(row.cells)
-        grid.append([
-            None if cell is None else (
-                pdfplumber_utils.extract_text(
-                    sorted(chars, key=lambda c: page_order.get(id(c), 0))
-                ) if chars else ""
-            )
-            for cell, chars in zip(cells, row_buckets)
-        ])
+        # The first row is the header: its labels wrap in narrow columns, which
+        # looks like records, so it is never split.
+        bands = (
+            split_record_bands(word_buckets[ri], cells) if split_rows and ri > 0 else None
+        )
+        grid.extend(
+            [
+                None if cell is None else (
+                    pdfplumber_utils.extract_text(
+                        sorted(chars, key=lambda c: page_order.get(id(c), 0))
+                    ) if chars else ""
+                )
+                for cell, chars in zip(cells, band)
+            ]
+            for band in bands or [row_buckets]
+        )
     try:
         banded = _split_merged_header_band(grid, rows, placed, region, page_order)
     except Exception:
@@ -3295,16 +3444,93 @@ def _split_merged_header_band(
 
 
 
+# --- records inside a ruled row band ---------------------------------------------------
+
+
+def split_record_bands(
+    cell_words: list[list[dict[str, Any]]],
+    row_cells: list[Optional[tuple[float, float, float, float]]],
+) -> Optional[list[list[list[dict[str, Any]]]]]:
+    """A ruled row's words as one list of per-cell char lists per record, or None.
+
+    None keeps the row whole: fewer than two records, or no key cell. Space glyphs
+    travel with the record whose line holds them."""
+    idx = [i for i, c in enumerate(row_cells) if c is not None]
+    if not idx:
+        return None
+    shown = [w for ws in cell_words for w in ws if str(w.get("text", "")).strip()]
+    if len(shown) < 2:
+        return None
+    lines = band_lines(shown)
+    if len(lines) < 2:
+        return None
+    cols = [(row_cells[i][0], row_cells[i][2]) for i in idx]
+    # A word's column is the cell it was put in: the band analysis never re-decides it.
+    column_of = {id(w): j for j, i in enumerate(idx) for w in cell_words[i]}
+    groups = split_band_records(lines, cols, ruled_cell=True, column_of_word=lambda w: column_of.get(id(w)))
+    if len(groups) < 2:
+        return None
+    record_of = {id(w): gi for gi, g in enumerate(groups) for ln in g for w in ln["w"]}
+    line_cy = [(ln["cy"], gi) for gi, g in enumerate(groups) for ln in g]
+    bands: list[list[list[Any]]] = [[[] for _ in cell_words] for _ in groups]
+    for ci, ws in enumerate(cell_words):
+        for w in ws:
+            gi = record_of.get(id(w))
+            if gi is None:
+                # a space glyph: it goes with the record of the nearest line
+                cy = (float(w["top"]) + float(w["bottom"])) / 2.0
+                gi = min(line_cy, key=lambda t: abs(t[0] - cy))[1]
+            bands[gi][ci].extend(w["chars"])
+    return bands
+
+
+_TARGET_MIN_IOU = 0.5
+
+
 def _extract_table_by_words(
-    page: "Page", settings: Optional[dict[str, Any]] = None,
+    page: "Page",
+    settings: Optional[dict[str, Any]] = None,
+    target: Optional[tuple[float, float, float, float]] = None,
+    info: Optional[dict[str, Any]] = None,
 ) -> Optional[list[list[Optional[str]]]]:
-    """``page.extract_table(settings)`` built on ``_table_grid_by_words``."""
+    """``page.extract_table(settings)`` built on ``_table_grid_by_words``.
+
+    With ``target``, the table whose bbox best matches it is used, and only
+    words centred in it become cell text. A best match covering less than
+    ``_TARGET_MIN_IOU`` of the target is no match: a small ruled block inside a
+    larger table would otherwise stand for the whole of it, since words outside
+    a grid's cells are assigned to its nearest cell."""
     tables = page.find_tables(settings) if settings else page.find_tables()
     if not tables:
         return None
-    # Same pick as pdfplumber's extract_table: most cells, then topmost, leftmost.
-    largest = min(tables, key=lambda t: (-len(t.cells), t.bbox[1], t.bbox[0]))
-    return _table_grid_by_words(largest, region=page)
+    if target is None:
+        # Same pick as pdfplumber's extract_table: most cells, then topmost, leftmost.
+        largest = min(tables, key=lambda t: (-len(t.cells), t.bbox[1], t.bbox[0]))
+    else:
+        # Candidates must reach the cutoff by their exact IoU; among them the best match wins
+        # (IoU to two places, then most cells, then topmost, leftmost).
+        matching = [t for t in tables if _iou(tuple(t.bbox), target) >= _TARGET_MIN_IOU]
+        if not matching:
+            return None
+        largest = min(
+            matching,
+            key=lambda t: (-round(_iou(tuple(t.bbox), target), 2), -len(t.cells), t.bbox[1], t.bbox[0]),
+        )
+    if target is None:
+        return _table_grid_by_words(largest, region=page)
+    own = tuple(float(v) for v in largest.bbox)
+    if info is not None:
+        info["bbox"] = own
+    # The table is published with its own extent reaching up to the target's top (``_region_bbox``): its cells hold
+    # every word of that extent, edge cells outside the target included, and nothing below or beside it.
+    return _table_grid_by_words(largest, region=page, within=_published_extent(own, target), split_rows=True)
+
+
+def _published_extent(
+    own: tuple[float, float, float, float], target: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    """The words a ruled table matched to *target* is published with: its own extent, up to the target's top."""
+    return (own[0], min(own[1], target[1]), own[2], own[3])
 
 
 # Share of the characters inside a table's bbox its grid must keep. Below it the
@@ -3342,6 +3568,12 @@ def _demote_lossy_tables(
             continue
         out.extend(_text_regions_from_words(words, gutter_x) or [r])
     return out
+
+
+# A table's rules are drawn on its cell edges, so they stick out past its bbox by
+# half their thickness. The ruled pass selects objects in a box this much wider,
+# or the grid loses its outer rules.
+_RULE_TOLERANCE = 2.0
 
 
 # A layout model's table box can stop a fraction of a point inside a ruled table's outer border. Cropped to the box, that border is
@@ -3388,12 +3620,33 @@ def _reextract_grid_for_bbox(
     page_w: float,
     page_h: float,
 ) -> Optional[List[List[Optional[str]]]]:
+    return _reextract_grid_and_bbox(page, bbox, page_w, page_h)[0]
+
+
+def _reextract_grid_and_bbox(
+    page: "Page",
+    bbox: tuple[float, float, float, float],
+    page_w: float,
+    page_h: float,
+) -> tuple[Optional[list[list[Optional[str]]]], Optional[tuple[float, float, float, float]]]:
+    """The grid for the box and, when it is the table's own ruled grid, that
+    table's bbox: words of the box outside it are not in the grid and must stay
+    text."""
+    target = _clamp_bbox(_snap_to_border(page, bbox), page_w, page_h)
     try:
-        sub = page.within_bbox(_clamp_bbox(_snap_to_border(page, bbox), page_w, page_h))
+        sub = page.within_bbox(target)
     except Exception:
-        return None
+        return None, None
     if sub is None:
-        return None
+        return None, None
+    try:
+        ruled_sub = page.within_bbox(_clamp_bbox(
+            (target[0] - _RULE_TOLERANCE, target[1] - _RULE_TOLERANCE,
+             target[2] + _RULE_TOLERANCE, target[3] + _RULE_TOLERANCE),
+            page_w, page_h,
+        ))
+    except Exception:
+        ruled_sub = None
 
     strategies = [
         None,  # pdfplumber defaults (rule lines)
@@ -3411,24 +3664,45 @@ def _reextract_grid_for_bbox(
 
     # Most columns wins, but only among grids that keep the table's words: the
     # text strategies can split a chart's value labels into more columns while
-    # silently dropping some of them.
+    # silently dropping some of them. A ruled grid is the exception: the text
+    # strategies split prose at every word gap and always out-count it, so a
+    # ruled grid that keeps the words wins outright.
     best: Optional[List[List[Optional[str]]]] = None
     best_key: tuple[bool, float] = (False, -1.0)
     for s in strategies:
+        ruled = s is None and ruled_sub is not None
+        info: dict[str, Any] = {}
         try:
-            grid = _extract_table_by_words(sub, s)
+            grid = (
+                _extract_table_by_words(ruled_sub, s, target, info) if ruled
+                else _extract_table_by_words(sub, s)
+            )
         except Exception:
             grid = None
         clean = _trim_empty_rows_cols(grid)
         if not clean or len(clean) < 2 or not clean[0]:
             continue
-        coverage = _grid_char_coverage(clean, bbox_words)
+        if ruled:
+            # Words outside the matched table are not its text: they stay text regions.
+            own = info.get("bbox")
+            try:
+                ref = [
+                    w for w in ruled_sub.extract_words()
+                    if _word_center_in_bbox(w, target if own is None else _published_extent(own, target))
+                ]
+            except Exception:
+                ref = bbox_words
+        else:
+            ref = bbox_words
+        coverage = _grid_char_coverage(clean, ref)
         keeps_words = coverage >= _GRID_MIN_WORD_COVERAGE
+        if ruled and keeps_words and max(len(r) for r in clean) >= 2:
+            return clean, info.get("bbox")
         key = (keeps_words, float(len(clean[0])) if keeps_words else coverage)
         if key > best_key:
             best_key = key
             best = clean
-    return best
+    return best, None
 
 
 def _detect_borderless_tables(
@@ -5308,13 +5582,31 @@ def _resolve_overlaps(
         if not changed:
             break
 
+    cut_back: list[tuple[LayoutRegion, tuple[float, float, float, float]]] = []
     for i, r in enumerate(current):
         if id(r) in dirty:
+            old_bbox = r.bbox
             current[i] = _reextract_region_payload(
                 r, page, all_words, page_w, page_h, gutter_x=gutter_x,
             )
+            if r.type == LayoutRegionType.TABLE and r.bbox != old_bbox and all_words:
+                cut_back.append((r, old_bbox))
 
-    return current
+    # Words the table had absorbed and the grid does not hold become text again. Words that a
+    # region still in the list owns (a list kept apart from the table) stay with that region.
+    leftover: list[LayoutRegion] = []
+    for table, old_bbox in cut_back:
+        owners = [o.bbox for o in current if o is not table]
+        words = [
+            w for w in all_words
+            if _word_center_in_bbox(w, old_bbox) and not _word_center_in_bbox(w, table.bbox)
+            and not any(_word_center_in_bbox(w, ob) for ob in owners)
+            and str(w.get("fontname", "")) != "_synthetic_bullet"
+        ]
+        if words:
+            leftover.extend(_text_regions_from_words(words, gutter_x))
+
+    return current + leftover
 
 
 def _merge_regions(primary: LayoutRegion, other: LayoutRegion) -> LayoutRegion:
@@ -5364,10 +5656,18 @@ def _reextract_region_payload(
     if region.type == LayoutRegionType.TABLE:
         if page is None:
             return region
-        grid = _reextract_grid_for_bbox(page, region.bbox, page_w, page_h)
+        grid, own_bbox = _reextract_grid_and_bbox(page, region.bbox, page_w, page_h)
         if grid:
             region.table_grid = grid
             region.text = _grid_to_text(grid)
+            if own_bbox is not None:
+                # The ruled grid left out what the overlap resolution had merged into the
+                # region (a note below, text beside): the region shrinks to the grid, and
+                # the caller emits the rest as text. Only then: otherwise the box stays.
+                shrunk = (own_bbox[0], min(own_bbox[1], region.bbox[1]), own_bbox[2], own_bbox[3])
+                if all_words and any(_word_center_in_bbox(w, region.bbox) and not _word_center_in_bbox(w, shrunk)
+                                     for w in all_words):
+                    region.bbox = shrunk
         return region
 
     if region.type in (LayoutRegionType.TEXT, LayoutRegionType.LIST):
