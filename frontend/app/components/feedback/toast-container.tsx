@@ -1,13 +1,14 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom';
-import { Box, Text, Theme } from '@radix-ui/themes';
+import { Box, Text, Theme, VisuallyHidden } from '@radix-ui/themes';
 import {
   useToastStore,
   selectToasts,
   selectIsHovered,
   type ToastPlacement,
+  type Toast as ToastData,
 } from '@/lib/store/toast-store';
 import { useThemeAppearance } from '@/app/components/theme-provider';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
@@ -114,6 +115,61 @@ function ToastStack({
   );
 }
 
+/** How long the region stays empty before the same words are put back, so they are heard again. */
+const REPEAT_ANNOUNCEMENT_GAP_MS = 100;
+
+/**
+ * Screen readers hear toasts through this region, which stays mounted with or without toasts:
+ * a live region inserted together with its text is often not read at all. It carries the toast
+ * that changed last, whether it was just added or just updated (a progress toast turning into
+ * its result), so two requests that finish in any order are both heard. A dismissal says nothing.
+ */
+function ToastAnnouncer({ toasts }: { toasts: ToastData[] }) {
+  const [text, setText] = useState('');
+  const seen = useRef(new Map<string, string>());
+  const shown = useRef<{ id: string; text: string }>({ id: '', text: '' });
+  // Owned by the change that set it: a re-render with no toast change must not cancel it.
+  const restore = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (restore.current) clearTimeout(restore.current);
+  }, []);
+
+  useEffect(() => {
+    const words = (t: ToastData) => [t.title, t.description].filter(Boolean).join('. ');
+    const signature = (t: ToastData) => `${t.variant}\u0000${words(t)}`;
+    // Newest first, as the store keeps them, so a burst of changes reads the newest.
+    const changed = toasts.find((t) => seen.current.get(t.id) !== signature(t));
+    seen.current = new Map(toasts.map((t) => [t.id, signature(t)]));
+    if (!changed) return;
+
+    if (restore.current) clearTimeout(restore.current);
+    restore.current = null;
+    const next = words(changed);
+    const previous = shown.current;
+    shown.current = { id: changed.id, text: next };
+    if (next !== previous.text) {
+      setText(next);
+      return;
+    }
+    // A change with the same words leaves the region unchanged, which is not announced.
+    // Empty it, then put the words back in a later task; a newer change cancels the restore.
+    setText('');
+    restore.current = setTimeout(() => {
+      restore.current = null;
+      setText(next);
+    }, REPEAT_ANNOUNCEMENT_GAP_MS);
+  }, [toasts]);
+
+  return (
+    <VisuallyHidden>
+      <div role="status" aria-live="polite" aria-atomic="true" data-ph-toast-announcer="">
+        {text}
+      </div>
+    </VisuallyHidden>
+  );
+}
+
 export function ToastContainer() {
   const toasts = useToastStore(selectToasts);
   const isHovered = useToastStore(selectIsHovered);
@@ -126,15 +182,20 @@ export function ToastContainer() {
     setMounted(true);
   }, []);
 
+  const announcer = <ToastAnnouncer toasts={toasts.filter((t) => !t.isExiting)} />;
+
   if (toasts.length === 0 || !mounted) {
-    return null;
+    return announcer;
   }
 
   // On a phone, side panels fill the screen with their actions in the footer; keep toasts off them.
   const topToasts = isMobile ? toasts : toasts.filter((t) => t.placement === 'top');
   const bottomToasts = isMobile ? [] : toasts.filter((t) => t.placement !== 'top');
 
-  return ReactDOM.createPortal(
+  return (
+    <>
+      {announcer}
+      {ReactDOM.createPortal(
     <Theme accentColor="jade" grayColor="olive" appearance={appearance} radius="medium" data-accent-color="emerald">
       <style jsx global>{`
         @keyframes toastSlideIn {
@@ -174,5 +235,7 @@ export function ToastContainer() {
       />
     </Theme>,
     document.body
+      )}
+    </>
   );
 }

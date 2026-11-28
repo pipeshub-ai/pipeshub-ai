@@ -59,3 +59,25 @@ describe('ConfigSuccessDialog', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 });
+
+describe('ConfigSuccessDialog: while the sync is starting', () => {
+  it('shows the start button as busy', () => {
+    const { onStartSyncing } = renderDialog({ isStarting: true });
+    const start = screen.getByRole('button', { name: /Start syncing now/ });
+    expect(start.hasAttribute('disabled')).toBe(true);
+    fireEvent.click(start);
+    expect(onStartSyncing).not.toHaveBeenCalled();
+  });
+
+  it('can still be closed with "I\'ll do it later"', () => {
+    const { onDoLater } = renderDialog({ isStarting: true });
+    fireEvent.click(screen.getByRole('button', { name: "I'll do it later" }));
+    expect(onDoLater).toHaveBeenCalledTimes(1);
+  });
+
+  it('can still be closed with Escape', () => {
+    const { onDoLater } = renderDialog({ isStarting: true });
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    expect(onDoLater).toHaveBeenCalledTimes(1);
+  });
+});
