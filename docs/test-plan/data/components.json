@@ -2787,6 +2787,7 @@
         "backend/nodejs/apps/tests/modules/agent-harness/sch02-schedules-without-harness.test.ts",
         "backend/nodejs/apps/tests/modules/agent-harness/sch03-managing-schedules.test.ts",
         "backend/nodejs/apps/tests/modules/agent-harness/sch03-internal-route-limits.test.ts",
+        "backend/nodejs/apps/tests/modules/agent-harness/sch02-classic-conversations.test.ts",
         "backend/nodejs/apps/tests/modules/agent-harness/fixtures/sch03-call-tool-approval.json",
         "backend/python/tests/unit/harness/test_sch03_call_tool_binding.py",
         "backend/nodejs/apps/tests/modules/enterprise_search/scheduled-classic-turn.test.ts"

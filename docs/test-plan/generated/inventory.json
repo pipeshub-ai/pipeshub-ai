@@ -2,8 +2,8 @@
  "generatedBy": "scripts/harness_test_inventory.py",
  "componentMap": "docs/test-plan/data/components.json",
  "harnessTestFiles": 2054,
- "claimedTestFiles": 4021,
- "claimedTests": 43272,
+ "claimedTestFiles": 4022,
+ "claimedTests": 43275,
  "claimedFilesByLevel": {
   "cohesion": 64,
   "component": 37,
@@ -18,7 +18,7 @@
   "live": 6,
   "perf": 3,
   "replay": 16,
-  "unit": 3292
+  "unit": 3293
  },
  "components": [
   {
@@ -15993,15 +15993,15 @@
    "id": "SCH",
    "name": "Scheduler",
    "status": "built, Labs off by default",
-   "files": 48,
-   "tests": 457,
+   "files": 49,
+   "tests": 460,
    "filesByLevel": {
     "component": 2,
     "contract": 1,
     "e2e-browser": 1,
     "integration": 5,
     "integration-docker": 1,
-    "unit": 38
+    "unit": 39
    },
    "testsByLevel": {
     "component": 11,
@@ -16009,7 +16009,7 @@
     "e2e-browser": 1,
     "integration": 16,
     "integration-docker": 1,
-    "unit": 386
+    "unit": 389
    },
    "markers": {
     "docker": 1
@@ -16042,6 +16042,12 @@
      "level": "unit",
      "markers": [],
      "tests": 39
+    },
+    {
+     "path": "backend/nodejs/apps/tests/modules/agent-harness/sch02-classic-conversations.test.ts",
+     "level": "unit",
+     "markers": [],
+     "tests": 3
     },
     {
      "path": "backend/nodejs/apps/tests/modules/agent-harness/sch02-schedules-without-harness.test.ts",
@@ -29664,7 +29670,6 @@
   "backend/nodejs/apps/tests/cohesion/c35-one-digest-scheme.test.ts",
   "backend/nodejs/apps/tests/contracts/ma1-child-spawned.test.ts",
   "backend/nodejs/apps/tests/contracts/uxrb1-planned-run.test.ts",
-  "backend/nodejs/apps/tests/modules/agent-harness/sch02-classic-conversations.test.ts",
   "backend/python/tests/cohesion/test_c24_selection_parity.py",
   "backend/python/tests/cohesion/test_c35_one_digest_scheme.py",
   "backend/python/tests/cohesion/test_c36_flags_and_dimensions.py",

@@ -122,11 +122,11 @@ export function attachUpstreamAbort(
   const requestContext = getRequestContext();
   res.on(
     'close',
-    bindOrgContext(() => {
+    bindOrgContext(() =>
       requestContext
         ? runWithRequestContext(requestContext, onClose)
-        : onClose();
-    }),
+        : onClose(),
+    ),
   );
 
   return {
