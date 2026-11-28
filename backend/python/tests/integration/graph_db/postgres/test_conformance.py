@@ -18,8 +18,7 @@ from tests.integration.graph_permissions.loaders import EDGE_TARGETS, NODE_TARGE
 from tests.permissions import gen
 from tests.permissions.graph import Graph, Namespace, compile_world
 from tests.permissions.runner import ConformanceRunner, Report
-
-from .pg_support import corpus
+from tests.permissions.scenario import Scenario, load_all
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable
@@ -62,15 +61,19 @@ class PgLayer:
         for w in (w for w in dict.fromkeys(worlds) if w not in self._prefix):
             self._prefix[w] = f"w{next(_COUNTER)}"
             graph = compile_world(w, self._prefix[w])
-            org = _hex(Namespace(self._prefix[w]).org)
+            name = Namespace(self._prefix[w]).org
+            org = _hex(name)
             kind = {n["id"]: NODE_TARGETS[n["kind"]] for n in graph["nodes"]}
+
+            def pid(i: str, name: str = name, org: str = org) -> str:
+                return org if i == name else i      # the organization node's id is the org id, hexed as every orgId is (production: organizations/{orgId})
             await self._wipe(org)      # a world a killed run left behind must not collide
             with bind(OrgContext(org, None, "job", "job:test", "t")):
                 for k, coll in NODE_TARGETS.items():
-                    if rows := [_props(n["props"]) for n in graph["nodes"] if n["kind"] == k]:
+                    if rows := [_props({**n["props"], "id": pid(n["id"])}) for n in graph["nodes"] if n["kind"] == k]:
                         await self._provider.batch_upsert_nodes(rows, coll)
                 for et, coll in EDGE_TARGETS.items():
-                    if rows := [{"from_id": e["from"], "from_collection": kind[e["from"]], "to_id": e["to"], "to_collection": kind[e["to"]], **_props(e["props"])}
+                    if rows := [{"from_id": pid(e["from"]), "from_collection": kind[e["from"]], "to_id": pid(e["to"]), "to_collection": kind[e["to"]], **_props(e["props"])}
                                 for e in graph["edges"] if e["type"] == et]:
                         await self._provider.batch_create_edges(rows, coll)
 
@@ -121,7 +124,7 @@ def _describe(report: Report) -> str:
 
 @pytest.mark.parametrize("tier", ["rules", "golden"])
 async def test_layer_equals_oracle(layer: PgLayer, tier: str) -> None:
-    scenarios = [s for s in corpus() if ("rules" in s.tags) == (tier == "rules")]
+    scenarios: list[Scenario] = [s for s in load_all() if ("rules" in s.tags) == (tier == "rules")]
     await layer.preload(s.final_world() for s in scenarios)
     runner = ConformanceRunner(layer)
     total = Report()

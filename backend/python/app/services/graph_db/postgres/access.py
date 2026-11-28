@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
+from app.config.constants.arangodb import AccessLimit
 from app.models.permission import ORG_SHARE_PERMISSION_TYPES
 from app.services.graph_db.postgres.base import _pgbool
 from app.services.graph_db.postgres.kg.reader import seeks
@@ -25,6 +26,16 @@ PAG = "PARENT_AND_GRANT"
 PRINCIPALS = ["users", "groups", "roles", "teams", "organizations"]
 
 
+def limit_admits(a: str, org: str, user_id: str, user_key: str) -> str:
+    """Whether a limited app (alias ``a``, ``accessLimit`` not null) lets the user through, whatever edges exist: CREATOR only the user whose ``userId``
+    (SQL ``user_id``) is the app's ``createdBy``, ORG every member of the app's own org (the user, node id ``user_key``, has a belongsTo edge of entityType
+    ORGANIZATION to the organization whose id is the app's ``orgId``). Any other value lets nobody through; so does a NULL comparison. A cleared limit is
+    stored null or removed, and ``->>`` reads both as NULL. The one definition, as ArangoDB's ``_aql_limit_admits`` and Neo4j's ``_cypher_limit_admits``."""
+    return (f"(({a}.doc->>'accessLimit' = '{AccessLimit.CREATOR.value}' AND {a}.doc->>'createdBy' = {user_id})"
+            f" OR ({a}.doc->>'accessLimit' = '{AccessLimit.ORG.value}' AND EXISTS (SELECT 1 FROM graph.edges lb"
+            f" JOIN graph.nodes lo ON lo.org_id = lb.org_id AND lo.coll = 'organizations' AND lo.id = lb.to_id"
+            f" WHERE lb.org_id = {org} AND lb.coll = 'belongsTo' AND lb.from_coll = 'users' AND lb.from_id = {user_key} AND lb.to_coll = 'organizations'"
+            f" AND lb.to_id = {a}.doc->>'orgId' AND lb.doc->>'entityType' = 'ORGANIZATION')))")
 
 
 _DECLARED_BOUND = 100000        # the rows of graph.declared_record_groups: a read that reaches it may be partial

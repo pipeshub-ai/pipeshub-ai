@@ -32,6 +32,7 @@ from app.services.graph_db.entity_index_queries import (
     ENTITY_INDEX_SWEPT_AT_FIELD,
     entity_index_source,
 )
+from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.base import PgBase, _arango, _doc, _j
 
 if TYPE_CHECKING:
@@ -213,9 +214,12 @@ class EntityAccessMixin(PgBase):
                     JOIN graph.edges g ON g.org_id = p.org_id AND g.coll = 'permission' AND g.from_coll = 'teams' AND g.from_id = tm.id AND g.to_coll = 'apps' AND g.doc->>'type' = 'TEAM'
                     JOIN graph.nodes kb ON kb.org_id = g.org_id AND kb.coll = 'apps' AND kb.id = g.to_id AND kb.doc->>'type' = $4 AND kb.doc->>'orgId' = $3
                     WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = $2 AND p.to_coll = 'teams' AND p.doc->>'type' = 'USER'
-                  UNION SELECT unnest($7::text[]))
-                AND ((cardinality($8::text[]) = 0 AND NOT coalesce((a.doc->>'isHidden')::boolean, false)) OR a.id = ANY($8::text[])) AND NOT a.id = ANY($9::text[]) ORDER BY a.id""",
-                                  org, uk, org_id, _KB, _RETIRED, list(TEAM_GRANT_ROLES), [cid for _, cid in principals if cid], want, skip)
+                  UNION SELECT unnest($7::text[])
+                  UNION SELECT l.id FROM graph.nodes l WHERE l.org_id = $1 AND l.coll = 'apps' AND l.doc->>'orgId' = $3 AND l.doc->>'accessLimit' IS NOT NULL)
+                AND (a.doc->>'accessLimit' IS NULL OR (a.doc->>'orgId' = $3 AND __LIMIT_ADMITS__))
+                AND ((cardinality($8::text[]) = 0 AND NOT coalesce((a.doc->>'isHidden')::boolean, false)) OR a.id = ANY($8::text[])) AND NOT a.id = ANY($9::text[]) ORDER BY a.id""".replace(
+                                      "__LIMIT_ADMITS__", access_sql.limit_admits("a", "$1", "$10", "$2")),       # a limited app: whom its limit admits, whatever edges exist
+                                  org, uk, org_id, _KB, _RETIRED, list(TEAM_GRANT_ROLES), [cid for _, cid in principals if cid], want, skip, user_id)
             apps = [{"id": r["id"], **{k: _doc(r["doc"]).get(k) for k in ("name", "type", "permissionModel")}} for r in rows]
             levels = [a["id"] for a in apps if (a["type"] or "") != _KB and (a["permissionModel"] or "") != PermissionModel.APP_LEVEL.value]
             seeds = await tx.fetch("""/* pipeshub:graph.get_entity_access_context_seeds */ WITH pr AS (SELECT * FROM unnest($3::text[], $4::text[]) AS p(uid, cid)),

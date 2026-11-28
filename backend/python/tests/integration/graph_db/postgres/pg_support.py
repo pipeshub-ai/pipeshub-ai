@@ -6,7 +6,6 @@ from typing import Any
 
 from app.core.org_context import OrgContext, bind
 from app.services.graph_db.postgres.provider import PostgresGraphProvider
-from tests.permissions.scenario import Scenario, load_all
 
 
 def new_org() -> str:
@@ -32,9 +31,3 @@ class OrgBound:
 
 class StandInProvider(PostgresGraphProvider):
     pass
-
-
-def corpus() -> list[Scenario]:
-    """The scenario corpus PostgreSQL is held to: every scenario but the connector access-limit ones (tag ``access-limit``),
-    whose rule PostgreSQL's gate does not have yet. Step 3 of the licence gate adds it there and drops this filter."""
-    return [s for s in load_all() if "access-limit" not in s.tags]

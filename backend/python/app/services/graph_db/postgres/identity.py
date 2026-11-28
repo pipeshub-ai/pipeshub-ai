@@ -31,6 +31,7 @@ from app.services.graph_db.common.utils import (
     dedupe_agents_by_id,
     is_full_address,
 )
+from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.base import (
     _VALIDATOR,
     NotImplementedInPostgres,
@@ -718,12 +719,13 @@ class IdentityMixin(PgBase):
               AND (n.doc->>'scope' = 'team' OR n.doc->>'createdBy' = $4)
               AND ($5::text IS NULL OR n.doc->>'type' <> $5)
               AND (NOT $6::boolean OR (n.doc->>'scope' = 'personal' AND n.doc->>'createdBy' = $4))
-              AND (NOT $7::boolean OR (n.doc->>'scope' = 'team' AND ($8::boolean OR n.id IN (
+              AND (NOT $7::boolean OR (n.doc->>'scope' = 'team' AND ($8::boolean OR (n.doc->>'accessLimit' IS NOT NULL AND n.doc->>'orgId' = n.org_id AND __LIMIT_ADMITS__)
+                OR (n.doc->>'accessLimit' IS NULL AND n.id IN (
                     SELECT e.to_id FROM graph.nodes u JOIN graph.edges e ON e.org_id = u.org_id AND e.coll = 'userAppRelation' AND e.from_coll = 'users' AND e.from_id = u.id
                     WHERE u.org_id = n.org_id AND u.coll = 'users' AND u.doc->>'userId' = $4
                     UNION SELECT t.to_id FROM graph.nodes u JOIN graph.edges p ON p.org_id = u.org_id AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = u.id AND p.to_coll = 'teams' AND p.doc->>'type' = 'USER'
                     JOIN graph.edges t ON t.org_id = p.org_id AND t.coll = 'userAppRelation' AND t.from_coll = 'teams' AND t.from_id = p.to_id
-                    WHERE u.org_id = n.org_id AND u.coll = 'users' AND u.doc->>'userId' = $4))))
+                    WHERE u.org_id = n.org_id AND u.coll = 'users' AND u.doc->>'userId' = $4)))))
               AND ($9::text IS NULL OR position(lower($9) in lower(coalesce(n.doc->>'name', ''))) > 0 OR position(lower($9) in lower(coalesce(n.doc->>'type', ''))) > 0
                    OR position(lower($9) in lower(coalesce(n.doc->>'appGroup', ''))) > 0)
               AND ($10::boolean IS NULL OR n.doc->'isAuthenticated' = to_jsonb($10::boolean))
@@ -732,7 +734,9 @@ class IdentityMixin(PgBase):
               AND ($13::boolean IS NULL OR coalesce((n.doc->>'isConfigured')::boolean, false) = $13)
               AND ($14::boolean IS NULL OR coalesce((n.doc->>'isAgentActive')::boolean, false) = $14)
               AND ($15::text[] IS NULL OR n.doc->>'type' = ANY($15))), cnt AS (SELECT count(*) AS total FROM f)
-            SELECT cnt.total, p.doc FROM cnt LEFT JOIN LATERAL (SELECT doc FROM f ORDER BY doc->'createdAtTimestamp' DESC, id OFFSET $16 LIMIT $17) p ON true""",
+            SELECT cnt.total, p.doc FROM cnt LEFT JOIN LATERAL (SELECT doc FROM f ORDER BY doc->'createdAtTimestamp' DESC, id OFFSET $16 LIMIT $17) p ON true""".replace(
+                # a limited team connector is listed for whom its limit admits, whatever edges exist (the gate, PermissionsMixin._gate)
+                "__LIMIT_ADMITS__", access_sql.limit_admits("n", "n.org_id", "$4", "(SELECT u.id FROM graph.nodes u WHERE u.org_id = n.org_id AND u.coll = 'users' AND u.doc->>'userId' = $4 LIMIT 1)")),
                                   [current_org_id(), collection, edge_collection, user_id, kb_connector_type if exclude_kb and kb_connector_type else None,
                                    scope == "personal", scope == "team", is_admin, search or None, is_authenticated, is_active, connector_type_filter or None,
                                    is_configured, is_agent_active, list(allowed_connector_types) if allowed_connector_types is not None else None,

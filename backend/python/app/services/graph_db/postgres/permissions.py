@@ -170,8 +170,11 @@ class PermissionsMixin(PgBase):
                       AND ut.to_coll = 'teams' AND ut.to_id = e.from_id AND ut.doc->>'type' = 'USER' LIMIT 1) END) = ANY($5::text[]))""",
                                               org, grantees, access_sql.PRINCIPALS, user_key, [*_ROLE_RANK, *sorted(RETIRED_ROLES)])}
         app_ids |= {x["cid"] for x in links if x["cid"]}
+        # A limited app (accessLimit set) ignores the edges and links above and is gated for whom the limit admits.
         gated = [r["id"] for r in await tx.fetch("""/* pipeshub:graph.access_gate */ SELECT a.id FROM graph.nodes a WHERE a.org_id = $1 AND a.coll = 'apps'
-            AND a.doc->>'orgId' = $1 AND a.id = ANY($2::text[])""", org, sorted(app_ids))]
+            AND a.doc->>'orgId' = $1 AND ((a.doc->>'accessLimit' IS NULL AND a.id = ANY($2::text[])) OR (a.doc->>'accessLimit' IS NOT NULL AND __LIMIT_ADMITS__))""".replace(
+                "__LIMIT_ADMITS__", access_sql.limit_admits("a", "$1", "(SELECT u.doc->>'userId' FROM graph.nodes u WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $3)", "$3")),
+                                                 org, sorted(app_ids), user_key)]
         return grantees, gated, links
 
     async def get_knowledge_hub_access_v3(self, user_key: str, org_id: str, *, transaction: str | None = None) -> dict[str, Any]:
