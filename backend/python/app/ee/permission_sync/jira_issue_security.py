@@ -1,3 +1,8 @@
+# Copyright (c) 2026 PipesHub Inc.
+# Licensed under the PipesHub Enterprise License. See the LICENSE file in this
+# ee folder. Free for development, testing and evaluation. Production use needs
+# a PipesHub licence key.
+
 """Jira issue security levels for the team connectors.
 
 Issue security is not the project permission scheme. A project browse grant
@@ -116,6 +121,8 @@ class IssueSecurityContext:
     # Level id -> the people its same-on-every-issue holders name (``level_readers``), None for a level whose members
     # were not read. None when not tracked: then a person is matched to the level by a user holder only.
     level_readers: dict[str, frozenset[tuple[str, str]] | None] | None = None
+    # Not read because the install has no licence key: the stored levels and their digests stay as they are.
+    unlicensed: bool = False
 
     def browse_fingerprint(self) -> str:
         """"?" when the holders are unknown, "" when there are none, else a digest of them."""
@@ -1087,6 +1094,9 @@ def plan_level_reread(
     levels were tracked has no map, which reads as ``"leveled"``: that is the one-time re-read
     that closes issues stored open before levels were applied.
     """
+    if security.unlicensed:
+        # Nothing was read, so nothing changed: no pass, and the stored map (digests and marker) is saved back as it is.
+        return None, None, dict(stored or {})
     stored_real = {k: v for k, v in (stored or {}).items() if k != "*"}
     marker = (stored or {}).get("*")
     if security.defer_checkpoint:

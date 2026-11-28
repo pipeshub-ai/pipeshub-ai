@@ -18,11 +18,11 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import AccessRule, Connectors
-from app.connectors.sources.atlassian.core.jira_issue_security import (
+from app.ee.permission_sync.jira_issue_security import (
     IssueSecurityContext,
     SchemeKnowledge,
 )
-from app.connectors.sources.atlassian.jira_cloud.comment_access import (
+from app.ee.permission_sync.jira_comment_access import (
     restricted_comment_grants,
 )
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
@@ -82,6 +82,7 @@ def test_who_jira_shows_a_restricted_comment_to(comment, kwargs, expected) -> No
 
 def _connector(cls: type[JiraConnector] = JiraConnector) -> JiraConnector:
     dep = MagicMock()
+    dep.skips_permission_writes = AsyncMock(return_value=False)
     dep.org_id = "org-1"
     dep.get_record_by_external_id = AsyncMock(return_value=None)
     dep.get_records_by_parent = AsyncMock(return_value=[])
@@ -412,6 +413,7 @@ async def test_a_level_set_on_an_issue_with_a_restricted_comment_closes_the_issu
         members_by_level={"10102": [{"type": "group", "value": "g-lead", "group": {"groupId": "g-lead"}}]}))
     connector.data_entities_processor.on_new_records = AsyncMock()
     connector.data_entities_processor.on_new_record_groups = AsyncMock()
+    connector.data_entities_processor.skips_permission_writes = AsyncMock(return_value=False)
     result = await connector._check_and_fetch_updated_issue(_stored_issue(), {})
     assert result is not None
     record, grants = result
@@ -489,3 +491,16 @@ async def test_an_issue_takes_the_time_of_its_read_only_once_its_comments_are_wr
         r for call in dep.on_new_records.await_args_list for r, _ in call.args[0]]
     assert next(r for r in written if isinstance(r, TicketRecord)).source_updated_at == 1
     dep.on_record_metadata_update.assert_not_awaited()
+
+
+async def test_an_unlicensed_sync_does_not_hold_an_issue_back_for_comment_grants_it_never_reads() -> None:
+    """Without a licence key no role or group is read, so a role comment has no grant by design, not by failure: the
+    comment is still written (the processor keeps its stored grants) and the issue settles, not retried every sync."""
+    read_at = JiraConnector._parse_jira_timestamp(_connector(), "2024-01-20T00:00:00.000+0000")
+    connector = _connector()
+    connector.data_entities_processor.skips_permission_writes = AsyncMock(return_value=True)
+    connector._role_ids = {}
+    connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=_stored_ticket(1))
+    records, _ = await _build(connector, _issue([ROLE_COMMENT]))
+    assert [p for r, p, _ in records if isinstance(r, CommentRecord)] == [[]]
+    assert connector._settle_after_dependents == {"100": read_at}

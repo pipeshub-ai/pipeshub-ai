@@ -17,8 +17,10 @@ from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.filters import IndexingFilterKey
 from app.connectors.sources.atlassian.core.apps import JiraDataCenterApp
 from app.connectors.sources.atlassian.jira_data_center.connector import (
-    GroupMemberships,
     JiraDataCenterConnector,
+)
+from app.ee.permission_sync.jira_data_center import (
+    GroupMemberships,
     _normalize_jira_dc_group_row,
 )
 
@@ -39,6 +41,7 @@ def _make_deps():
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
+    dep.skips_permission_writes = AsyncMock(return_value=False)
     dep.on_record_deleted = AsyncMock()
     dep.on_new_app_roles = AsyncMock()
     dep.reindex_existing_records = AsyncMock()

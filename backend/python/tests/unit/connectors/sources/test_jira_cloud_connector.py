@@ -41,7 +41,7 @@ import httpx
 import pytest
 from fastapi import HTTPException
 
-from app.connectors.sources.atlassian.core.jira_issue_security import IssueSecurityContext, SchemeKnowledge
+from app.ee.permission_sync.jira_issue_security import IssueSecurityContext, SchemeKnowledge
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus, RecordRelations
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.sources.atlassian.jira_cloud.connector import (
@@ -49,11 +49,13 @@ from app.connectors.sources.atlassian.jira_cloud.connector import (
     BATCH_PROCESSING_SIZE,
     DEFAULT_MAX_RESULTS,
     GROUP_MEMBER_PAGE_SIZE,
-    GROUP_PAGE_SIZE,
     ISSUE_SEARCH_FIELDS,
     USER_PAGE_SIZE,
     IncompleteSyncError,
     JiraConnector,
+)
+from app.ee.permission_sync.jira_cloud import (
+    GROUP_PAGE_SIZE,
 )
 from app.models.entities import (
     AppRole,
@@ -89,6 +91,7 @@ def _make_mock_deps():
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
+    dep.skips_permission_writes = AsyncMock(return_value=False)
     dep.on_record_deleted = AsyncMock()
     dep.on_record_content_update = AsyncMock()
     dep.on_records_deleted_cascade = AsyncMock(return_value={

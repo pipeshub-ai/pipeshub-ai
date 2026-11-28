@@ -2880,6 +2880,35 @@ class TestFoldersAboveInScopePages:
         assert db.records["500"].id in db.kept_records
 
 
+
+async def _no_licence(connector_id: str | None) -> bool:
+    return True  # what the processor's licence gate answers for a company-wide connector with no key
+
+
+def _access_reads(api: AtlassianApiStub, *parts: str) -> list[str]:
+    return sorted({r.url.path for r in api.requests if any(part in r.url.path for part in parts)})
+
+
+class TestWithoutALicenceKey:
+    """The licence gate holds: the connector still syncs the content, and reads no access from the source."""
+
+    async def test_gated_steps_store_the_pages_and_read_no_access_from_confluence(self, api, db, checkpoints, search) -> None:
+        api.on("GET", f"{V2}/spaces", {"results": [{"id": "77", "key": "ENG", "name": "Engineering"}], "_links": {"base": WIKI}})
+        search.by_cursor[None] = search_page([v1_page("10")])
+        db.skips_permission_writes = _no_licence
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_user_groups()
+        await connector._sync_spaces()
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        await connector._sync_permission_changes_from_audit_log()
+
+        assert "10" in db.records
+        assert db.record_group_permissions == {"77": []}, "the space carries no grant of its own"
+        assert db.user_groups == []
+        assert _access_reads(api, "/permissions", "/restriction", "/group", "/audit") == []
+
+
 class FullSyncUnlink:
     """Stands in for the unlink after a full sync (#4119).
 

@@ -27,7 +27,7 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import AccessRule, CollectionNames
 from app.connectors.core.sync import sync_runner
-from app.connectors.sources.atlassian.core.jira_issue_security import (
+from app.ee.permission_sync.jira_issue_security import (
     IssueSecurityContext,
     SchemeKnowledge,
 )
@@ -3486,6 +3486,32 @@ class TestBrowseHolders:
         project_searches = [jql for jql in search.jql[searched:] if 'project = "ENG"' in jql]
         assert project_searches and all("updated >=" in jql for jql in project_searches), (
             "the incremental pass alone (its date predicate), no project re-read")
+
+
+
+async def _no_licence(connector_id: str | None) -> bool:
+    return True  # what the processor's licence gate answers for a company-wide connector with no key
+
+
+def _access_reads(api: AtlassianApiStub, *parts: str) -> list[str]:
+    return sorted({r.url.path for r in api.requests if any(part in r.url.path for part in parts)})
+
+
+class TestWithoutALicenceKey:
+    """The licence gate holds: the connector still syncs the content, and reads no access from the source."""
+
+    async def test_a_gated_sync_stores_the_issues_and_reads_no_access_from_jira(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        first_page_eng(search)
+        db.skips_permission_writes = _no_licence
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert len(tickets(db)) == 3
+        assert db.record_group_permissions == {"10000": []}, "the project carries no grant of its own"
+        assert db.groups_saved == {} and db.app_roles == {}
+        assert _access_reads(jira, "permissionscheme", "/role", "groups/picker", "issuesecurity") == []
 
 
 async def make_personal_connector(db: JiraRecordsDb, store: FakeCheckpointStore) -> JiraDataCenterPersonalConnector:

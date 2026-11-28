@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable
 import pytest
 
 from app.config.constants.arangodb import AccessRule, Connectors, OriginTypes
-from app.connectors.sources.atlassian.core.jira_issue_security import (
+from app.ee.permission_sync.jira_issue_security import (
     LEVEL_MEMBERS_UNREAD,
     UNREADABLE_AUTH,
     UNREADABLE_KEEPS_STORED_ACCESS,

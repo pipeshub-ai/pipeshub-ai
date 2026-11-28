@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import AccessRule
-from app.connectors.sources.atlassian.core.jira_issue_security import (
+from app.ee.permission_sync.jira_issue_security import (
     LEVEL_MEMBERS_UNREAD,
     UNREADABLE_AUTH,
     UNREADABLE_PERMISSION,
@@ -67,6 +67,7 @@ def _resp(status: int = 200, body: object = None) -> MagicMock:
 
 def _connector() -> JiraConnector:
     dep = MagicMock()
+    dep.skips_permission_writes = AsyncMock(return_value=False)
     dep.org_id = "org-1"
     for name in ("on_new_records", "on_record_content_update", "on_new_record_groups"):
         setattr(dep, name, AsyncMock())
@@ -1381,6 +1382,30 @@ class TestStoriesUnderTheirEpic:
         assert c._parents_to_retry == {"2001"}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("filed_under", ["2001", None])
+    async def test_unlicensed_a_story_stays_where_it_was_filed_and_its_epic_is_not_retried(self, filed_under) -> None:
+        """Unlicensed, the Browse holders are not read by design (``browse_holders`` None): that is not a failed epic
+        read. Queued for retry, the epic would make every later unlicensed sync re-read all its children."""
+        c = _connector()
+        c._get_fresh_datasource = AsyncMock()
+        unlicensed = IssueSecurityContext(knowledge=SchemeKnowledge.NONE, enforce=False, unlicensed=True,
+                                          browse_holders=None)
+        stored = MagicMock(id="rid", version=1, source_updated_at=0, is_placeholder=False,
+                           parent_external_record_id=filed_under)
+        story = await _story_record(c, [_epic(), _story()], context=unlicensed, existing=stored)
+        assert story.parent_external_record_id == filed_under
+        assert c._parents_to_retry == set()
+
+    @pytest.mark.asyncio
+    async def test_unlicensed_a_failed_epic_read_is_still_retried(self) -> None:
+        c = _connector()
+        c._get_fresh_datasource = AsyncMock(return_value=_bulk_fetch(_resp(500)))
+        unlicensed = IssueSecurityContext(knowledge=SchemeKnowledge.NONE, enforce=False, unlicensed=True,
+                                          browse_holders=None)
+        await _story_record(c, [_story()], context=unlicensed)
+        assert c._parents_to_retry == {"2001"}
+
+    @pytest.mark.asyncio
     async def test_an_epic_read_later_in_the_sync_replaces_a_failed_read(self) -> None:
         c = _connector()
         c._get_fresh_datasource = AsyncMock(return_value=_bulk_fetch(_resp(500)))
@@ -2112,7 +2137,7 @@ async def _roles_at(points: _KeptSyncPoints, now_ms: int, *, roles: dict | None)
     c.issues_sync_point = points
     c.notify = AsyncMock()
     c._app_roles_forbidden, c._app_roles_mapping = roles is None, roles or {}
-    with patch("app.connectors.sources.atlassian.jira_cloud.connector.get_epoch_timestamp_in_ms", return_value=now_ms):
+    with patch("app.ee.permission_sync.jira_cloud.get_epoch_timestamp_in_ms", return_value=now_ms):
         await c._read_level_roles()
     return c
 

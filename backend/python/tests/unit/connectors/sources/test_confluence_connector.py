@@ -33,7 +33,6 @@ from app.connectors.core.registry.filters import (
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     CONTENT_EXPAND_PARAMS,
     FOLDER_EXPAND_PARAMS,
-    PSEUDO_USER_GROUP_PREFIX,
     TIME_OFFSET_HOURS,
     CommentsUnreadable,
     ConfluenceConnector,
@@ -41,6 +40,9 @@ from app.connectors.sources.atlassian.confluence_cloud.connector import (
     extract_media_from_adf,
 )
 from app.connectors.sources.atlassian.core.confluence_html import HtmlImageContext
+from app.ee.permission_sync.confluence_cloud import (
+    PSEUDO_USER_GROUP_PREFIX,
+)
 from app.models.blocks import BlocksContainer, ChildRecord, ChildType, GroupSubType
 from app.models.entities import (
     AppUser,
@@ -70,6 +72,7 @@ def _make_mock_deps():
     data_entities_processor.on_new_user_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
+    data_entities_processor.skips_permission_writes = AsyncMock(return_value=False)
     data_entities_processor.on_record_deleted = AsyncMock()
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
     data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
@@ -1505,6 +1508,7 @@ def _make_mock_deps_cov():
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
+    dep.skips_permission_writes = AsyncMock(return_value=False)
     dep.on_record_deleted = AsyncMock()
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.get_all_app_users = AsyncMock(return_value=[])
@@ -3458,6 +3462,7 @@ def _make_mock_deps_fullcov():
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
+    dep.skips_permission_writes = AsyncMock(return_value=False)
     dep.on_record_deleted = AsyncMock()
     dep.on_record_content_update = AsyncMock()
     dep.on_updated_record_permissions = AsyncMock()

@@ -11,9 +11,11 @@ from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.registry.filters import ListOperator, SyncFilterKey
 from app.connectors.sources.atlassian.jira_data_center.connector import (
+    JiraDataCenterConnector,
+)
+from app.ee.permission_sync.jira_data_center import (
     GroupMemberships,
     GroupPickerPage,
-    JiraDataCenterConnector,
 )
 from app.models.entities import AppUser, RecordGroupType, RecordType, TicketRecord
 from app.models.permission import EntityType, PermissionType
@@ -34,6 +36,7 @@ def _make_connector() -> JiraDataCenterConnector:
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
+    dep.skips_permission_writes = AsyncMock(return_value=False)
     dep.on_record_deleted = AsyncMock()
     dep.on_new_app_roles = AsyncMock()
     dep.reindex_existing_records = AsyncMock()
@@ -643,7 +646,7 @@ class TestIssueLinkAndEpicDiscoveryGaps:
         conn.data_entities_processor.on_new_app_roles = AsyncMock()
 
         with patch(
-            "app.connectors.sources.atlassian.jira_data_center.connector.AppRole",
+            "app.ee.permission_sync.jira_data_center.AppRole",
             side_effect=RuntimeError("role build failed"),
         ):
             await conn._sync_project_lead_roles([{"key": "P"}], [])

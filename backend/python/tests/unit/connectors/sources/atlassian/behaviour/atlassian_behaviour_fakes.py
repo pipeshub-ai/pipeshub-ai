@@ -168,6 +168,9 @@ class FakeRecordsDb:
     the Atlassian connectors call are implemented; anything else raises.
     """
 
+    async def skips_permission_writes(self, connector_id: str | None) -> bool:
+        return False  # licensed: the licence gate has its own tests
+
     def __init__(self, org_id: str = "org-1", creator_email: Optional[str] = "owner@example.com") -> None:
         self.org_id = org_id
         self.creator_email = creator_email
