@@ -682,21 +682,31 @@ export const CARD_ANSWER_WITHHELD = 'Answered a question from the assistant.';
  */
 export const CARD_PICKS_WITHHELD = `User selections:\n${CARD_ANSWER_WITHHELD}`;
 
+/**
+ * And of an approval card's answer, to a reader who may see the card: still in the form the app answers an approval card
+ * with, so what the answer carried on joins the card's row, with no word of the decision.
+ */
+export const APPROVAL_DECISION_WITHHELD = `Tool approval:\n${CARD_ANSWER_WITHHELD}`;
+
 /** The app's answer to a question card, as Python reads it (`CARD_ANSWER_TEXT`). */
 const SELECTIONS_TEXT =
   // eslint-disable-next-line no-control-regex -- matching those characters is the point
   /^[\s\x1c-\x1f\x85]*User selections:/u;
 
+/** The app's answer to an approval card, as Python reads it (`CARD_ANSWER_TEXT`). */
+const APPROVAL_TEXT =
+  // eslint-disable-next-line no-control-regex -- matching those characters is the point
+  /^[\s\x1c-\x1f\x85]*Tool approval:/u;
+
 const withheldCardAnswer = <T extends object>(row: T, cardShown = false): T => {
   const r = row as Plain;
-  const picks =
-    cardShown &&
-    typeof r.content === 'string' &&
-    SELECTIONS_TEXT.test(r.content);
-  const view: Plain = {
-    ...r,
-    content: picks ? CARD_PICKS_WITHHELD : CARD_ANSWER_WITHHELD,
-  };
+  const text = cardShown && typeof r.content === 'string' ? r.content : '';
+  const content = SELECTIONS_TEXT.test(text)
+    ? CARD_PICKS_WITHHELD
+    : APPROVAL_TEXT.test(text)
+      ? APPROVAL_DECISION_WITHHELD
+      : CARD_ANSWER_WITHHELD;
+  const view: Plain = { ...r, content };
   return view as T;
 };
 

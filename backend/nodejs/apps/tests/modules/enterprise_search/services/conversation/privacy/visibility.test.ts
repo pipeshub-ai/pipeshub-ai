@@ -1596,6 +1596,8 @@ describe('the reader check: who may see an answer', () => {
     const WITHHELD_TEXT = 'Answered a question from the assistant.'
     // To who may see the card: still a card's answer, so the card reads as answered, with nothing of what was picked.
     const PICKS_WITHHELD = `User selections:\n${WITHHELD_TEXT}`
+    // The same of an approval card's answer: it still opens as one, with no word of the decision.
+    const APPROVAL_WITHHELD = `Tool approval:\n${WITHHELD_TEXT}`
     type Row = ReaderRow & Record<string, unknown>
     const perRecordView = async <M extends object>(rows: M[]): Promise<M[]> => rows
 
@@ -1632,6 +1634,19 @@ describe('the reader check: who may see an answer', () => {
       expect(byId(carol, t.reply._id).content).to.equal(PICKS_WITHHELD)
       expect(JSON.stringify(byId(carol, t.reply._id))).to.not.include('CANARY-R')
       expect(byId(await view(DANA, t.rows, w), t.reply._id).content).to.equal(SELECTIONS)
+    })
+
+    it("an approval answer bound to the card: Carol, who may see it, reads an approval's answer with no decision; Bob only that it was answered", async () => {
+      // The app joins a row in that form to the card's row, so what the answer carried on still reads under the card.
+      const t = cardTurn()
+      const approval: Row = { ...t.reply, content: 'Tool approval: allow' }
+      const rows = [t.asked, t.card, t.waiting, approval, t.resumed]
+      const w = world(rows)
+      expect(byId(await view(CAROL, rows, w), approval._id).content).to.equal(APPROVAL_WITHHELD)
+      expect(byId(await view(BOB, rows, w), approval._id).content).to.equal(WITHHELD_TEXT)
+      expect(byId(await view(DANA, rows, w), approval._id).content).to.equal('Tool approval: allow')
+      const carols = (await includableRows(reader(CAROL), session, rows, { deps: w.deps })) as Row[]
+      expect(byId(carols, approval._id).content, "nor does anyone else's model get the decision").to.equal(WITHHELD_TEXT)
     })
 
     it("Dana's own model, where others read the chat, gets her card whole: its questions go with its run's answer, sealed", async () => {
