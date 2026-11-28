@@ -33,6 +33,27 @@ import {
 } from './conversation-guards';
 
 const OBJECT_ID_HEX = /^[0-9a-f]{24}$/i;
+
+/**
+ * What only the person who started the chat may do, as its owner: the owner path for these also needs the chat's
+ * `initiator` to be the caller, as each operation's own lookup always required. A transfer sets both fields.
+ */
+const INITIATOR_OPERATIONS: Readonly<
+  Record<GuardKind, ReadonlySet<ConversationOperation>>
+> = {
+  chat: new Set<ConversationOperation>([
+    'manageSharing',
+    'linkProject',
+    'delete',
+    'archiveSelf',
+    'feedback',
+  ]),
+  agent: new Set<ConversationOperation>([
+    'regenerate',
+    'manageSharing',
+    'linkProject',
+  ]),
+};
 const SCOPED_FIELDS =
   'orgId userId isDeleted isShared sharedWith projectId projectVisibility initiator isArchived agentKey';
 
@@ -186,7 +207,17 @@ export class DefaultConversationGuards implements IConversationGuards {
         ? await this.teamIdsOf(req)
         : [];
 
-    const via = accessPaths(session, project, { userId, orgId, teamIds });
+    const startedIt = session.initiator?.toString() === userId;
+    const via = accessPaths(session, project, {
+      userId,
+      orgId,
+      teamIds,
+    }).filter(
+      (path) =>
+        path.type !== 'owner' ||
+        startedIt ||
+        !INITIATOR_OPERATIONS[kind].has(op),
+    );
     if (!legacyAllows(kind, op, via)) {
       throw new ConversationNotFoundError();
     }

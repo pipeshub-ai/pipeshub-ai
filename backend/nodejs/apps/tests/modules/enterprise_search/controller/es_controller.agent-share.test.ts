@@ -1127,6 +1127,21 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
       }
     })
 
+    it('regenerating is refused when the caller owns the row but did not initiate the chat, even if it is shared', async () => {
+      const s = setup()
+      // isShared is what the old filter let through; only the initiator may regenerate.
+      s.store.session(s.agentChatId)?.set({ initiator: STRANGER, isShared: true })
+      s.store.writes.length = 0
+
+      const res = await callStream(
+        agentTurnRoute('regenerate', controller.regenerateAgentAnswers(appConfig, turnDeps()) as StreamHandler),
+        request(owner, agentParams(s, { messageId: s.agentBotMessageId }), {}),
+      )
+
+      expect(notFoundMessage(res)).to.not.equal(undefined)
+      expect(s.ai.streamCalls).to.deep.equal([])
+    })
+
     const streamCases: Array<{ name: string; op: 'send' | 'regenerate'; handler: () => StreamHandler; body: Record<string, unknown> }> = [
       {
         name: 'addMessageStreamToAgentConversation',

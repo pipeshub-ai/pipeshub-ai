@@ -54891,8 +54891,9 @@ paths:
 
         **Permissions:**
 
-        Only the conversation owner can share; anyone else gets `404`. Users
-        must belong to the same organization.
+        Only the conversation's initiator can share. A missing, deleted or
+        agent conversation, or one the caller did not start (even one
+        shared with them at `write` access), is `404`.
       operationId: shareConversation
       security:
         - bearerAuth: []
