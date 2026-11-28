@@ -781,6 +781,21 @@ describe('Enterprise Search Routes', () => {
       expect(guards[1]).to.be.lessThan(names.length - 1)
     })
 
+    it('the chat regenerate route lets the harness admit a collaborator, and guards today’s loop for its owner', () => {
+      const chat = createConversationalRouter(container)
+      const route = chat.stack.find(
+        (layer: any) => layer.route?.path === '/:conversationId/message/:messageId/regenerate' && layer.route.methods.post,
+      )?.route
+      if (route === undefined) return expect.fail('the chat regenerate route')
+      const names: string[] = route.stack.map((layer: any) => layer.name)
+      const guards = names.flatMap((name, at) => (name === 'refuseNonOwnerTurn' ? [at] : []))
+      expect(guards, 'one guard before the durable layer, one after it').to.have.length(2)
+      const durable = names.indexOf('passThrough')
+      expect(guards[0]).to.be.lessThan(durable)
+      expect(guards[1]).to.be.greaterThan(durable)
+      expect(guards[1]).to.be.lessThan(names.length - 1)
+    })
+
     it('LAT2: regenerate and cancel pass the durable layer before today’s handler (a no-op while the harness is unbound)', () => {
       const layered = (router: any, path: string) => {
         const route = router.stack.find((layer: any) => layer.route?.path === path && layer.route.methods.post)?.route

@@ -2259,6 +2259,8 @@ export interface ChatSlot {
   isShared?: boolean;
   /** From GET conversation detail `durable`: the session runs on the durable harness (LC2FIX), whatever its latest answer. */
   durable?: boolean;
+  /** From GET conversation detail `access.accessLevel`: `write` for someone it was shared with for editing. */
+  accessLevel?: string;
   /**
    * Who the conversation is shared with: from the loaded detail, or from the
    * last share/unshare answer. `null` when not known.

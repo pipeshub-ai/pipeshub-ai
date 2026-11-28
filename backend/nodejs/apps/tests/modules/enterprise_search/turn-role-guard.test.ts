@@ -5,7 +5,9 @@ import { Types } from 'mongoose'
 import { SessionRole } from '../../../src/modules/agent-harness/domain/session-roles'
 import { HarnessSessionRoles } from '../../../src/libs/repositories/agent-harness/session-roles/mongo'
 import { ChatSession } from '../../../src/modules/enterprise_search/schema/chat.session.schema'
-import { refuseNonOwnerTurns, TurnRefusedError } from '../../../src/modules/enterprise_search/utils/turn-role-guard'
+import { refuseNonOwnerTurns, storedAsker, TurnRefusedError } from '../../../src/modules/enterprise_search/utils/turn-role-guard'
+import { ConversationNotFoundError } from '../../../src/modules/enterprise_search/services/conversation/domain/errors'
+import * as conversationRepository from '../../../src/libs/repositories/conversation'
 import { inRequestOrg } from '../../helpers/request-org-context'
 
 const ORG = new Types.ObjectId()
@@ -51,6 +53,50 @@ describe('enterprise_search: turn routes refuse participants who may not send tu
     on.enabled.resetHistory()
     expect(await run('owner', on)).to.deep.equal([])
     expect(on.enabled.callCount).to.equal(0)
+  })
+
+  // A collaborator the org lets send turns regenerates as they send, but only the answers to their own questions.
+  it('with collaborator turns on, a collaborator regenerates the answer to their own question; anyone else\'s stays the owner\'s', async () => {
+    const on = { enabled: sinon.stub().resolves(true) }
+    const off = { enabled: sinon.stub().resolves(false) }
+    const asker = sinon.stub()
+    const regenerate = request(String(WRITER), { conversationId: String(SESSION), messageId: 'msg-1' })
+    const run = async (role: SessionRole, askedBy: string | undefined, setting = on) => {
+      asker.resolves(askedBy)
+      const next = sinon.stub()
+      await inRequestOrg(refuseNonOwnerTurns({ roleOf: () => Promise.resolve(role) }, setting, asker))(regenerate, {} as never, next)
+      return next.firstCall.args as unknown[]
+    }
+    expect(await run('collaborator', String(WRITER))).to.deep.equal([])
+    expect(asker.lastCall.args[0]).to.deep.equal({ orgId: String(ORG), sessionId: String(SESSION), messageId: 'msg-1' })
+    // The owner's answer names nobody; another person's names them. Neither is the collaborator's to regenerate.
+    for (const someoneElse of [undefined, String(READER)]) {
+      const [refused] = await run('collaborator', someoneElse)
+      expect(refused, String(someoneElse)).to.be.instanceOf(ConversationNotFoundError)
+      expect(refused).to.include({ statusCode: 404 })
+    }
+    // With collaborator turns off, a collaborator's regenerate is refused as their message is, asking nothing else.
+    asker.resetHistory()
+    expect((await run('collaborator', String(WRITER), off))[0]).to.include({ code: 'HTTP_COLLABORATOR_TURNS_DISABLED' })
+    expect((await run('viewer', String(WRITER)))[0]).to.include({ code: 'HTTP_VIEWER_READ_ONLY' })
+    // The owner regenerates any answer, and nobody is asked whose it is.
+    expect(await run('owner', String(READER))).to.deep.equal([])
+    expect(asker.callCount).to.equal(0)
+  })
+
+  it('whose answer a regenerate names is read from the stored row: its sender, else whoever it names, else nobody', async () => {
+    const findMessage = sinon.stub()
+    sinon.stub(conversationRepository, 'getConversationRepository').returns({ findMessage } as never)
+    const scope = { orgId: String(ORG), sessionId: String(SESSION), messageId: 'msg-1' }
+    findMessage.resolves({ _id: 'msg-1', messageType: 'bot_response', senderId: String(WRITER) })
+    expect(await storedAsker(scope)).to.equal(String(WRITER))
+    expect(findMessage.lastCall.args).to.deep.equal([String(SESSION), String(ORG), 'msg-1'])
+    findMessage.resolves({ _id: 'msg-1', messageType: 'error', senderId: WRITER })
+    expect(await storedAsker(scope)).to.equal(String(WRITER))
+    findMessage.resolves({ _id: 'msg-1', messageType: 'bot_response' })
+    expect(await storedAsker(scope)).to.equal(undefined)
+    findMessage.resolves(null)
+    expect(await storedAsker(scope)).to.equal(undefined)
   })
 
   it('a setting that cannot be read is an error, never a pass', async () => {

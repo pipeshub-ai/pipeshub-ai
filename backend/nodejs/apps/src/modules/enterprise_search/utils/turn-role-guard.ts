@@ -11,6 +11,9 @@ import {
 import { SessionRoleLookup } from '../../agent-harness/ports/session-roles';
 import { CollaboratorTurnsSetting } from '../../agent-harness/ports/collaborator-turns';
 import { getCurrentOrgId } from '../../../libs/context/orgContext';
+import { ConversationNotFoundError } from '../services/conversation/domain/errors';
+import { getConversationRepository } from '../../../libs/repositories/conversation';
+import { idOf, rowAuthorOf } from '../services/conversation/privacy/visibility';
 
 const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 
@@ -20,6 +23,33 @@ export class TurnRefusedError extends ExpectedRefusalError {
     super(reason, TURN_REFUSAL_MESSAGES[reason], HTTP_STATUS.FORBIDDEN);
   }
 }
+
+/**
+ * Who asked the question whose answer a regenerate names: the person a stored row names (its sender, for a
+ * collaborator's turn), or undefined when it names nobody (the owner's own) or is not there.
+ */
+export type RegeneratedAsker = (scope: {
+  orgId: string;
+  sessionId: string;
+  messageId: string;
+}) => Promise<string | undefined>;
+
+/**
+ * `RegeneratedAsker` as the conversation store answers it: whom the row names, else who sent it (a collaborator's turn,
+ * as the harness stores it).
+ */
+export const storedAsker: RegeneratedAsker = async ({
+  orgId,
+  sessionId,
+  messageId,
+}) => {
+  const row = await getConversationRepository().findMessage(
+    sessionId,
+    orgId,
+    messageId,
+  );
+  return row === null ? undefined : rowAuthorOf(row, idOf(row.senderId));
+};
 
 /**
  * Refuses a turn (a new message, a regenerated answer) from a participant
@@ -33,10 +63,16 @@ export class TurnRefusedError extends ExpectedRefusalError {
  * its owner only: today's loop and anything else that has no collaborator path
  * (R38AUTHZ-FU-2: the chat route once passed no setting, so every
  * collaborator was refused although the org allowed their turns).
+ *
+ * `askerOf`, on a regenerate route: such a collaborator regenerates only the
+ * answers to their own questions. Anyone else's stays its owner's, and is
+ * denied as the conversation policy denies every operation it keeps for the
+ * owner (`ConversationNotFoundError`).
  */
 export function refuseNonOwnerTurns(
   roles: SessionRoleLookup,
   collaboratorTurns?: CollaboratorTurnsSetting,
+  askerOf?: RegeneratedAsker,
 ) {
   return async function refuseNonOwnerTurn(
     req: AuthenticatedUserRequest,
@@ -69,6 +105,26 @@ export function refuseNonOwnerTurns(
                 ? await collaboratorTurns.enabled(orgId)
                 : false,
             );
+      const messageId = req.params['messageId'];
+      if (
+        reason === null &&
+        role === 'collaborator' &&
+        askerOf !== undefined &&
+        messageId !== undefined &&
+        (await askerOf({ orgId, sessionId, messageId })) !== actorId
+      ) {
+        logger.info('session.turn_refused', {
+          event: 'session.turn_refused',
+          orgId,
+          sessionId,
+          actorId,
+          role,
+          reason: 'not_asker',
+          requestId: req.context?.requestId,
+        });
+        next(new ConversationNotFoundError());
+        return;
+      }
       if (reason === null) {
         next();
         return;

@@ -10,6 +10,7 @@ vi.mock('@/lib/api', () => ({
 
 const { defaultChatExtension: ext, defaultChatSlots: slots } = await import('../chat-extension');
 const { useChatStore } = await import('../store');
+const { useFeatureFlagsStore } = await import('@/lib/store/feature-flags-store');
 import type { ChatSlot, ConversationMessage, StreamChatRequest } from '../types';
 import type { MessagePair } from '../components/message-area/message-pairs';
 
@@ -86,6 +87,33 @@ describe('default chat slots', () => {
     });
     expect(renderHook(() => slots.useChatAccess(shared)).result.current).toMatchObject({ canShare: false, showComposer: false });
     expect(renderHook(() => slots.useChatAccess(loading)).result.current).toMatchObject({ canShare: false, showComposer: true });
+  });
+
+  it('someone a durable chat was shared with for editing gets the composer while the harness is on for the org', () => {
+    const harness = (harnessOn: boolean) =>
+      useFeatureFlagsStore.setState({
+        agentHarness: { useHarness: harnessOn, harnessMajor: 2, reason: 'org', resumeInFlightRuns: true, harnessOn },
+      } as never);
+    const chat = (id: string, fields: object) => {
+      const slotId = useChatStore.getState().createSlot(id);
+      useChatStore.getState().updateSlot(slotId, { isOwner: false, ...fields });
+      return slotId;
+    };
+    const editing = chat('c-edit', { accessLevel: 'write', durable: true });
+    const classic = chat('c-edit-classic', { accessLevel: 'write', durable: false });
+    const reading = chat('c-read-durable', { accessLevel: 'read', durable: true });
+    const agentChat = chat('c-edit-agent', { accessLevel: 'write', durable: true, threadAgentId: 'agent-1' });
+    const composer = (slotId: string) => renderHook(() => slots.useChatAccess(slotId)).result.current;
+    try {
+      harness(true);
+      expect(composer(editing)).toEqual({ isOwner: false, canShare: false, showComposer: true, shareAgentChats: true });
+      // Today's loop serves only the owner, a read share stays read-only, and an agent's chat takes its owner's turns only.
+      for (const slotId of [classic, reading, agentChat]) expect(composer(slotId).showComposer, slotId).toBe(false);
+      harness(false);
+      expect(composer(editing).showComposer).toBe(false);
+    } finally {
+      useFeatureFlagsStore.setState({ agentHarness: null } as never);
+    }
   });
 
   it('adds nothing around the composer, the list or a row', async () => {

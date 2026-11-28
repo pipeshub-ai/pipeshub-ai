@@ -34,7 +34,7 @@ import {
 } from '../../agent-harness/transport/chat-turn-route';
 import { Container } from 'inversify';
 import { createSessionRoles } from '../../../libs/repositories/agent-harness/session-roles';
-import { refuseNonOwnerTurns } from '../utils/turn-role-guard';
+import { refuseNonOwnerTurns, storedAsker } from '../utils/turn-role-guard';
 import { forkConversation as forkConversationPrivately } from '../controller/session-fork.controller';
 import {
   grepRecords,
@@ -307,13 +307,20 @@ export function createConversationalRouter(container: Container): Router {
   const turnRoleGuard = refuseNonOwnerTurns(createSessionRoles());
   // R38AUTHZ-FU-2: a collaborator the org lets send turns reaches the harness, which admits their turn as them; one
   // the harness leaves to today's loop is refused there, since that loop serves only the conversation's owner.
+  const collaboratorTurns = container.isBound('KeyValueStoreService')
+    ? createCollaboratorTurns(
+        container.get<KeyValueStoreService>('KeyValueStoreService'),
+      )
+    : undefined;
   const harnessTurnRoleGuard = refuseNonOwnerTurns(
     createSessionRoles(),
-    container.isBound('KeyValueStoreService')
-      ? createCollaboratorTurns(
-          container.get<KeyValueStoreService>('KeyValueStoreService'),
-        )
-      : undefined,
+    collaboratorTurns,
+  );
+  // A regenerate is such a collaborator's turn too, of an answer to their own question only.
+  const harnessRegenerateRoleGuard = refuseNonOwnerTurns(
+    createSessionRoles(),
+    collaboratorTurns,
+    storedAsker,
   );
   // Turns today's loop serves, counted beside the durable path's (DUR3).
   const legacyChatTurn = legacyTurnMetrics(
@@ -738,10 +745,11 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
     ValidationMiddleware.validate(regenerateAnswersParamsSchema),
-    turnRoleGuard,
+    harnessRegenerateRoleGuard,
     defaultChatModel,
     regenerateCommandOf(container),
     chatRegenerate,
+    turnRoleGuard,
     legacyChatTurn,
     guards.authorize('regenerate', 'chat'),
     guards.runLease('chat', { op: 'regenerate' }),

@@ -826,6 +826,9 @@ function ChatContent() {
           isOwner,
           isShared,
           durable: (detail.conversation as { durable?: boolean }).durable === true,
+          ...(typeof detail.conversation.access?.accessLevel === 'string'
+            ? { accessLevel: detail.conversation.access.accessLevel }
+            : {}),
           sharedWith: detail.conversation.sharedWith ?? null,
           projectVisibility: detail.conversation.projectVisibility ?? null,
           forkedFrom: detail.conversation.forkedFrom ?? null,
