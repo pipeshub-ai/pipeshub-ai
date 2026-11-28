@@ -20,6 +20,7 @@ from box_sdk_gen.managers.uploads import (  # type: ignore
     PreflightFileUploadCheckParent,
     UploadFileAttributes,
 )
+from box_sdk_gen.managers.users import GetUsersUserType  # type: ignore
 
 from app.sources.client.box.box import BoxClient as CustomBoxClient
 from app.sources.client.box.box import BoxResponse
@@ -794,7 +795,16 @@ class BoxDataSource:
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
 
-    async def users_get_users(self, limit: Optional[int] = None, offset: Optional[int] = None, **kwargs) -> BoxResponse:
+    async def users_get_users(
+        self,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+        *,
+        usemarker: Optional[bool] = None,
+        marker: Optional[str] = None,
+        user_type: Optional[str] = None,
+        **kwargs,
+    ) -> BoxResponse:
         """Get all users in the enterprise
 
         API Endpoint: users.get_users
@@ -803,6 +813,9 @@ class BoxDataSource:
         Args:
             limit (int, optional): The maximum number of users to return
             offset (int, optional): The offset for pagination
+            usemarker (bool, optional): Page by marker instead of offset
+            marker (str, optional): The next_marker of the previous page
+            user_type (str, optional): all, managed or external
 
         Returns:
             BoxResponse: SDK response
@@ -818,7 +831,10 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_users(limit=limit, offset=offset))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_users(
+                limit=limit, offset=offset, usemarker=usemarker, marker=marker,
+                user_type=GetUsersUserType(user_type) if user_type else None,
+            ))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))

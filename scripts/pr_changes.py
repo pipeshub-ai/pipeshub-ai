@@ -155,6 +155,7 @@ INTEGRATION_HELPERS = (
     f"{PYTHON}/tests/unit/attempt_start.py",
     f"{PYTHON}/tests/unit/agents/adapter/conftest.py",
     f"{PYTHON}/tests/unit/agents/adapter/support/scripted_transport.py",
+    f"{PYTHON}/tests/unit/connectors/sources/box/behaviour/box_behaviour_fakes.py",
     f"{PYTHON}/tests/unit/connectors/sources/localKB/push/bodies.py",
     f"{PYTHON}/tests/unit/connectors/sources/localKB/push/fake_storage.py",
     f"{PYTHON}/tests/unit/connectors/sources/localKB/push/image_harness.py",

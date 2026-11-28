@@ -138,6 +138,8 @@ def box_connector(mock_logger, mock_data_entities_processor,
     connector.box_cursor_sync_point = AsyncMock()
     connector.box_cursor_sync_point.read_sync_point = AsyncMock(return_value={})
     connector.box_cursor_sync_point.update_sync_point = AsyncMock()
+    connector.user_sync_point = AsyncMock()
+    connector.user_sync_point.read_sync_point = AsyncMock(return_value={"ids": []})
     return connector
 
 

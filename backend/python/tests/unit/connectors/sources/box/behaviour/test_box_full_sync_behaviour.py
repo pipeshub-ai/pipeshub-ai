@@ -268,7 +268,7 @@ class TestSharingAndPermissions:
         await connector.run_sync()
         assert db.records["fold-t"].external_record_group_id == ALICE
         checkpoints.sync_points.clear()
-        box_api.fail("GET", "/2.0/users", 503, times=5, query={"offset": "1000"})
+        box_api.fail("GET", "/2.0/users", 503, times=5, query={"marker": "1000"})
         if fresh_connector:
             connector = await ready_connector(db, checkpoints)
 
@@ -294,7 +294,7 @@ class TestSharingAndPermissions:
              "accessible_by": {"type": "user", "id": BOB, "login": BOB_EMAIL}},
         )
         checkpoints.sync_points.clear()
-        box_api.fail("GET", "/2.0/users", 503, times=5, query={"offset": "1000"})
+        box_api.fail("GET", "/2.0/users", 503, times=5, query={"marker": "1000"})
         connector = await ready_connector(db, checkpoints)
 
         await connector.run_sync()
@@ -911,12 +911,15 @@ class TestReplayedShareLookups:
 
         await connector.run_sync()
 
-        assert BOB_EMAIL in db.access("file-1")
+        # The walk rewrote the file's grants from Box's collaborators, so only the replay is held back.
+        assert BOB_EMAIL not in db.access("file-1")
         assert checkpoints.cursor() is None
 
         await connector.run_sync()
 
         assert BOB_EMAIL not in db.access("file-1")
+        # A position is saved only once the replay that was held back has been applied in full.
+        assert checkpoints.cursor() is not None
 
     async def test_a_removal_whose_collaboration_could_not_be_looked_up_leaves_no_cursor(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)
@@ -948,13 +951,16 @@ class TestReplayedShareLookups:
 
         await connector.run_sync()
 
-        assert BOB_EMAIL in db.access("file-1")
+        # The walk rewrote the file's grants from Box's collaborators, so only the replay is held back.
+        assert BOB_EMAIL not in db.access("file-1")
         assert checkpoints.cursor() is None
 
         db.failing.clear()
         await connector.run_sync()
 
         assert BOB_EMAIL not in db.access("file-1")
+        # A position is saved only once the replay that was held back has been applied in full.
+        assert checkpoints.cursor() is not None
 
 
 def history_calls(api: FakeBoxApi) -> list[str]:

@@ -1154,6 +1154,7 @@ class TestBoxSyncUsersPagination:
                 {"id": f"u{i}", "login": f"u{i}@t.com", "name": f"U{i}",
                  "status": "active"} for i in range(1000)
             ],
+            "next_marker": "m2",
         }
         page2 = {
             "entries": [
@@ -1177,6 +1178,8 @@ class TestBoxSyncUsersPagination:
 
         result = await box_connector._sync_users()
         assert len(result) == 1001
+        markers = [c.kwargs["marker"] for c in box_connector.data_source.users_get_users.await_args_list]
+        assert markers == [None, "m2"]
 
     async def test_api_failure(self, box_connector):
         box_connector.data_source.users_get_users = AsyncMock(
@@ -1310,6 +1313,8 @@ def box_connector(mock_logger_fullcov, mock_data_entities_processor_fullcov,
     connector.box_cursor_sync_point = AsyncMock()
     connector.box_cursor_sync_point.read_sync_point = AsyncMock(return_value={})
     connector.box_cursor_sync_point.update_sync_point = AsyncMock()
+    connector.user_sync_point = AsyncMock()
+    connector.user_sync_point.read_sync_point = AsyncMock(return_value={"ids": []})
     return connector
 
 
