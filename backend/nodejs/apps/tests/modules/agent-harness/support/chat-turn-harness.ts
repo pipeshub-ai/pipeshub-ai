@@ -63,6 +63,13 @@ export const OTHER_ORG_USER = new Types.ObjectId().toHexString();
 const identities: Record<string, { user?: Record<string, unknown>; tokenPayload?: Record<string, unknown> }> = {
   pat: { user: { orgId: ORG, userId: USER, isOAuth: true, oauthClientId: `pat-system:${ORG}`, oauthScopes: ['conversation:chat'] } },
   oauth: { user: { orgId: ORG, userId: USER, isOAuth: true, oauthClientId: 'client-app-1', oauthScopes: ['conversation:chat'] } },
+  // The same app's client_credentials token: it acts as USER, the identity the app names, not for USER.
+  client: {
+    user: {
+      orgId: ORG, userId: USER, isOAuth: true, oauthClientId: 'client-app-1', isClientCredentials: true,
+      oauthScopes: ['conversation:chat'],
+    },
+  },
   // A PAT its owner limited to one collection (main #4451).
   patLimited: {
     user: {

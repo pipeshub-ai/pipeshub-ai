@@ -61,8 +61,12 @@ def test_the_check_comes_first() -> None:
     assert called.index("refuse_unidentified_run") < called.index("offer")
 
 
-def _claim(via: str):  # noqa: ANN202 - a NodeClaim
-    spec = pinned_spec(tool_ids=[])
+def _claim(via: str, *, chat: bool = False):  # noqa: ANN202 - a NodeClaim
+    spec = (
+        pinned_spec(tool_ids=[], kb=[], agent=False, chat={"mode": "internal_search", "internalSearch": True},
+                    strict_scope=False)
+        if chat else pinned_spec(tool_ids=[])
+    )
     spec.extensions[PIPESHUB]["via"] = via
     return claim(spec)
 
@@ -96,3 +100,13 @@ async def test_the_tool_environment_refuses_before_it_reads_anything(monkeypatch
 def test_with_the_switch_off_a_service_run_still_builds(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(edition, "AGENTS_RUN_AS_THE_CALLER", False)
     assert _run_context(_claim("service")).via == "service"
+
+
+def test_an_assistant_chat_run_follows_the_same_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Node records an application's client-credentials token as ``service`` (request-identity ``requestVia``): its
+    assistant chat-mode run, which admission does not ask run-definition about, is refused; a user's own grant runs."""
+    monkeypatch.setattr(edition, "AGENTS_RUN_AS_THE_CALLER", True)
+    with pytest.raises(RunRefused) as refused:
+        _run_context(_claim("service", chat=True))
+    assert refused.value.error_type == "unidentified_caller"
+    assert _run_context(_claim("oauth_app", chat=True)).chat is not None

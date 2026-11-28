@@ -27,9 +27,9 @@ NOT_A_PERSON_DETAIL = (
 
 
 # How a durable run's actor reached it (``x.pipeshub`` ``via``), where the actor is a person: a session, their own
-# personal access token, an OAuth app's user token, or a trigger they set. A service identity is not. The run spec
-# does not say which OAuth grant an ``oauth_app`` run came from; admission refuses a client-credentials token when it
-# asks the agent authority (run-definition), so ``oauth_app`` here is the user's own grant.
+# personal access token, an OAuth app's user token, or a trigger they set. A service identity is not, and Node records
+# an application's client-credentials token as one (request-identity ``requestVia``), so ``oauth_app`` here is always
+# the user's own grant.
 PERSON_VIAS = frozenset({"session", "pat", "oauth_app", "trigger"})
 
 

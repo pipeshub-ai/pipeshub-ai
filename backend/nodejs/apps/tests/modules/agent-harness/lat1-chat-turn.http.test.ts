@@ -109,6 +109,16 @@ describe('LAT1: one request on the existing chat routes', () => {
     expect(logged(http.lines, 'projection.subscribe').map((line) => line['audience'])).to.deep.equal(['owner', 'owner']);
   });
 
+  it("an assistant chat-mode turn records an application's client_credentials token as a service and its user token as the app", async () => {
+    // The worker refuses a service run where agents run only as the identified caller; the user's own grant runs.
+    http = await start();
+    for (const [identity, via] of [['client', 'service'], ['oauth', 'oauth_app']] as const) {
+      const reply = await http.post('/conversations/stream', identity, { query: 'q', chatMode: 'internal_search' });
+      await reply.text();
+      expect(logged(http.lines, 'admission.accepted').pop(), identity).to.include({ via, orgId: ORG, actorId: USER });
+    }
+  });
+
   it('OR-5: a follow-up on a durable conversation whose run ended is admitted into it as a new run', async () => {
     http = await start();
     await (await http.post('/conversations/stream', 'session', { query: 'first', chatMode: 'internal_search' })).text();

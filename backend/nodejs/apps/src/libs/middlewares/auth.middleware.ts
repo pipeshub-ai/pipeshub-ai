@@ -384,6 +384,8 @@ export class AuthMiddleware {
       tokenId: payload.tokenRowId,
       delegatedBy,
       oauthClientId: payload.client_id,
+      // A client_credentials token acts as an identity its application names, not for a person who granted it.
+      ...(isClientCredentials ? { isClientCredentials: true } : {}),
       oauthScopes: tokenScopes,
       oauthAudience: payload.aud,
       // The Python services take a personal access token's limit from here,

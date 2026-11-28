@@ -536,6 +536,7 @@ describe('AuthMiddleware', () => {
       })
       expect(req.user.oauthScopes).to.deep.equal(['user:read', 'kb:read'])
       expect(req.user).to.not.have.property('knowledgeLimit')
+      expect(req.user).to.not.have.property('isClientCredentials')
     })
 
     it('SYNCMAIN2: carries a limited OAuth app token\'s signed limit on req.user for the harness, apart from a PAT\'s', async () => {
@@ -807,6 +808,8 @@ describe('AuthMiddleware', () => {
 
       expect(next.firstCall.args).to.have.length(0)
       expect(req.user.userId).to.equal('real-owner-id')
+      // The harness records such a caller as a service, not as the person it acts as.
+      expect(req.user.isClientCredentials).to.equal(true)
     })
 
     it('authenticates a delegated token as the person, not the service account', async () => {
