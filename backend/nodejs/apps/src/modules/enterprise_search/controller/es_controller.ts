@@ -241,6 +241,7 @@ import {
 import { TurnRun } from '../services/conversation/turn/turn-run';
 import type { TurnAnswerHooks } from '../services/conversation/turn/turn-extension';
 import { LeaseLostError } from '../services/conversation/turn/run-lease';
+import { ConversationNotFoundError } from '../services/conversation/domain/errors';
 import {
   gateTellingLive,
   RunWatchdog,
@@ -4700,9 +4701,8 @@ const setConversationPinned =
           pinned,
         ))
       ) {
-        throw new NotFoundError(
-          'Conversation not found or not owned by caller',
-        );
+        // A reader the guard let in is refused as every denial of a chat is.
+        throw new ConversationNotFoundError();
       }
 
       res.status(HTTP_STATUS.OK).json({
