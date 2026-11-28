@@ -839,6 +839,14 @@ class ZammadConnector(BaseConnector):
         while True:
             response = await datasource.list_users(page=page, per_page=per_page)
 
+            if self._token_in_use() != self._users_listed_with:
+                # Pages read with two tokens are two accounts' views, not one complete list.
+                outcome = ReadOutcome.INTERRUPTED
+                self.logger.warning(
+                    f"The Zammad access token was replaced while the user list was read (page {page}); group and "
+                    "role members and linked accounts stay as stored until the next sync reads them with the new one"
+                )
+                break
             if not response.success:
                 outcome = read_failure(response.status_code)
                 self.logger.warning(

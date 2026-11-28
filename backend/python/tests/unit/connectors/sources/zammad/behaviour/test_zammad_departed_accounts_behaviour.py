@@ -15,6 +15,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import urlparse
 
 import pytest
 from zammad_behaviour_fakes import (
@@ -234,6 +235,30 @@ async def test_a_token_replaced_after_a_listing_of_its_own_record_keeps_members_
         return listing
 
     world.connector._fetch_users = listed_then_replaced
+
+    parts = await world.sync_incomplete()
+
+    assert "the user list (interrupted)" in parts
+    assert world.linked() == EVERYONE
+    assert world.directory.group_members == groups_before
+    assert world.directory.role_members == roles_before
+
+
+async def test_a_token_replaced_between_pages_of_the_user_list_keeps_members_as_stored(world: World) -> None:
+    """Page 1 came from a token that lists everyone, page 2 from one shown only its own record: together they read
+    as a complete list of 100 users, which would take group and role access from the other 50."""
+    groups_before = {gid: set(m) for gid, m in world.directory.group_members.items()}
+    roles_before = {rid: set(m) for rid, m in world.directory.role_members.items()}
+    world.zammad.token = "old"
+    real_execute = world.zammad.execute
+
+    async def execute(request: HTTPRequest) -> FakeHttpResponse:
+        response = await real_execute(request)
+        if urlparse(request.url).path == "/api/v1/users" and int((request.query_params or {}).get("page", 1)) == 1:
+            world.zammad.token, world.zammad.lists_everyone = "new", False  # saved while page 1 was read
+        return response
+
+    world.zammad.execute = execute
 
     parts = await world.sync_incomplete()
 
