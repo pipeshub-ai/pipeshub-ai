@@ -427,10 +427,14 @@ def llm_for_chat(scenario: Scenario) -> AsyncMock:
 
 
 def prefetch_patches() -> list[tuple[str, object]]:
-    """The prefetch's blob-backed steps, answered with the refund policy's blocks."""
+    """The prefetch's blob-backed steps, answered with the refund policy's blocks, and the build's own
+    ``edition_defaults.golden_contract_patches()``: every golden driver applies these, so none can miss them."""
     from tests.support.knowledge_builder import builder_patches
 
-    return builder_patches("app.agents.chat_modes.prefetch.KnowledgeContextBuilder", _fake_flattened_results)
+    return [
+        *builder_patches("app.agents.chat_modes.prefetch.KnowledgeContextBuilder", _fake_flattened_results),
+        *edition_defaults.golden_contract_patches(),
+    ]
 
 
 async def record_stream(
@@ -479,7 +483,6 @@ async def record_stream(
             ("app.services.artifact_registry.ArtifactRegistryService", _FakeArtifactRegistry),
             ("app.models.citation_source.uuid4", live_ids()),
             *prefetch_patches(),
-            *edition_defaults.golden_contract_patches(),
         ):
             stack.enter_context(patch(target, new=value))
         for key, value in (

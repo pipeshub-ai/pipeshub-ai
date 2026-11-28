@@ -44,7 +44,6 @@ from harness_core.testing import ManualClock, armed
 from tests.contracts import golden_support
 from tests.contracts.golden_support import GOLDEN_DIR, GoldenTransport, Scenario
 from tests.contracts.scenarios import SCENARIOS
-from tests.support import edition_defaults
 from tests.unit.agents.adapter.conftest import FakeChatModel
 from tests.unit.harness.assembly import world as w
 
@@ -344,7 +343,6 @@ async def run_durably(
                 ("app.models.citation_source.uuid4", golden_support.live_ids()),
                 ("app.agents.agent_loop.parked_turn.datetime", _on_clock(clock)),
                 *golden_support.prefetch_patches(),
-                *edition_defaults.golden_contract_patches(),
                 ("app.api.routes.chatbot.get_llm_for_chat", golden_support.llm_for_chat(scenario)),
             ):
                 stack.enter_context(patch(target, new=value))
