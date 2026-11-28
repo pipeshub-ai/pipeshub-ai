@@ -36,6 +36,7 @@ from app.config.constants.arangodb import (
     PERSON_CRM_EDGES_OUTBOUND,
     PERSON_TRANSFERABLE_EDGES,
     RECORD_TYPE_COLLECTION_MAPPING,
+    AccessLimit,
     AppGroups,
     CollectionNames,
     Connectors,
@@ -540,6 +541,20 @@ def _aql_granted_hop(child: str, parent: str, tag: str, *, navigation: bool) -> 
 
 # Whether the App opens everything to whoever is gated in; `kh_app` must be in scope.
 _AQL_APP_OPENS = 'kh_app.permissionModel == "APP_LEVEL" OR kh_app.type == "KB"'
+
+
+def _aql_limit_admits(app: str, user: str) -> str:
+    """Whether a limited App (``accessLimit`` not null) lets ``user`` (a user document) through, whatever edges exist:
+    CREATOR only the user whose ``userId`` is the App's ``createdBy``, ORG every member of the App's own org (a
+    belongsTo edge of entityType ORGANIZATION to ``organizations/{orgId}``, as ``get_users`` reads membership). Any
+    other value lets nobody through. A cleared limit is stored null, so callers test ``accessLimit == null``, never
+    whether the attribute exists."""
+    member = (f'LENGTH(FOR kh_m IN {CollectionNames.BELONGS_TO.value} FILTER kh_m._from == {user}._id'
+              f' AND kh_m._to == CONCAT("{CollectionNames.ORGS.value}/", {app}.orgId) AND kh_m.entityType == "ORGANIZATION"'
+              f' AND DOCUMENT(kh_m._to) != null LIMIT 1 RETURN 1) > 0')
+    return (f'(({app}.accessLimit == "{AccessLimit.CREATOR.value}" AND {app}.createdBy != null'
+            f' AND {app}.createdBy == {user}.userId)'
+            f' OR ({app}.accessLimit == "{AccessLimit.ORG.value}" AND {app}.orgId != null AND {member}))')
 
 
 def _aql_below_seed_vertex(v: str) -> str:
@@ -2971,7 +2986,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         LET user_from = CONCAT("{CollectionNames.USERS.value}/", user_doc._key)
         LET direct_keys = (
             FOR app IN OUTBOUND user_from {CollectionNames.USER_APP_RELATION.value}
-                FILTER app.scope == @team_scope
+                FILTER app.scope == @team_scope AND app.accessLimit == null
                 RETURN app._key
         )
         LET team_keys = (
@@ -2980,10 +2995,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FILTER perm.type == "USER"
                 FILTER STARTS_WITH(perm._to, "{CollectionNames.TEAMS.value}/")
                 FOR app IN OUTBOUND perm._to {CollectionNames.USER_APP_RELATION.value}
-                    FILTER app.scope == @team_scope
+                    FILTER app.scope == @team_scope AND app.accessLimit == null
                     RETURN app._key
         )
-        FOR key IN UNION_DISTINCT(direct_keys, team_keys)
+        // A limited connector is listed for whom its limit admits, whatever edges exist (the gate, _kh_gate_aql).
+        LET limited_keys = (
+            FOR app IN {CollectionNames.APPS.value}
+                FILTER app.scope == @team_scope AND app.orgId == user_doc.orgId AND app.accessLimit != null
+                FILTER {_aql_limit_admits("app", "user_doc")}
+                RETURN app._key
+        )
+        FOR key IN UNION_DISTINCT(direct_keys, team_keys, limited_keys)
             RETURN key
         """
         results = await self.execute_query(
@@ -20377,7 +20399,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         orgAppRelation is left out on purpose: the organization holds one to every
         App of the tenant, so honouring it gates everyone into everything. A
         connector the user authenticated as another source account
-        (authenticatedAs) is gated too: the link is its grant.
+        (authenticatedAs) is gated too: the link is its grant. An App whose
+        ``accessLimit`` is set ignores all of these and is gated for whom the
+        limit admits (``_aql_limit_admits``).
 
         Yields ``kh_grantees`` (handles) and ``kh_gated_apps`` (keys).
         """
@@ -20402,10 +20426,16 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             FOR kh_link IN {CollectionNames.AUTHENTICATED_AS.value}
                 FILTER kh_link._from == u._id
                 LET linked = DOCUMENT("{CollectionNames.APPS.value}", kh_link.connectorId)
-                FILTER linked != null AND linked.orgId == {org}
+                FILTER linked != null AND linked.orgId == {org} AND linked.accessLimit == null
                 RETURN linked._key
         )
-        LET kh_gated_apps = UNION_DISTINCT(kh_linked_apps,
+        LET kh_limited_apps = (
+            FOR kh_lim IN {CollectionNames.APPS.value}
+                FILTER kh_lim.orgId == {org} AND kh_lim.accessLimit != null
+                FILTER {_aql_limit_admits("kh_lim", "u")}
+                RETURN kh_lim._key
+        )
+        LET kh_gated_apps = UNION_DISTINCT(kh_linked_apps, kh_limited_apps,
             FOR g IN kh_grantees
                 FOR app_handle IN UNION(
                     (FOR p IN {CollectionNames.PERMISSION.value}
@@ -20415,7 +20445,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         FILTER r._from == g
                         RETURN r._to))
                     LET gated = DOCUMENT(app_handle)
-                    FILTER gated != null AND gated.orgId == {org}
+                    FILTER gated != null AND gated.orgId == {org} AND gated.accessLimit == null
                     RETURN gated._key
         )
         """
@@ -27248,9 +27278,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 RETURN app
         )
 
+        // A limited connector is reached by whom its limit admits, whatever edges exist (the gate, _kh_gate_aql).
+        LET limited_apps = (
+            FOR app IN {apps}
+                FILTER app.orgId == @org_id AND app.accessLimit != null
+                RETURN app
+        )
+
         LET accessible_apps = (
-            FOR app IN UNION(direct_apps, team_apps, kb_apps_direct, kb_apps_team, linked_apps)
+            FOR app IN UNION(direct_apps, team_apps, kb_apps_direct, kb_apps_team, linked_apps, limited_apps)
                 FILTER app != null
+                FILTER app.accessLimit == null OR (app.orgId == @org_id AND {_aql_limit_admits("app", "userDoc")})
                 // A hidden KB (a project's linked collection) is reachable
                 // only when the caller names it, as in the Knowledge Hub paths.
                 FILTER (LENGTH(@source_ids) == 0 AND NOT_NULL(app.isHidden, false) == false)

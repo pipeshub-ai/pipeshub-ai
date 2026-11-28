@@ -84,7 +84,8 @@ def _link_storage_groups(edge_type: str, rows: list[dict]) -> list[tuple[str, li
 
 def arango_shape(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[dict]]:
     """The same graph as Arango stores it. A null property is an absent one (as
-    on Neo4j, where setting null removes it). Arango removes a group rather than
+    on Neo4j, where setting null removes it), except an App's accessLimit: Arango
+    stores a cleared limit as null, and the gate must read that as no limit. Arango removes a group rather than
     flagging it deleted or a placeholder, and its validator has no field for
     either, so such groups and their edges are left out: the guards for them are
     no-ops there. So is a record without an origin, which its validator requires."""
@@ -92,7 +93,7 @@ def arango_shape(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list
             if (n["kind"] == "RecordGroup" and (n["props"].get("isDeleted") or n["props"].get("isPlaceholder")))
             or (n["kind"] == "Record" and n["props"].get("origin") is None)}
     shaped = [
-        {**n, "props": {k: v for k, v in n["props"].items() if v is not None
+        {**n, "props": {k: v for k, v in n["props"].items() if (v is not None or (n["kind"] == "App" and k == "accessLimit"))
                         and not (n["kind"] == "RecordGroup" and k in ("isDeleted", "isPlaceholder"))}}
         for n in nodes if n["id"] not in gone
     ]

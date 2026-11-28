@@ -1,0 +1,231 @@
+# The connector's access limit (App.accessLimit). While it is set the connector is written APP_LEVEL, so whoever passes
+# the gate reads every record of it; the limit alone decides who passes, whatever edges, links or grants exist.
+# Tagged access-limit: PostgreSQL does not have the rule yet, and its suites leave these worlds out until it does.
+- id: RULE-L01
+  title: 'Limited to the creator: the creator passes with no edge and reads everything'
+  source: licence gate design B (accessLimit)
+  rule: access-limit
+  world:
+    principals:
+      - {id: c}
+      - {id: o}
+    nodes:
+      - {id: A, kind: app, model: APP_LEVEL, access_limit: CREATOR, created_by: c}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+  expect:
+    verdicts:
+      c: {A: admit, d: admit, f: admit}
+      o: {A: deny, d: deny, f: deny}
+  tags: [rules, access-limit]
+- id: RULE-L02
+  title: 'Limited to the creator: another user with a user-app edge does not pass'
+  source: licence gate design B (accessLimit)
+  rule: access-limit
+  world:
+    principals:
+      - {id: c}
+      - {id: o}
+    nodes:
+      - {id: A, kind: app, model: APP_LEVEL, access_limit: CREATOR, created_by: c}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    gates:
+      - [c, A]
+      - [o, A]
+      - [o, A, PERMISSION]
+  expect:
+    verdicts:
+      c: {A: admit, f: admit}
+      o: {A: deny, d: deny, f: deny}
+  tags: [rules, access-limit]
+- id: RULE-L03
+  title: 'Limited to the creator: a team or group edge does not pass'
+  source: licence gate design B (accessLimit)
+  rule: access-limit
+  world:
+    principals:
+      - {id: t, kind: team, org_member: false}
+      - {id: g, kind: group, org_member: false}
+      - {id: c}
+      - {id: o}
+    nodes:
+      - {id: A, kind: app, model: APP_LEVEL, access_limit: CREATOR, created_by: c}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    memberships:
+      - [o, t]
+      - [o, g]
+      - [c, t]
+    gates:
+      - [t, A]
+      - [g, A]
+      - [org, A, PERMISSION]
+  expect:
+    verdicts:
+      c: {f: admit}
+      o: {A: deny, f: deny}
+  tags: [rules, access-limit]
+  comment: The creator is a member of the team too; the team edge neither adds nor takes away.
+- id: RULE-L04
+  title: 'Limited to the creator: an authenticatedAs link does not pass'
+  source: licence gate design B (accessLimit)
+  rule: access-limit
+  world:
+    principals:
+      - {id: c}
+      - {id: o}
+      - {id: s, org_member: false}
+    nodes:
+      - {id: A, kind: app, model: APP_LEVEL, access_limit: CREATOR, created_by: c}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    grants:
+      - [s, f]
+    links:
+      - [o, s, A]
+  expect:
+    verdicts:
+      c: {f: admit}
+      o: {A: deny, f: deny}
+  tags: [rules, access-limit]
+- id: RULE-L05
+  title: 'Limited to the creator: a grant on a record or group does not pass'
+  source: licence gate design B (accessLimit)
+  rule: access-limit
+  world:
+    principals:
+      - {id: c}
+      - {id: o}
+    nodes:
+      - {id: A, kind: app, model: APP_LEVEL, access_limit: CREATOR, created_by: c}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    grants:
+      - [o, d]
+      - [o, f]
+      - [org, f, ORG]
+  expect:
+    verdicts:
+      c: {f: admit}
+      o: {d: deny, f: deny}
+  tags: [rules, access-limit]
+- id: RULE-L06
+  title: 'Opened to the org: every member passes with no edge, a user outside the org does not'
+  source: licence gate design B (accessLimit)
+  rule: access-limit
+  world:
+    principals:
+      - {id: c}
+      - {id: o}
+      - {id: x, org_member: false}
+    nodes:
+      - {id: A, kind: app, model: APP_LEVEL, access_limit: ORG, created_by: c}
+      - {id: d, kind: group, connector: A, rule: RESTRICTED, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    gates:
+      - [x, A]
+  expect:
+    verdicts:
+      c: {A: admit, d: admit, f: admit}
+      o: {A: admit, d: admit, f: admit}
+      x: {A: deny, f: deny}
+  tags: [rules, access-limit]
+  comment: x has no BELONGS_TO to the organization, so the org-wide limit does not reach it, and its own edge no longer counts.
+- id: RULE-L07
+  title: 'Opened to the org: an app of another org stays closed'
+  source: licence gate design B (accessLimit)
+  rule: access-limit
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, org: other, model: APP_LEVEL, access_limit: ORG, created_by: u}
+      - {id: d, kind: group, connector: A, rule: OPEN, org: other, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, org: other, parents: [d]}
+      - {id: B, kind: app, org: other, model: APP_LEVEL, access_limit: CREATOR, created_by: u}
+      - {id: e, kind: record, connector: B, rule: OPEN, org: other, parents: [B]}
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {A: deny, f: deny, B: deny, e: deny}
+  tags: [rules, access-limit, org-isolation]
+  comment: The limit is weighed only for apps of the org the request is made in, as every gate arm is.
+- id: RULE-L08
+  title: 'A limit stored as null is no limit: the gate is as today'
+  source: licence gate design B (accessLimit); ArangoDB stores a cleared field as null
+  rule: access-limit
+  world:
+    principals:
+      - {id: u}
+      - {id: v}
+      - {id: w}
+    nodes:
+      - {id: A, kind: app, access_limit_null: true, created_by: v}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    grants:
+      - [u, f]
+      - [w, f]
+    gates:
+      - [u, A]
+      - [v, A]
+  expect:
+    verdicts:
+      u: {A: admit, f: admit}
+      v: {A: admit, f: deny}
+      w: {A: deny, f: deny}
+  tags: [rules, access-limit]
+- id: RULE-L09
+  title: 'No limit field at all: the gate is as today, and the creator gets nothing extra'
+  source: licence gate design B (accessLimit)
+  rule: access-limit
+  world:
+    principals:
+      - {id: u}
+      - {id: v}
+      - {id: w}
+    nodes:
+      - {id: A, kind: app, created_by: w}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    grants:
+      - [u, f]
+      - [w, f]
+    gates:
+      - [u, A]
+      - [v, A]
+  expect:
+    verdicts:
+      u: {A: admit, f: admit}
+      v: {A: admit, f: deny}
+      w: {A: deny, f: deny}
+  tags: [rules, access-limit]
+- id: RULE-L10
+  title: 'Limited to the creator: restricted and non-inheriting nodes are read by the creator (APP_LEVEL)'
+  source: licence gate design B (accessLimit)
+  rule: access-limit
+  world:
+    principals:
+      - {id: c}
+      - {id: o}
+    nodes:
+      - {id: A, kind: app, model: APP_LEVEL, access_limit: CREATOR, created_by: c}
+      - {id: d, kind: group, connector: A, rule: RESTRICTED, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: RESTRICTED, parents: [d]}
+      - {id: g, kind: record, connector: A, rule: STRICT, parents: [d]}
+      - {id: h, kind: record, connector: A, rule: OPEN, parents: [d]}
+      - {id: k, kind: record, connector: A, rule: PARENT_AND_GRANT, parents: [h]}
+      - {id: z, kind: record, connector: A, rule: OPEN, parents: [d], deleted: true}
+    grants:
+      - [o, d]
+      - [o, f]
+    gates:
+      - [o, A]
+  expect:
+    verdicts:
+      c: {d: admit, f: admit, g: admit, h: admit, k: admit, z: deny}
+      o: {d: deny, f: deny, g: deny, h: deny, k: deny}
+  tags: [rules, access-limit]
+  comment: No node inherits and only o holds grants; APP_LEVEL opens every hop for whoever passes the gate. A deleted node still blocks.
