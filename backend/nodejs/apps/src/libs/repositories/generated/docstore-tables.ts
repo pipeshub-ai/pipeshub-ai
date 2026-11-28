@@ -220,6 +220,11 @@ export interface IdentityOrgLogos {
   version: Generated<number>;
 }
 
+export interface IdentityOrgSlugs {
+  slug: string;
+  org_id: string;
+}
+
 export interface IdentityOrgs {
   org_id: string;
   slug: Generated<string>;
@@ -679,6 +684,7 @@ export interface DB {
   'conversation.semantic_searches': ConversationSemanticSearches;
   'identity.org_auth_config': IdentityOrgAuthConfig;
   'identity.org_logos': IdentityOrgLogos;
+  'identity.org_slugs': IdentityOrgSlugs;
   'identity.orgs': IdentityOrgs;
   'identity.session_families': IdentitySessionFamilies;
   'identity.slug_counters': IdentitySlugCounters;

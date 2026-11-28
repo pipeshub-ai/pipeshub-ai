@@ -140,6 +140,7 @@ jobs:
             --allow='-kernel.org_parent_ids]' --allow='-kernel.org_writes_held]' --allow='-kernel.assert_org_writable]' --allow='-kernel.org_lineage]' --allow='-platform.job_start]' --allow='-platform.job_finish]' \
             --allow='-platform.job_checkpoint]' --allow='-identity.oldest_org]' --allow='-identity.org_count]' \
             --allow='-identity.gauge_user_counts]' --allow='-identity.gauge_live_orgs]' --allow='-identity.gauge_auth_configs]' \
+            --allow='-identity.org_slug_claim]' --allow='-identity.copied_org_slug_claim]' \
             --allow='-kt.set_note_title]' --allow='-kt.token_owner]' --allow='-ku.item_labels]' \
             --allow='-kt.w_fence_add]' --allow='-kt.w_fence_remove]' --allow='-kt.w_fence_reason]' --allow='-kt.w_changes_ack]' \
             --allow='-kt.w_keys_add]' --allow='-kt.w_pref_put]' \

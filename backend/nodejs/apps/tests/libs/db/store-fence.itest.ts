@@ -320,7 +320,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           'content.documents', 'content.project_members', 'content.projects',
           'conversation.chat_messages', 'conversation.chat_session_members', 'conversation.chat_sessions', 'conversation.citations',
           'conversation.semantic_search_members', 'conversation.semantic_searches',
-          'identity.org_auth_config', 'identity.org_logos', 'identity.orgs', 'identity.session_families', 'identity.slug_counters', 'identity.used_reset_links',
+          'identity.org_auth_config', 'identity.org_logos', 'identity.org_slugs', 'identity.orgs', 'identity.session_families', 'identity.slug_counters', 'identity.used_reset_links',
           'identity.user_activities', 'identity.user_credentials', 'identity.user_group_members', 'identity.user_groups', 'identity.user_pictures', 'identity.users', 'integrations.slack_threads', 'integrations.slack_user_links', 'oauth.access_tokens',
           'oauth.agent_call_events', 'oauth.agent_registrations', 'oauth.apps', 'oauth.authorization_codes', 'oauth.delegation_events', 'oauth.device_authorizations', 'oauth.refresh_tokens',
           'oauth.service_account_delegations',
