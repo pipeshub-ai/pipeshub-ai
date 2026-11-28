@@ -7088,6 +7088,13 @@
       "hidden": "这里有些字符原本不可见或会改变文字顺序，因此显示为 ⟨U+202E⟩ 这样的代码。请确认这正是您要发送的内容。",
       "host": "{{ascii}} 混用了不同文字，看起来像 {{unicode}}。它可能不是看上去的那个网站，因此以真实形式显示。",
       "markerTitle": "原本不可见或会改变文字顺序的字符"
+    },
+    "schedule": {
+      "name": "名称",
+      "when": "时间",
+      "ask": "每次运行要问的内容",
+      "notify": "通知方式",
+      "where": "每次运行都会开启单独的对话。可随时在“工作区 > 计划”中暂停或删除。"
     }
   },
   "codeTaskCard": {
@@ -7917,7 +7924,8 @@
     "status": {
       "active": "运行中",
       "paused": "已暂停",
-      "disabled": "已关闭"
+      "disabled": "已关闭",
+      "ranOnce": "已运行一次"
     },
     "trigger": {
       "cron": "Cron",
@@ -7940,7 +7948,8 @@
         "cron": "按计划",
         "manual": "立即运行",
         "event": "已触发",
-        "cronCaughtUp": "计划运行（补运行）"
+        "cronCaughtUp": "计划运行（补运行）",
+        "once": "一次性"
       },
       "openConversation": "打开对话",
       "admitted": "已启动",
@@ -7993,7 +8002,13 @@
       "notifyUnknown": "暂时不可用。",
       "notifyCheckFailed": "无法检查你可以使用哪些渠道，因此只提供 PipesHub。",
       "webhookCantSign": "调用方无法签名。改为在请求头中使用令牌",
-      "webhookCantSignHint": "任何看到令牌的人都能调用它。签名更安全。"
+      "webhookCantSignHint": "任何看到令牌的人都能调用它。签名更安全。",
+      "kindOnce": "一次，在指定日期和时间",
+      "onceAt": "日期和时间",
+      "onceAtHint": "按你的时区（{{timeZone}}）。至少一分钟后，最多一年内。",
+      "onceNotExisting": "在你的时区，这一天没有这个时间：时钟会跳过它。请选择其他时间。",
+      "onceTooSoon": "请选择至少一分钟后的时间。",
+      "onceTooFar": "请选择一年以内的时间。"
     },
     "webhook": {
       "title": "您的 webhook",
@@ -8019,7 +8034,10 @@
       "limit": "您已达到允许的计划任务数量上限。请先删除一个。",
       "budgetCeiling": "每次运行的预算过高。",
       "unavailable": "计划运行需要持久化代理聊天，而你的组织已将其关闭。",
-      "triggerTokenInvalid": "Webhook 的触发令牌不匹配。请从计划中复制当前令牌后重试。"
+      "triggerTokenInvalid": "Webhook 的触发令牌不匹配。请从计划中复制当前令牌后重试。",
+      "ranOnce": "此计划已运行过一次，不会再次运行；你可以删除它。",
+      "notApproved": "此计划未获批准，因此没有创建。",
+      "approvalUsed": "该批准已创建过一个计划，且该计划已被删除。请重新提出请求以创建新计划。"
     },
     "reason": {
       "scheduledRunsDisabled": "组织已关闭计划运行",
@@ -8055,6 +8073,21 @@
       "latest": "始终使用当前版本",
       "latestHint": "每次运行都使用最近发布的版本。",
       "save": "保存"
+    },
+    "ranOnce": "已运行一次，不会再次运行。",
+    "when": {
+      "cron": "{{cron}}（cron）",
+      "everyMinute": "每分钟",
+      "everyMinutes": "每 {{count}} 分钟",
+      "hourly": "每小时的第 {{minute}} 分",
+      "daily": "每天 {{time}}",
+      "weekdays": "每个工作日 {{time}}",
+      "weekly": "每{{day}} {{time}}",
+      "monthly": "每月 {{day}} 日 {{time}}",
+      "onceToday": "一次，今天 {{time}}",
+      "onceTomorrow": "一次，明天 {{time}}",
+      "onceOn": "一次，{{date}}",
+      "withZone": "{{when}}（{{timeZone}}）"
     }
   },
   "unknownEffectCard": {
@@ -8839,7 +8872,9 @@
       "generic_one": "{{action}}",
       "generic_other": "{{action}}（{{count}} 次调用）",
       "install_packages_one": "安装软件包",
-      "install_packages_other": "安装软件包 {{count}} 次"
+      "install_packages_other": "安装软件包 {{count}} 次",
+      "scheduleCreate_one": "设置计划",
+      "scheduleCreate_other": "设置 {{count}} 个计划"
     },
     "engineWants": "{{engine}} 想要：",
     "childWants": "代码任务想要：",
@@ -8907,7 +8942,8 @@
     "waitingForOwner_one": "正在等待对话所有者对一个步骤作出决定",
     "waitingForOwner_other": "正在等待对话所有者对 {{count}} 个步骤作出决定",
     "denyAllLabel": "全部拒绝：{{title}}",
-    "titleSiteUpload": "允许本次运行上传到 {{destination}}？"
+    "titleSiteUpload": "允许本次运行上传到 {{destination}}？",
+    "titleSchedule": "设置计划"
   },
   "engineSignIn": {
     "title": "编程引擎登录",

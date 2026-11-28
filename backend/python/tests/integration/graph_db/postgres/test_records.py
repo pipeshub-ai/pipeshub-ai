@@ -21,6 +21,9 @@ from app.core.org_context import (
 from app.models.entities import CodeFileRecord, FileRecord, Record, RecordType
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.postgres.records import RecordsMixin
+from tests.integration.graph_db.sync_point_contract import (
+    assert_a_null_clears_a_sync_point_field,
+)
 
 from .pg_support import OrgBound, StandInProvider, new_org
 
@@ -250,6 +253,10 @@ async def test_a_sync_point_is_created_once_merged_cleared_and_removed(pg_db) ->
     await p.remove_sync_point("k", "syncPoints")
     assert await p.get_sync_point("k", "syncPoints") is None
     await p.remove_sync_point("k", "syncPoints")
+
+
+async def test_a_field_written_as_none_reads_back_absent_as_on_every_store(pg_db) -> None:
+    await assert_a_null_clears_a_sync_point_field(bound(pg_db), "cleared")
 
 
 async def test_wp87_fu_4b_one_orgs_sync_points_page_in_key_order_and_another_org_reads_nothing(pg_db) -> None:

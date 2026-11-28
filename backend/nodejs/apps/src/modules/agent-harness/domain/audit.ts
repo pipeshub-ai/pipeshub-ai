@@ -201,6 +201,8 @@ export const AUDIT_EVENT_FIELDS: Readonly<
     'counted',
     'required',
   ),
+  // ADR-SCH-01 D3: the schedule an approval in chat made; its ids only, never its ask.
+  'x.pipeshub.schedule.created': pick('interactionId', 'scheduleId'),
   // A grant that widens what the conversation may do without asking again (R2 F1).
   'interaction.granted': pick(
     'interactionId',

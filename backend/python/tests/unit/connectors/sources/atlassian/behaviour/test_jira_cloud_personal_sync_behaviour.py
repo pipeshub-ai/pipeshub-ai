@@ -10,6 +10,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -30,6 +31,11 @@ from atlassian_cloud_fakes import (
     route_every_http_client,
 )
 
+from app.connectors.core.base.connector.failure_notices import ReconnectRequiredError
+from app.connectors.core.base.token_service.oauth_service import (
+    RefreshTokenInvalidError,
+)
+from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.sources.atlassian.jira_cloud_personal.connector import (
     JiraCloudPersonalConnector,
 )
@@ -334,11 +340,16 @@ class TestLostAccess:
 
         assert tickets(db) == {"1", "2", "3", "5"}
 
-    async def test_a_token_jira_no_longer_accepts_removes_nothing(self, site, db, checkpoints) -> None:
+    async def test_a_token_jira_no_longer_accepts_stops_the_sync_and_removes_nothing(
+        self, site, db, checkpoints, monkeypatch,
+    ) -> None:
         connector, _ = await synced(db, checkpoints)
         site.signed_in = False
+        refresher = MagicMock(refresh_now=AsyncMock(side_effect=RefreshTokenInvalidError("revoked")))
+        monkeypatch.setattr(startup_service, "get_token_refresh_service", lambda: refresher)
 
-        await connector.run_sync()
+        with pytest.raises(ReconnectRequiredError, match="Jira rejected this connector's sign-in"):
+            await connector.run_sync()
 
         assert tickets(db) == {"1", "2", "3", "5"}, "to an anonymous visitor everything looks gone; none of it is"
         assert set(db.record_groups) == {"10000", "10001"}

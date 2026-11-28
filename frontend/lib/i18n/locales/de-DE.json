@@ -7041,6 +7041,13 @@
       "hidden": "Einige Zeichen hier wären unsichtbar oder würden die Reihenfolge des Textes ändern. Sie werden deshalb als Codes wie ⟨U+202E⟩ angezeigt. Prüfen Sie, ob Sie genau das senden möchten.",
       "host": "{{ascii}} mischt Alphabete und sieht aus wie {{unicode}}. Die Adresse wird in ihrer echten Form angezeigt, weil sie womöglich nicht die Website ist, die sie zu sein scheint.",
       "markerTitle": "Ein Zeichen, das sonst unsichtbar wäre oder den Text umordnen würde"
+    },
+    "schedule": {
+      "name": "Name",
+      "when": "Wann",
+      "ask": "Jeder Lauf wird gefragt",
+      "notify": "Benachrichtigen über",
+      "where": "Jeder Lauf startet eine eigene Unterhaltung. Pausieren oder löschen Sie ihn jederzeit unter Workspace > Zeitpläne."
     }
   },
   "codeTaskCard": {
@@ -7969,7 +7976,8 @@
     "status": {
       "active": "Aktiv",
       "paused": "Pausiert",
-      "disabled": "Ausgeschaltet"
+      "disabled": "Ausgeschaltet",
+      "ranOnce": "Einmal ausgeführt"
     },
     "trigger": {
       "cron": "Cron",
@@ -7992,7 +8000,8 @@
         "cron": "Geplant",
         "manual": "Jetzt ausführen",
         "event": "Ausgelöst",
-        "cronCaughtUp": "Geplant (nachgeholt)"
+        "cronCaughtUp": "Geplant (nachgeholt)",
+        "once": "Einmalig"
       },
       "openConversation": "Unterhaltung öffnen",
       "admitted": "Gestartet",
@@ -8045,7 +8054,13 @@
       "notifyUnknown": "Gerade nicht verfügbar.",
       "notifyCheckFailed": "Die verfügbaren Kanäle konnten nicht geprüft werden, daher wird nur PipesHub angeboten.",
       "webhookCantSign": "Der Aufrufer kann nicht signieren. Stattdessen ein Token im Header verwenden",
-      "webhookCantSignHint": "Wer das Token sieht, kann den Webhook aufrufen. Signieren ist sicherer."
+      "webhookCantSignHint": "Wer das Token sieht, kann den Webhook aufrufen. Signieren ist sicherer.",
+      "kindOnce": "Einmal, zu Datum und Uhrzeit",
+      "onceAt": "Datum und Uhrzeit",
+      "onceAtHint": "In Ihrer Zeitzone ({{timeZone}}). Frühestens in einer Minute, höchstens ein Jahr im Voraus.",
+      "onceNotExisting": "Diese Uhrzeit gibt es an diesem Tag in Ihrer Zeitzone nicht: Die Uhren springen darüber. Wählen Sie eine andere Uhrzeit.",
+      "onceTooSoon": "Wählen Sie eine Zeit frühestens in einer Minute.",
+      "onceTooFar": "Wählen Sie eine Zeit höchstens ein Jahr im Voraus."
     },
     "webhook": {
       "title": "Ihr Webhook",
@@ -8071,7 +8086,10 @@
       "limit": "Sie haben die zulässige Anzahl an Zeitplänen erreicht. Löschen Sie zuerst einen.",
       "budgetCeiling": "Das Budget pro Lauf ist zu hoch.",
       "unavailable": "Geplante Läufe benötigen den dauerhaften Agent-Chat, der für Ihre Organisation ausgeschaltet ist.",
-      "triggerTokenInvalid": "Das Trigger-Token des Webhooks stimmt nicht. Kopieren Sie das aktuelle Token aus dem Zeitplan und versuchen Sie es erneut."
+      "triggerTokenInvalid": "Das Trigger-Token des Webhooks stimmt nicht. Kopieren Sie das aktuelle Token aus dem Zeitplan und versuchen Sie es erneut.",
+      "ranOnce": "Dieser Zeitplan ist schon einmal gelaufen. Er läuft nicht noch einmal; Sie können ihn löschen.",
+      "notApproved": "Dieser Zeitplan wurde nicht genehmigt und daher nicht angelegt.",
+      "approvalUsed": "Mit dieser Genehmigung wurde bereits ein Zeitplan angelegt, der gelöscht wurde. Fragen Sie erneut, um einen neuen einzurichten."
     },
     "reason": {
       "scheduledRunsDisabled": "geplante Läufe wurden für die Organisation ausgeschaltet",
@@ -8107,6 +8125,21 @@
       "latest": "Immer die Live-Version verwenden",
       "latestHint": "Jeder Lauf verwendet die zuletzt veröffentlichte Version.",
       "save": "Speichern"
+    },
+    "ranOnce": "Einmal ausgeführt. Er läuft nicht noch einmal.",
+    "when": {
+      "cron": "{{cron}} (Cron)",
+      "everyMinute": "Jede Minute",
+      "everyMinutes": "Alle {{count}} Minuten",
+      "hourly": "Jede Stunde um :{{minute}}",
+      "daily": "Jeden Tag um {{time}}",
+      "weekdays": "Jeden Werktag um {{time}}",
+      "weekly": "Jeden {{day}} um {{time}}",
+      "monthly": "Jeden Monat am {{day}}. um {{time}}",
+      "onceToday": "Einmal, heute um {{time}}",
+      "onceTomorrow": "Einmal, morgen um {{time}}",
+      "onceOn": "Einmal, {{date}}",
+      "withZone": "{{when}} ({{timeZone}})"
     }
   },
   "unknownEffectCard": {
@@ -8891,7 +8924,9 @@
       "generic_one": "{{action}}",
       "generic_other": "{{action}} ({{count}} Aufrufe)",
       "install_packages_one": "Pakete installieren",
-      "install_packages_other": "{{count}}-mal Pakete installieren"
+      "install_packages_other": "{{count}}-mal Pakete installieren",
+      "scheduleCreate_one": "Zeitplan einrichten",
+      "scheduleCreate_other": "{{count}} Zeitpläne einrichten"
     },
     "engineWants": "{{engine}} möchte:",
     "childWants": "Die Code-Aufgabe möchte:",
@@ -8959,7 +8994,8 @@
     "waitingForOwner_one": "Wartet darauf, dass der Besitzer der Unterhaltung über einen Schritt entscheidet",
     "waitingForOwner_other": "Wartet darauf, dass der Besitzer der Unterhaltung über {{count}} Schritte entscheidet",
     "denyAllLabel": "Alle ablehnen: {{title}}",
-    "titleSiteUpload": "Uploads an {{destination}} für diesen Lauf erlauben?"
+    "titleSiteUpload": "Uploads an {{destination}} für diesen Lauf erlauben?",
+    "titleSchedule": "Zeitplan einrichten"
   },
   "engineSignIn": {
     "title": "Anmeldung für Coding-Engines",

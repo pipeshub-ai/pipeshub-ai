@@ -2154,7 +2154,7 @@ class TestTreeRefused:
         connector.notify.assert_awaited_once()
         message = connector.notify.await_args.kwargs["message"]
         assert message == "- " + TREE_UNREADABLE.message.format(spaces="'S3', 'S4', 'S5'")
-        assert "1 problem" in connector.notify.await_args.kwargs["title"]
+        assert "finished with problems" in connector.notify.await_args.kwargs["title"]
         # The structure says nothing about which records exist, so nothing is held back.
         assert connector.full_sync_coverage().complete is True
         assert len(page_checkpoint_writes(connector)) == 3

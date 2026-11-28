@@ -20,6 +20,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from app.core.db import notify
 from app.services.pg_runtime import QUEUE_CHANNEL, RuntimeDb
 from app.utils.log_redaction import redact_secrets_in_text
 
@@ -35,7 +36,6 @@ WITH m AS (
   RETURNING id, msg_key)
 INSERT INTO platform.queue_deliveries (group_id, topic, message_id, msg_key)
 SELECT g, $1, m.id, m.msg_key FROM m CROSS JOIN unnest($4::text[]) AS g"""
-_NOTIFY = "/* pipeshub:queue.notify */ SELECT pg_notify('pipeshub_queue', $1)"  # QUEUE_CHANNEL
 _LOCK_GROUPS = """/* pipeshub:queue.lockgroups */
 LOCK TABLE platform.queue_groups IN EXCLUSIVE MODE"""
 _ADD_GROUP = """/* pipeshub:queue.addgroup */
@@ -197,7 +197,7 @@ class PgQueue:
         # message, never neither.
         groups = [r["group_id"] for r in await tx.fetch(_GROUPS, topic)]
         await tx.execute(_INSERT, topic, [k for k, _ in items], [v for _, v in items], groups)
-        await tx.execute(_NOTIFY, topic)  # sent at COMMIT, so a consumer wakes only for what committed
+        await notify(tx, QUEUE_CHANNEL, topic)  # sent at COMMIT, so a consumer wakes only for what committed
 
     async def ensure_group(
         self, topic: str, group_id: str, *, from_start: bool, ephemeral: bool = False
@@ -361,15 +361,15 @@ class PgQueue:
         kind loops, one short transaction per batch, while batches come back full, so the sweep keeps up with a burst."""
         async with await self._write() as tx:
             await tx.execute(_SWEEP_GROUPS, ephemeral_stale_s)
-        for sql, retention in (
-            (_SWEEP_DEAD, dead_retention_s),
-            (_SWEEP_MESSAGES, orphan_retention_s),
-        ):
-            for _ in range(self.SWEEP_MAX_BATCHES):
-                async with await self._write() as tx:
-                    done = await tx.execute(sql, retention, self.SWEEP_BATCH)
-                if int(done.rsplit(" ", 1)[-1]) < self.SWEEP_BATCH:
-                    break
+        await self._sweep_batches(_SWEEP_DEAD, dead_retention_s)
+        await self._sweep_batches(_SWEEP_MESSAGES, orphan_retention_s)
+
+    async def _sweep_batches(self, sql: str, retention: float) -> None:
+        for _ in range(self.SWEEP_MAX_BATCHES):
+            async with await self._write() as tx:
+                done = await tx.execute(sql, retention, self.SWEEP_BATCH)
+            if int(done.rsplit(" ", 1)[-1]) < self.SWEEP_BATCH:
+                break
 
     async def backlog(self, group_id: str, topics: list[str]) -> dict[str, int]:
         async with (await self.rt.db()).runtime_uow() as tx:

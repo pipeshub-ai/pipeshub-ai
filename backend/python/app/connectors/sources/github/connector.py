@@ -44,6 +44,10 @@ from app.sources.external.github.github_async import GhObject
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors, PermissionModel
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.failure_notices import (
+    SyncIncompleteError,
+    reports_failed_sync,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -295,9 +299,9 @@ class GithubConnector(GitHubTeamsConnector):
         """
         return self._connector_group_permission
 
+    @reports_failed_sync("GitHub")
     async def run_sync(self) -> None:
         """Sync every repo the configured account reaches; skip org member/email sync."""
-        self.runtime.sign_in_refused = False
         try:
             self.record_sync_point.org_id = self.data_entities_processor.org_id
             await self.repos.timestamps.cancel()
@@ -328,12 +332,11 @@ class GithubConnector(GitHubTeamsConnector):
             await self.projects.sync_all_repos()
             self.repos.timestamps.schedule()
             if self.projects.failures:
-                raise RuntimeError(
+                raise SyncIncompleteError(
                     "GitHub Personal sync did not complete: " + "; ".join(self.projects.failures[:10])
                 )
         except Exception as e:
             self.logger.error("Error in GitHub Personal sync: %s", e, exc_info=True)
-            await self._stop_if_sign_in_refused(e)
             raise
 
     async def run_incremental_sync(self) -> None:

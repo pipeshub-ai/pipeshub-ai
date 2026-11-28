@@ -196,6 +196,8 @@ def test_ext_event_catalog() -> None:
         "x.pipeshub.provenance.recorded": {"worker"},
         # One approval of an ask that needs several approvals.
         "x.pipeshub.approval.counted": {"node"},
+        # ADR-SCH-01 D3: the schedule an approval in chat made, so the approval makes one schedule only.
+        "x.pipeshub.schedule.created": {"node"},
         "x.pipeshub.artifact.publish_intent": {"worker"},
         "x.pipeshub.artifact.published": {"worker"},
         "x.pipeshub.artifact.presented": {"worker"},
