@@ -1,7 +1,11 @@
 // auth.middleware.ts
 import { Response, NextFunction, Request, RequestHandler } from 'express';
 import jwt from 'jsonwebtoken';
-import { ForbiddenError, UnauthorizedError } from '../errors/http.errors';
+import {
+  ForbiddenError,
+  InternalServerError,
+  UnauthorizedError,
+} from '../errors/http.errors';
 import { orgLifecycle } from '../org-lifecycle';
 import { Logger } from '../services/logger.service';
 import { AuthenticatedServiceRequest, AuthenticatedUserRequest } from './types';
@@ -123,7 +127,9 @@ export class AuthMiddleware {
       } else {
         if (method === 'session') method = 'oauth_token';
         if (!this.oauthTokenServiceFactory()) {
-          throw new UnauthorizedError('OAuth authentication is not configured');
+          throw new InternalServerError(
+            'OAuth authentication is not configured',
+          );
         }
         // authenticate oauth token
         await this.authenticateOAuthToken(token, req);
@@ -242,55 +248,49 @@ export class AuthMiddleware {
     // arrive at all.
     const isClientCredentials = userId === payload.client_id;
     if (isClientCredentials) {
-      try {
-        const app = await getOAuthAppRepository().findLiveIdentity(
-          payload.client_id,
-        );
-        if (app) {
-          // Absent means the creator, which is how every app behaves until
-          // someone points it at a service account.
-          const resolved = app.tokenIdentityUserId ?? app.createdBy;
-          // An app no person created has nobody for its client_credentials tokens to act as.
-          if (resolved === NO_APP_CREATOR) {
-            throw new UnauthorizedError(
-              'This application does not act as a user',
-            );
-          }
-
-          // The token carries the identity it was minted for. If the
-          // application has been pointed somewhere else since, this token is
-          // not one of its current credentials and is refused.
-          //
-          // Substituting the live identity instead would leave the two halves
-          // of the product disagreeing: Node would authorise the request as
-          // the new identity while the Python services, which read the claim
-          // rather than the record, would go on reading as the previous one.
-          // Refusing fails both closed, because their role check comes back
-          // through here.
-          //
-          // Revoking on change does not make this unnecessary. A grant that
-          // had already loaded the application can insert its row after the
-          // revocation has run, and a revocation that throws leaves every
-          // existing token carrying the old claim.
-          if (
-            typeof payload.createdBy === 'string' &&
-            payload.createdBy !== resolved
-          ) {
-            throw new UnauthorizedError(
-              'This token was issued for an identity the application no longer acts as',
-            );
-          }
-
-          userId = resolved;
-        } else {
-          throw new UnauthorizedError('OAuth app not found or revoked');
+      // A failed read is no verdict on the token: it goes on as it is (the
+      // store's 503/504, else a 500), never as a 401.
+      const app = await getOAuthAppRepository().findLiveIdentity(
+        payload.client_id,
+      );
+      if (app) {
+        // Absent means the creator, which is how every app behaves until
+        // someone points it at a service account.
+        const resolved = app.tokenIdentityUserId ?? app.createdBy;
+        // An app no person created has nobody for its client_credentials tokens to act as.
+        if (resolved === NO_APP_CREATOR) {
+          throw new UnauthorizedError(
+            'This application does not act as a user',
+          );
         }
-      } catch (err) {
-        if (err instanceof UnauthorizedError) {
-          throw err;
+
+        // The token carries the identity it was minted for. If the
+        // application has been pointed somewhere else since, this token is
+        // not one of its current credentials and is refused.
+        //
+        // Substituting the live identity instead would leave the two halves
+        // of the product disagreeing: Node would authorise the request as
+        // the new identity while the Python services, which read the claim
+        // rather than the record, would go on reading as the previous one.
+        // Refusing fails both closed, because their role check comes back
+        // through here.
+        //
+        // Revoking on change does not make this unnecessary. A grant that
+        // had already loaded the application can insert its row after the
+        // revocation has run, and a revocation that throws leaves every
+        // existing token carrying the old claim.
+        if (
+          typeof payload.createdBy === 'string' &&
+          payload.createdBy !== resolved
+        ) {
+          throw new UnauthorizedError(
+            'This token was issued for an identity the application no longer acts as',
+          );
         }
-        this.logger.error('Failed to look up OAuth app owner', err);
-        throw new UnauthorizedError('Failed to look up OAuth app owner');
+
+        userId = resolved;
+      } else {
+        throw new UnauthorizedError('OAuth app not found or revoked');
       }
     }
 
@@ -357,16 +357,11 @@ export class AuthMiddleware {
       user.role === 'admin' && user.kind !== 'service' ? 'admin' : 'member';
 
     if (!accountType && isClientCredentials) {
-      try {
-        const org = await this.asVerified(orgId, userId, 'oauth', () =>
-          getOrgRepository().getAccountType(orgId),
-        );
-        if (org) {
-          accountType = org.accountType;
-        }
-      } catch (err) {
-        this.logger.error('Failed to look up org for OAuth token', err);
-        throw new UnauthorizedError('Failed to look up org for OAuth token');
+      const org = await this.asVerified(orgId, userId, 'oauth', () =>
+        getOrgRepository().getAccountType(orgId),
+      );
+      if (org) {
+        accountType = org.accountType;
       }
     }
 

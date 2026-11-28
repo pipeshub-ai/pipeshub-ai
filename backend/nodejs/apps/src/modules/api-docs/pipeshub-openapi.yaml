@@ -793,6 +793,10 @@ components:
         The prefix is display-only, added for secret-scanner detectability; the
         gateway strips it before verifying the token, so send it exactly as
         issued, prefix included.
+
+        A `401` refuses the token: get a new one. A `5xx` while PipesHub checks
+        the token (`500`, `503` with `Retry-After` when the store sends it,
+        `504`) is not a refusal: keep the token and retry.
     scopedToken:
       type: http
       scheme: bearer
@@ -846,6 +850,10 @@ components:
         Supports authorization_code (with PKCE) and client_credentials flows.
         OAuth tokens are Bearer JWTs — use the same Authorization header as regular tokens.
         For **client_credentials**, machine JWTs may use `userId === client_id`; the Node gateway resolves the application's token identity — the service account it is pointed at, or its creator for an application registered before that was required — see **OAuth Provider** tag.
+
+        A `401` refuses the token: get a new one. A `5xx` while PipesHub checks
+        the token (`500`, `503` with `Retry-After` when the store sends it,
+        `504`) is not a refusal: keep the token and retry.
       flows:
         authorizationCode:
           authorizationUrl: /api/v1/oauth2/authorize
@@ -91795,11 +91803,32 @@ paths:
               schema:
                 $ref: '#/components/schemas/McpTransportError'
         '503':
-          description: The organization's MCP access settings could not be read (`id` null, code `-32000`)
+          description: |
+            The organization's MCP access settings could not be read (`id` null, code `-32000`).
+
+            The bearer token could not be checked just now (a store did not answer). Nothing
+            says the token is bad: no `WWW-Authenticate` is sent and the address is not counted
+            as sending bad tokens; keep the token and retry, after `Retry-After` when present (`ErrorResponse`).
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying; present when the store sends one.
+              schema:
+                type: string
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/McpTransportError'
+                oneOf:
+                  - $ref: '#/components/schemas/McpTransportError'
+                  - $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: |
+            The bearer token could not be checked just now (a store did not answer). Nothing
+            says the token is bad: no `WWW-Authenticate` is sent and the address is not counted
+            as sending bad tokens; keep the token and retry (the store timed out).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '406':
           description: Not Acceptable - the `Accept` header does not list both `application/json` and `text/event-stream`
           content:
@@ -91863,6 +91892,10 @@ paths:
           description: |
             Internal server error.
 
+            The bearer token could not be checked just now (a store did not answer). Nothing
+            says the token is bad: no `WWW-Authenticate` is sent and the address is not counted
+            as sending bad tokens; keep the token and retry (for example, the document store is down).
+
             A form-encoded body larger than 100 KB or with more than 1000 fields is answered `413` by the app-wide body parser, also before authentication. A JSON body larger than 5 MB is answered `413` instead (`/mcp` has its own JSON parser, which runs before the app-wide one).
           content:
             application/json:
@@ -91894,6 +91927,33 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/McpTransportError'
+        '503':
+          description: |
+            The organization's MCP access settings could not be read (`id` null, code `-32000`).
+
+            The bearer token could not be checked just now (a store did not answer). Nothing
+            says the token is bad: no `WWW-Authenticate` is sent and the address is not counted
+            as sending bad tokens; keep the token and retry, after `Retry-After` when present (`ErrorResponse`).
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying; present when the store sends one.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/McpTransportError'
+                  - $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: |
+            The bearer token could not be checked just now (a store did not answer). Nothing
+            says the token is bad: no `WWW-Authenticate` is sent and the address is not counted
+            as sending bad tokens; keep the token and retry (the store timed out).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '405':
           description: This server offers no SSE stream; send messages with `POST /mcp`
           headers:
@@ -91992,6 +92052,10 @@ paths:
         '500':
           description: |
             Internal server error.
+
+            The bearer token could not be checked just now (a store did not answer). Nothing
+            says the token is bad: no `WWW-Authenticate` is sent and the address is not counted
+            as sending bad tokens; keep the token and retry (for example, the document store is down).
 
             A form-encoded body larger than 100 KB or with more than 1000 fields is answered `413` by the app-wide body parser, also before authentication. A JSON body larger than 5 MB is answered `413` instead (`/mcp` has its own JSON parser, which runs before the app-wide one).
           content:

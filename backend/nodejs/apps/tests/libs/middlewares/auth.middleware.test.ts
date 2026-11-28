@@ -5,7 +5,7 @@ import jwt from 'jsonwebtoken'
 import { AuthMiddleware } from '../../../src/libs/middlewares/auth.middleware'
 import { AuthTokenService } from '../../../src/libs/services/authtoken.service'
 import { Logger } from '../../../src/libs/services/logger.service'
-import { UnauthorizedError } from '../../../src/libs/errors/http.errors'
+import { InternalServerError, UnauthorizedError } from '../../../src/libs/errors/http.errors'
 import { UserActivities } from '../../../src/modules/auth/schema/userActivities.schema'
 import { Users } from '../../../src/modules/user_management/schema/users.schema'
 import { Org } from '../../../src/modules/user_management/schema/org.schema'
@@ -477,7 +477,7 @@ describe('AuthMiddleware', () => {
       oauthTokenServiceFactory.returns(mockOAuthTokenService)
     })
 
-    it('should reject if oauth factory returns null (not configured)', async () => {
+    it('should fail as our own error (500), not a 401, if oauth factory returns null (not configured)', async () => {
       oauthTokenServiceFactory.returns(null)
 
       sinon.stub(jwt, 'decode').returns({
@@ -494,7 +494,7 @@ describe('AuthMiddleware', () => {
 
       expect(next.calledOnce).to.be.true
       const error = next.firstCall.args[0]
-      expect(error).to.be.instanceOf(UnauthorizedError)
+      expect(error).to.be.instanceOf(InternalServerError)
       expect(error.message).to.equal('OAuth authentication is not configured')
     })
 
@@ -1201,7 +1201,7 @@ describe('AuthMiddleware', () => {
       )
     })
 
-    it('should throw UnauthorizedError when Org lookup fails for client_credentials missing accountType', async () => {
+    it('should pass the store error on, not a 401, when Org lookup fails for client_credentials missing accountType', async () => {
       sinon.stub(jwt, 'decode').returns({
         tokenType: 'oauth',
         client_id: 'client123',
@@ -1223,7 +1223,8 @@ describe('AuthMiddleware', () => {
       sinon.stub(Users, 'findOne').returns(userQuery)
 
       const orgQuery = createMockQuery(null)
-      orgQuery.exec.rejects(new Error('Org DB failure'))
+      const storeError = new Error('Org DB failure')
+      orgQuery.exec.rejects(storeError)
       sinon.stub(Org, 'findOne').returns(orgQuery)
 
       const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
@@ -1233,9 +1234,7 @@ describe('AuthMiddleware', () => {
       await authMiddleware.authenticate(req, res, next)
 
       expect(next.calledOnce).to.be.true
-      const error = next.firstCall.args[0]
-      expect(error).to.be.instanceOf(UnauthorizedError)
-      expect(error.message).to.equal('Failed to look up org for OAuth token')
+      expect(next.firstCall.args[0]).to.equal(storeError)
     })
 
     it('should use fullName from user DB when not in payload', async () => {
