@@ -278,7 +278,12 @@ describe('AccessCheckDialog', () => {
     fireEvent.change(screen.getByLabelText('Record'), { target: { value: 'Q3' } });
     const matches = await screen.findByRole('group', { name: 'Matching records' });
     expect(searchNodes).toHaveBeenCalledTimes(1);
-    expect(searchNodes.mock.calls[0][0]).toMatchObject({ q: 'Q3', parent: { nodeType: 'app', id: 'conn-1' } });
+    // Records only, asked of the server, so matching folders cannot fill the page.
+    expect(searchNodes.mock.calls[0][0]).toMatchObject({
+      q: 'Q3',
+      parent: { nodeType: 'app', id: 'conn-1' },
+      nodeTypes: 'record',
+    });
     // Only records: a folder cannot be checked.
     expect(matches.querySelectorAll('button').length).toBe(1);
     expect(matches.textContent).toContain('Finance');
@@ -319,6 +324,24 @@ describe('AccessCheckDialog', () => {
     searchNodes.mockRejectedValueOnce(new Error('down'));
     fireEvent.change(screen.getByLabelText('Record'), { target: { value: 'nothing2' } });
     expect(await screen.findByText('The search did not work. You can still paste a record ID.')).toBeTruthy();
+  });
+
+  it('drops the matches for an earlier query that arrive after the text changed', async () => {
+    let late: (v: unknown) => void = () => {};
+    searchNodes.mockImplementation(({ q }: { q: string }) =>
+      q === 'Q3' ? new Promise((resolve) => (late = resolve)) : Promise.resolve({ items: [] })
+    );
+    await open();
+    fireEvent.change(screen.getByLabelText('Record'), { target: { value: 'Q3' } });
+    await waitFor(() => expect(searchNodes).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByLabelText('Record'), { target: { value: 'Q4' } });
+    expect(await screen.findByText('No records you can open match. You can still paste a record ID.')).toBeTruthy();
+    late({ items: [hit('rec-7', 'Q3 plan')] });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(screen.queryByRole('group', { name: 'Matching records' })).toBeNull();
+    expect(screen.getByText('No records you can open match. You can still paste a record ID.')).toBeTruthy();
   });
 
   it('does not search for one letter', async () => {

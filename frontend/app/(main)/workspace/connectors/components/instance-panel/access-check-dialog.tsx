@@ -104,10 +104,14 @@ export function AccessCheckDialog({ connectorId, container }: AccessCheckDialogP
       KnowledgeHubApi.searchNodes({
         q,
         parent: { nodeType: 'app', id: connectorId },
+        // Records only, so folders that match the name do not fill the page.
+        nodeTypes: 'record',
         limit: RECORD_SEARCH_LIMIT,
         signal: controller.signal,
       })
         .then((res) => {
+          // A late page for an earlier query must not replace the list for the text now in the field.
+          if (controller.signal.aborted) return;
           const hits = res.items
             .filter((n) => n.nodeType === 'record')
             .map((n) => ({ id: n.id, name: n.name, where: n.parent?.name }));
@@ -252,7 +256,7 @@ export function AccessCheckDialog({ connectorId, container }: AccessCheckDialogP
                       type="button"
                       variant="soft"
                       color="gray"
-                      style={{ justifyContent: 'flex-start', height: 'auto', paddingBlock: 'var(--space-1)' }}
+                      style={{ justifyContent: 'flex-start', height: 'auto', minHeight: '44px', paddingBlock: 'var(--space-1)' }}
                       onClick={() =>
                         changeInputs(() => {
                           setPicked(hit);

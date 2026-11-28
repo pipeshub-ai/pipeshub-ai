@@ -331,6 +331,8 @@ export const KnowledgeHubApi = {
     signal?: AbortSignal;
     /** False keeps the search on this level. A global flatten only walks connectors, so a root collection is invisible to it. */
     flattened?: boolean;
+    /** Only these node types (e.g. 'record'). The server filters before the limit. */
+    nodeTypes?: string;
   }): Promise<KnowledgeHubApiResponse> {
     const path = params.parent
       ? `${BASE_URL}/knowledge-hub/nodes/${params.parent.nodeType}/${params.parent.id}`
@@ -344,6 +346,7 @@ export const KnowledgeHubApi = {
         sortBy: 'name',
         sortOrder: 'asc',
         ...(params.origins ? { origins: params.origins } : {}),
+        ...(params.nodeTypes ? { nodeTypes: params.nodeTypes } : {}),
         ...(params.cursor ? { cursor: params.cursor } : {}),
       },
       signal: params.signal,
