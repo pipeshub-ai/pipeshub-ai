@@ -2010,6 +2010,9 @@ agent_skill_versions_schema = {
             "summary": {"type": "string", "default": ""},
             "updatedBy": {"type": ["string", "null"]},
             "generation": {"type": "string"},  # the generation of the skill this revises
+            # The revised skill's author and scope as archived, so an erased author's revisions are found after a delete.
+            "createdBy": {"type": ["string", "null"]},
+            "scope": {"type": "string"},
             # The archived state's own updatedAtTimestamp: a version superseded in more than one state (a resource
             # write keeps the version) has a row per state, and readers take the latest.
             "stateUpdatedAtTimestamp": {"type": "number"},

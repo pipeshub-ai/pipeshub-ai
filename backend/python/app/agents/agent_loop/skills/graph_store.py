@@ -1454,6 +1454,10 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         }
         if generation:
             version_doc["generation"] = generation
+        # Whose skill it was, and how shared, so an erased author's revisions are found once the skill is gone.
+        version_doc["scope"] = SkillSharing.of(current_doc).scope
+        if current_doc.get("createdBy"):
+            version_doc["createdBy"] = current_doc["createdBy"]
         await self._graph.batch_upsert_nodes([version_doc], _VERSIONS)
 
     # ---- Graph edges: permissions + skill-to-skill connectedness --------
@@ -1670,26 +1674,61 @@ async def erase_skill_author(
 ) -> tuple[int, int]:
     """A deleted user's skills (SLASH1 D4, O3): personal ones are erased with their version log; team and org ones
     pass to the org, their author shown as a former member. Their id is also cleared from every ``updatedBy``.
+    Revisions are matched to a creation by generation, not by name: those of a personal skill of theirs that is
+    already deleted are erased too, and those of someone else's skill created under the same name are kept.
     Idempotent, so a redelivered deletion event is harmless. Returns ``(erased, reassigned)``."""
     ids = {i for i in author_ids if i}
     if not ids:
         return 0, 0
-    erased = reassigned = 0
-    for doc in await graph.get_nodes_by_filters(_SKILLS, {"orgId": org_id}):
+    skills = [d for d in await graph.get_nodes_by_filters(_SKILLS, {"orgId": org_id}) if _doc_id(d) is not None]
+    versions = await graph.get_nodes_by_filters(_VERSIONS, {"orgId": org_id})
+    reader = GraphSkillStore(graph, org_id, "")  # only to match revisions to a live skill (`_belongs_to`)
+    live = {d["name"]: d for d in skills}
+
+    def owner(version: dict) -> dict | None:
+        doc = live.get(version["name"])
+        return doc if doc is not None and reader._belongs_to(version, doc) else None
+
+    def erasable(doc: Mapping[str, Any]) -> bool:
+        return SkillSharing.of(doc).scope == SkillScope.PERSONAL and doc.get("createdBy") in ids
+
+    # A deleted skill's revisions: its last archived state (the one its delete wrote) says whose it was.
+    last_of_gone: dict[str, dict] = {}
+    for v in versions:
+        if v.get("generation") and owner(v) is None:
+            last = last_of_gone.get(v["generation"])
+            if last is None or int(v.get("createdAtTimestamp") or 0) > int(last.get("createdAtTimestamp") or 0):
+                last_of_gone[v["generation"]] = v
+    gone_erased = {g for g, last in last_of_gone.items() if erasable(last)}
+    to_erase = [d for d in skills if not is_seeded_builtin(d) and erasable(d)]
+    erased_keys = {_doc_id(d) for d in to_erase}
+
+    kept: list[dict] = []
+    doomed: list[str] = []
+    for v in versions:
+        doc = owner(v)
+        gone = v.get("generation") in gone_erased if doc is None else _doc_id(doc) in erased_keys
+        key = _doc_id(v)
+        if key is None:
+            continue
+        if gone:
+            doomed.append(key)
+        else:
+            kept.append(v)
+    if doomed:
+        await graph.delete_nodes(doomed, _VERSIONS)
+    for doc in to_erase:
+        await graph.delete_nodes_and_edges([_doc_id(doc)], _SKILLS)
+
+    erased = len(to_erase)
+    reassigned = 0
+    for doc in skills:
         key = _doc_id(doc)
-        if key is None or is_seeded_builtin(doc):
+        if is_seeded_builtin(doc) or key in erased_keys:
             continue
         if doc.get("createdBy") not in ids:
             if doc.get("updatedBy") in ids:
                 await graph.update_node(key, _SKILLS, {"updatedBy": None})
-            continue
-        if SkillSharing.of(doc).scope == SkillScope.PERSONAL:
-            versions = await graph.get_nodes_by_filters(_VERSIONS, {"orgId": org_id, "name": doc["name"]})
-            version_keys = [k for k in (_doc_id(v) for v in versions) if k]
-            if version_keys:
-                await graph.delete_nodes(version_keys, _VERSIONS)
-            await graph.delete_nodes_and_edges([key], _SKILLS)
-            erased += 1
             continue
         await graph.batch_delete_edges(
             [{"from_id": a, "from_collection": _USERS, "to_id": key, "to_collection": _SKILLS} for a in ids],
@@ -1701,8 +1740,9 @@ async def erase_skill_author(
             **({"updatedBy": None} if doc.get("updatedBy") in ids else {}),
         })
         reassigned += 1
-    for version in await graph.get_nodes_by_filters(_VERSIONS, {"orgId": org_id}):
+    for version in kept:
         key = _doc_id(version)
-        if key is not None and version.get("updatedBy") in ids:
-            await graph.update_node(key, _VERSIONS, {"updatedBy": None})
+        cleared = {f: None for f in ("updatedBy", "createdBy") if version.get(f) in ids}
+        if cleared:
+            await graph.update_node(key, _VERSIONS, cleared)
     return erased, reassigned
