@@ -33,6 +33,11 @@ export const org: CollectionMapping = {
   derived: [],
   dropped: [
     {
+      path: 'pendingCreate',
+      reason:
+        'marks an organisation whose create failed partway; preflight refuses the move while any document holds it, so no such row is copied',
+    },
+    {
       path: 'adminRoleLease',
       reason:
         'standalone-Mongo lease for admin-role changes; PostgreSQL serialises them with the org row lock',

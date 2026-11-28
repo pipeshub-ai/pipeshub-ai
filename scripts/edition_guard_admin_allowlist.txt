@@ -24,6 +24,7 @@ page connectors/personal -- upstream workspace page: a person's own connectors
 page connectors/team -- upstream workspace page: the team's connectors
 page developer-settings/oauth2 -- upstream workspace page: OAuth 2 developer settings
 page developer-settings/personal-access-tokens -- upstream workspace page: a person's access tokens
+page enterprise -- upstream workspace page: what the Enterprise Edition adds; it reads only and changes no setting
 page enterprise/audit-logs -- upstream workspace page: a locked placeholder
 page enterprise/scim -- upstream workspace page: a locked placeholder
 page enterprise/usage -- upstream workspace page: a locked placeholder

@@ -57,6 +57,7 @@ export function interactionAction(
 ): string {
   const bare = bareTool(approval.toolName);
   if (VERBS.has(bare)) return t(`interaction.verb.${bare}`, { count });
+  if (isScheduleCreate(approval)) return t('interaction.verb.scheduleCreate', { count });
   const display = shownName(approval.displayName);
   const dotted = display?.split(' · ');
   // "E2Esaas · create_ticket" and a bare tool id are ids, worded "Create ticket"; a written name stays as written.
@@ -76,6 +77,15 @@ const REPOSITORY_TITLES: Readonly<Record<string, string>> = {
   repository_fetch: 'interaction.titleClone',
   repository_push: 'interaction.titlePush',
 };
+
+/**
+ * `pipeshub@schedules/create` (ADR-SCH-01 D2), by its tool id or its model name. Matched whole: an MCP server's
+ * `mcp_x_schedule_create` never passes for PipesHub's own schedule card (SEC-B-04).
+ */
+const SCHEDULE_CREATE_TOOLS: ReadonlySet<string> = new Set(['pipeshub@schedules/create', 'schedule_create', 'pipeshub__schedule_create']);
+
+export const isScheduleCreate = (approval: Pick<PendingApproval, 'toolName'>): boolean =>
+  SCHEDULE_CREATE_TOOLS.has(approval.toolName);
 
 /** WP-63: the upload hold of a read-write site after a private read, asked once per run and site. */
 export const SITE_UPLOAD_RULE = 'site_upload';
@@ -126,6 +136,8 @@ export function interactionTitle(
   if (isSiteUpload(approval)) {
     return t('interaction.titleSiteUpload', { destination: masked(approval.reason?.destination) ?? t('interaction.outside') });
   }
+  // ADR-SCH-01 D4: the card's body says the schedule; its title is the app's words, never the tool's name.
+  if (isScheduleCreate(approval)) return t('interaction.titleSchedule');
   // WP-63: a clone names its repository ("Clone github.com/o/r?", its size in the card's body); a push its branch.
   const repository = REPOSITORY_TITLES[bareTool(approval.toolName)];
   const where = masked(approval.reason?.destination);

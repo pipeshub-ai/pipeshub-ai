@@ -89,16 +89,29 @@ def _code_claim_path(credentials_path: str, code: str) -> str:
 
 
 async def read_oauth_config(config_service: ConfigurationService, path: str) -> dict[str, Any]:
-    """The config at ``path`` ({} when unset). A store that did not answer is an OAuthStoreUnavailableError; a value
-    that is there but does not decode in the encrypted layer (a changed SECRET_KEY) reads as unset, as before, since
-    retrying cannot fix it."""
+    """The config at ``path`` ({} when unset or undecodable). A store that did not answer is an
+    OAuthStoreUnavailableError."""
     try:
-        config = await config_service.get_config(path, raise_on_error=True)
-    except (ValueError, DecryptionError):
-        return {}
+        config = await _read_unless_undecodable(config_service, path)
     except Exception as e:
         raise OAuthStoreUnavailableError("The OAuth config could not be read") from e
     return config if isinstance(config, dict) else {}
+
+
+async def read_oauth_app_list(config_service: ConfigurationService, path: str) -> list[dict[str, Any]]:
+    """The OAuth app list at ``path`` ([] when unset or undecodable). A failed read is raised as it is, for the caller
+    to class."""
+    apps = await _read_unless_undecodable(config_service, path)
+    return apps if isinstance(apps, list) else []
+
+
+async def _read_unless_undecodable(config_service: ConfigurationService, path: str) -> object:
+    """The value at ``path``, or None when unset. A value that is there but does not decode in the encrypted layer (a
+    changed SECRET_KEY) reads as unset, as before, since retrying cannot fix it; any other failure is raised."""
+    try:
+        return await config_service.get_config(path, raise_on_error=True)
+    except (ValueError, DecryptionError):
+        return None
 
 
 class MalformedTokenError(ValueError):
@@ -175,10 +188,24 @@ def _is_servicenow_refresh_rejection(error: OAuthTokenRequestError, token_url: s
     return "server_error" in lowered and "access_denied" in lowered
 
 
+_ZOOM_TOKEN_ENDPOINT = "zoom.us/oauth/token"
+
+
+def _is_zoom_refresh_rejection(error: OAuthTokenRequestError, token_url: str) -> bool:
+    """Zoom replaces the refresh token at each refresh and refuses a replaced, revoked or removed-app one with
+    401 and ``invalid_request`` ("Invalid Token!"), a code RFC 6749 gives to a malformed request."""
+    return (
+        _ZOOM_TOKEN_ENDPOINT in token_url.lower()
+        and error.status == HttpStatusCode.UNAUTHORIZED.value
+        and error.error_code == "invalid_request"
+    )
+
+
 def _is_permanent_refresh_rejection(error: OAuthTokenRequestError, token_url: str) -> bool:
     return (
         is_permanent_grant_rejection(str(error), error.error_code, status=error.status)
         or _is_servicenow_refresh_rejection(error, token_url)
+        or _is_zoom_refresh_rejection(error, token_url)
     )
 
 

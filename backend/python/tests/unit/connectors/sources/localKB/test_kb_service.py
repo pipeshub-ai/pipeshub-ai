@@ -20,14 +20,12 @@ Covers:
 - list_kb_permissions (success, user not found, no permission, exception)
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
-from app.config.constants.arangodb import DeleteSource
-
-from app.config.constants.arangodb import CollectionNames, ProgressStatus
-from app.utils.user_messages import action_failed
+from app.config.constants.arangodb import CollectionNames, DeleteSource, ProgressStatus
 from app.config.constants.service import DefaultEndpoints
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -42,6 +40,13 @@ from app.models.entities import FileRecord, SourcePerson
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.common.utils import KB_MAX_FOLDER_DEPTH
 from app.services.graph_db.interface.graph_db_provider import MoveDestinationMissing
+from app.utils.user_messages import action_failed
+
+
+@pytest.fixture(autouse=True)
+def _one_request_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keys these tests can name: each delete request's entry is stored as ``r``."""
+    monkeypatch.setattr("app.connectors.services.connector_intents.uuid4", lambda: SimpleNamespace(hex="r"))
 
 
 # Fixtures live in conftest.py (service, mock_graph_provider, mock_processor, …)
@@ -134,6 +139,24 @@ def _upload_analysis(*, parent_folder_id=None):
 # ===========================================================================
 # create_knowledge_base
 # ===========================================================================
+
+
+from app.connectors.sources.localKB.upload_grant import GrantedDocument  # noqa: E402
+
+
+class _AnyGrant(dict):
+    """Stands for a grant that names every record key and gives it the document ``ext-<key>``: these tests are about
+    what the service builds, not who may upload (that is test_kb_upload_grant.py and
+    test_kb_upload_foreign_pointer.py)."""
+
+    def get(self, key, default=None) -> object:
+        return GrantedDocument(f"ext-{key}", "application/pdf", "pdf")
+
+    def __contains__(self, item: object) -> bool:
+        return True
+
+
+_ANY_GRANT = _AnyGrant()
 
 
 class TestCreateKnowledgeBase:
@@ -871,9 +894,9 @@ class TestDeleteKnowledgeBase:
         result = await service.delete_knowledge_base("kb1", "user1", "org1")
         assert result["success"] is True
         assert calls[:4] == [
-            "intent:/services/entityCleanup/pending/kb1",
-            "intent:/services/storageRelease/pending/kb1",
-            "intent:/services/lateWriteSweep/pending/kb1",
+            "intent:/services/entityCleanup/pending/org1/kb1/r",
+            "intent:/services/storageRelease/pending/org1/kb1/r",
+            "intent:/services/lateWriteSweep/pending/org1/kb1/r",
             "graph-delete",
         ]
 
@@ -894,7 +917,7 @@ class TestDeleteKnowledgeBase:
         mock_config_service.set_config = AsyncMock(side_effect=record)
 
         assert (await service.delete_knowledge_base("kb1", "user1", "org1"))["success"] is True
-        assert written["/services/lateWriteSweep/pending/kb1"]["recordGroupIds"] == ["kb1"]
+        assert written["/services/lateWriteSweep/pending/org1/kb1/r"]["recordGroupIds"] == ["kb1"]
         # The harness also reads the KB's publications on delete; the group read is the one on record groups.
         group_reads = [
             c.kwargs for c in service.graph_provider.get_nodes_by_filters.await_args_list
@@ -989,7 +1012,9 @@ class TestDeleteKBStorageCleanup:
 
     @staticmethod
     def _helper(result=None, error=None):
-        from app.connectors.core.base.data_processor.storage_cleanup import StorageReleaseResult
+        from app.connectors.core.base.data_processor.storage_cleanup import (
+            StorageReleaseResult,
+        )
 
         helper = AsyncMock()
         helper.release_connector_storage = AsyncMock(
@@ -1007,16 +1032,20 @@ class TestDeleteKBStorageCleanup:
     @pytest.mark.asyncio
     async def test_a_completed_release_clears_its_intent(self, service, mock_config_service):
         helper = self._helper()
+        mock_config_service.list_keys_in_directory = AsyncMock(side_effect=lambda prefix: [f"{prefix}r"])
+        mock_config_service.get_config = AsyncMock(side_effect=lambda key, *_a, **_k: {"orgId": "org1", "connectorId": "kb1", "requestedAt": 1} if "/pending/org1/" in key else None)
 
         await self._cleanup(service, helper)
 
         helper.release_connector_storage.assert_awaited_once_with("org1", "kb1")
-        mock_config_service.delete_config.assert_awaited_once_with("/services/storageRelease/pending/kb1")
+        mock_config_service.delete_config.assert_awaited_once_with("/services/storageRelease/pending/org1/kb1/r")
         helper.close.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_an_unfinished_release_keeps_its_intent_for_a_retry(self, service, mock_config_service):
-        from app.connectors.core.base.data_processor.storage_cleanup import StorageReleaseResult
+        from app.connectors.core.base.data_processor.storage_cleanup import (
+            StorageReleaseResult,
+        )
 
         helper = self._helper(StorageReleaseResult(completed=False, failed=1))
 
@@ -1024,7 +1053,7 @@ class TestDeleteKBStorageCleanup:
 
         mock_config_service.delete_config.assert_not_awaited()
         key, intent = mock_config_service.set_config.await_args.args
-        assert key == "/services/storageRelease/pending/kb1"
+        assert key == "/services/storageRelease/pending/org1/kb1/r"
         assert intent["attempts"] == 1 and intent["nextAttemptAt"] > 0
         helper.close.assert_awaited_once()
 
@@ -1054,8 +1083,8 @@ class TestDeleteKBStorageCleanup:
             mock_asyncio.create_task.call_args[0][0].close()
 
         assert calls == [
-            "/services/entityCleanup/pending/kb1", "/services/storageRelease/pending/kb1",
-            "/services/lateWriteSweep/pending/kb1", "delete",
+            "/services/entityCleanup/pending/org1/kb1/r", "/services/storageRelease/pending/org1/kb1/r",
+            "/services/lateWriteSweep/pending/org1/kb1/r", "delete",
         ]
 
     @pytest.mark.asyncio
@@ -2768,18 +2797,18 @@ class TestUploadRecords:
     @pytest.mark.asyncio
     async def test_upload_records_to_kb(self, service):
         service._upload_records = AsyncMock(return_value={"success": True, "totalCreated": 1})
-        result = await service.upload_records_to_kb("kb1", "user1", "org1", [{"name": "test.txt"}])
+        result = await service.upload_records_to_kb("kb1", "user1", "org1", [{"name": "test.txt"}], _ANY_GRANT)
         service._upload_records.assert_awaited_once_with(
-            "kb1", "user1", "org1", [{"name": "test.txt"}], parent_folder_id=None
+            "kb1", "user1", "org1", [{"name": "test.txt"}], parent_folder_id=None, granted_documents=_ANY_GRANT
         )
         assert result["success"] is True
 
     @pytest.mark.asyncio
     async def test_upload_records_to_folder(self, service):
         service._upload_records = AsyncMock(return_value={"success": True, "totalCreated": 1})
-        result = await service.upload_records_to_folder("kb1", "f1", "user1", "org1", [{"name": "test.txt"}])
+        result = await service.upload_records_to_folder("kb1", "f1", "user1", "org1", [{"name": "test.txt"}], _ANY_GRANT)
         service._upload_records.assert_awaited_once_with(
-            "kb1", "user1", "org1", [{"name": "test.txt"}], parent_folder_id="f1"
+            "kb1", "user1", "org1", [{"name": "test.txt"}], parent_folder_id="f1", granted_documents=_ANY_GRANT
         )
         assert result["success"] is True
 
@@ -3445,20 +3474,21 @@ class TestUploadRecordsPipeline:
     def test_build_kb_file_record_signed_url(self, service):
         record = _minimal_upload_record_dict(recordName="report.pdf", externalRecordId="ext-99")
         file_rec = {"name": "report.pdf", "mimeType": "application/pdf", "isFile": True}
-        built = service._build_kb_file_record("kb1", record, file_rec, "parent-folder", "http://storage:3001")
+        built = service._build_kb_file_record("kb1", record, file_rec, "parent-folder", "http://storage:3001", org_id="org1", granted_documents=_ANY_GRANT)
         assert isinstance(built, FileRecord)
-        assert built.fetch_signed_url.endswith("/api/v1/document/internal/ext-99/download")
+        # the document comes from the grant, not from the body's externalRecordId ("ext-99")
+        assert built.fetch_signed_url.endswith("/api/v1/document/internal/ext-rec-upload-1/download")
 
     def test_build_kb_file_record_root_no_parent(self, service):
         record = _minimal_upload_record_dict()
         file_rec = {"name": "root.pdf", "mimeType": "application/pdf", "isFile": True}
-        built = service._build_kb_file_record("kb1", record, file_rec, None, "http://storage:3001")
+        built = service._build_kb_file_record("kb1", record, file_rec, None, "http://storage:3001", org_id="org1", granted_documents=_ANY_GRANT)
         assert built.parent_external_record_id is None
 
-    def test_build_kb_file_record_skips_signed_url_without_external_id(self, service):
-        record = _minimal_upload_record_dict(externalRecordId="")
+    def test_build_kb_file_record_skips_signed_url_without_storage_url(self, service) -> None:
+        record = _minimal_upload_record_dict()
         file_rec = {"name": "root.pdf", "mimeType": "application/pdf", "isFile": True}
-        built = service._build_kb_file_record("kb1", record, file_rec, None, "http://storage:3001")
+        built = service._build_kb_file_record("kb1", record, file_rec, None, "", org_id="org1", granted_documents=_ANY_GRANT)
         assert built.fetch_signed_url is None
 
     def test_build_kb_file_record_ignores_client_statuses_and_content_id(self, service) -> None:
@@ -3470,7 +3500,7 @@ class TestUploadRecordsPipeline:
             isInternal=True,
         )
         file_rec = {"name": "root.pdf", "mimeType": "application/pdf", "isFile": False}
-        built = service._build_kb_file_record("kb1", record, file_rec, None, "http://storage:3001")
+        built = service._build_kb_file_record("kb1", record, file_rec, None, "http://storage:3001", org_id="org1", granted_documents=_ANY_GRANT)
         assert built.indexing_status == ProgressStatus.QUEUED.value
         assert built.extraction_status == ProgressStatus.NOT_STARTED.value
         assert built.virtual_record_id is None
@@ -3480,7 +3510,7 @@ class TestUploadRecordsPipeline:
         record = _minimal_upload_record_dict()
         file_rec = {"name": "root.pdf", "mimeType": "application/pdf", "isFile": True}
         built = service._build_kb_file_record(
-            "kb1", record, file_rec, None, "http://storage:3001", uploaded_by="u-ext"
+            "kb1", record, file_rec, None, "http://storage:3001", uploaded_by="u-ext", org_id="org1", granted_documents=_ANY_GRANT
         )
         assert built.uploaded_by == "u-ext"
         assert built.to_arango_base_record()["uploadedBy"] == "u-ext"
@@ -3491,7 +3521,7 @@ class TestUploadRecordsPipeline:
         record["uploadedBy"] = "attacker"
         file_rec = {"name": "root.pdf", "mimeType": "application/pdf", "isFile": True}
         built = service._build_kb_file_record(
-            "kb1", record, file_rec, None, "http://storage:3001", uploaded_by="u-ext"
+            "kb1", record, file_rec, None, "http://storage:3001", uploaded_by="u-ext", org_id="org1", granted_documents=_ANY_GRANT
         )
         assert built.uploaded_by == "u-ext"
         assert built.to_arango_base_record()["uploadedBy"] == "u-ext"
@@ -3581,7 +3611,7 @@ class TestUploadRecordsPipeline:
             "record": _minimal_upload_record_dict(recordName="a.pdf", externalRecordId="ext-a"),
             "fileRecord": {"name": "a.pdf", "mimeType": "application/pdf", "isFile": True},
         }]
-        result = await service._upload_records("kb1", "user1", "org1", files, parent_folder_id=None)
+        result = await service._upload_records("kb1", "user1", "org1", files, parent_folder_id=None, granted_documents=_ANY_GRANT)
         assert result["success"] is True
         assert result["foldersCreated"] == 1
         entities = service.processor_for_kb.return_value.on_new_records.await_args[0][0]
@@ -3632,7 +3662,7 @@ class TestUploadRecordsPipeline:
                     recordName="report.pdf", externalRecordId=ext_id, mimeType="application/pdf",
                 ),
                 "fileRecord": {"name": "report.pdf", "mimeType": "application/pdf", "isFile": True},
-            }], parent_folder_id=None)
+            }], parent_folder_id=None, granted_documents=_ANY_GRANT)
 
         first, second = await asyncio.gather(upload("ext-1"), upload("ext-2"))
 
@@ -3646,7 +3676,7 @@ class TestUploadRecordsPipeline:
         service.graph_provider._validate_upload_context = AsyncMock(
             return_value={"valid": False, "success": False, "code": 404, "reason": "KB not found"}
         )
-        result = await service._upload_records("kb1", "user1", "org1", [], parent_folder_id=None)
+        result = await service._upload_records("kb1", "user1", "org1", [], parent_folder_id=None, granted_documents=_ANY_GRANT)
         assert result["valid"] is False
         service.processor_for_kb.return_value.on_new_records.assert_not_awaited()
 
@@ -3662,7 +3692,7 @@ class TestUploadRecordsPipeline:
         })
         service.graph_provider._populate_file_destinations = MagicMock()
         service.graph_provider._generate_upload_message = MagicMock(return_value="done")
-        result = await service._upload_records("kb1", "user1", "org1", [], parent_folder_id=None)
+        result = await service._upload_records("kb1", "user1", "org1", [], parent_folder_id=None, granted_documents=_ANY_GRANT)
         assert result["success"] is True
         assert result["totalCreated"] == 0
         service.processor_for_kb.return_value.on_new_records.assert_not_awaited()
@@ -3670,7 +3700,7 @@ class TestUploadRecordsPipeline:
     @pytest.mark.asyncio
     async def test_upload_records_unexpected_error(self, service):
         service.graph_provider._validate_upload_context = AsyncMock(side_effect=RuntimeError("boom"))
-        result = await service._upload_records("kb1", "user1", "org1", [], parent_folder_id=None)
+        result = await service._upload_records("kb1", "user1", "org1", [], parent_folder_id=None, granted_documents=_ANY_GRANT)
         assert result["success"] is False
         assert result["code"] == 500
 
@@ -3720,7 +3750,7 @@ class TestFolderDepthLimit:
         service.graph_provider.get_folder_depth = AsyncMock(return_value=KB_MAX_FOLDER_DEPTH - 2)
 
         result = await service._upload_records(
-            "kb1", "user1", "org1", [{"filePath": _nested_path(3)}], parent_folder_id="deep"
+            "kb1", "user1", "org1", [{"filePath": _nested_path(3), "record": {"_key": "k1", "recordName": "a.pdf"}}], parent_folder_id="deep", granted_documents=_ANY_GRANT
         )
 
         assert result["code"] == 400
@@ -3775,7 +3805,7 @@ class TestUploadRecordsCreator:
                     "email": "ann@acme.com", "fullName": "Ann Uploader"}
         _stub_upload_pipeline(service, mock_config_service, {"valid": True, "user": uploader, "user_key": "user-key-1"})
 
-        await service._upload_records("kb1", "user1", "org1", [dict(f) for f in _UPLOAD_FILES], parent_folder_id=None)
+        await service._upload_records("kb1", "user1", "org1", [dict(f) for f in _UPLOAD_FILES], parent_folder_id=None, granted_documents=_ANY_GRANT)
 
         entities = service.processor_for_kb.return_value.on_new_records.await_args[0][0]
         expected = SourcePerson(email="ann@acme.com", display_name="Ann Uploader")
@@ -3786,7 +3816,7 @@ class TestUploadRecordsCreator:
     async def test_uploader_without_email_names_no_one(self, service, mock_config_service) -> None:
         _stub_upload_pipeline(service, mock_config_service, {"valid": True, "user": {"_key": "user-key-1"}})
 
-        await service._upload_records("kb1", "user1", "org1", [dict(f) for f in _UPLOAD_FILES], parent_folder_id=None)
+        await service._upload_records("kb1", "user1", "org1", [dict(f) for f in _UPLOAD_FILES], parent_folder_id=None, granted_documents=_ANY_GRANT)
 
         entities = service.processor_for_kb.return_value.on_new_records.await_args[0][0]
         assert all(record.created_by is None for record, _ in entities)

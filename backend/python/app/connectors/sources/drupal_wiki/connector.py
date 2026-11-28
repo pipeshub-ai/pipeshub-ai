@@ -52,6 +52,7 @@ from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
     ConnectorInitError,
 )
+from app.connectors.core.base.connector.failure_notices import notify_init_failed
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -703,6 +704,9 @@ class DrupalWikiConnector(BaseConnector):
             )
             self.logger.error("Drupal Wiki sync failed: %s", describe_exception(e), exc_info=True)
             raise
+
+    async def on_background_init_failed(self, error: Exception | None) -> None:
+        await notify_init_failed(self, "Drupal Wiki", error)
 
     async def _run_phase(self, name: str, coro: Awaitable[T]) -> T | None:
         """Run one sync phase, returning None if it failed.
@@ -1823,7 +1827,7 @@ class DrupalWikiConnector(BaseConnector):
         await self.notify(
             type=NotificationType.CONNECTOR_SYNC_ERROR if self._failures else NotificationType.CONNECTOR_WARNING,
             severity=NotificationSeverity.ERROR if self._failures else NotificationSeverity.WARNING,
-            title=self._notification_title(f"sync finished with {_plural(len(problems), 'problem')}"),
+            title=self._notification_title("sync finished with problems"),
             message=self._failure_preview(problems),
         )
 

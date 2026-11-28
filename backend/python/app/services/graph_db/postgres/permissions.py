@@ -40,12 +40,15 @@ if TYPE_CHECKING:
 _NO_ACCESS: dict[str, Any] = {"grantee_ids": [], "gated_app_ids": [], "by_connector": {}}
 # Every grant of a viewer in one statement, so a writable transaction (read committed, a snapshot per statement) never joins two states of them: the live
 # records and groups that the grantees ($2) hold a permission edge to (an organisation's only of a sharing type, $4), and, inside its own connector only,
-# what a source account the user authenticated as ($5, connector $6) and its groups, roles and teams hold (never an organisation's). Edges by the key,
+# what a source account the user authenticated as ($5, connector $6) and its groups, roles and teams hold (never an organisation's). A group, role or team counts only while
+# it is a node, as the user's own do (``_gate``): every writer of a membership reads the group's node first and a delete takes the node's edges with it, so a membership
+# of a group that is gone is one written beside the group's delete, never one ahead of the group's sync. Edges by the key,
 # nodes by primary key (LATERAL ... OFFSET 0: a lookup per row whatever the statistics say).
 _GRANTS_SQL = """/* pipeshub:graph.access_grants_all */ WITH acct AS (SELECT * FROM unnest($5::text[], $6::text[]) AS a(id, cid)),
   holder AS (SELECT a.id, a.cid FROM acct a
     UNION SELECT b.to_id, a.cid FROM acct a CROSS JOIN LATERAL (SELECT b.to_id FROM graph.edges b WHERE b.org_id = $1 AND b.coll = 'permission' AND b.from_coll = 'users'
-      AND b.from_id = a.id AND b.to_coll IN ('groups', 'roles', 'teams') AND b.doc->>'type' = 'USER' OFFSET 0) b),
+      AND b.from_id = a.id AND b.to_coll IN ('groups', 'roles', 'teams') AND b.doc->>'type' = 'USER'
+      AND EXISTS (SELECT 1 FROM graph.nodes g WHERE g.org_id = $1 AND g.coll = b.to_coll AND g.id = b.to_id) OFFSET 0) b),
   hit AS (SELECT e.to_coll, e.to_id, NULL::text AS only_cid FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_id = ANY($2::text[])
       AND e.from_coll = ANY($3::text[]) AND e.to_coll IN ('records', 'recordGroups') AND (e.from_coll <> 'organizations' OR e.doc->>'type' = ANY($4::text[]))
     UNION ALL SELECT e.to_coll, e.to_id, h.cid FROM holder h CROSS JOIN LATERAL (SELECT e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'permission'
@@ -140,7 +143,6 @@ class PermissionsMixin(PgBase):
         """Who the user is (``grantees``), the apps they pass the connector gate for, and the source accounts they authenticated as; None when the
         user is no node of the graph. The part of ``get_knowledge_hub_access_v3`` that does not read the grants."""
         # single-table lookups (edges by the key, nodes by primary key): no plan depends on table statistics
-        await tx.fetchval(access_sql.NO_JIT)
 
         async def exist(coll: str, ids: list[str]) -> set[str]:
             if not ids:
@@ -204,7 +206,8 @@ class PermissionsMixin(PgBase):
             if not lk["cid"] or lk["cid"] not in gated:
                 continue
             badges = [r["to_id"] for r in await tx.fetch("""/* pipeshub:graph.access_linked_groups */ SELECT b.to_id FROM graph.edges b WHERE b.org_id = $1
-                AND b.coll = 'permission' AND b.from_coll = 'users' AND b.from_id = $2 AND b.to_coll IN ('groups', 'roles', 'teams') AND b.doc->>'type' = 'USER'""", org, lk["to_id"])]
+                AND b.coll = 'permission' AND b.from_coll = 'users' AND b.from_id = $2 AND b.to_coll IN ('groups', 'roles', 'teams') AND b.doc->>'type' = 'USER'
+                AND EXISTS (SELECT 1 FROM graph.nodes g WHERE g.org_id = $1 AND g.coll = b.to_coll AND g.id = b.to_id)""", org, lk["to_id"])]
             out.setdefault(lk["cid"], []).extend([lk["to_id"], *badges])
         return out
 
@@ -829,7 +832,6 @@ class PermissionsMixin(PgBase):
             async def candidates(tx: Tx) -> list[Any]:
                 """The scope filters are applied where the records are read: every record of a collection or app-level connector in one statement, and the
                 records the walk reached, by key, in another."""
-                await tx.fetchval(access_sql.NO_JIT)      # the walks down below plan as large reads: compiling each costs more than it reads
                 rows = list(await tx.fetch("""/* pipeshub:graph.accessible_candidates_app_wide */ SELECT r.id, {cols} FROM graph.nodes r
                     WHERE r.org_id = $1 AND r.coll = 'records' AND r.doc->>'orgId' = $1 AND r.doc->>'virtualRecordId' IS NOT NULL
                       AND ((r.doc->>'connectorId' = ANY($2::text[])) OR (r.doc->>'connectorId' = ANY($3::text[]) AND r.doc->>'origin' = 'UPLOAD'))

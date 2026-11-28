@@ -34,6 +34,12 @@ from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
     ConnectorInitError,
 )
+from app.connectors.core.base.connector.failure_notices import (
+    ReconnectRequiredError,
+    notify_init_failed,
+    notify_reconnect,
+    switched_off_after_rejection,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -1075,6 +1081,40 @@ class JiraDataCenterConnector(BaseConnector):
                 "keep their access and no new account is linked", shown, low, high,
             )
 
+    async def on_background_init_failed(self, error: Optional[Exception]) -> None:
+        await notify_init_failed(self, "Jira", error)
+
+    async def _notify_if_signed_out(self, error: Exception) -> bool:
+        """Whether ``error`` ended the run because Jira no longer accepts the sign-in, after telling its owner."""
+        if not isinstance(error, ReconnectRequiredError):
+            return False
+        if not await switched_off_after_rejection(self, error):
+            await notify_reconnect(self, str(error))
+        return True
+
+    async def _stop_if_signed_out(self) -> bool:
+        """Raise when Jira no longer accepts the token or password. Jira Data Center also answers 401 for a
+        permission the account lacks, so only a refused read of the account itself counts. Returns whether
+        Jira confirmed the sign-in; False when the check could not tell."""
+        try:
+            response = await self.data_source.get_current_user_v2()
+        except Exception as e:
+            self.logger.debug("Could not check the Jira sign-in: %s", e)
+            return False
+        if response.status != HttpStatusCode.UNAUTHORIZED.value:
+            return response.status == HttpStatusCode.SUCCESS.value
+        why = "its token or password is not renewed automatically"
+        self.logger.error(
+            "Jira rejected the connector's credentials (HTTP 401) and they cannot be renewed (%s). The token was "
+            "revoked, expired or is wrong, or its app was removed. The sync stops until the connector is reconnected.",
+            why,
+        )
+        raise ReconnectRequiredError(
+            f"Jira rejected this connector's sign-in ({why}). It may have been revoked or expired, or its app or "
+            "account may have been removed. Syncing stopped and nothing was removed. Reconnect it, or replace its "
+            "token, in the connector's settings."
+        )
+
     async def run_sync(self) -> None:
         """
         Run sync of Jira projects and issues - only new/updated tickets
@@ -1093,6 +1133,7 @@ class JiraDataCenterConnector(BaseConnector):
                         "check auth configuration (authType / baseUrl / credentials)"
                     )
 
+            await self._stop_if_signed_out()
             await self._register_authenticated_identity()
             await self._read_server_version()
 
@@ -1243,6 +1284,7 @@ class JiraDataCenterConnector(BaseConnector):
                     "⚠️ Jira DC sync: %s/%s project(s) failed to sync issues: %s",
                     len(failed_keys), len(projects), preview,
                 )
+                await self._stop_if_signed_out()
                 await self.notify(
                     type=NotificationType.CONNECTOR_SYNC_ERROR,
                     severity=NotificationSeverity.ERROR,
@@ -1261,7 +1303,7 @@ class JiraDataCenterConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Error during Jira sync: {e}", exc_info=True)
-            if not isinstance(e, ConnectorInitError):
+            if not await self._notify_if_signed_out(e):
                 await self.notify(
                     type=NotificationType.CONNECTOR_SYNC_ERROR,
                     severity=NotificationSeverity.ERROR,
@@ -2284,6 +2326,13 @@ class JiraDataCenterConnector(BaseConnector):
         results across the org), give the configuring user direct READ access
         so they can still discover their own data.
         """
+        if status == HttpStatusCode.UNAUTHORIZED.value and not await self._stop_if_signed_out():
+            # The sign-in may be dead: it must not replace stored access with the owner's alone.
+            self.logger.warning(
+                "%s for %s returned 401 and Jira could not confirm the sign-in; keeping the project's stored access.",
+                stage, project_key,
+            )
+            return None
         if self.creator_email:
             self.logger.warning(
                 "⚠️ %s for %s returned %s — configuring user lacks Administer "
@@ -2581,6 +2630,8 @@ class JiraDataCenterConnector(BaseConnector):
 
             return permissions
 
+        except ReconnectRequiredError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error fetching permission scheme for project {project_key}: {e}", exc_info=True)
             return None
@@ -5799,52 +5850,61 @@ class JiraDataCenterConnector(BaseConnector):
                 if not attachment_id:
                     continue
 
-                # Check for existing attachment record
-                existing_record = await self.data_entities_processor.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_record_id=f"attachment_{attachment_id}"
-                )
+                # One attachment that cannot be built must not drop the issue's others: it is left out, and a
+                # full sync keeps it as stored with its issue (``_keep_stored_records``).
+                try:
+                    # Check for existing attachment record
+                    existing_record = await self.data_entities_processor.get_record_by_external_id(
+                        connector_id=self.connector_id,
+                        external_record_id=f"attachment_{attachment_id}"
+                    )
 
-                # Get attachment metadata
-                filename = attachment.get("filename", "unknown")
-                file_size = attachment.get("size", 0)
-                mime_type = attachment.get("mimeType", MimeTypes.UNKNOWN.value)
+                    # Get attachment metadata
+                    filename = attachment.get("filename", "unknown")
+                    file_size = attachment.get("size", 0)
+                    mime_type = attachment.get("mimeType", MimeTypes.UNKNOWN.value)
 
-                # Parse timestamps
-                created_str = attachment.get("created")
-                created_at = self._parse_jira_timestamp(created_str) if created_str else 0
+                    # Parse timestamps
+                    created_str = attachment.get("created")
+                    created_at = self._parse_jira_timestamp(created_str) if created_str else 0
 
-                # Determine version (increment if file was updated)
-                record_id = existing_record.id if existing_record else None
-                is_new = existing_record is None
+                    # Determine version (increment if file was updated)
+                    record_id = existing_record.id if existing_record else None
+                    is_new = existing_record is None
 
-                if is_new:
-                    version = 0
-                elif hasattr(existing_record, 'source_updated_at') and existing_record.source_updated_at != created_at:
-                    version = existing_record.version + 1
-                else:
-                    version = existing_record.version if existing_record else 0
+                    if is_new:
+                        version = 0
+                    elif hasattr(existing_record, 'source_updated_at') and existing_record.source_updated_at != created_at:
+                        version = existing_record.version + 1
+                    else:
+                        version = existing_record.version if existing_record else 0
 
-                # Create FileRecord using helper method
-                attachment_record = self._create_attachment_file_record(
-                    attachment_id=str(attachment_id),
-                    filename=filename,
-                    mime_type=mime_type,
-                    file_size=file_size,
-                    created_at=created_at,
-                    parent_issue_id=issue_id,
-                    parent_node_id=parent_node_id,
-                    project_id=parent_record_group_id,
-                    weburl=weburl,
-                    record_id=record_id,
-                    version=version,
-                    authored_by=atlassian_person(attachment.get("author")),
-                )
+                    # Create FileRecord using helper method
+                    attachment_record = self._create_attachment_file_record(
+                        attachment_id=str(attachment_id),
+                        filename=filename,
+                        mime_type=mime_type,
+                        file_size=file_size,
+                        created_at=created_at,
+                        parent_issue_id=issue_id,
+                        parent_node_id=parent_node_id,
+                        project_id=parent_record_group_id,
+                        weburl=weburl,
+                        record_id=record_id,
+                        version=version,
+                        authored_by=atlassian_person(attachment.get("author")),
+                    )
 
-                # Attachments inherit permissions from parent issue
-                attachment_permissions = []
+                    # Attachments inherit permissions from parent issue
+                    attachment_permissions = []
 
-                attachment_records.append((attachment_record, attachment_permissions))
+                    attachment_records.append((attachment_record, attachment_permissions))
+                except Exception as e:
+                    self.logger.error(
+                        f"Skipping attachment {attachment_id} on issue {issue_key}: failed to build its record: {e}",
+                        exc_info=True,
+                    )
+                    self._issues_not_written.add(str(issue_id))
 
             self.logger.info(f"📎 Returning {len(attachment_records)} attachment records for issue {issue_key}")
             return attachment_records

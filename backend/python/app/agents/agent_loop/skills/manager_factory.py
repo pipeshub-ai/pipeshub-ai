@@ -67,6 +67,7 @@ from app.agents.agent_loop.skills.graph_tracker import GraphUsageTracker
 from app.agents.agent_loop.skills.offer import skill_viewers
 from app.agents.agent_loop.skills.semantic_index import SemanticSkillIndex
 from app.core.org_jobs import for_each_org
+from app.services.featureflag.platform_settings import is_skills_enabled
 from app.utils.env_flags import (
     PIPESHUB_SKILLS_AUTO_APPROVE,
     PIPESHUB_SKILLS_LEARNING_ENABLED,
@@ -81,6 +82,7 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.modules.providers.skills.base import SkillProvenance
     from app.agent_loop_lib.transport.registry import TransportRegistry
     from app.agents.agent_loop.context import AgentContext
+    from app.config.configuration_service import ConfigurationService
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 __all__ = [
@@ -218,16 +220,19 @@ async def reconcile_builtin_skills(graph_provider: "IGraphDBProvider", org_id: s
     await asyncio.shield(_reconcile_task(graph_provider, org_id))
 
 
-async def reconcile_builtin_skills_for_orgs(graph_provider: "IGraphDBProvider") -> None:
-    """Service-startup reconcile for every active org (sequential: this is
-    background work and should not compete with request traffic), each in its
-    own org context. A deleted org is inactive and keeps no data, so it is not
-    seeded. Never raises: a failure is logged, and requests retry per org."""
+async def reconcile_builtin_skills_for_orgs(
+    graph_provider: "IGraphDBProvider", config_service: "ConfigurationService",
+) -> None:
+    """Service-startup reconcile for every active org with skills switched on
+    (sequential: this is background work and should not compete with request
+    traffic), each in its own org context, where its switch is read too. A
+    deleted org is inactive and keeps no data, so it is not seeded. Never raises: a failure is logged, and requests retry per org."""
+    async def reconcile(org_id: str) -> None:
+        if await is_skills_enabled(config_service):
+            await reconcile_builtin_skills(graph_provider, org_id)
+
     try:
-        await for_each_org(
-            graph_provider, "builtin_skills", lambda org_id: reconcile_builtin_skills(graph_provider, org_id), logger,
-            active=True,
-        )
+        await for_each_org(graph_provider, "builtin_skills", reconcile, logger, active=True)
     except Exception as e:
         logger.warning("skills: builtin skill seeding did not run at startup (requests will retry): %s", type(e).__name__)
 

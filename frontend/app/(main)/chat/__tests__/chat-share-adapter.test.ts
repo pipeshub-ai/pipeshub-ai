@@ -14,6 +14,8 @@ vi.mock('@/app/(main)/agents/api', () => ({ AgentsApi: { fetchAgentConversation:
 vi.mock('../api', () => ({ ChatApi: { fetchConversation: h.fetchConversation } }));
 vi.mock('../project-api', () => ({ ProjectApi: {} }));
 vi.mock('@/config', () => ({ useAuthStore: { getState: () => ({ user: null }) } }));
+// i18next is not initialised in unit tests: `t` would answer undefined.
+vi.mock('i18next', () => ({ default: { t: (key: string) => key } }));
 vi.mock('@/lib/store/user-store', () => ({ useUserStore: { getState: () => ({ profile: h.profile }) } }));
 
 import { useChatStore } from '../store';
@@ -177,5 +179,13 @@ describe('chat share adapter', () => {
 
     expect(sharedWithOf(open)).toEqual([BEN, CARA]);
     expect(sharedWithOf(background)).toEqual([BEN, CARA]);
+  });
+
+  it('tells the owner of an agent chat that the agent is not shared with the chat', () => {
+    expect(createChatShareAdapter('conv-1', { agentId: 'agent-1' }).notice).toBeTruthy();
+  });
+
+  it('has no notice for a plain chat', () => {
+    expect(createChatShareAdapter('conv-1').notice).toBeUndefined();
   });
 });

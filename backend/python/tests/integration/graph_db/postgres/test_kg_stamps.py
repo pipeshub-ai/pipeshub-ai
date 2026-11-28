@@ -347,7 +347,7 @@ async def test_the_verify_flags_a_stamp_that_took_the_facts_of_a_node_of_the_sam
         r = await tx.fetchrow("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = $2 AND id = 'X'", org, COLL_CODE["records"])
         g = await tx.fetchrow("SELECT r.* FROM kg.records r JOIN kg.node_keys k ON k.org_id = r.org_id AND k.sk = r.sk WHERE r.org_id = $1 AND k.coll = $2 AND k.id = 'X'", org, COLL_CODE["recordGroups"])
         await KgWriter(tx).stamps_set([{"sk": r["sk"], "coll": COLL_CODE["records"], "id": "X", "kind": 3, "path": g["path"], "class_id": g["class_id"], "self_lit": g["self_lit"], "seed": g["seed"],
-                                        "own_grant": g["own_grant"], "under_deleted": g["under_deleted"], "legacy_reason": g["legacy_reason"], "leaf": g["leaf"]}])
+                                        "own_grant": g["own_grant"], "under_deleted": g["under_deleted"], "legacy_reason": g["legacy_reason"], "leaf": g["leaf"], "r13": g["r13"]}])
     with ctx(org):
         await pg_db.run(swap, write=True)
     assert any(d.startswith("s|X") for d in await dry_diffs(p, org, "app1"))
@@ -518,6 +518,7 @@ async def test_a_restamp_page_counts_a_write_for_every_connector_it_rewrites(pg_
     assert locks.written(org, "app1") > before                                # the parent of the page's child is app1's row
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_the_stampers_facts_are_read_by_key_on_an_org_the_statistics_do_not_know(pg_db) -> None:
     """The graph is analysed before this org's 20,000 records, 200 groups and 2,000 users are written (its first load, before autovacuum reaches it), so
     the planner puts the org at a row. Each fact the stamper reads for 500 records is read by the record's key and each edge's other end by its own: joined,

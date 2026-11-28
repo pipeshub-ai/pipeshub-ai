@@ -11,9 +11,16 @@ from typing import TYPE_CHECKING, Any
 import asyncpg
 import pytest
 
-from app.services.graph_db.postgres.kg import drainer, grant_marks, stampgraph
+from app.services.graph_db.postgres.kg import (
+    dependents,
+    drainer,
+    grant_marks,
+    restamp,
+    stampgraph,
+)
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH
 from app.services.graph_db.postgres.kg.reader import seeks
+from app.services.graph_db.postgres.kg.writers import KgWriter
 from tests.support import plan_gate
 
 from .pg_support import new_org
@@ -90,6 +97,7 @@ async def _world(p, org: str) -> None:
             await p.batch_create_edges([edge(u, "users", k, "records", type="USER", role="READER") for _, k in part for u in ("u1", "u2")], "permission")
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_the_first_drain_of_a_large_connector_commits_with_no_statistics_under_a_short_statement_timeout(pg_provider, pg_db, monkeypatch, no_stats) -> None:
     """One page drains the whole world (every node, grant and mark written and read in one unit) with kg's statistics cleared and every statement of the unit held to 5 s
     after the projection starts. On the plans the planner made of the marks' lookups with no statistics (a record's own row and its parents' rows found by a scan of the
@@ -119,7 +127,9 @@ async def test_the_first_drain_of_a_large_connector_commits_with_no_statistics_u
 
 
 # The key column each index of a statement below must be bounded by (with the org): a probe of any other index, or of one of these by the org alone, reads the org per row.
-KEY_OF = {"records_pkey": r"\bsk >= ", "records_id": r"\bid >= ", "records_parent": r"\bparent_sk >= ", "links_pkey": r"\bparent_sk\b", "links_child": r"\bchild_sk\b",
+KEY_OF = {"records_pkey": r"\bsk >= ", "records_id": r"\bid >= ", "records_parent": r"\bparent_sk >= ", "records_group": r"\bgroup_sk >= ", "records_fence": r"\bfence_job >= ",
+          "records_app": r"\bapp_sk IS NULL\b",
+          "links_pkey": r"\bparent_sk\b", "links_child": r"\bchild_sk\b",
           "scope_members_pkey": r"\bprincipal_sk\b", "scope_members_by_node": r"\bnode_sk >= "}
 KG = ("records", "links", "scope_members")
 
@@ -141,6 +151,7 @@ def _not_seeks(plan: dict[str, Any]) -> list[str]:
     return bad
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_the_marks_and_stamp_lookups_of_a_drain_are_seeks_with_no_statistics_and_analysed(pg_provider, pg_db, no_stats) -> None:
     """EXPLAIN gate: on the world above (drained and promoted), with kg's statistics cleared and then analysed, the statements a drain unit runs per grant or node (the marks of the grants on
     nodes, the children of parents, the stamp's kg rows), as the unit runs them (under reader.seeks, custom plans), read kg.records, kg.links and kg.scope_members only by
@@ -173,6 +184,24 @@ async def test_the_marks_and_stamp_lookups_of_a_drain_are_seeks_with_no_statisti
                 pytest.fail(f"{state} {name}: not a seek per key: {bad}\n{json.dumps(ran, indent=1)[:6000]}")
 
 
+async def test_a_unit_plans_without_jit_where_the_server_has_it_on(pg_provider, pg_db) -> None:
+    """The marks of every file's grants, outside reader.seeks, with jit_above_cost at 0 in the unit (on a large org the estimate of 5,000 keys' seeks passes the default 100,000:
+    the server's default jit=on then compiled a 10 ms read for 370 ms). Every unit turns jit off, so the plan carries no JIT section, whatever the server's setting."""
+    p, org = pg_provider, new_org()
+    await _world(p, org)
+    assert (await flip(pg_db, org))[0] == 1
+
+    async def go(tx) -> tuple[str, dict[str, Any]]:
+        sks = [r["sk"] for r in await tx.fetch("SELECT sk FROM kg.records WHERE org_id = $1 AND coll = 3 AND NOT folder ORDER BY sk", org)]
+        await tx.fetchval("/* pipeshub:test.jit_above_cost */ SELECT set_config('jit_above_cost', '0', true)")
+        ran = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + grant_marks.ON_NODES, org, sks)
+        return await tx.fetchval("SELECT current_setting('jit')"), (json.loads(ran) if isinstance(ran, str) else ran)[0]
+    with ctx(org):
+        jit, plan = await pg_db.run(go, custom_plan=True)
+    assert jit == "off" and "JIT" not in plan, plan.get("JIT")
+
+
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_clearing_kg_statistics_is_undone_at_teardown(no_stats) -> None:
     """The fixture's own check (its teardown asserts the same for every test that uses it): cleared here, so the teardown has to bring them back."""
     await no_stats()
@@ -186,3 +215,41 @@ def test_the_plan_gate_judges_rows_per_probe_as_explain_reports_them() -> None:
              "Actual Rows": 5000, "Actual Loops": 100, "Rows Removed by Filter": 0}
     assert _not_seeks({"Plan": probe}) == ["records_pkey: 5000 rows per probe"]
     assert _not_seeks({"Plan": {**probe, "Actual Rows": 1}}) == []
+
+
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
+async def test_the_walk_below_a_large_change_reads_by_keys_with_no_statistics_and_analysed(pg_provider, pg_db, no_stats) -> None:
+    """EXPLAIN gate for the reads of a large change's walk (stamp.affected's kg children, and a subtree job's pages and rows, restamp._walk) on the world above with its folders
+    marked by a job: with kg's statistics cleared and then analysed, each reads kg.records and kg.links only by its key's index, bounded by the org and the key, a folder's rows at
+    most per probe (each read stops at its limit, so a group of 5,000 members is no larger a probe)."""
+    p, org = pg_provider, new_org()
+    await _world(p, org)
+    assert (await flip(pg_db, org))[0] == 1
+    job = 2 ** 40
+
+    async def mark(tx) -> tuple[list[int], int]:
+        rows = await tx.fetch("SELECT sk, coll, id, kind FROM kg.records WHERE org_id = $1 AND folder ORDER BY sk", org)
+        await KgWriter(tx).fence_rows([(r["sk"], r["coll"], r["id"], r["kind"]) for r in rows], job)
+        return [r["sk"] for r in rows], await tx.fetchval("SELECT sk FROM kg.records WHERE org_id = $1 AND coll = 2", org)
+    with ctx(org):
+        folders, group = await pg_db.run(mark, write=True)
+    assert len(folders) == FOLDERS
+    few = FILES // 2
+    wants = {"walk next": (restamp.WALK_NEXT, [job, 0, FOLDERS], True), "kg children": (dependents.KIDS_KG, [[*folders, group], few], True),
+             "page by parent": (restamp.WALK_PAGE_PARENT, [folders, few], True), "page by group": (restamp.WALK_PAGE_GROUP, [[group], few], True),
+             "page by links": (restamp.WALK_PAGE_LINKS, [folders, few], False), "one by parent": (restamp.WALK_ONE_PARENT, [folders[0], 0, few], True),
+             "one by group": (restamp.WALK_ONE_GROUP, [group, 0, few], True), "one by links": (restamp.WALK_ONE_LINKS, [folders[0], 0, 0, few], False),
+             "hide read": (restamp.HIDE_READ, [folders], True), "rows of no connector": (restamp.APPLESS_PARENT, [restamp.APPLESS_SCAN], True)}
+    for state in ("no statistics", "analysed"):
+        await (no_stats() if state == "no statistics" else _admin(RESTORE))
+        for name, (sql, args, rows) in wants.items():
+            async def go(tx, sql=sql, args=args) -> tuple[int, dict[str, Any]]:
+                async with seeks(tx):
+                    n = len(await tx.fetch(sql, org, *args))
+                    ran = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, org, *args)
+                return n, (json.loads(ran) if isinstance(ran, str) else ran)[0]
+            with ctx(org):
+                n, ran = await pg_db.run(go, custom_plan=True)
+            assert n > 0 or not rows, f"{state} {name}: the statement found nothing, so the gate judged no probe"
+            if bad := _not_seeks(ran):
+                pytest.fail(f"{state} {name}: not a seek per key: {bad}\n{json.dumps(ran, indent=1)[:6000]}")

@@ -160,6 +160,7 @@ async def _fetched(tx) -> int:
     return await tx.fetchval("SELECT coalesce(sum(seq_tup_read + coalesce(idx_tup_fetch, 0)), 0) FROM pg_stat_xact_user_tables WHERE schemaname = 'graph' AND relname LIKE 'nodes%'")
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_a_copy_page_of_records_reads_the_page_not_the_records_after_its_cursor(pg_db) -> None:
     """3,000 records of another connector sort between the cursor and app1's next records: a page of 10 of app1's records reads about 10 rows, fresh and analysed (the role's own statement cannot seek
     the connector's index under row-level security, and read every record after the cursor). The page is app1's next records in byte order."""
@@ -643,7 +644,7 @@ async def test_the_verify_names_a_stale_stamp_and_a_backfill_repairs_it(pg_db) -
     assert await run_in(pg_db, org, stamped) > 0                              # the backfill restamped the connector (the copy itself writes none)
     sk = await sk_of(pg_db, org, ("records", "fold"))
     await corrupt(pg_db, org, lambda tx, w: w.stamps_set([{"sk": sk, "coll": 3, "id": "fold", "kind": 3, "path": None, "class_id": None, "self_lit": False, "seed": False, "own_grant": False,
-                                                          "under_deleted": False, "legacy_reason": 3, "leaf": True}]))
+                                                          "under_deleted": False, "legacy_reason": 3, "leaf": True, "r13": False}]))
     res = await verify(pg_db, org, "app1")
     assert not res.ok and any(m.startswith("s|fold") for m in res.changed), res.changed
     again = await bf.backfill(pg_db, org, "app1", page=4)                          # the backfill restamps the connector whole: the stale stamp is repaired

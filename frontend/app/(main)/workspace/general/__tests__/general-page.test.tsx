@@ -5,7 +5,12 @@ import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-bu
 
 const api = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), delete: vi.fn() }));
 const addToast = vi.hoisted(() => vi.fn());
+const router = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn(), prefetch: vi.fn(), back: vi.fn(), refresh: vi.fn() }));
 vi.mock('@/lib/api', () => ({ apiClient: api, streamSSERequest: vi.fn() }));
+vi.mock('next/navigation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('next/navigation')>()),
+  useRouter: () => router,
+}));
 vi.mock('@/lib/store/toast-store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/store/toast-store')>()),
   useToastStore: (select: (s: { addToast: typeof addToast }) => unknown) => select({ addToast }),
@@ -150,14 +155,14 @@ describe('General settings page', () => {
     });
 
     await waitFor(() => expect(useGeneralStore.getState().isLoading).toBe(false));
-    expect(form().dataCollection).toBe(true);
+    expect(form().optIn).toBe(true);
   });
 
   it('saving the name and the data-collection switch together keeps the new values and raises no load error', async () => {
     await renderPage();
     act(() => {
       useGeneralStore.getState().setField('displayName', 'Acme Labs');
-      useGeneralStore.getState().setField('dataCollection', true);
+      useGeneralStore.getState().setField('optIn', true);
     });
     org = { ...ORG, shortName: 'Acme Labs' };
     // The metrics reread after the toggle fails: it must not undo the switch or toast a load error.
@@ -168,9 +173,23 @@ describe('General settings page', () => {
 
     await waitFor(() => expect(calls('/api/v1/configurationManager/metricsCollection')).toBe(2));
     await waitFor(() => expect(calls('/api/v1/org')).toBe(2));
-    expect(form()).toMatchObject({ displayName: 'Acme Labs', dataCollection: true });
+    expect(form()).toMatchObject({ displayName: 'Acme Labs', optIn: true });
     expect(useGeneralStore.getState().isDirty()).toBe(false);
     expect(addToast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'workspace.general.toasts.loadError' }));
+  });
+
+  it('an admin sees the Data Collection switch, and saving it on calls the toggle route', async () => {
+    await renderPage();
+    expect(screen.getByText('workspace.general.dataCollection')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('switch'));
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() =>
+      expect(api.put).toHaveBeenCalledWith('/api/v1/configurationManager/metricsCollection/toggle', {
+        enableMetricCollection: true,
+      }),
+    );
   });
 
   it('uploading a logo keeps unsaved edits and shows the stored logo', async () => {
@@ -255,5 +274,50 @@ describe('General settings page', () => {
 
     expect(form().displayName).toBe('Acme');
     expect(screen.getByTestId('logo').getAttribute('data-src')).toBe('');
+  });
+
+  describe('the Edition link, with the form edited', () => {
+    const editionLink = () => screen.getByRole('link', { name: 'workspace.enterprise.seeWhatsInEnterprise' });
+
+    it('asks before leaving, and goes on to the Enterprise page once the edits are discarded', async () => {
+      await renderPage();
+      await screen.findByDisplayValue('Acme Inc');
+      act(() => useGeneralStore.getState().setField('city', 'Shelbyville'));
+
+      fireEvent.click(editionLink());
+
+      expect(router.push).not.toHaveBeenCalled();
+      fireEvent.click(await screen.findByRole('button', { name: 'workspace.general.discardDialog.confirm' }));
+      expect(form().city).toBe('Springfield');
+      expect(router.push.mock.calls[0][0].replace(/\/$/, '')).toBe('/workspace/enterprise');
+    });
+
+    it('stays, with the edits kept, when the admin continues editing', async () => {
+      await renderPage();
+      await screen.findByDisplayValue('Acme Inc');
+      act(() => useGeneralStore.getState().setField('city', 'Shelbyville'));
+
+      fireEvent.click(editionLink());
+      fireEvent.click(await screen.findByRole('button', { name: 'workspace.general.discardDialog.cancel' }));
+
+      expect(form().city).toBe('Shelbyville');
+      expect(router.push).not.toHaveBeenCalled();
+      // A later Discard from the save bar only discards: the link it was opened for is forgotten.
+      act(() => useGeneralStore.getState().setDiscardDialogOpen(true));
+      fireEvent.click(await screen.findByRole('button', { name: 'workspace.general.discardDialog.confirm' }));
+      expect(router.push).not.toHaveBeenCalled();
+    });
+
+    it('leaves without asking when nothing is edited', async () => {
+      await renderPage();
+      await screen.findByDisplayValue('Acme Inc');
+
+      const event = new MouseEvent('click', { bubbles: true, cancelable: true });
+      editionLink().dispatchEvent(event);
+
+      expect(screen.queryByRole('button', { name: 'workspace.general.discardDialog.confirm' })).toBeNull();
+      // next/link handles the click itself; the page did not stop it.
+      expect(router.push).not.toHaveBeenCalled();
+    });
   });
 });

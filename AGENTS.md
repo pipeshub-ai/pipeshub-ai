@@ -9,7 +9,7 @@ Human onboarding is [CONTRIBUTING.md](./CONTRIBUTING.md).
 ## Layout
 
 ```text
-frontend/                 Next.js dashboard. UI conventions: frontend/CLAUDE.md
+frontend/                 Next.js dashboard. UI conventions: frontend/AGENTS.md
 backend/nodejs/apps/     Express — auth, orgs, KB, gateway, MCP, and (in Docker) the built UI
 backend/python/          FastAPI: connectors :8088, indexing :8091, query :8000,
                           docling :8081, embedding :8002, parsing :8092, extraction :8093
@@ -17,6 +17,48 @@ deployment/               Docker Compose and Helm
 ```
 
 New connectors extend `ConnectorFactory` under `backend/python/app/connectors/sources/`. Before adding or changing one, read [CONNECTOR.md](./CONNECTOR.md); [CONNECTOR_CHECKLIST.md](./CONNECTOR_CHECKLIST.md) is the definition of done. New HTTP routes must keep `backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml` in sync — a mismatch is blocking.
+
+Design docs for each feature are listed in [docs/README.md](./docs/README.md).
+
+## Module guides
+
+Some folders have their own `AGENTS.md`: what the code does, the rules it must keep, the decisions behind it, and what to check when you add, change or remove code there. **Before you edit a file, read the guide in its folder and in every parent folder up to this one.** Each guide has a `CLAUDE.md` next to it that only imports it (`@AGENTS.md`), so Claude Code loads the guide when it opens a file in that folder.
+
+| Folder | Read before you change |
+| --- | --- |
+| [`frontend/`](./frontend/AGENTS.md) | Any UI: naming, routing, styling, i18n, data fetching |
+| [`backend/nodejs/apps/src/libs/`](./backend/nodejs/apps/src/libs/AGENTS.md) | Node errors, calls to other services, retries |
+| [`backend/nodejs/apps/src/libs/middlewares/`](./backend/nodejs/apps/src/libs/middlewares/AGENTS.md) | Error handling, path params, validation, access lines for any Node route |
+| [`backend/nodejs/apps/src/modules/`](./backend/nodejs/apps/src/modules/AGENTS.md) | Any Node feature module, above all the ones that proxy to the Python services |
+| [`backend/nodejs/apps/src/modules/user_management/`](./backend/nodejs/apps/src/modules/user_management/AGENTS.md) | Users, roles, admins, groups, teams, invites |
+| [`backend/python/app/agents/mcp/`](./backend/python/app/agents/mcp/AGENTS.md) | The MCP client and its server catalog |
+| [`backend/python/app/config/`](./backend/python/app/config/AGENTS.md) | Config reads and writes, KV providers, the file-type table |
+| [`backend/python/app/connectors/api/`](./backend/python/app/connectors/api/AGENTS.md) | The connectors service HTTP API: OAuth, connector create and config |
+| [`backend/python/app/services/graph_db/`](./backend/python/app/services/graph_db/AGENTS.md) | Graph queries and providers, and any job that reads the graph without a request |
+| [`backend/python/app/services/messaging/`](./backend/python/app/services/messaging/AGENTS.md) | Broker consumers and producers, retries, commits |
+
+### Using a guide
+
+- **Read before you plan,** not after you have written the code. The guides on the path from the root to the file's folder all apply; a nearer guide adds to a parent's rules and wins where the two differ.
+- **Rules** are what the code must keep. Breaking one is a bug unless the user agrees and the guide is changed in the same PR.
+- **Decisions** say what was chosen, what was rejected and why (with the PR). Do not reopen a rejected option without a new reason; when you have one, tell the user.
+- **Changing this code** is the checklist for your kind of change (adding, editing or removing). Go through it before you call the work done, and run the commands under **Tests**.
+- **Check before you rely on it.** A guide names files and symbols; if one is gone or does something else, treat it as drift (below).
+- **The user comes first.** If the user asks for something a guide forbids, say which rule it breaks and why the rule exists, then follow their call.
+
+### Writing and keeping a guide
+
+- **Same PR.** A change that makes a guide wrong (a rule, a decision, a file or symbol it names, a checklist step) updates the guide in the same PR. Reviewers treat a stale guide as a defect.
+- **Write a new guide only when all of these hold.** Most folders do not need one.
+  1. The folder is a module or feature with its own boundary (a service, a provider family, a group of routes), not a single file, a helper folder or one connector. Connectors follow [CONNECTOR.md](./CONNECTOR.md).
+  2. It has at least three rules an agent would plausibly break that the code, its tests and its comments do not make plain: invariants, failure modes, decisions that look odd until you know why.
+  3. No guide in a parent folder and no doc in `docs/` covers them. If one does, add the rules there or link the doc instead.
+- **Before writing one, ask the user.** If the folder you are working in passes the test above and has no guide, say which rules it would hold and ask whether to add it. If they agree, write it in the same PR and add it to the table above. Do not write a guide for a folder you only touched in passing.
+- **Keep a guide short.** It holds rules and decisions, not a tour of the code. Something an agent can read from the code or a docstring in a minute does not go in. Past about 200 lines, move the long explanations to `docs/` and link them.
+- **A guide disagrees with the code: find out which is wrong.** If the code is right, correct the guide in your PR, even when your change did not cause the drift, and say so in the PR description. If the code breaks a rule or decision the guide records, tell the user before you change either.
+- **A guide misses something important: add it.** A rule, failure mode or decision you had to learn the hard way (from a bug, a failing test or a review comment) goes into the guide, so the next agent does not learn it the same way.
+- **Shape.** Content in `AGENTS.md`; a `CLAUDE.md` beside it that holds only `@AGENTS.md`. Sections: what it is and when to read it, how it fits, files, rules, decisions (with the PR), changing this code (adding / editing / removing), tests, keeping this file true. [`backend/python/app/agents/mcp/AGENTS.md`](./backend/python/app/agents/mcp/AGENTS.md) is a full example.
+- **Only what holds on main**, checked in the code. Cite files and symbols, never line numbers. Link this file and `docs/` instead of repeating them.
 
 ## Storage is pluggable
 
@@ -107,12 +149,24 @@ would run and why anything is skipped.
 
 Style: [.gemini/styleguide.md](./.gemini/styleguide.md) (Ruff, PEP 8, ESLint, no secrets).
 
+## Logging and errors
+
+Read [docs/logging.md](./docs/logging.md) before you add a log line or handle an error. The rules that apply everywhere:
+
+- **The message is static text or a dotted event name** (`sync_run.end`). Ids and values go in snake_case fields, named the same in Python and Node. Fields are scalars: ids, counts, enums.
+- **Never log** secrets, tokens, request or response bodies, prompts, document content, emails or names. Driver, provider and model error text counts as content: in Python use `error_class.log_failure(..., include_error_text=False)` for it, and `failure_reason(exc)`, never `str(e)`, in anything a client, tool result or trace receives. CI checks for emails and names in log calls (`log-pii`).
+- **Log an error once, where it is handled.** Python: `error_class.log_failure(logger, event, exc, **ids)`; lower layers `raise … from e`. Node: pass it to `next(err)` and the error middleware writes the line.
+- **Bind ids once where work enters** (a request, a broker message, a tick). `loop.run_in_executor`, `ThreadPoolExecutor.submit` and `threading.Thread` do not copy the context; run the work in `contextvars.copy_context().run`.
+- **An outage is not an absence.** A store, graph or config read that failed raises (`GraphQueryError`, `get_config(..., raise_on_error=True)`, `PermissionVerificationUnavailableError`) and the route answers an error. It is never read as "not found", "no access", "not configured" or "nothing to delete".
+- **A Python 4xx `detail` is shown to the user.** Node passes a 4xx's words through and replaces a 5xx with its own (`libs/errors/backend-error.ts`). So a 4xx `detail` holds no exception text, raw path value or email.
+- **Python's KV config has no compare-and-set.** `create_config_if_absent` is its only conditional write, so a read-modify-write there can lose a concurrent write. Node has `KeyValueStoreService.compareAndSet`; use it to rewrite a stored list or object. It is atomic on Redis and PostgreSQL only: on etcd (`Etcd3DistributedKeyValueStore`) it reads, compares and writes in separate calls, so two writers can both succeed there.
+
 ## Conventions
 
-- Python config reads and writes go through `ConfigurationService` (`config_service.get_config(key)`, `set_config(key, value)`), never `KeyValueStore` directly. Use `get_config(key, use_cache=False)` when you need the value right after an update.
+- Python config reads and writes go through `ConfigurationService` (`config_service.get_config(key)`, `set_config(key, value)`), never `KeyValueStore` directly. Use `get_config(key, use_cache=False)` when you need the value right after an update. Caching and failure rules are in [backend/python/app/config/AGENTS.md](./backend/python/app/config/AGENTS.md).
 - `app/edition*.py`, `src/config.ts` and `frontend/config.ts` are extension points: keep the OSS default working and don't add edition-specific logic elsewhere ([CONTRIBUTING.md, Extension points](./CONTRIBUTING.md#extension-points)).
 - Comments explain only the why the code cannot show: a non-obvious constraint or the bug a line guards against. No comments that restate the code or narrate the change, no commented-out code, no TODOs without an owner.
-- PR review criteria: [.claude/skills/pr-review/SKILL.md](./.claude/skills/pr-review/SKILL.md). Frontend work: [frontend/CLAUDE.md](./frontend/CLAUDE.md) (Collections vs Knowledge Base naming, styling, i18n).
+- PR review criteria: [.claude/skills/pr-review/SKILL.md](./.claude/skills/pr-review/SKILL.md). Frontend work: [frontend/AGENTS.md](./frontend/AGENTS.md) (Collections vs Knowledge Base naming, styling, i18n).
 
 ## Do not
 

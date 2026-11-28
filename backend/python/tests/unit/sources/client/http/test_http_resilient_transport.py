@@ -150,6 +150,24 @@ class TestRetryOnStatus:
         assert transport.closed == [first, second]
 
     @pytest.mark.asyncio
+    async def test_a_throttle_that_outlasts_the_retries_is_reported_once(self, transport_factory) -> None:
+        policy = _policy(max_retries=1)
+        outlasted: list[int] = []
+        policy.on_throttle_outlasted = lambda: outlasted.append(1)
+        transport = transport_factory(policy, [_response(429), _response(429)])
+        assert (await _run(transport)).status_code == 429
+        assert outlasted == [1]
+
+    @pytest.mark.asyncio
+    async def test_a_throttle_that_clears_or_an_outage_is_not_reported(self, transport_factory) -> None:
+        for outcomes in ([_response(429), _response(200)], [_response(503), _response(503)]):
+            policy = _policy(max_retries=1)
+            outlasted: list[int] = []
+            policy.on_throttle_outlasted = lambda outlasted=outlasted: outlasted.append(1)
+            await _run(transport_factory(policy, outcomes))
+            assert outlasted == []
+
+    @pytest.mark.asyncio
     async def test_closes_response_before_retrying(self, transport_factory):
         """An unread response holds a pooled connection; leaking one per retry
         eventually exhausts the pool."""

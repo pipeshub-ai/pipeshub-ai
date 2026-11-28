@@ -750,8 +750,9 @@
     "moreOptions": "More options",
     "docs": "Docs",
     "enterprise": {
-      "label": "Available in EE",
-      "tooltip": "Part of the PipesHub Enterprise Edition"
+      "label": "Available in Enterprise",
+      "tooltip": "Included in PipesHub Enterprise Edition",
+      "short": "EE"
     },
     "errorBoundary": {
       "title": "Something went wrong",
@@ -1136,6 +1137,7 @@
     "agentSidebarLabel": "Agent",
     "agentNameLoading": "Loading…",
     "sharedAgentChat": "Shared agent chat",
+    "sharedAgentChatNotice": "People you share this chat with can read it, but they cannot open the agent unless you share the agent with them too.",
     "myAgents": "My agents",
     "moreAgents": "More agents",
     "agentHeaderMenuAria": "Agent options",
@@ -2164,8 +2166,8 @@
     "groups": {
       "title": "Groups",
       "subtitle": "Create and manage groups to control access and permissions",
-      "enterpriseTitle": "Group permissions are available in the Enterprise Edition",
-      "enterpriseMessage": "Upgrade to the Enterprise Edition to use group permissions.",
+      "enterpriseTitle": "Group permissions are available in Enterprise Edition",
+      "enterpriseMessage": "Group-based access control: grant access to a whole group at once.",
       "createGroup": "Create group",
       "searchPlaceholder": "Search...",
       "emptyTitle": "You've not created any groups yet",
@@ -2249,18 +2251,168 @@
       }
     },
     "enterprise": {
-      "contact": "Talk to Sales",
+      "contact": "Talk with us",
       "scim": {
-        "heading": "SCIM provisioning is available in the Enterprise Edition",
-        "message": "Let Okta or Microsoft Entra ID add, update and switch off people in your workspace automatically."
+        "heading": "SCIM provisioning is available in Enterprise Edition",
+        "message": "Automate user provisioning and deprovisioning from Okta or Microsoft Entra ID.",
+        "benefits": {
+          "providers": "Works with Okta and Microsoft Entra ID over SCIM 2.0",
+          "offboarding": "Deprovisioned users lose access automatically",
+          "noManualWork": "No more manual user invites and removals"
+        }
       },
       "auditLogs": {
-        "heading": "Audit logs are available in the Enterprise Edition",
-        "message": "See who did what in your workspace, and when."
+        "heading": "Audit logs are available in Enterprise Edition",
+        "message": "See who did what in your workspace, and when.",
+        "benefits": {
+          "everyEvent": "Every action with its actor, time, IP address, target and outcome",
+          "filters": "Filter by user, action or outcome",
+          "alerts": "Set alerts and export logs for compliance reviews"
+        }
       },
       "usage": {
-        "heading": "Usage, credits and billing are available in the Enterprise Edition",
-        "message": "See what AI costs by person, agent, connector and model, manage credits, your plan and invoices, and set spending alerts in Credit settings."
+        "heading": "Usage & billing is available in Enterprise Edition",
+        "message": "See and control AI spend. Track it by user, agent, connector and model, set how much each user can spend, and manage credits and invoices.",
+        "benefits": {
+          "breakdown": "AI spend by user, agent, connector and model",
+          "billing": "Credits and invoices in one place",
+          "alerts": "Alerts when AI spend goes over your limit"
+        }
+      },
+      "benefitsTitle": "What's included",
+      "relatedTitle": "Also in Enterprise",
+      "tenants": {
+        "heading": "Multi-tenancy is available in Enterprise Edition",
+        "message": "Give each team, region or customer its own organization, all on one deployment.",
+        "benefits": {
+          "separate": "Each tenant has its own users, groups, connectors, collections and agents",
+          "inherit": "Choose which settings tenants inherit, like AI models, email and sign-in",
+          "manage": "Create and manage every tenant in one place"
+        }
+      },
+      "groups": {
+        "benefits": {
+          "grantOnce": "Grant access to an entire group at once",
+          "teams": "Add whole teams or individual users to a group",
+          "builtIn": "Start with the built-in Admin and Everyone groups"
+        }
+      },
+      "seeWhatsInEnterprise": "See what's in Enterprise",
+      "sidebarCard": {
+        "title": "Enterprise Edition",
+        "body": "Multi-tenancy, SSO, SCIM provisioning, audit logs and more.",
+        "action": "See what's included",
+        "dismiss": "Hide the Enterprise Edition card"
+      },
+      "overview": {
+        "currentEdition": "Current edition: Community Edition",
+        "title": "Enterprise Edition",
+        "subtitle": "Everything in Community Edition, plus multi-tenancy, SSO, SCIM provisioning, audit logs and cost controls.",
+        "seePreview": "Preview",
+        "seePreviewLabel": "Preview {{name}}",
+        "plans": {
+          "community": {
+            "name": "Community Edition",
+            "yourPlan": "Current edition",
+            "summary": "Free and open source, self-hosted",
+            "lead": "Included in Community",
+            "items": {
+              "search": "Search and chat across your connected apps",
+              "agents": "AI agents, actions and MCP servers",
+              "people": "Users and teams",
+              "signIn": "Password, email one-time code, Google and Microsoft sign-in"
+            },
+            "current": "Your current edition"
+          },
+          "enterprise": {
+            "name": "Enterprise Edition",
+            "summary": "For larger organizations. Pricing on request.",
+            "lead": "Everything in Community, plus:",
+            "seeAll": "See all features"
+          }
+        },
+        "compare": {
+          "title": "Compare editions",
+          "feature": "Feature",
+          "community": "Community",
+          "enterprise": "Enterprise",
+          "pricing": "Pricing on request",
+          "included": "Included",
+          "notIncluded": "Not included",
+          "communityHas": {
+            "scim": "Manual user management",
+            "collaborativeChat": "Share a chat to read",
+            "groups": "Teams",
+            "sso": "Password, email one-time code, Google and Microsoft"
+          }
+        },
+        "faq": {
+          "title": "Questions",
+          "free": {
+            "question": "Does Community Edition stay free?",
+            "answer": "Yes. It stays open source and free."
+          },
+          "preview": {
+            "question": "Can I preview a feature first?",
+            "answer": "Yes. Features marked “{{label}}” open the page where they would live, with a preview of the screen."
+          },
+          "get": {
+            "question": "How do I get Enterprise Edition?",
+            "answer": "{{contact}}. We’ll go through your organization’s needs and how to set it up."
+          }
+        },
+        "groups": {
+          "scale": "Scale",
+          "governance": "Access and governance",
+          "security": "Security and compliance",
+          "cost": "Cost and indexing"
+        },
+        "items": {
+          "tenants": {
+            "name": "Multi-tenancy",
+            "description": "Separate organizations for each team, region or customer, on one deployment."
+          },
+          "scim": {
+            "name": "SCIM provisioning",
+            "description": "Automate user provisioning and deprovisioning from Okta or Microsoft Entra ID."
+          },
+          "collaborativeChat": {
+            "name": "Collaborative chat",
+            "description": "Chat together in one conversation, and share it with teams and groups."
+          },
+          "groups": {
+            "name": "Group permissions",
+            "description": "Group-based access control: grant access to a whole group at once."
+          },
+          "toolApprovals": {
+            "name": "Tool approval policies",
+            "description": "Set organization-wide rules for each agent tool: run, ask for approval or block."
+          },
+          "actOnBehalf": {
+            "name": "Acting on behalf of a person",
+            "description": "Let a service account act as a named user (delegated access). Every attempt is logged."
+          },
+          "peoplesOwnApps": {
+            "name": "Governance over user apps",
+            "description": "Review and remove the OAuth apps, actions and MCP servers users connect."
+          },
+          "sso": {
+            "name": "Single sign-on (SSO)",
+            "description": "Sign in through Okta, OneLogin or any SAML 2.0 or OpenID Connect (OIDC) provider."
+          },
+          "auditLogs": {
+            "name": "Audit logs",
+            "description": "Track every action by actor, time, IP address and outcome. Filter, alert and export."
+          },
+          "usage": {
+            "name": "Usage & billing",
+            "description": "Visibility and control over AI spend: track it by user, agent, connector and model, and set how much each user can spend."
+          },
+          "indexingPriority": {
+            "name": "Indexing priority",
+            "description": "Choose which records, collections and uploads are indexed first."
+          }
+        }
       }
     },
     "teams": {
@@ -2632,6 +2784,8 @@
       "configSaveErrorFallback": "Failed to save model configuration",
       "configSaveOutboundError": "PipesHub cannot reach this model provider from inside the container. Cloud providers need outbound internet — see deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity.",
       "configSaveTimeoutError": "Request timed out while validating the model. Cloud providers need outbound internet from the PipesHub container — see deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity.",
+      "configSaveCredentialReentry": "Enter the credentials again to use this new endpoint.",
+      "configForwardingCredentialsCleared": "Forwarding credentials were removed because the endpoint changed. Add them again in Identity forwarding.",
       "configNoConfigRequired": "No configuration required for this provider.",
       "configDefaultModelNotice": "\"{{modelName}}\" will be used by the system by default.",
       "configSectionModelConfiguration": "Model configuration",
@@ -2747,6 +2901,7 @@
       "rotateCredentialsPlaceholder": "New API key",
       "rotateCredentialsSave": "Update key",
       "rotateCredentialsFailed": "Could not update the key",
+      "connectionEndpointsDiffer": "These models in the connection use a different endpoint from {{reference}}: {{models}}. Put every model in the connection on one endpoint, then try again.",
       "identity": {
         "menuItem": "Identity forwarding",
         "title": "Identity forwarding",
@@ -2862,7 +3017,7 @@
       "sections": {
         "overview": "Overview",
         "workspace": "Workspace",
-        "usageAndCredits": "Usage & credits",
+        "usageAndCredits": "Usage & billing",
         "security": "Security",
         "personal": "Personal",
         "people": "People",
@@ -2896,13 +3051,14 @@
         "groups": "Groups",
         "scim": "SCIM",
         "auditLogs": "Audit logs",
-        "usage": "Usage & credits",
+        "usage": "Usage & billing",
         "teams": "Teams",
         "webSearch": "Web search",
         "tenants": "Tenants",
         "superOrgs": "Organisations",
         "oauthApps": "Connector OAuth apps",
         "serviceAccounts": "Service accounts",
+        "enterprise": "Enterprise Edition",
         "aiAccounts": "AI accounts",
         "schedules": "Schedules",
         "memories": "Memories",
@@ -3173,6 +3329,11 @@
         "message": "If you discard, your edits won't be saved",
         "confirm": "Discard",
         "cancel": "Continue editing"
+      },
+      "edition": {
+        "title": "Edition",
+        "name": "Community Edition",
+        "description": "Open source and self-hosted. Enterprise Edition adds multi-tenancy, SSO, SCIM provisioning, audit logs and more."
       }
     },
     "mcpAccess": {
@@ -5437,7 +5598,7 @@
     },
     "tenants": {
       "title": "Tenants",
-      "subtitle": "Create and manage tenant organisations within the workspace",
+      "subtitle": "Create and manage tenant organizations on this deployment",
       "createTenant": "Create Tenant",
       "searchPlaceholder": "Search tenants...",
       "emptyTitle": "No tenants created yet",
@@ -7019,6 +7180,13 @@
       "hidden": "Some characters here would be invisible or would change the order of the text, so they are shown as codes like ⟨U+202E⟩. Check that this is what you expect to send.",
       "host": "{{ascii}} mixes alphabets and looks like {{unicode}}. It is shown in its real form because it may not be the site it seems to be.",
       "markerTitle": "A character that would otherwise be invisible or reorder the text"
+    },
+    "schedule": {
+      "name": "Name",
+      "when": "When",
+      "ask": "Each run is asked",
+      "notify": "Tell you on",
+      "where": "Each run starts its own conversation. Pause or delete it any time in Workspace > Schedules."
     }
   },
   "connectCard": {
@@ -7873,7 +8041,8 @@
     "status": {
       "active": "Active",
       "paused": "Paused",
-      "disabled": "Turned off"
+      "disabled": "Turned off",
+      "ranOnce": "Ran once"
     },
     "trigger": {
       "cron": "Cron",
@@ -7896,7 +8065,8 @@
         "cron": "Scheduled",
         "manual": "Run now",
         "event": "Triggered",
-        "cronCaughtUp": "Scheduled (caught up)"
+        "cronCaughtUp": "Scheduled (caught up)",
+        "once": "One-time"
       },
       "openConversation": "Open the conversation",
       "admitted": "Started",
@@ -7949,7 +8119,13 @@
       "notifyUnknown": "Not available right now.",
       "notifyCheckFailed": "Couldn't check which channels you can use, so only PipesHub is offered.",
       "webhookCantSign": "The caller can't sign. Use a token in a header instead",
-      "webhookCantSignHint": "Anyone who sees the token can call it. Signing is safer."
+      "webhookCantSignHint": "Anyone who sees the token can call it. Signing is safer.",
+      "kindOnce": "Once, at a date and time",
+      "onceAt": "Date and time",
+      "onceAtHint": "In your time zone ({{timeZone}}). At least a minute from now, at most a year ahead.",
+      "onceNotExisting": "That time doesn't exist on that day in your time zone: the clocks skip it. Pick another time.",
+      "onceTooSoon": "Pick a time at least a minute from now.",
+      "onceTooFar": "Pick a time at most a year ahead."
     },
     "webhook": {
       "title": "Your webhook",
@@ -7975,7 +8151,10 @@
       "limit": "You have reached the number of schedules allowed. Delete one first.",
       "budgetCeiling": "The budget per run is too high.",
       "unavailable": "Scheduled runs need durable agent chat, which is off for your organization.",
-      "triggerTokenInvalid": "The webhook's trigger token does not match. Copy the current token from the schedule and try again."
+      "triggerTokenInvalid": "The webhook's trigger token does not match. Copy the current token from the schedule and try again.",
+      "ranOnce": "This schedule already ran once. It won't run again; you can delete it.",
+      "notApproved": "This schedule wasn't approved, so it wasn't made.",
+      "approvalUsed": "That approval already made a schedule that was deleted. Ask again to set up a new one."
     },
     "reason": {
       "scheduledRunsDisabled": "scheduled runs were turned off for the organization",
@@ -8011,6 +8190,21 @@
       "latest": "Always use the live version",
       "latestHint": "Each run uses whatever was published last.",
       "save": "Save"
+    },
+    "ranOnce": "Ran once. It won't run again.",
+    "when": {
+      "cron": "{{cron}} (cron)",
+      "everyMinute": "Every minute",
+      "everyMinutes": "Every {{count}} minutes",
+      "hourly": "Every hour at :{{minute}}",
+      "daily": "Every day at {{time}}",
+      "weekdays": "Every weekday at {{time}}",
+      "weekly": "Every {{day}} at {{time}}",
+      "monthly": "Every month on day {{day}} at {{time}}",
+      "onceToday": "Once, today at {{time}}",
+      "onceTomorrow": "Once, tomorrow at {{time}}",
+      "onceOn": "Once, {{date}}",
+      "withZone": "{{when}} ({{timeZone}})"
     }
   },
   "unknownEffectCard": {
@@ -8795,7 +8989,9 @@
       "generic_one": "{{action}}",
       "generic_other": "{{action}} ({{count}} calls)",
       "install_packages_one": "Install packages",
-      "install_packages_other": "Install packages {{count}} times"
+      "install_packages_other": "Install packages {{count}} times",
+      "scheduleCreate_one": "Set up a schedule",
+      "scheduleCreate_other": "Set up {{count}} schedules"
     },
     "engineWants": "{{engine}} wants to:",
     "childWants": "The code task wants to:",
@@ -8863,7 +9059,8 @@
     "waitingForOwner_one": "Waiting for the conversation's owner to decide on a step",
     "waitingForOwner_other": "Waiting for the conversation's owner to decide on {{count}} steps",
     "denyAllLabel": "Deny all: {{title}}",
-    "titleSiteUpload": "Allow uploads to {{destination}} for this run?"
+    "titleSiteUpload": "Allow uploads to {{destination}} for this run?",
+    "titleSchedule": "Set up a schedule"
   },
   "engineSignIn": {
     "title": "Coding engine sign-in",

@@ -21,6 +21,7 @@ import time
 import unicodedata
 import uuid
 from collections.abc import Awaitable, Collection, Sequence
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from functools import lru_cache
 from logging import Logger
@@ -76,7 +77,13 @@ from app.config.constants.neo4j import (
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.config.constants.service_accounts import cypher_not_a_service_account
-from app.core.org_context import MissingOrgContext, spawn_detached, spawn_in_request
+from app.core.org_context import (
+    MissingOrgContext,
+    for_org,
+    org_optional,
+    spawn_detached,
+    spawn_in_request,
+)
 from app.edition import extra_node_collections
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,
@@ -241,6 +248,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_DUE_AT_FIELD,
     DUPLICATE_RECONCILE_GRACE_MS,
     DUPLICATE_RECONCILE_PENDING_FIELD,
+    KH_CHILDREN_ORDER_FLAG,
     KH_LISTING_STATE_FLAG,
     KH_SKIP_READS,
     MAX_INDEXED_COPIES_PER_ITEM,
@@ -607,6 +615,56 @@ def _record_insert_split(doc: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     return rest, ins
 
 
+# A hierarchy edge carries its child's place in the parent's name order (`khFrom`, `khOrd`, `khChild`), read through one relationship index,
+# so a browse of a node with very many children reads a page of them in order instead of every child (`Neo4jProvider._kh_split_window`).
+# `khOrd` is '0' + the lowercased name, '1' for a child with no name (it sorts after every named one, as the page's nullRank does), and
+# '2' for a stub (read apart, never in the window). Every write that changes a child's name or stub flag, or adds an edge, rewrites it in
+# the same statement; the browse reads it only once the migration behind KH_CHILDREN_ORDER_FLAG has stamped every older edge.
+KH_CHILDREN_ORDER_INDEX = "kh_children_order"
+_KH_CHILDREN_ORDER_DDL = (f"CREATE INDEX {KH_CHILDREN_ORDER_INDEX} IF NOT EXISTS FOR ()-[r:NODE_RELATION]-() "
+                          "ON (r.khFrom, r.khOrd, r.khChild)")
+# The children order index, sought by the wide browse's window (`kh_ur`) and stub (`kh_r`) reads: every server then reads them the same way
+# whatever its statistics. Each has its unhinted twin, run where the index is refused (`_execute_hinted`).
+_KH_WINDOW_ORDER_HINT = "USING INDEX SEEK kh_ur:NODE_RELATION(khFrom, khOrd, khChild)"
+_KH_STUBS_ORDER_HINT = "USING INDEX SEEK kh_r:NODE_RELATION(khFrom, khOrd, khChild)"
+# The order stamps on an edge; never part of an edge document handed out (`node_validator.INTERNAL_PROPERTIES` lists them too).
+_KH_EDGE_INTERNAL_PROPERTIES = frozenset({"khFrom", "khOrd", "khChild"})
+# What the backend derives and keeps itself on records, groups and hierarchy edges: never taken from a caller's document, which could
+# carry a stale or a forged value (the validator ignores these keys, so it would not refuse one).
+_KH_OWN_PROPERTIES = _KH_INTERNAL_PROPERTIES | _KH_EDGE_INTERNAL_PROPERTIES
+
+
+def _owned(doc: dict[str, Any]) -> dict[str, Any]:
+    """``doc`` without `_KH_OWN_PROPERTIES`, as a new dict: a caller's document before it is written, and every node or edge document
+    before it is handed out."""
+    return {k: v for k, v in doc.items() if k not in _KH_OWN_PROPERTIES}
+
+
+def _cypher_kh_child_ord(v: str) -> str:
+    name = f"toLower(coalesce({v}.name, {v}.recordName, {v}.groupName))"
+    return f"CASE WHEN coalesce({v}.isPlaceholder, false) THEN '2' WHEN {name} IS NULL THEN '1' ELSE '0' + {name} END"
+
+
+def _cypher_kh_edge_order(v: str) -> str:
+    """Rewrite the order stamps of every NODE_RELATION edge into `v` that disagrees with `v`: a FOREACH, so it runs wherever the node state
+    does (inside another FOREACH too)."""
+    ord_ = _cypher_kh_child_ord(v)
+    return (f"FOREACH (kh_oe IN [()-[kh_or:NODE_RELATION]->({v}) WHERE ({v}:Record OR {v}:RecordGroup) AND (kh_or.khOrd IS NULL"
+            f" OR kh_or.khOrd <> {ord_} OR kh_or.khChild IS NULL OR kh_or.khFrom IS NULL OR kh_or.khFrom <> startNode(kh_or).id) | kh_or] |"
+            f" SET kh_oe.khFrom = startNode(kh_oe).id, kh_oe.khChild = {v}.id, kh_oe.khOrd = {ord_})")
+
+
+# The properties a node's listing state (`_cypher_kh_node_state`) and the children order stamps of its edges (`_cypher_kh_edge_order`) are
+# derived from. A write of any of them to a record or group rewrites both in the same statement: the browse reads a wide folder's children
+# from those stamps and trusts them (tests/unit/services/graph_db/test_neo4j_children_order_writers.py holds every writer to this).
+_KH_STATE_INPUTS = frozenset({"name", "recordName", "groupName", "isDeleted", "hideChildren", "isPlaceholder", "mimeType", "recordType"})
+
+
+def _cypher_kh_state_for(v: str, label: str, keys: Iterable[str]) -> str:
+    """`_cypher_kh_node_state` for a write of ``keys`` to ``v``, a ``label`` node: empty when the write cannot change that state."""
+    return _cypher_kh_node_state(v) if label in _KH_STATE_LABELS and _KH_STATE_INPUTS.intersection(keys) else ""
+
+
 def _cypher_kh_node_state(v: str) -> str:
     """Rewrite the property-derived listing state of Record or RecordGroup `v`: the
     lowercased sort name and one label per flag the listing tests."""
@@ -620,6 +678,7 @@ def _cypher_kh_node_state(v: str) -> str:
                          ("KhFolder", folder)):
         lines.append(f"FOREACH (_ IN CASE WHEN {holds} THEN [1] ELSE [] END | SET {v}:{label})")
         lines.append(f"FOREACH (_ IN CASE WHEN {holds} THEN [] ELSE [1] END | REMOVE {v}:{label})")
+    lines.append(_cypher_kh_edge_order(v))
     return "\n            ".join(lines)
 
 
@@ -641,6 +700,7 @@ def _cypher_kh_tree_state(v: str) -> str:
                 FOREACH (_ IN CASE WHEN khOne THEN [] ELSE [1] END | REMOVE khNode:KhInherits)
                 FOREACH (_ IN CASE WHEN khMany THEN [1] ELSE [] END | SET khNode:KhMultiParent)
                 FOREACH (_ IN CASE WHEN khMany THEN [] ELSE [1] END | REMOVE khNode:KhMultiParent)
+                {_cypher_kh_edge_order("khNode")}
             }}"""
 
 
@@ -948,6 +1008,14 @@ _KH_SPLIT_COMPARE = "split-compare"
 def _warn_unknown_kh_browse_mode(value: str) -> None:
     # Once per value: the mode is read on every browse.
     logging.getLogger(__name__).warning("KH_BROWSE_MODE=%r is not legacy, split or shadow; browsing with split", value)
+
+
+# Set while a page is read again without the children order index (`Neo4jProvider._kh_split_without_order_index`), for that read alone.
+_KH_ORDER_INDEX_OFF: ContextVar[bool] = ContextVar("kh_order_index_off", default=False)
+
+
+class _KhOrderStale(Exception):
+    """A child's order stamp on its edge (`KH_CHILDREN_ORDER_INDEX`) disagrees with the child: the browse reads every child instead."""
 
 
 class _KhSplitUndecided(Exception):
@@ -1836,6 +1904,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         indexes.extend(named_entity_neo4j_indexes())
         indexes.extend(_STAGE_STATE_INDEXES)
+        indexes.append(_KH_CHILDREN_ORDER_DDL)
         return indexes
 
     def _generate_fulltext_indexes(self) -> list[str]:
@@ -2083,7 +2152,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Returns:
             Node in Neo4j format (with id, label)
         """
-        neo4j_node = arango_node.copy()
+        neo4j_node = _owned(arango_node)
 
         # Convert _key to id
         if "_key" in neo4j_node:
@@ -2120,10 +2189,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         if in_place:
             arango_node = neo4j_node
-            for k in _KH_INTERNAL_PROPERTIES:
+            for k in _KH_OWN_PROPERTIES:
                 arango_node.pop(k, None)
         else:
-            arango_node = {k: v for k, v in neo4j_node.items() if k not in _KH_INTERNAL_PROPERTIES}
+            arango_node = _owned(neo4j_node)
 
         # Convert id to _key
         if "id" in arango_node:
@@ -2155,7 +2224,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Returns:
             Edge in ArangoDB format (with _key, _from, _to)
         """
-        arango_edge = neo4j_edge.copy()
+        arango_edge = _owned(neo4j_edge)
 
         # If we have from_id and to_id, construct _from and _to
         if "from_id" in arango_edge and "to_id" in arango_edge:
@@ -2690,6 +2759,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             REMOVE n.{_MATCH_LOCK}
             {run_with}
             SET n += {run_patch}, n += $updates
+            {_cypher_kh_state_for("n", collection_to_label(collection), updates)}
             RETURN n.id AS id
             """,
             parameters=parameters,
@@ -2836,10 +2906,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 self.logger.warning(f"Skipping invalid edge (missing required fields): {edge}")
                 continue
 
-            # Extract edge properties (excluding format-specific fields)
-            props = {k: v for k, v in edge.items() if k not in [
+            # Extract edge properties (excluding format-specific fields, and what the backend keeps itself)
+            props = _owned({k: v for k, v in edge.items() if k not in [
                 "_from", "_to", "from_id", "to_id", "from_collection", "to_collection"
-            ]}
+            ]})
 
             key = (collection_to_label(from_collection), collection_to_label(to_collection))
             grouped.setdefault(key, []).append({"from_key": from_key, "to_key": to_key, "props": props})
@@ -2937,6 +3007,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
     ) -> None:
         """Replace the *collection* edges into *to_id*: every old one is gone unless *edges* has it again."""
+        if edge_collection_to_relationship(collection) in _KH_TREE_TYPES:
+            # Its ``SET r = ...`` rewrites a kept edge whole, which would drop a hierarchy edge's children order stamps, and it keeps no
+            # tree label: hierarchy and inherit edges go through the writers that keep both (batch_create_edges and the rest).
+            raise ValueError(f"replace_edges_to does not write {collection} edges")
         # One statement, so a failure deletes nothing: the code default of
         # NEO4J_EXPLICIT_TRANSACTIONS is true, but false is a supported mode in
         # which a separate delete would commit before the new edges were written,
@@ -3207,6 +3281,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return 0 if count_created else None
 
             relationship_type = edge_collection_to_relationship(collection)
+            # A hierarchy or inherit edge keeps its ends' tree state and its children order stamps, as batch_create_edges does.
+            refresh = _cypher_kh_tree_refresh(relationship_type, "from", "to")
 
             for (from_label, to_label), group_edges in self._edges_by_labels(edges).items():
                 query = f"""
@@ -3215,6 +3291,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 MATCH (to:{to_label} {{id: edge.to_key}})
                 MERGE (from)-[r:{relationship_type}]->(to)
                 ON CREATE SET r = edge.props{f", r.{_EDGE_NEW} = true" if report else ""}
+                {f"WITH edge, from, to, r {refresh}" if refresh else ""}
                 {f"WITH edge, r, coalesce(r.{_EDGE_NEW}, false) AS isNew" if report else ""}
                 {f"REMOVE r.{_EDGE_NEW}" if report else ""}
                 {"RETURN collect(CASE WHEN isNew THEN [edge.from_key, edge.to_key] END) AS made" if report else "RETURN count(r) AS matched"}
@@ -3390,8 +3467,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if results:
                 # properties(r) returns a dict directly, so we can use it as-is
                 edge_data = results[0].get("r", {})
-                if not isinstance(edge_data, dict):
-                    edge_data = {}
+                edge_data = _owned(edge_data) if isinstance(edge_data, dict) else {}
                 # Return in generic format
                 edge_data["from_id"] = from_id
                 edge_data["from_collection"] = from_collection
@@ -3716,16 +3792,21 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """Update an edge"""
         try:
             self.validator.validate_edge_update(collection, edge_updates)
+            edge_updates = _owned(edge_updates)
             relationship_type = edge_collection_to_relationship(collection)
             from_collection, from_id = self._parse_arango_id(from_key)
             to_collection, to_id = self._parse_arango_id(to_key)
 
             from_label = collection_to_label(from_collection)
             to_label = collection_to_label(to_collection)
+            # A hierarchy edge's stamps are made of its ends and its child, which this write cannot change; rewritten here all the same,
+            # so the edge it leaves carries them true whatever it held.
+            stamps = _cypher_kh_edge_order("to") if relationship_type == Neo4jRelationshipType.NODE_RELATIONS.value else ""
 
             query = f"""
             MATCH (from:{from_label} {{id: $from_id}})-[r:{relationship_type}]->(to:{to_label} {{id: $to_id}})
             SET r += $updates
+            {stamps}
             RETURN r
             """
 
@@ -3881,13 +3962,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction
             )
 
-            # Convert results
-            documents = []
-            for record in results:
-                node = record.get("n", {})
-                documents.append(node)
-
-            return documents
+            return [_owned(record.get("n") or {}) for record in results]
 
         except Exception as e:
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
@@ -4644,10 +4719,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             edges = []
             for record in results:
-                # properties(r) returns a dict directly
+                # properties(r) returns a dict directly; handed out less what the backend keeps for itself
                 edge = record.get("r", {})
-                if not isinstance(edge, dict):
-                    edge = {}
+                edge = _owned(edge) if isinstance(edge, dict) else {}
                 from_id = record.get("from_id", "")
                 to_id = record.get("to_id", "")
                 from_labels = record.get("from_labels", [])
@@ -5522,6 +5596,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 ON CREATE SET n += $props, n.{_CREATED_MARK} = true
                 WITH n, coalesce(n.{_CREATED_MARK}, false) AS created
                 REMOVE n.{_CREATED_MARK}
+                {_cypher_kh_state_for("n", label, props)}
                 RETURN created
                 """,
                 parameters={"key": key, "props": props},
@@ -5602,6 +5677,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                      THEN n[row.fields[i]] IS NULL
                      ELSE n[row.fields[i]] = row.values[i] END)
             SET n += row.updates
+            {_cypher_kh_state_for("n", label, {k for row in params for k in row["updates"]})}
             RETURN n.id AS id
             """,
             parameters={"rows": params},
@@ -6764,19 +6840,26 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                     op="get_user_by_source_id")
             return None
 
+    @org_optional
     async def get_user_by_user_id(
         self,
         user_id: str,
         *,
         raise_on_error: bool = False,
+        org_id: str | None = None,
     ) -> dict | None:
-        """Get user by user ID. Memoized for the current chat turn (see
-        `app.utils.turn_memo`): a turn looked the same user up about twenty
-        times. Each caller gets its own copy, so one caller's edits stay its own."""
+        """Get user by user ID; with ``org_id``, only a user of that organisation.
+        Memoized for the current chat turn (see `app.utils.turn_memo`): a turn
+        looked the same user up about twenty times. Each caller gets its own
+        copy, so one caller's edits stay its own."""
+        if org_id == "":
+            return None  # an empty organisation matches no user
         from app.utils.turn_memo import memo
 
         try:
-            user = await memo(("user_by_user_id", user_id), lambda: self._get_user_by_user_id(user_id))
+            user = await memo(
+                ("user_by_user_id", user_id, org_id), lambda: self._get_user_by_user_id(user_id, org_id)
+            )
         except Exception as e:
             if raise_on_error:  # raised before logging: the caller that handles it logs it once
                 raise
@@ -6784,15 +6867,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return None
         return copy.deepcopy(user)
 
-    async def _get_user_by_user_id(self, user_id: str) -> dict | None:
-        query = """
-        MATCH (u:User {userId: $user_id})
-        RETURN u {.*} AS u
+    async def _get_user_by_user_id(self, user_id: str, org_id: str | None = None) -> dict | None:
+        scoped = org_id is not None
+        org_filter = "WHERE u.orgId = $org_id" if scoped else ""
+        query = f"""
+        MATCH (u:User {{userId: $user_id}})
+        {org_filter}
+        RETURN u {{.*}} AS u
         LIMIT 1
         """
         results = await self.client.execute_query(
             query,
-            parameters={"user_id": user_id},
+            parameters={"user_id": user_id, **({"org_id": org_id} if scoped else {})},
             plain=True,
         )
         if results:
@@ -7495,6 +7581,46 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             raise RuntimeError(f"{stale} record(s) or group(s) carry listing state the graph disagrees with")
         return {"stamped": (rows or [{}])[0].get("stamped", 0)}
 
+    async def stamp_kh_children_order(self, batch_size: int = 5000) -> dict:
+        """See the interface. The index first (built online), then one pass over every edge into a record or group, committed in batches,
+        then the stale check: any disagreement raises, so the flag stays unset and a wide browse keeps reading every child."""
+        await self.client.execute_query(_KH_CHILDREN_ORDER_DDL)
+        await self.client.execute_query("CALL db.awaitIndexes(86400)")
+        rows = await self.client.execute_query(f"""
+            MATCH ()-[e:NODE_RELATION]->(n) WHERE n:Record OR n:RecordGroup
+            CALL (e, n) {{
+                SET e.khFrom = startNode(e).id, e.khChild = n.id, e.khOrd = {_cypher_kh_child_ord("n")}
+            }} IN TRANSACTIONS OF {int(batch_size)} ROWS
+            RETURN count(*) AS stamped
+            """)
+        stale = await self.count_stale_kh_children_order()
+        if stale:
+            raise RuntimeError(f"{stale} hierarchy edge(s) carry an order the graph disagrees with")
+        return {"stamped": (rows or [{}])[0].get("stamped", 0)}
+
+    async def _kh_stamp_unstamped_children_order(self, rel_type: str) -> None:
+        """Stamp the children order on the edges into a record or group that carry none: a migration that moved edges onto the hierarchy
+        type without the writers. Nothing when ``rel_type`` is no hierarchy type."""
+        if rel_type != Neo4jRelationshipType.NODE_RELATIONS.value:
+            return
+        await self.client.execute_query(f"""
+            MATCH ()-[e:NODE_RELATION]->(n) WHERE (n:Record OR n:RecordGroup) AND e.khFrom IS NULL
+            CALL (e, n) {{
+                SET e.khFrom = startNode(e).id, e.khChild = n.id, e.khOrd = {_cypher_kh_child_ord("n")}
+            }} IN TRANSACTIONS OF 5000 ROWS
+            """)
+
+    async def count_stale_kh_children_order(self) -> int:
+        """Edges into a record or group whose order stamps disagree with their ends. Zero on a consistent graph; anything else is a write
+        path that skipped the rewrite."""
+        rows = await self.client.execute_query(f"""
+            MATCH (p)-[e:NODE_RELATION]->(n) WHERE n:Record OR n:RecordGroup
+            WITH e, p, n WHERE e.khFrom IS NULL OR e.khFrom <> p.id OR e.khChild IS NULL OR e.khChild <> n.id
+                OR e.khOrd IS NULL OR e.khOrd <> {_cypher_kh_child_ord("n")}
+            RETURN count(e) AS stale
+            """)
+        return int((rows or [{}])[0].get("stale") or 0)
+
     async def count_stale_kh_listing_state(self) -> int:
         """Records and groups whose listing state disagrees with their own
         properties and edges. Zero on a consistent graph; anything else is a write
@@ -7722,11 +7848,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Both paths preserve edge properties; without that, `relationshipType`
         would be lost and every edge would stop counting as hierarchy.
         """
-        current = Neo4jRelationshipType.NODE_RELATIONS.value
         # Interpolated, never parameterised: a relationship type is syntax in
         # Cypher, not a value. Both names are module constants, never input.
         if not legacy_relationship_type.replace("_", "").isalnum():
             raise ValueError(f"Unsafe relationship type: {legacy_relationship_type!r}")
+        result = await self._move_legacy_relation_edges(legacy_relationship_type)
+        # Whatever the move found, also when nothing was left to move: an earlier run may have moved the edges and stopped before stamping them.
+        await self._kh_stamp_unstamped_children_order(Neo4jRelationshipType.NODE_RELATIONS.value)
+        return result
+
+    async def _move_legacy_relation_edges(self, legacy_relationship_type: str) -> dict:
+        """`migrate_legacy_relation_edge`'s move, with no children order stamp: its only caller stamps the edges after it."""
+        current = Neo4jRelationshipType.NODE_RELATIONS.value
 
         try:
             remaining = await self.client.execute_query(
@@ -7752,7 +7885,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     raise
                 # An expected fallback (APOC not installed), whatever class the driver error reads as.
                 error_class.log_failure(self.logger, "graph.provider.step_failed", apoc_error, include_error_text=False, level=logging.WARNING,
-                                        op="migrate_legacy_relation_edge", step="apoc_rename")
+                                        op="_move_legacy_relation_edges", step="apoc_rename")
 
             if apoc_ran:
                 # APOC returns normally on partial failure, so committedOperations
@@ -8571,6 +8704,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (n:{label} {{id: node_data.id}})
             WHERE n.indexingStatus = 'QUEUED' AND n.refreshIntentId IS NULL
             SET n += node_data
+            {_cypher_kh_state_for("n", label, {k for node in nodes for k in node})}
             RETURN n.id AS id
             """,
             parameters={"nodes": _in_lock_order(nodes, _by_id)},
@@ -9500,6 +9634,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self, key: str, collection: str, field: str, transaction: str | None = None
     ) -> int | None:
         label = collection_to_label(collection)
+        if label in _KH_STATE_LABELS and field in _KH_STATE_INPUTS:
+            raise ValueError(f"{field} is not a counter: the listing state is derived from it")
         self.validator.validate_node_update(collection, {field: 1})
         # The write lock is taken first (the same trick as the other match locks), so the value read next is the latest committed one
         rows = await self.client.execute_query(
@@ -10112,9 +10248,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 from_key = edge.get("from_id") or edge.get("_from", "").split("/")[-1]
                 to_key = edge.get("to_id") or edge.get("_to", "").split("/")[-1]
                 relationship_type = edge.get("relationshipType", "")
-                props = {k: v for k, v in edge.items() if k not in [
+                props = _owned({k: v for k, v in edge.items() if k not in [
                     "from_id", "to_id", "from_collection", "to_collection", "_from", "_to"
-                ]}
+                ]})
                 constraint_name = edge.get("constraintName") or ""
                 edge_data.append({
                     "from_key": from_key,
@@ -15982,6 +16118,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # Every item before the statement: it writes them all or none.
         for item in items:
             self.validator.validate_node_update(CollectionNames.RECORDS.value, item["set"])
+        items = [{**item, "set": _owned(item["set"])} for item in items]
         cleared = ", ".join(f"r.{name} = null" for name in TRASH_STATE_FIELDS)
         # Each statement commits on its own unless explicit transactions are on, so a
         # restore split over statements could stop halfway, and an external id given
@@ -16066,10 +16203,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None,
         *,
         index: str,
+        run: Callable[..., Awaitable[list[dict[str, Any]]]] | None = None,
     ) -> list[dict[str, Any]]:
-        """Run *hinted*; if its hinted *index* is not ready, run *unhinted* and log that once per index."""
+        """Run *hinted*; if its hinted *index* is not ready, run *unhinted* and log that once per index. ``run``: what runs a statement
+        (the client's, or the knowledge hub's ``_kh_query``)."""
+        run = run or self.client.execute_query
         try:
-            rows = await self.client.execute_query(hinted, parameters=parameters, txn_id=transaction)
+            rows = await run(hinted, parameters=parameters, txn_id=transaction)
         except ClientError as exc:
             # Raised only where the server sets dbms.cypher.hints_error; elsewhere a
             # missing or building index is a notification and the plan goes without it.
@@ -16080,7 +16220,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 error_class.log_failure(self.logger, "graph.provider.step_failed", exc, include_error_text=False,
                                         level=logging.WARNING, op="_execute_hinted", step="unhinted_fallback", index=index)
                 self._hint_indexes_missing.add(index)
-            return await self.client.execute_query(unhinted, parameters=parameters, txn_id=transaction)
+            return await run(unhinted, parameters=parameters, txn_id=transaction)
         self._hint_indexes_missing.discard(index)
         return rows
 
@@ -16977,6 +17117,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         coll = CollectionNames.RECORDS.value
         try:
             self.validator.validate_node_update(coll, {"indexingStatus": status, **(fields or {})})
+            fields = _owned(fields) if fields else fields
             label = collection_to_label(coll)
             run_with, run_patch = cypher_parts("n", WriteKind.STATUS_VAR, status="$status")
             # One statement, so the run rule reads the stored record it writes. Internal and placeholder records are skipped.
@@ -16989,6 +17130,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 {run_with}
                 SET n.indexingStatus = $status, n += {run_patch}
                 {"SET n += $fields" if fields else ""}
+                {_cypher_kh_state_for("n", label, fields or {})}
                 """,
                 parameters={"ids": unique_ids, "status": status, "now": get_epoch_timestamp_in_ms(), **({"fields": dict(fields)} if fields else {})},
                 txn_id=None,
@@ -17008,12 +17150,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return 0
         coll = CollectionNames.RECORDS.value
         self.validator.validate_node_update(coll, dict(fields))
+        fields = _owned(fields)
         label = collection_to_label(coll)
         rows = await self.client.execute_query(
             f"""
             MATCH (n:{label})
             WHERE n.id IN $ids AND coalesce(n.isInternal, false) = false AND coalesce(n.isPlaceholder, false) = false
             SET n += $fields
+            {_cypher_kh_state_for("n", label, fields)}
             RETURN count(n) AS written
             """,
             parameters={"ids": unique_ids, "fields": dict(fields)},
@@ -17658,6 +17802,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not keys:
             return []
         self.validator.validate_node_update(CollectionNames.RECORDS.value, fields)
+        fields = _owned(fields)
         if "indexingStatus" in fields:
             # COMPLETED sets hasIndexedCopy and EMPTY clears it, as every indexingStatus write does.
             fields = {**indexed_copy_fields(fields["indexingStatus"]), **fields}
@@ -18779,7 +18924,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             edges = []
             for result in results:
-                edge_dict = result.get("r", {})  # properties(r) already returns a dict
+                edge_dict = _owned(result.get("r") or {})  # properties(r), less what the backend keeps for itself
                 target_labels = result.get("target_labels", [])
                 target_id = result.get("target_id")
 
@@ -18852,7 +18997,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             edges = []
             for result in results:
-                edge_dict = result.get("r", {})  # properties(r) already returns a dict
+                edge_dict = _owned(result.get("r") or {})  # properties(r), less what the backend keeps for itself
                 target_labels = result.get("target_labels", [])
                 target_id = result.get("target_id")
                 target_name = result.get("target_name")
@@ -19013,6 +19158,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query = f"""
             MERGE (p:{label} {{email: $email, orgId: $org_id}})
             ON CREATE SET p = $props
+            ON MATCH SET p.{_MATCH_LOCK} = true
+            WITH p
+            REMOVE p.{_MATCH_LOCK}
             RETURN p.id AS id
             """
             parameters: dict[str, Any] = {
@@ -19103,9 +19251,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         Ensure a principal (user or person) has a membership edge to an app.
 
-        Create-only. An existing edge is left untouched, so this can never downgrade
-        a real member to an external collaborator, and re-running it over an
-        already-synced app is a no-op.
+        Create-only. An existing edge keeps its flag, so this can never downgrade a
+        real member to an external collaborator. Its ``updatedAtTimestamp`` is written:
+        the write lock makes a reaper deciding on the edge wait for this transaction
+        and then see the grant written before it (``reap_stale_external_app_relations``).
 
         Deliberately not routed through batch_create_edges: that helper does
         ``SET r = edge.props``, which would overwrite an existing edge's flag.
@@ -19133,6 +19282,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (app:{app_label} {{id: $connector_id}})
             MERGE (principal)-[r:{relationship}]->(app)
             ON CREATE SET r = $props
+            ON MATCH SET r.updatedAtTimestamp = $now
             """
             await self.client.execute_query(
                 query,
@@ -19140,6 +19290,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "principal_id": principal_id,
                     "connector_id": connector_id,
                     "props": props,
+                    "now": now,
                 },
                 txn_id=transaction,
             )
@@ -19319,16 +19470,26 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (app:{app_label} {{id: $connector_id}})
             MATCH (principal)-[uar:{app_rel}]->(app)
             WHERE uar.isExternalUser = true
-              AND NOT {grant_exists}
+            // The write lock first (a property set and removed: nothing kept), then the flag and the grant: a writer of a grant touches its
+            // holder's edge after it (ensure_app_membership) and a writer of a membership writes its flag, so either has committed (and is
+            // read below) or waits for this transaction and writes the edge again once it is gone.
+            SET uar.{_MATCH_LOCK} = true
+            REMOVE uar.{_MATCH_LOCK}
+            WITH principal, uar, app
+            WHERE uar.isExternalUser = true AND NOT {grant_exists}
             WITH collect(DISTINCT principal) AS stale_principals, collect(uar) AS stale_edges
 
             FOREACH (e IN stale_edges | DELETE e)
 
             // Delete only Persons this pass actually stranded. A global sweep would risk
-            // a Person created moments ago whose first edge is not committed yet.
+            // a Person created moments ago whose first edge is not committed yet. The person's lock first, as
+            // above: a writer of a grant from it takes it (upsert_person_by_email), so its edge is seen.
             WITH stale_principals
             UNWIND stale_principals AS principal
-            WITH principal WHERE principal:{person_label} AND NOT (principal)--()
+            WITH principal WHERE principal:{person_label}
+            SET principal.{_MATCH_LOCK} = true
+            REMOVE principal.{_MATCH_LOCK}
+            WITH principal WHERE NOT (principal)--()
             DETACH DELETE principal
             RETURN count(*) AS reaped_people
             """
@@ -19348,6 +19509,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return reaped
 
         except Exception as e:
+            if self.is_write_conflict(e):
+                # Nothing is removed and the caller's transaction is aborted: raised, so the caller runs it again (and never commits a dead one).
+                raise
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
                                     op="reap_stale_external_app_relations", connector_id=connector_id)
             return 0
@@ -21857,6 +22021,23 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return probe
         return f"({child}:KhInherits OR ({child}:KhMultiParent AND {probe}))"
 
+    async def _kh_children_order_ready(self) -> bool:
+        """Whether every hierarchy edge carries its child's order (the children order migration's flag), re-read at most once a minute
+        until it is set."""
+        if getattr(self, "_kh_order_ready", False):
+            return True
+        now = time.monotonic()
+        if now < getattr(self, "_kh_order_next_check", 0.0):
+            return False
+        self._kh_order_next_check = now + 60
+        try:
+            flag = await self.config_service.get_config(KH_CHILDREN_ORDER_FLAG, raise_on_error=True)
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="_kh_children_order_ready")
+            return False
+        self._kh_order_ready = bool(isinstance(flag, dict) and flag.get("done") is True)
+        return self._kh_order_ready
+
     async def _kh_listing_state_ready(self) -> bool:
         """Whether every node carries listing state (the stamp migration's flag).
         Until it does the listing derives everything per request, and the flag
@@ -22365,7 +22546,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         placeholder flags, the total and the counts. Only counts are logged (an id the split path listed could be one the viewer
         may not read)."""
         if legacy.get("totalCapped") or legacy.get("resume"):
-            # Legacy ended this page at its time budget, and split has none: the pages differ by construction, so neither is run.
+            # Legacy ended this page at its time budget, and split decides a start held whole without one: the pages differ by
+            # construction, so neither is run.
             self.logger.info("kh browse shadow: legacy page cut by its time budget, not compared")
             return
         try:
@@ -22377,6 +22559,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
                                     op="_kh_shadow_compare", step="shadow_split")
+            return
+        if split.get("totalCapped") or split.get("resume"):
+            # A wide start's split page has legacy's budget and ended at it: where each stopped depends on timing, not on what they list.
+            log_event(self.logger, "kh.browse.shadow_skipped", reason="split_cut_by_budget")
             return
         def rows(page: dict[str, Any]) -> list[tuple[Any, ...]]:
             return [(r.get("id"), bool(r.get("hasChildren")), bool(r.get("isPlaceholder"))) for r in page.get("rows") or []]
@@ -22395,18 +22581,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             len(ids_a - ids_b), len(ids_b - ids_a), not same_rows and ids_a == ids_b, arrows, totals,
             legacy.get("total"), split.get("total"))
 
-    def _kh_split_children_cypher(self, *, stubs_only: bool = False) -> str:
+    def _kh_split_children_cypher(self, *, stubs_only: bool = False, indexed: bool = False, hint: str = "") -> str:
         """The live hierarchy children of the nodes ``$ids`` that belong to ``$app_id``, less a group that carries access only (never a row,
         `_cypher_read_by_app`), each with whether a group that hides its
         children holds it or lies above it (`kh_layer.hidden_by_navigation`): a display flag the check ignores and a browse honours.
         The children are read from the parent in a subquery and tested after: beside the pattern, the App test let a plan seek the App's
-        records and join them to the parent. ``stubs_only``: the stubs among them alone."""
-        stubs = " AND coalesce(kh_c.isPlaceholder, false)" if stubs_only else ""
+        records and join them to the parent. ``stubs_only``: the stubs among them alone. ``indexed`` (with ``stubs_only``): the edges stamped
+        as a stub's (`KH_CHILDREN_ORDER_INDEX`), read from the index without reading the other children; the stub test is left to the caller,
+        which so sees an edge whose stamp has gone stale."""
+        stubs = " AND coalesce(kh_c.isPlaceholder, false)" if stubs_only and not indexed else ""
+        read = (f"MATCH ()-[kh_r:NODE_RELATION]->(kh_c:Record|RecordGroup) {hint} "
+                "WHERE kh_r.khFrom = kh_p.id AND kh_r.khOrd >= '2' AND kh_r.khChild IS NOT NULL AND startNode(kh_r) = kh_p" if indexed else "MATCH (kh_p)-[kh_r:NODE_RELATION]->(kh_c:Record|RecordGroup)")
         return f"""
         {_cypher_by_ids("kh_p", "App|RecordGroup|Record", "$ids")}
         WITH kh_p WHERE kh_p.orgId = $org_id
         CALL (kh_p) {{
-            CALL (kh_p) {{ MATCH (kh_p)-[kh_r:NODE_RELATION]->(kh_c:Record|RecordGroup) RETURN kh_r, kh_c }}
+            CALL (kh_p) {{ {read} RETURN kh_r, kh_c }}
             WITH *
             WHERE kh_r.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] AND kh_c.orgId = $org_id AND kh_c.connectorId = $app_id
               AND NOT coalesce(kh_c.accessOnly, false) AND NOT coalesce(kh_c.isDeleted, false) AND kh_c.id IS NOT NULL AND kh_c <> kh_p{stubs}
@@ -22420,6 +22610,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     async def _kh_split_children(
         self, ids: Iterable[str], *, app_id: str, org_id: str, transaction: str | None, most: int | None = None, stubs_only: bool = False,
+        indexed: bool = False,
     ) -> dict[str, list[dict[str, Any]]]:
         """``{parent: [child rows]}`` for ``ids`` (`_kh_split_children_cypher`), every id present: up to one past ``most``
         (``_KH_SPLIT_MAX_CHILDREN`` when None) each."""
@@ -22428,9 +22619,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not asked:
             return out
         # One past the bound, so a caller can tell a node that has more.
-        rows = await self._kh_query(self._kh_split_children_cypher(stubs_only=stubs_only), parameters={
-            "ids": asked, "app_id": app_id, "org_id": org_id, "per_parent": (self._KH_SPLIT_MAX_CHILDREN if most is None else most) + 1},
-            txn_id=transaction)
+        parameters = {"ids": asked, "app_id": app_id, "org_id": org_id, "per_parent": (self._KH_SPLIT_MAX_CHILDREN if most is None else most) + 1}
+        if indexed:
+            rows = await self._execute_hinted(
+                self._kh_split_children_cypher(stubs_only=stubs_only, indexed=True, hint=_KH_STUBS_ORDER_HINT),
+                self._kh_split_children_cypher(stubs_only=stubs_only, indexed=True), parameters, transaction,
+                index=KH_CHILDREN_ORDER_INDEX, run=self._kh_query)
+        else:
+            rows = await self._kh_query(self._kh_split_children_cypher(stubs_only=stubs_only), parameters=parameters, txn_id=transaction)
         for r in rows:
             out.setdefault(r["parent"], []).append(r)
         return out
@@ -22549,6 +22745,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 memo[i] = i in found
         return {i for i in ids if memo.get(i)}
 
+    async def _kh_split_without_order_index(self, app_id: str, args: dict[str, Any], browse_mode: str) -> dict[str, Any]:
+        """The page read again without the children order index, from its start: a stale stamp can hide a child from any read the index
+        served (a stub stamped as a named child is missing from the stubs, a named child stamped as a stub from the windows), so nothing
+        that read decided is kept."""
+        log_event(self.logger, "kh.browse.children_order_stale", level=logging.WARNING, connector_id=app_id)
+        token = _KH_ORDER_INDEX_OFF.set(True)
+        try:
+            return await self.get_knowledge_hub_connector_page_v3(**args, browse_mode=browse_mode)
+        finally:
+            _KH_ORDER_INDEX_OFF.reset(token)
+
     async def _kh_split_answered_by_legacy(
         self, undecided: _KhSplitUndecided, app_id: str, args: dict[str, Any], browse_mode: str,
     ) -> dict[str, Any]:
@@ -22624,17 +22831,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     async def _kh_split_listed(
         self, start_id: str, *, app_id: str, org_id: str, access: dict[str, Any], placed: list[str], transaction: str | None,
-        memo: dict[str, bool],
+        memo: dict[str, bool], indexed: bool = False,
     ) -> tuple[list[str], bool]:
         """What a browse of ``start_id`` lists (the definition above), before filters, order and paging, and whether the start is wide (more
         children than ``_KH_SPLIT_START_MAX``): then only its stubs and chain-tops are listed here, and its other children are read with the page
         (`_kh_split_window`). ``_KhSplitUndecided`` when the start has more stubs than ``_KH_SPLIT_MAX_CHILDREN``, or a stub it lists cannot be
-        decided."""
-        # The start's hierarchy edges out bound its children, and counting them reads no child: the read by id orders every child, so a wide
-        # start is not read that way.
+        decided. ``indexed``: a wide start's stubs are read through the children order index (`KH_CHILDREN_ORDER_INDEX`)."""
+        # The start's edges out, of any type, bound its children: read from its degree, so deciding whether it is wide reads no edge. An
+        # edge that is no hierarchy edge only makes a start wide sooner, and a wide start lists exactly what one decided whole does.
         edges = await self._kh_query(f"""{_cypher_by_ids("kh_p", "App|RecordGroup|Record", "[$start_id]")}
-        RETURN COUNT {{ (kh_p)-[kh_d:NODE_RELATION]->() WHERE kh_d.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] }} AS n""",
-                                     parameters={"start_id": start_id}, txn_id=transaction)
+        RETURN COUNT {{ (kh_p)-[:NODE_RELATION]->() }} AS n""", parameters={"start_id": start_id}, txn_id=transaction)
         wide = bool(edges) and edges[0]["n"] > self._KH_SPLIT_START_MAX
         if not wide:
             kids = (await self._kh_split_children([start_id], app_id=app_id, org_id=org_id, transaction=transaction,
@@ -22642,7 +22848,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Children added between the count and the read: the read holds one past the bound, so the start is wide after all.
             wide = len(kids) > self._KH_SPLIT_START_MAX
         if wide:
-            kids = (await self._kh_split_children([start_id], app_id=app_id, org_id=org_id, transaction=transaction, stubs_only=True))[start_id]
+            kids = (await self._kh_split_children([start_id], app_id=app_id, org_id=org_id, transaction=transaction, stubs_only=True,
+                                                  indexed=indexed))[start_id]
+        if wide and indexed and not all(k["stub"] for k in kids):
+            # An edge stamped as a stub's whose child is not one: its order is stale, so the index cannot be trusted for this start.
+            raise _KhOrderStale(start_id)
         if wide and len(kids) > self._KH_SPLIT_MAX_CHILDREN:
             raise _KhSplitUndecided("the start has more stubs than the split browse reads")
         visible = [k for k in kids if not k["hidden"]]
@@ -22658,7 +22868,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     async def _kh_split_window(
         self, start_id: str, *, app_id: str, org_id: str, order: str, listed: list[str], edge: dict[str, Any] | None, n: int,
-        transaction: str | None,
+        transaction: str | None, indexed: bool = False,
     ) -> list[dict[str, Any]]:
         """The first ``n`` children of a wide start past ``edge`` in the page's ``order`` (`_kh_v3_undecided`'s), as ``{id, sortKey, nullRank,
         hidden}``: the children `_kh_split_listed` reads (no stub, none of ``listed``), ``hidden`` where a group that hides its children holds it
@@ -22666,6 +22876,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if n <= 0:
             return []
         e = edge or {}
+        if indexed:
+            return await self._kh_split_window_indexed(start_id, app_id=app_id, org_id=org_id, listed=listed, edge=edge, n=n,
+                                                       transaction=transaction)
         rows = await self._kh_query(f"""
         {_cypher_by_ids("start", "App|RecordGroup|Record", "[$start_id]")}
         WITH start WHERE start.orgId = $org_id
@@ -22691,39 +22904,101 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         hidden = set(row.get("hidden") or [])
         return [{**u, "hidden": u["id"] in hidden} for u in row.get("kh_win") or []]
 
+    async def _kh_split_window_indexed(
+        self, start_id: str, *, app_id: str, org_id: str, listed: list[str], edge: dict[str, Any] | None, n: int, transaction: str | None,
+    ) -> list[dict[str, Any]]:
+        """`_kh_split_window` for the name order, ascending: the start's edges read from the children order index (`KH_CHILDREN_ORDER_INDEX`)
+        in its order from the boundary, so a window reads about ``n`` edges whatever the start holds. Its order (stamp, then child id) is the
+        page's: nullRank, the lowercased name, the id. The stamps are trusted (every writer keeps them, docs/knowledge-hub-browse.md): a child
+        whose stamp disagrees with it among the rows read raises `_KhOrderStale`, a check that cannot see a stale child outside them. The boundary is one range
+        on the index and a list comparison past it, never an OR (nor a negated AND, which the planner rewrites into one): with an OR the
+        planner seeks twice and sorts every child. The seek is a hint (`_KH_WINDOW_ORDER_HINT`)."""
+        e = edge or {}
+        if not e:
+            lo, lo_id = "", ""
+        else:
+            lo, lo_id = ("1" if e.get("nullRank") else "0" + (e.get("sortKey") or "")), e.get("id") or ""
+        name = "toLower(coalesce(kh_u.name, kh_u.recordName, kh_u.groupName))"
+        def window(hint: str) -> str:
+            return f"""
+        MATCH ()-[kh_ur:NODE_RELATION]->(kh_u:Record|RecordGroup)
+        {hint}
+        WHERE kh_ur.khFrom = $start_id AND kh_ur.khOrd >= $kh_lo AND kh_ur.khOrd < '2' AND kh_ur.khChild IS NOT NULL
+          AND [kh_ur.khOrd, kh_ur.khChild] > [$kh_lo, $kh_lo_id]
+          AND kh_ur.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] AND kh_u.orgId = $org_id AND kh_u.connectorId = $app_id
+          AND NOT coalesce(kh_u.accessOnly, false) AND NOT coalesce(kh_u.isDeleted, false) AND kh_u.id IS NOT NULL AND kh_u.id <> $start_id
+          AND NOT kh_u.id IN $kh_listed AND startNode(kh_ur).id = $start_id
+        // Two hierarchy edges between the start and one child are one child, made one before the limit: a window counted in edges would
+        // hold fewer children than it asked for, and a short window reads as the start's last. Both edges sit side by side in the index's
+        // order, so the distinct keeps that order.
+        WITH DISTINCT kh_ur.khFrom AS kh_f, kh_ur.khOrd AS kh_o, kh_ur.khChild AS kh_cid, kh_u
+        ORDER BY kh_f, kh_o, kh_cid LIMIT $kh_uread
+        WITH collect({{id: kh_u.id, sortKey: {name}, nullRank: CASE WHEN {name} IS NULL THEN 1 ELSE 0 END,
+                       fresh: kh_o = {_cypher_kh_child_ord("kh_u")} AND kh_cid = kh_u.id}}) AS kh_win
+        CALL (kh_win) {{
+            UNWIND kh_win AS kh_w
+            WITH kh_w.id AS kh_wid
+            {_cypher_by_id("kh_c", "Record|RecordGroup", "kh_wid")}
+            WITH kh_c WHERE {self._kh_v3_hidden_above("kh_c", "a")} OR {self._kh_v3_in_hidden_group("kh_c", "g")}
+            RETURN collect(kh_c.id) AS hidden
+        }}
+        RETURN kh_win, hidden
+        """
+        rows = await self._execute_hinted(
+            window(_KH_WINDOW_ORDER_HINT), window(""), {"start_id": start_id, "app_id": app_id, "org_id": org_id, "kh_listed": listed,
+                                                        "kh_uread": n, "kh_lo": lo, "kh_lo_id": lo_id},
+            transaction, index=KH_CHILDREN_ORDER_INDEX, run=self._kh_query)
+        row = (rows or [{}])[0]
+        win = row.get("kh_win") or []
+        if not all(u.pop("fresh") for u in win):
+            raise _KhOrderStale(start_id)
+        hidden = set(row.get("hidden") or [])
+        return [{**u, "hidden": u["id"] in hidden} for u in win]
+
     async def _kh_split_wide_page(
         self, payload: dict[str, Any], query: str, params: dict[str, Any], start_id: str, *, order: str, sidebar: bool, state: bool,
         after: dict[str, Any] | None, limit: int, descending: bool, direction: str, org_id: str, access: dict[str, Any],
-        transaction: str | None, memo: dict[str, bool],
+        transaction: str | None, memo: dict[str, bool], indexed: bool = False,
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         """The page of a wide start (`_kh_split_listed`): ``payload`` is the page statement's read of what that listed (its stubs and
-        chain-tops); the start's other children are read past the boundary in the page's order a window at a time and asked of the check
-        (`_kh_v3_browse_undecided`), and the page is read again with those it admits. The sidebar keeps an admitted record only where its arrow is
-        on, decided before the page is read. Returns the payload and the last child asked when some were left unasked."""
+        chain-tops), or empty when it was not read; the start's other children are read past the boundary in the page's order a window at a
+        time and asked of the check (`_kh_v3_browse_undecided`), and the page is read again with those it admits. The sidebar keeps an
+        admitted record only where its arrow is on, decided before the page is read. Returns the payload and the last child asked when some
+        were left unasked. ``indexed``: the windows are read through the children order index, and a stale stamp there raises
+        `_KhOrderStale`."""
         base, base_arrows = list(params["kh_listed"]), set(params["kh_arrows"])
         lit: set[str] = set()
         decided: set[str] = set()
-        first = [payload]
+        first = [payload] if payload else []
+        # With nothing admitted yet and nothing listed before the page (no stub, no chain-top), the page holds no row: it is read once, at the end.
+        empty: dict[str, Any] = {"rows": []}
+
+        async def page(admitted: list[str]) -> dict[str, Any]:
+            if sidebar:
+                new = [i for i in admitted if i not in decided]
+                decided.update(new)
+                plain = await self._kh_split_plain_records(new, org_id=org_id, state=state, transaction=transaction)
+                lit.update(await self._kh_split_lists(plain, app_id=params["app_id"], org_id=org_id, access=access, transaction=transaction,
+                                                      memo=memo))
+            params.update(kh_listed=[*base, *admitted], kh_arrows=sorted(base_arrows | lit))
+            first.clear()
+            return (await self._kh_query(query, parameters=params, txn_id=transaction) or [{}])[0]
 
         async def read(admitted: list[str], edge: dict[str, Any] | None, n: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-            if admitted or not first:
-                if sidebar:
-                    new = [i for i in admitted if i not in decided]
-                    decided.update(new)
-                    plain = await self._kh_split_plain_records(new, org_id=org_id, state=state, transaction=transaction)
-                    lit.update(await self._kh_split_lists(plain, app_id=params["app_id"], org_id=org_id, access=access, transaction=transaction,
-                                                          memo=memo))
-                params.update(kh_listed=[*base, *admitted], kh_arrows=sorted(base_arrows | lit))
-                got = (await self._kh_query(query, parameters=params, txn_id=transaction) or [{}])[0]
-                first.clear()
-            else:
+            if first and not admitted:
                 got = first.pop()
+            elif not admitted and not base:
+                got = empty
+            else:
+                got = await page(admitted)
             window = await self._kh_split_window(start_id, app_id=params["app_id"], org_id=org_id, order=order, listed=base,
-                                                 edge=edge or after, n=n, transaction=transaction)
+                                                 edge=edge or after, n=n, transaction=transaction, indexed=indexed)
             return got, window
 
         got, cut = await self._kh_v3_browse_undecided(read, after=after, limit=limit, descending=descending, direction=direction, org_id=org_id,
                                                       access=access, transaction=transaction)
+        if got is empty:
+            got = await page([])
         for k in ("khUndecided", "khProbes"):
             got.pop(k, None)
         return got, cut
@@ -23311,10 +23586,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
              }}] AS crumbNodes,
              // A start the walk from the App does not reach (admitted by the
              // check alone) takes its trail through the ancestors the check admits.
-             // Expanded from each member: an unanchored pattern scans the graph.
-             reduce(edges = [], par IN members | edges + [(par)-[kh_cr:NODE_RELATION]->(ch)
+             // Expanded up from each member, to its few parents: an unanchored pattern scans the graph, and down from the start it reads every
+             // child of a wide folder. The trail takes its parent by a stable order (`build_trail`), not this list's.
+             reduce(edges = [], ch IN members | edges + [(par)-[kh_cr:NODE_RELATION]->(ch)
                 WHERE kh_cr.relationshipType {hierarchy}
-                AND ch IN members
+                AND par IN members
                 AND ([par.id, ch.id] IN pathEdges
                      OR (NOT fromApp
                          AND (par = app OR par.id IN $admittedAncestors)
@@ -23823,14 +24099,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # itself, read after them, decides afresh, so what it lists is as current as a page read alone.
         skip_reads = KH_SKIP_READS.get() if split and browse_mode == "split" else None
         decided_for = repr((start_id if scoped_start else app_id, app_id, org_id, split_access, placed_ids, sidebar, state)) if skip_reads is not None else ""
-        wide = False
+        wide = indexed = False
         if skip_reads is not None and decided_for in skip_reads:
             params["kh_listed"], params["kh_arrows"] = skip_reads[decided_for]
         elif split:
+            # A wide start's children are read in order from the children order index for the name order, ascending, once it is stamped.
+            indexed = (sort_field == "name" and direction == "next" and self._kh_v2_sort_direction(sort_dir) == "ASC"
+                       and not _KH_ORDER_INDEX_OFF.get() and await self._kh_children_order_ready())
             try:
-                listed, wide = await self._kh_split_listed(
-                    start_id if scoped_start else app_id, app_id=app_id, org_id=org_id, access=split_access, placed=placed_ids,
-                    transaction=transaction, memo=split_memo)
+                try:
+                    listed, wide = await self._kh_split_listed(
+                        start_id if scoped_start else app_id, app_id=app_id, org_id=org_id, access=split_access, placed=placed_ids,
+                        transaction=transaction, memo=split_memo, indexed=indexed)
+                except _KhOrderStale:
+                    return await self._kh_split_without_order_index(app_id, shadow_args, browse_mode)
                 params["kh_listed"] = listed
                 # The sidebar keeps a row exactly where its arrow is on, and decides that before the page is cut.
                 if sidebar:
@@ -23844,7 +24126,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # A wide start's listing follows the boundary each read starts from, so no other read reuses it.
             if skip_reads is not None and not wide:
                 skip_reads[decided_for] = (params["kh_listed"], params["kh_arrows"])
-        if not use_scope:
+        # A wide start's page statement is read with its windows (`_kh_split_wide_page`), once they have admitted something.
+        if not use_scope and not wide:
             try:
                 walk_started = time.monotonic()
                 rows = await self._kh_query(query, parameters=params, txn_id=transaction)
@@ -23871,9 +24154,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     payload, cut = await self._kh_split_wide_page(
                         payload, query, params, start_id if scoped_start else app_id, order=undecided_order, sidebar=sidebar, state=state,
                         after=after, limit=limit, descending=descending, direction=direction, org_id=org_id, access=split_access,
-                        transaction=transaction, memo=split_memo)
+                        transaction=transaction, memo=split_memo, indexed=indexed)
                 except _KhSplitUndecided as undecided:
                     return await self._kh_split_answered_by_legacy(undecided, app_id, shadow_args, browse_mode)
+                except _KhOrderStale:
+                    return await self._kh_split_without_order_index(app_id, shadow_args, browse_mode)
                 resume = self._kh_v3_end_at(payload, cut, limit=limit, descending=descending, direction=direction)
             rows_ = payload.get("rows") or []
             for r in rows_:
@@ -24229,22 +24514,24 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             places, app_org = row["places"], row["appOrg"]
             ids = {node for place in places for node in (place["groupId"], place["recordId"])}
             for user in row["users"]:
-                admitted = (await self.check_access(user["key"], app_org, node_ids=ids)).node_ids
+                # The candidates come from every org; each App's access check runs in that App's org.
+                with for_org(app_org, job="kh_plan_keeper"):
+                    admitted = (await self.check_access(user["key"], app_org, node_ids=ids)).node_ids
                 place = next((p for p in places if p["groupId"] in admitted and p["recordId"] in admitted), None)
                 if place is not None:
                     samples.append({"userId": user["userId"], "orgId": app_org, "appId": row["appId"], **place})
                     break
         return samples
 
-    async def kh_scope_restamp_stale(self) -> list[dict[str, Any]]:
-        """Stamp every connector without a fresh stamp of this version, one by one, when the listing is enabled.
+    async def kh_scope_restamp_stale(self, org_id: str) -> list[dict[str, Any]]:
+        """Stamp every connector of the org without a fresh stamp of this version, one by one, when the listing is enabled.
         A connector whose sync is running is skipped by the stamp itself and picked up after it."""
         if not await self.kh_scope_enabled():
             return []
         # The listing-state migration may have set its flag a moment ago; do not wait out the one-minute re-check.
         self._kh_state_next_check = 0.0
         results = []
-        for connector_id in await kh_scope.stale_connectors(self.client):
+        for connector_id in await kh_scope.stale_connectors(self.client, org_id):
             try:
                 results.append(await self.kh_scope_stamp(connector_id))
             except Exception as e:
@@ -28892,6 +29179,61 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         f"for agent {agent_id}"
                     )
 
+            # ── Step 7b: Agent->MCP server edges, then the orphaned MCP servers and their tool nodes ──
+            # As the ArangoDB provider deletes them: the agent's DETACH DELETE alone leaves them behind.
+            mcp_label = collection_to_label(CollectionNames.AGENT_MCP_SERVERS.value)
+            has_mcp_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_MCP_SERVER.value)
+            mcp_tool_rel = edge_collection_to_relationship(CollectionNames.MCP_SERVER_HAS_TOOL.value)
+            mcp_servers_deleted = 0
+            # One statement, so the agent's server links and the cleanup they lead to commit together: a failed cleanup leaves
+            # the links for a retry to find again. The servers are write-locked (by id) before their links are read, then the
+            # candidate tools before their holders are read, so two deletes cleaning up servers that share a tool see each
+            # other's removals: of two orphaned servers of one agent, or of two agents' servers deleted at once, the last
+            # cleanup takes the tool. A tool is kept only by a server outside the orphaned set. A statement run on its own is
+            # sent again by the client when it loses to another delete (lost_to_a_delete).
+            result = await self.client.execute_query(
+                f"""
+                OPTIONAL MATCH (:{agent_label} {{id: $agent_id}})-[mr:{has_mcp_rel}]->(linked:{mcp_label})
+                WITH collect(DISTINCT linked.id) as sid_list, collect(mr) as rels
+                FOREACH (x IN rels | DELETE x)
+                WITH sid_list, size(rels) as agent_rels
+                CALL (sid_list) {{
+                    MATCH (server:{mcp_label})
+                    WHERE server.id IN sid_list
+                    WITH server ORDER BY server.id
+                    SET server.{_MATCH_LOCK} = true
+                    REMOVE server.{_MATCH_LOCK}
+                    WITH server WHERE NOT EXISTS {{ MATCH (server)<-[:{has_mcp_rel}]-() }}
+                    RETURN collect(server.id) as orphan_ids
+                }}
+                CALL (orphan_ids) {{
+                    MATCH (orphan:{mcp_label})-[:{mcp_tool_rel}]->(tool:{tool_label})
+                    WHERE orphan.id IN orphan_ids
+                    WITH DISTINCT tool ORDER BY tool.id
+                    SET tool.{_MATCH_LOCK} = true
+                    REMOVE tool.{_MATCH_LOCK}
+                    WITH tool WHERE NOT EXISTS {{ MATCH (tool)<-[:{mcp_tool_rel}]-(other) WHERE NOT other.id IN orphan_ids }}
+                    WITH tool, COUNT {{ (tool)<-[:{mcp_tool_rel}]-() }} as links
+                    DETACH DELETE tool
+                    RETURN count(tool) as tool_count, sum(links) as tool_links
+                }}
+                CALL (orphan_ids) {{
+                    MATCH (server:{mcp_label})
+                    WHERE server.id IN orphan_ids
+                    WITH server, COUNT {{ (server)-[:{mcp_tool_rel}]->() }} as links
+                    DETACH DELETE server
+                    RETURN count(server) as deleted_count, sum(links) as server_links
+                }}
+                RETURN agent_rels, deleted_count, tool_count, tool_links + server_links as rel_count
+                """,
+                parameters={"agent_id": agent_id},
+                txn_id=transaction
+            )
+            if result:
+                edges_deleted += (result[0].get("agent_rels", 0) or 0) + (result[0].get("rel_count", 0) or 0)
+                mcp_servers_deleted = result[0].get("deleted_count", 0) or 0
+                tools_deleted += result[0].get("tool_count", 0) or 0
+
             # ── Step 8: DETACH DELETE the agent node ──
             # This removes the agent AND any remaining relationships (permissions,
             # plus any unexpected edges we didn't explicitly handle above).
@@ -28919,6 +29261,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "tools_deleted": tools_deleted,
                 "knowledge_deleted": knowledge_deleted,
                 "edges_deleted": edges_deleted,
+                "mcp_servers_deleted": mcp_servers_deleted,
             }
 
         except Exception as e:
@@ -28930,6 +29273,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "tools_deleted": 0,
                 "knowledge_deleted": 0,
                 "edges_deleted": 0,
+                "mcp_servers_deleted": 0,
             }
 
     async def hard_delete_all_agents(self, transaction: str | None = None) -> dict[str, int]:
@@ -29087,6 +29431,48 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     toolsets_deleted = result[0].get("toolset_count", 0) or 0
                     self.logger.debug(f"Deleted {toolsets_deleted} toolset nodes")
 
+            # Step 9b: MCP servers attached to agents and their tool nodes, as the ArangoDB provider deletes them (the agents'
+            # DETACH DELETE below would leave them behind). One statement: the agents' server links and the cleanup they lead to
+            # commit together, so a failed cleanup leaves the links for a retry to find. A tool a server outside the set holds stays.
+            mcp_label = collection_to_label(CollectionNames.AGENT_MCP_SERVERS.value)
+            has_mcp_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_MCP_SERVER.value)
+            mcp_tool_rel = edge_collection_to_relationship(CollectionNames.MCP_SERVER_HAS_TOOL.value)
+            mcp_servers_deleted = 0
+            result = await self.client.execute_query(
+                f"""
+                OPTIONAL MATCH (:{agent_label})-[:{has_mcp_rel}]->(linked:{mcp_label})
+                WITH collect(DISTINCT linked.id) as server_ids
+                CALL (server_ids) {{
+                    MATCH (server:{mcp_label})-[r:{mcp_tool_rel}]->(tool:{tool_label})
+                    WHERE server.id IN server_ids
+                      AND NOT EXISTS {{ MATCH (tool)<-[:{mcp_tool_rel}]-(other) WHERE NOT other.id IN server_ids }}
+                    WITH tool, count(r) as rels
+                    DETACH DELETE tool
+                    RETURN count(tool) as tool_count, sum(rels) as tool_links
+                }}
+                CALL () {{
+                    MATCH (:{agent_label})-[mr:{has_mcp_rel}]->(:{mcp_label})
+                    DELETE mr
+                    RETURN count(mr) as agent_rels
+                }}
+                CALL (server_ids) {{
+                    MATCH (server:{mcp_label})
+                    WHERE server.id IN server_ids
+                    WITH server, COUNT {{ (server)-[:{mcp_tool_rel}]->() }} as links
+                    DETACH DELETE server
+                    RETURN count(server) as server_count, sum(links) as server_links
+                }}
+                RETURN tool_count, server_count, tool_links + agent_rels + server_links as rel_count
+                """,
+                txn_id=transaction
+            )
+            if result:
+                tools_deleted += result[0].get("tool_count", 0) or 0
+                edges_deleted += result[0].get("rel_count", 0) or 0
+                mcp_servers_deleted = result[0].get("server_count", 0) or 0
+                if mcp_servers_deleted:
+                    self.logger.debug(f"Deleted {mcp_servers_deleted} MCP server nodes")
+
             # Step 10: Delete all permission relationships pointing to agents
             result = await self.client.execute_query(
                 f"""
@@ -29121,7 +29507,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             self.logger.debug(
                 f"Hard deleted {agents_deleted} agents, {toolsets_deleted} toolsets, "
-                f"{tools_deleted} tools, {knowledge_deleted} knowledge, and {edges_deleted} relationships"
+                f"{tools_deleted} tools, {knowledge_deleted} knowledge, {mcp_servers_deleted} MCP servers and {edges_deleted} relationships"
             )
 
             return {
@@ -29130,6 +29516,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "tools_deleted": tools_deleted,
                 "knowledge_deleted": knowledge_deleted,
                 "edges_deleted": edges_deleted,
+                "mcp_servers_deleted": mcp_servers_deleted,
             }
 
         except Exception as e:
@@ -29141,6 +29528,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "tools_deleted": 0,
                 "knowledge_deleted": 0,
                 "edges_deleted": 0,
+                "mcp_servers_deleted": 0,
             }
 
     async def update_agent_permission(self, agent_id: str, owner_user_id: str, org_id: str, user_ids: list[str] | None, team_ids: list[str] | None, role: str, transaction: str | None = None) -> dict | None:

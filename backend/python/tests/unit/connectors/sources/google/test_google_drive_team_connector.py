@@ -64,6 +64,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
+from app.connectors.sources.google.drive.team.connector import GoogleDriveTeamConnector
 from app.connectors.sources.google.drive.team.user_status import UserStatusChange, UserStatusTracker
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -5435,3 +5436,127 @@ def test_only_an_explicit_directory_forbidden_is_a_refusal(status: int, details:
     error = HttpError(resp, b"{}")
     error.error_details = details
     assert is_directory_refusal_403(error) is refused
+
+
+# ===========================================================================
+# Tests: reindex_records gives external collaborators app membership
+# ===========================================================================
+
+
+class TestReindexExternalMembership:
+    """A reindex writes grants outside a sync, so it records their external membership itself."""
+
+    def _connector(self, memberships: set[str]) -> GoogleDriveTeamConnector:
+        conn = _make_connector()
+        conn.synced_user_emails = {"member@x.com"}
+
+        async def ensure(emails, _connector_id) -> None:
+            memberships.update(emails)
+
+        conn.data_entities_processor.on_external_app_users = AsyncMock(side_effect=ensure)
+        return conn
+
+    @staticmethod
+    def _grants() -> list[Permission]:
+        return [
+            Permission(email="Partner@Other.org", type=PermissionType.READ, entity_type=EntityType.USER),
+            Permission(email="member@x.com", type=PermissionType.WRITE, entity_type=EntityType.USER),
+        ]
+
+    async def _reindex_sharing_change(self, conn, grants, *, read=None) -> None:
+        """Reindex one file whose content is unchanged and whose sharing changed (with ``read``: whose sharing could
+        not be listed, so ``read`` stands in for what the read writes)."""
+        user = MagicMock(email="member@x.com", source_user_id="su-1")
+        conn.data_entities_processor.get_users_with_permission_to_node = AsyncMock(return_value=[user])
+        conn.data_store_provider = _make_mock_data_store_provider(user_with_permission=user)
+        record = MagicMock(id="r1", external_record_id="f1", external_record_group_id="d1")
+        ds = AsyncMock()
+        ds.about_get = AsyncMock(return_value={"user": {"permissionId": "p", "emailAddress": "member@x.com"}})
+        ds.files_get = AsyncMock(return_value=_make_file_metadata())
+        update = MagicMock(
+            is_deleted=False, is_new=False, is_updated=True, content_changed=False, metadata_changed=False,
+            permissions_changed=read is None, new_permissions=grants, record=MagicMock(record_name="f"),
+        )
+
+        async def process(*_args, **_kwargs) -> MagicMock:
+            if read is not None:
+                await read(record)
+            return update
+
+        with patch.object(conn, "_get_drive_service_for_user", new_callable=AsyncMock, return_value=MagicMock()), \
+                patch("app.connectors.sources.google.drive.team.connector.GoogleDriveDataSource", return_value=ds), \
+                patch.object(conn, "_process_drive_item", new_callable=AsyncMock, side_effect=process):
+            await conn.reindex_records([record])
+
+    @pytest.mark.asyncio
+    async def test_a_reindex_grant_written_while_the_reaper_runs_keeps_the_membership(self) -> None:
+        memberships = {"partner@other.org"}
+        conn = self._connector(memberships)
+
+        async def grant_while_reaping(_record, _permissions) -> None:
+            # A sync's reaper judged the membership before this grant committed, and dropped it.
+            memberships.discard("partner@other.org")
+
+        conn.data_entities_processor.on_updated_record_permissions = AsyncMock(side_effect=grant_while_reaping)
+        calls = MagicMock()
+        calls.attach_mock(conn.data_entities_processor.on_updated_record_permissions, "grant")
+        calls.attach_mock(conn.data_entities_processor.on_external_app_users, "member")
+
+        await self._reindex_sharing_change(conn, self._grants())
+
+        assert memberships == {"partner@other.org"}
+        assert [c[0] for c in calls.mock_calls] == ["grant", "member"]
+        conn.data_entities_processor.on_external_app_users.assert_awaited_once_with(
+            ["partner@other.org"], conn.connector_id
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_grant_a_members_only_drive_keeps_on_an_unlistable_item_gets_a_membership(self) -> None:
+        # The reader cannot list the item's sharing, so the stored grants stay, and the drive's limits are applied
+        # to them: a group grant is split into grants for those of its people the drive keeps, here one outside
+        # collaborator who is a member of the drive.
+        memberships: set[str] = set()
+        conn = self._connector(memberships)
+        conn._listed_shared_drive_ids = {"d1"}
+        kept = Permission(email="partner@other.org", type=PermissionType.READ, entity_type=EntityType.USER)
+        dep = conn.data_entities_processor
+        dep.get_roles_on_record = AsyncMock(return_value=({}, {"team@x.com": "READER"}))
+        dep.delete_group_permission_from_record = AsyncMock()
+
+        async def restrict(_held) -> list[Permission]:
+            return [kept]
+
+        with patch.object(conn, "_drive_restrictions_of", new_callable=AsyncMock,
+                          return_value={"driveMembersOnly": True}), \
+                patch.object(conn, "_restriction_filter", new_callable=AsyncMock,
+                             return_value=(restrict, lambda _email: True)):
+            await self._reindex_sharing_change(
+                conn, [], read=lambda record: conn._drop_grants_the_drive_keeps_out(record, "d1")
+            )
+
+        dep.add_permission_to_record.assert_awaited_once()
+        dep.on_updated_record_permissions.assert_not_awaited()
+        assert memberships == {"partner@other.org"}
+
+    @pytest.mark.asyncio
+    async def test_a_first_share_made_only_by_a_reindex_gets_a_membership_right_away(self) -> None:
+        memberships: set[str] = set()
+        conn = self._connector(memberships)
+        calls = MagicMock()
+        calls.attach_mock(conn.data_entities_processor.on_new_records, "grant")
+        calls.attach_mock(conn.data_entities_processor.on_external_app_users, "member")
+
+        with patch.object(conn, "_check_and_fetch_updated_record", new_callable=AsyncMock,
+                          return_value=(MagicMock(), self._grants())):
+            await conn.reindex_records([MagicMock(id="r1")])
+
+        assert memberships == {"partner@other.org"}
+        # Membership resolves the principal the grant created, so it comes second.
+        assert [c[0] for c in calls.mock_calls] == ["grant", "member"]
+
+    @pytest.mark.asyncio
+    async def test_a_reindex_that_writes_no_external_grant_writes_no_membership(self) -> None:
+        conn = self._connector(set())
+        await self._reindex_sharing_change(conn, self._grants()[1:])
+        conn.data_entities_processor.on_updated_record_permissions.assert_awaited_once()
+        conn.data_entities_processor.on_external_app_users.assert_not_awaited()

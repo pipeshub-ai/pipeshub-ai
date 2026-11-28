@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from gitlab.v4.objects import GroupMember, Project
 
 from app.config.constants.arangodb import Connectors, PermissionModel
+from app.connectors.core.base.connector.failure_notices import ReconnectRequiredError, listed
 from app.connectors.core.registry.filters import FilterOperator, SyncFilterKey
 from app.models.entities import AppUserGroup, RecordGroup, RecordGroupType
 from app.models.permission import EntityType, Permission, PermissionType
@@ -25,6 +26,10 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from app.connectors.sources.gitlab.connector import GitLabConnector
+
+
+class PrincipalLookupError(Exception):
+    """A member's stored identity could not be read: their grant is unknown, not absent."""
 
 
 def _parent_when_synced(full_path: str, group_paths: list[str]) -> str | None:
@@ -98,9 +103,11 @@ class ProjectsSync:
         if not projects:
             self.logger.warning("No projects to sync after applying filters")
             return
+        incomplete: list[str] = []
         for project in projects:
             project_id: int = project.id
             project_path: str = project.path_with_namespace
+            problems_before = len(self.c.sync_problems)
             for step_name, step in (
                 ("members", lambda: self._sync_project_members_as_pseudo(project)),
                 ("issues", lambda: self.c.issues.fetch_issues_batched(project_id)),
@@ -113,14 +120,25 @@ class ProjectsSync:
                 ),
                 ("merge_requests", lambda: self.c.merge_requests.fetch_prs_batched(project_id)),
             ):
+                self.c.run_state.raise_if_rejected()
                 try:
                     await step()
+                except ReconnectRequiredError:
+                    raise
                 except Exception as e:
                     self.logger.error(
                         "Unhandled error syncing %s for project %s (%s); continuing: %s",
                         step_name, project_id, project_path, e, exc_info=True,
                     )
                     self.c.note_sync_problem(f"{step_name} of project {project_path}: {e}")
+            if len(self.c.sync_problems) > problems_before:
+                incomplete.append(project_path)
+        self.c.run_state.raise_if_rejected()
+        if incomplete:
+            self.c.run_state.note(
+                f"These projects did not sync completely: {listed(incomplete)}. The next sync tries again; if it "
+                "keeps failing, check that the connected account can read them and that a selected branch exists."
+            )
 
     # ------------------------------------------------------------------
     # Project resolution
@@ -159,6 +177,7 @@ class ProjectsSync:
 
         by_id: dict[int, Project] = {}
         listing_complete = True
+        unreadable: list[str] = []
 
         if proj_in:
             for pth in proj_in:
@@ -168,6 +187,8 @@ class ProjectsSync:
                     project = await c.removed_projects.moved_or_remove(pth)
                 if not project:
                     self.logger.error("Repository not found or inaccessible: %s (%s)", pth, res.error)
+                    if res.status_code in (403, 404):
+                        unreadable.append(pth)
                     if res.status_code != 404:
                         c.note_failed_read(f"project {pth}", res)
                     continue
@@ -182,6 +203,8 @@ class ProjectsSync:
                 )
                 if not gres.success:
                     self.logger.error("Could not list projects for group %s: %s", gp, gres.error)
+                    if gres.status_code in (403, 404):
+                        unreadable.append(gp)
                     c.note_failed_read(f"projects of group {gp}", gres)
                     listing_complete = False
                     continue
@@ -196,6 +219,12 @@ class ProjectsSync:
                 raise Exception("Error in fetching projects")
             for p in res.data or []:
                 by_id[int(p.id)] = p
+
+        if unreadable and prune:
+            c.run_state.note(
+                f"These selected projects or groups were deleted, moved, or are not readable by the connected "
+                f"account: {listed(unreadable)}. Give the account access, or remove them from the filter."
+            )
 
         candidates = list(by_id.values())
         if proj_not_in:
@@ -339,10 +368,21 @@ class ProjectsSync:
                     # Minimal Access (5) cannot see the group's projects. Guest is 10.
                     if (getattr(member, "access_level", 0) or 0) < 10 or not member_has_access(member):
                         continue
-                    permission = await self._transform_restrictions_to_permissions(member)
+                    try:
+                        permission = await self._transform_restrictions_to_permissions(member)
+                    except PrincipalLookupError as e:
+                        # One unknown grant makes the list unknown: keep the stored one.
+                        self.logger.warning(
+                            "Could not resolve a member of GitLab group %s: %s. Keeping its stored access.",
+                            group_path, e,
+                        )
+                        c.note_sync_problem(f"members of group {group_path}: {e}")
+                        group_permissions = None
+                        break
                     if permission:
                         group_permissions.append(permission)
 
+            if group_permissions is not None:
                 # Always ensure the creator has access to the group node
                 creator_permission = c.creator_user_permission()
                 if creator_permission is not None and not any(
@@ -412,6 +452,11 @@ class ProjectsSync:
                     )
                 else:
                     self.logger.info("No members found for project %s", project_id)
+                # Access is unknown: the groups are written with no grants (hidden) so the
+                # project's records still sit under their named groups.
+                await c.data_entities_processor.on_new_record_groups(
+                    [(group, None) for group in self._build_project_record_groups(project)]
+                )
                 return
             if listing_failed:
                 self.logger.error(
@@ -455,13 +500,26 @@ class ProjectsSync:
         permission_merge_requests_level: list[Permission] = []
 
         for member in dict_member.values():
-            if not member_has_access(member):
-                continue
-            permission = await self._transform_restrictions_to_permissions(member)
-            if not permission:
-                continue
             level: int = getattr(member, "access_level", 0) or 0
-            if level < 10:
+            # Minimal Access (5) cannot see the project. Skip it before the lookup, so an
+            # unreadable member who would get no grant cannot hold back the rewrite.
+            if level < 10 or not member_has_access(member):
+                continue
+            try:
+                permission = await self._transform_restrictions_to_permissions(member)
+            except PrincipalLookupError as e:
+                # A member whose identity could not be read is unknown, not gone: keep the
+                # stored grants rather than rewrite them without that member.
+                self.logger.warning(
+                    "Could not resolve a member of project %s (%s): %s. Keeping its stored access.",
+                    project_id, project_name, e,
+                )
+                c.note_sync_problem(f"members of project {project.path_with_namespace}: {e}")
+                await c.data_entities_processor.on_new_record_groups(
+                    [(group, None) for group in self._build_project_record_groups(project)]
+                )
+                return
+            if not permission:
                 continue
             permission_project_level.append(permission)
             if level == 10:
@@ -635,7 +693,8 @@ class ProjectsSync:
 
         When a user is not found and ``create_pseudo_group_if_missing`` is True,
         creates a pseudo-group to preserve the permission until a real AppUser
-        row is created on the next sync.
+        row is created on the next sync. A lookup or write that fails raises
+        ``PrincipalLookupError``: the grant is unknown, which is not "no grant".
         """
         c = self.c
         try:
@@ -643,6 +702,7 @@ class ProjectsSync:
                 user = await c.data_entities_processor.get_user_by_source_id(
                     source_user_id=principal_id,
                     connector_id=c.connector_id,
+                    raise_on_error=True,
                 )
                 if user:
                     return Permission(
@@ -654,6 +714,7 @@ class ProjectsSync:
                     pseudo_group = await c.data_entities_processor.get_user_group_by_external_id(
                         connector_id=c.connector_id,
                         external_id=principal_id,
+                        raise_on_error=True,
                     )
                     if not pseudo_group:
                         pseudo_group = await self._create_pseudo_group(principal_id)
@@ -671,8 +732,7 @@ class ProjectsSync:
                 self.logger.debug("User %s not found in DB, skipping permission", principal_id)
                 return None
         except Exception as e:
-            self.logger.error("Failed to create permission from principal: %s", e)
-            return None
+            raise PrincipalLookupError(f"user {principal_id}: {e}") from e
 
     async def _keep_pseudo_group(self, account_id: str) -> None:
         """Note every stored copy of a reused pseudo-group kept, so the unlink after a full
@@ -685,27 +745,23 @@ class ProjectsSync:
             self.logger.error("Could not keep the pseudo-group of user %s: %s", account_id, e)
             c.note_sync_problem(f"pseudo-group of user {account_id}: could not be kept: {e}")
 
-    async def _create_pseudo_group(self, account_id: str) -> AppUserGroup | None:
+    async def _create_pseudo_group(self, account_id: str) -> AppUserGroup:
         """Create a pseudo-group for a user without an email address.
 
         The pseudo-group preserves the permission until the user's real
-        AppUser row is created on the next sync.
+        AppUser row is created on the next sync. A failed write raises.
         """
         c = self.c
-        try:
-            pseudo_group = AppUserGroup(
-                app_name=Connectors.GITLAB,
-                connector_id=c.connector_id,
-                source_user_group_id=account_id,
-                name=f"{PSEUDO_USER_GROUP_PREFIX}_{account_id}",
-                org_id=c.data_entities_processor.org_id,
-            )
-            await c.data_entities_processor.on_new_user_groups([(pseudo_group, [])])
-            self.logger.info("Created pseudo-group for user without email: %s", account_id)
-            return pseudo_group
-        except Exception as e:
-            self.logger.error("Failed to create pseudo-group for %s: %s", account_id, e)
-            return None
+        pseudo_group = AppUserGroup(
+            app_name=Connectors.GITLAB,
+            connector_id=c.connector_id,
+            source_user_group_id=account_id,
+            name=f"{PSEUDO_USER_GROUP_PREFIX}_{account_id}",
+            org_id=c.data_entities_processor.org_id,
+        )
+        await c.data_entities_processor.on_new_user_groups([(pseudo_group, [])])
+        self.logger.info("Created pseudo-group for user without email: %s", account_id)
+        return pseudo_group
 
 
 # ------------------------------------------------------------------

@@ -834,7 +834,7 @@ async def update_instance(
     # confirmed leaves the old target in place (503 for an outage, 500 otherwise).
     credentials_reset = _connection_target_changed(existing, record)
     if credentials_reset:
-        await await_or_503(_purge_instance_credentials(config_service, instance_id))
+        await await_or_503(_purge_instance_credentials(config_service, existing, user_context["user_id"]))
     else:
         credentials_reset = await _settle_shared_credential(config_service, existing, record)
 
@@ -890,8 +890,10 @@ def _connection_target_changed(existing: dict[str, Any], record: dict[str, Any])
     return any((existing.get(field) or None) != (record.get(field) or None) for field in fields)
 
 
-async def _purge_instance_credentials(config_service: ConfigurationService, instance_id: str) -> None:
-    await mcp_lifecycle.purge_instance_credentials(config_service, instance_id)
+async def _purge_instance_credentials(
+    config_service: ConfigurationService, existing: dict[str, Any], user_id: str,
+) -> None:
+    await mcp_lifecycle.purge_instance_credentials(config_service, existing, user_id=user_id)
 
 
 async def _assert_instance_not_in_use(request: Request, instance: dict[str, Any]) -> None:

@@ -188,6 +188,7 @@ def raising_defaults() -> set[str]:
 RAISING_DEFAULTS_NOT_ON_POSTGRES = {
     # data repairs of the other stores; their app/migrations/*_migration.py callers catch NotImplementedError and skip
     "backfill_app_org_ids", "split_link_edges", "backfill_hierarchy", "drop_redundant_group_edges", "normalize_folder_mime_types", "stamp_kh_listing_state",
+    "stamp_kh_children_order",
     # only the Neo4j and ArangoDB browse paths call these (_with_readable_children and _kh_v3_scoped_start_access); PostgreSQL browses in kh_browse.py
     "_kh_v3_child_ids", "_kh_v3_declared_scope", "_kh_v3_start_lineage",
     # only with ACL_SCOPE_FIELDS on or ACL_FILTER_MODE shadow/scopes (off by default); there a search fails at start and a vector point stays on the
@@ -304,3 +305,16 @@ class TestReplaceRecordEntityRelations:
             with pytest.raises(ValueError, match="needs a record"):
                 await provider.replace_record_entity_relations(*args)
         provider._q.assert_not_awaited()
+
+
+async def test_the_reaper_raises_a_conflict_so_its_caller_runs_it_again(monkeypatch) -> None:
+    """A serialization conflict or deadlock aborted the caller's transaction: reported as 0 (success) the caller would commit a dead one."""
+    from app.core.db import SerializationConflict
+    from app.core.org_context import OrgContext, bind
+    p = PostgresGraphProvider(logging.getLogger("t"), MagicMock())
+
+    async def conflict(*_a: object, **_k: object) -> None:
+        raise SerializationConflict("could not serialize access")
+    monkeypatch.setattr(p, "_q", conflict)
+    with bind(OrgContext("org-1", None, "job", "job:t", "t")), pytest.raises(SerializationConflict):
+        await p.reap_stale_external_app_relations("app1", transaction="t1")
