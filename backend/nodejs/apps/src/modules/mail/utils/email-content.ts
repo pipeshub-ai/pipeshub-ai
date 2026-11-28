@@ -12,6 +12,7 @@ import {
   isSandboxCapacityAlertData,
   joinRequestDecision,
   joinRequestNotify,
+  licenseGraceReminder,
   loginWithOTPRequest,
   orgEmailVerification,
   resetEmail,
@@ -82,6 +83,8 @@ export function getEmailContent(
     case EmailTemplateType.ConnectorAccountConnect as string:
       return connectorAccountConnect(templateData);
 
+    case EmailTemplateType.LicenseGraceReminder as string:
+      return licenseGraceReminder(templateData);
     // `as string`: the type is a plain string here, as for every case above.
     case EmailTemplateType.SupportRequest as string:
       return supportRequest(templateData);

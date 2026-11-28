@@ -38,6 +38,9 @@ const joinRequestDecisionTemplate = loadTemplate(
 const connectorAccountConnectTemplate = loadTemplate(
   'src/modules/mail/views/layouts/connectors/connectAccount.hbs',
 );
+const licenseGraceReminderTemplate = loadTemplate(
+  'src/modules/mail/views/layouts/org/licenseGraceReminder.hbs',
+);
 const orgEmailVerificationTemplate = loadTemplate(
   'src/modules/mail/views/layouts/org/orgEmailVerification.hbs',
 );
@@ -232,6 +235,9 @@ export const sandboxCapacityAlert = (
 export const connectorAccountConnect = (
   templateData: Record<string, unknown>,
 ): string => compileTemplate(connectorAccountConnectTemplate, templateData);
+export const licenseGraceReminder = (
+  templateData: Record<string, unknown>,
+): string => compileTemplate(licenseGraceReminderTemplate, templateData);
 export const supportRequest = (templateData: Record<string, unknown>): string =>
   compileTemplate(supportRequestTemplate, templateData);
 export const feedbackReceived = (

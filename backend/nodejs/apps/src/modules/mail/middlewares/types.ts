@@ -35,6 +35,7 @@ export enum EmailTemplateType {
   ScheduledRunEnded = 'scheduledRunEnded',
   SandboxCapacityAlert = 'sandboxCapacityAlert',
   ConnectorAccountConnect = 'connectorAccountConnect',
+  LicenseGraceReminder = 'licenseGraceReminder',
   SupportRequest = 'supportRequest',
   FeedbackReceived = 'feedbackReceived',
   FeedbackCopy = 'feedbackCopy',
