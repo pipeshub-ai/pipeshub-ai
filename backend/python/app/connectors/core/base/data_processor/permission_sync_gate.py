@@ -10,6 +10,8 @@ either way, and personal connectors are owner-only in both editions.
 
 import time
 import weakref
+from collections import defaultdict
+from collections.abc import Iterable
 from typing import Any
 
 from app.config.configuration_service import ConfigurationService
@@ -101,3 +103,35 @@ def personal_cap_reached(created_by: str, apps_of_type: list[dict]) -> bool:
         if (app.get("scope") or "").lower() == ConnectorScope.PERSONAL.value and app.get("createdBy")
     }
     return created_by not in owners and len(owners) >= PERSONAL_CONNECTOR_CAP
+
+
+# Written at connectors start-up for the Node licence check (N1): whether this install uses what a licence key pays
+# for. Once licence enforcement is on, Node keeps the first answer and gives the install its upgrade grace when it is.
+INSTALL_AFFECTED_KEY = "/services/licence/affected"
+
+
+def install_affected(apps_by_org: Iterable[list[dict[str, Any]]]) -> dict[str, Any]:
+    """Whether the install uses paid features, from each org's connector documents: a company-wide connector that copies
+    access from its source (``gated``), or more people than ``PERSONAL_CONNECTOR_CAP`` with their own connector to one
+    source, counted per org and including inactive connectors, as the cap counts them."""
+    # shortcut: a gated connector counts whether or not it has copied any access yet; reading its stored permissions
+    # would be exact, but the grace costs nothing for an install that turns out not to need it.
+    team_connectors = 0
+    over_cap: set[str] = set()
+    for apps in apps_by_org:
+        team_connectors += sum(1 for app in apps if gated(app))
+        owners: dict[str, set[str]] = defaultdict(set)
+        for app in apps:
+            connector_type = str(app.get("type") or "")
+            if (
+                (app.get("scope") or "").lower() == ConnectorScope.PERSONAL.value
+                and app.get("createdBy")
+                and personal_cap_applies(connector_type)
+            ):
+                owners[connector_type.upper()].add(app["createdBy"])
+        over_cap |= {connector_type for connector_type, people in owners.items() if len(people) > PERSONAL_CONNECTOR_CAP}
+    return {
+        "affected": bool(team_connectors or over_cap),
+        "teamConnectors": team_connectors,
+        "personalSourcesOverCap": sorted(over_cap),
+    }

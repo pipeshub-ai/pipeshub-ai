@@ -3,6 +3,7 @@ import contextlib
 import functools
 import json
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
 from enum import Enum
 from inspect import isawaitable, isclass
 from typing import Any, cast
@@ -856,11 +857,64 @@ class ConnectorRegistry:
             )
         except Exception as e:
             self.logger.error(f"Error syncing registry with database: {e}")
+            await self._forget_install_affected()
             return False
         if failed:
+            await self._forget_install_affected()
             return False
+        await self._report_install_affected(graph_provider)
         self.logger.info("Successfully synced registry with database")
         return True
+
+    async def _report_install_affected(self, graph_provider: IGraphDBProvider) -> None:
+        """Writes ``install_affected`` for the Node licence check, only when every read succeeded: the org list and each
+        org's connectors are read with ``raise_on_error``, because Arango and Neo4j otherwise answer a failed read with
+        no rows, and a partial count could call an affected install unaffected. A failure is logged and removes the
+        last report (``_forget_install_affected``): Node then treats the install as affected."""
+        from app.connectors.core.base.data_processor.permission_sync_gate import (
+            INSTALL_AFFECTED_KEY,
+            install_affected,
+        )
+
+        apps_by_org: list[list[dict[str, Any]]] = []
+
+        async def read(org_id: str) -> None:
+            apps_by_org.append(
+                await graph_provider.get_org_apps(org_id, active_only=False, raise_on_error=True)
+            )
+
+        try:
+            failed = await for_each_org(
+                graph_provider, "licence_install_affected", read, self.logger, raise_on_error=True
+            )
+            if failed:
+                self.logger.warning("Not reporting whether this install uses licensed features: an org could not be read")
+                await self._forget_install_affected()
+                return
+            facts = install_affected(apps_by_org)
+            facts["checkedAt"] = datetime.now(timezone.utc).isoformat()
+            if await self.container.config_service().set_config(INSTALL_AFFECTED_KEY, facts):
+                return
+            self.logger.warning("Could not report whether this install uses licensed features: the store refused it")
+        except Exception as e:
+            self.logger.warning(f"Could not report whether this install uses licensed features: {e}")
+        await self._forget_install_affected()
+
+    async def _forget_install_affected(self) -> None:
+        """Remove the last ``install_affected`` report when this start could not write a new one: a stored
+        ``affected: false`` would otherwise go on answering for an install nobody counted. Node reads a missing
+        report as affected. A failed delete is logged."""
+        from app.config.configuration_service import delete_config_confirmed
+        from app.connectors.core.base.data_processor.permission_sync_gate import (
+            INSTALL_AFFECTED_KEY,
+        )
+
+        try:
+            if await delete_config_confirmed(self.container.config_service(), INSTALL_AFFECTED_KEY):
+                return
+            self.logger.warning("The last report of licensed-feature use could not be removed")
+        except Exception as e:
+            self.logger.warning(f"The last report of licensed-feature use could not be removed: {e}")
 
     async def _sync_org_with_database(self, graph_provider: IGraphDBProvider, org_id: str) -> None:
         """One org's part of ``sync_with_database``, called under that org."""
