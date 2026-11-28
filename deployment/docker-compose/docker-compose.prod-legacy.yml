@@ -21,7 +21,7 @@ services:
     # then drops to that user (SETUID, SETGID) and empties its bounding set
     # (SETPCAP) before any service starts, so no service process has any of them.
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, SETPCAP, KILL]
-    image: pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}
+    image: docker.io/pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}
     container_name: pipeshub-ai
     restart: always
     ports:
@@ -396,7 +396,7 @@ services:
     user: "1000:1000"
     group_add:
       - "${DOCKER_GID:-0}"
-    image: pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}
+    image: docker.io/pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}
     restart: always
     working_dir: /app/python
     # Bypasses the image entrypoint, which drops privileges for the app and
@@ -453,7 +453,7 @@ services:
     # it (SETUID, SETGID); redis-server holds none of them. The command goes through
     # that entrypoint: started straight from sh, redis-server ran as root.
     cap_add: [CHOWN, DAC_READ_SEARCH, SETUID, SETGID]
-    image: redis:7.4.12-bookworm
+    image: docker.io/redis:7.4.12-bookworm
     ulimits:
       nofile:
         soft: 65536
@@ -484,7 +484,7 @@ services:
 
   arango:
     <<: *hardened
-    image: arangodb:3.12.4
+    image: docker.io/arangodb:3.12.4
     ulimits:
       nofile:
         soft: 65536
@@ -539,7 +539,7 @@ services:
 
   zookeeper:
     <<: *hardened
-    image: confluentinc/cp-zookeeper:7.9.0
+    image: docker.io/confluentinc/cp-zookeeper:7.9.0
     ulimits:
       nofile:
         soft: 65536
@@ -560,7 +560,7 @@ services:
 
   kafka-1:
     <<: *hardened
-    image: confluentinc/cp-kafka:7.9.0
+    image: docker.io/confluentinc/cp-kafka:7.9.0
     ulimits:
       nofile:
         soft: 100000
@@ -600,7 +600,7 @@ services:
 
   qdrant:
     <<: *hardened
-    image: qdrant/qdrant:v1.15.5
+    image: docker.io/qdrant/qdrant:v1.15.5
     stop_grace_period: 120s
     container_name: qdrant
     restart: always
@@ -649,7 +649,7 @@ services:
   # Override with SANDBOX_DOCKER_IMAGE if you host the image under another name.
   sandbox-image:
     <<: [*hardened, *read-only-root]
-    image: ${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
+    image: ${SANDBOX_DOCKER_IMAGE:-docker.io/pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
     restart: "no"
     command: ["sh", "-c", "echo 'sandbox image ready'"]
     deploy:

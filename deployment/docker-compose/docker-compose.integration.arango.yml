@@ -368,7 +368,7 @@ services:
   # the platform uses. It lets the PostgreSQL connector be tested without an
   # external database, the same way MinIO covers object storage.
   postgres-source:
-    image: postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
+    image: docker.io/postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
     restart: always
     environment:
       POSTGRES_USER: ${POSTGRES_TEST_USER:-pipeshubtest}
@@ -386,7 +386,7 @@ services:
   # have live coverage without depending on a public site. Tests change what it
   # serves through its control API (integration-tests/helper/web_fixtures.py).
   web-fixtures:
-    image: python:3.12.11-alpine3.22@sha256:efcdfa6a6b2fd2afb9c7dfa9a5b288a6f68338b5cfdebe6b637d986067d85757
+    image: docker.io/python:3.12.11-alpine3.22@sha256:efcdfa6a6b2fd2afb9c7dfa9a5b288a6f68338b5cfdebe6b637d986067d85757
     restart: always
     command: ["python", "/srv/server.py", "--seed", "/srv/seed", "--port", "8080", "--base-url", "http://web-fixtures:8080"]
     volumes:
@@ -498,7 +498,7 @@ services:
     mem_limit: 512m
 
   mcp-fixture:
-    image: python:3.12.11-alpine3.22@sha256:efcdfa6a6b2fd2afb9c7dfa9a5b288a6f68338b5cfdebe6b637d986067d85757
+    image: docker.io/python:3.12.11-alpine3.22@sha256:efcdfa6a6b2fd2afb9c7dfa9a5b288a6f68338b5cfdebe6b637d986067d85757
     restart: always
     command: ["python", "/srv/server.py", "--port", "8080"]
     volumes:
@@ -516,7 +516,7 @@ services:
   # third-party service. Its call log is read through the published port
   # (integration-tests/helper/openapi_fixture.py).
   openapi-fixture:
-    image: python:3.12.11-alpine3.22@sha256:efcdfa6a6b2fd2afb9c7dfa9a5b288a6f68338b5cfdebe6b637d986067d85757
+    image: docker.io/python:3.12.11-alpine3.22@sha256:efcdfa6a6b2fd2afb9c7dfa9a5b288a6f68338b5cfdebe6b637d986067d85757
     restart: always
     command: ["python", "/srv/server.py", "--port", "8080"]
     volumes:
@@ -532,7 +532,7 @@ services:
   # MariaDB, like postgres-source, is a connector *source* for the MariaDB
   # connector's tests, not a store the platform uses.
   mariadb-source:
-    image: mariadb:11.4@sha256:d1891ede5a559f1086f55053bb8cc1569b0298338c4d72d71725a7f74f6ba620
+    image: docker.io/mariadb:11.4@sha256:d1891ede5a559f1086f55053bb8cc1569b0298338c4d72d71725a7f74f6ba620
     restart: always
     environment:
       MARIADB_USER: ${MARIADB_TEST_USER:-pipeshubtest}
@@ -551,7 +551,7 @@ services:
   # large enough to start only where their tests run: the workflow sets
   # COMPOSE_PROFILES=selfhosted-sources for that shard.
   nextcloud-source:
-    image: nextcloud:31.0.9-apache@sha256:fdab7bfc1b35255e442ed207bca277a45495fb115f297a97711e0880167f833b
+    image: docker.io/nextcloud:31.0.9-apache@sha256:fdab7bfc1b35255e442ed207bca277a45495fb115f297a97711e0880167f833b
     profiles: ["selfhosted-sources"]
     restart: always
     environment:
@@ -571,7 +571,7 @@ services:
       retries: 60
 
   bookstack-db:
-    image: mariadb:11.4@sha256:d1891ede5a559f1086f55053bb8cc1569b0298338c4d72d71725a7f74f6ba620
+    image: docker.io/mariadb:11.4@sha256:d1891ede5a559f1086f55053bb8cc1569b0298338c4d72d71725a7f74f6ba620
     profiles: ["selfhosted-sources"]
     restart: always
     environment:
@@ -626,7 +626,7 @@ services:
     # it (SETUID, SETGID); redis-server holds none of them. The command goes through
     # that entrypoint: started straight from sh, redis-server ran as root.
     cap_add: [CHOWN, DAC_READ_SEARCH, SETUID, SETGID]
-    image: redis:7.4.12-bookworm@sha256:2e3eb11462c4e3759e6972678dd051d150ff54b1e60714b3c33b701260172a90
+    image: docker.io/redis:7.4.12-bookworm@sha256:2e3eb11462c4e3759e6972678dd051d150ff54b1e60714b3c33b701260172a90
     ulimits:
       nofile:
         soft: 65536
@@ -651,7 +651,7 @@ services:
 
   # Local SMTP sink for mail-dependent integration tests: CI runners cannot
   mailpit:
-    image: axllent/mailpit:v1.30.6@sha256:7f33095f80e901f6ad08028f06ca284aa58fe84942be5496008d041d3b9f4d4d
+    image: docker.io/axllent/mailpit:v1.30.6@sha256:7f33095f80e901f6ad08028f06ca284aa58fe84942be5496008d041d3b9f4d4d
     restart: always
     ports:
       - "1025:1025"
@@ -703,7 +703,7 @@ services:
 
   arango:
     <<: *hardened
-    image: arangodb:3.12.4@sha256:b7cc8dbf5f24c0fe235b6e50a26dbcfaebaf9abe0d322acefcf3dab63b5a0102
+    image: docker.io/arangodb:3.12.4@sha256:b7cc8dbf5f24c0fe235b6e50a26dbcfaebaf9abe0d322acefcf3dab63b5a0102
     ulimits:
       nofile:
         soft: 65536
@@ -728,7 +728,7 @@ services:
 
   zookeeper:
     <<: *hardened
-    image: confluentinc/cp-zookeeper:7.9.0@sha256:5ae28c2f45b89e12e8ba27bd0cfbe6488ef7082a17f01c878ab7f1841a58874b
+    image: docker.io/confluentinc/cp-zookeeper:7.9.0@sha256:5ae28c2f45b89e12e8ba27bd0cfbe6488ef7082a17f01c878ab7f1841a58874b
     ulimits:
       nofile:
         soft: 65536
@@ -747,7 +747,7 @@ services:
 
   kafka-1:
     <<: *hardened
-    image: confluentinc/cp-kafka:7.9.0@sha256:02170e46da5c36b1581cd42ebfbf2a55edae6348c62bc772bc2166841db745b2
+    image: docker.io/confluentinc/cp-kafka:7.9.0@sha256:02170e46da5c36b1581cd42ebfbf2a55edae6348c62bc772bc2166841db745b2
     ulimits:
       nofile:
         soft: 100000
@@ -781,7 +781,7 @@ services:
 
   qdrant:
     <<: *hardened
-    image: qdrant/qdrant:v1.15.5@sha256:0fb8897412abc81d1c0430a899b9a81eb8328aa634e7242d1bc804c1fe8fe863
+    image: docker.io/qdrant/qdrant:v1.15.5@sha256:0fb8897412abc81d1c0430a899b9a81eb8328aa634e7242d1bc804c1fe8fe863
     stop_grace_period: 120s
     ports:
       - "6333:6333"
@@ -831,7 +831,7 @@ services:
   # only the shard that runs the SMB suite starts it. The connector reaches it
   # by service name; the test process writes files through the published port.
   smb-source:
-    image: dockurr/samba:4.23.10@sha256:404f91bdf317d390241a41165579cd25199f34171b44677d877c75dc40184042
+    image: docker.io/dockurr/samba:4.23.10@sha256:404f91bdf317d390241a41165579cd25199f34171b44677d877c75dc40184042
     profiles: ["smb-source"]
     restart: always
     environment:
@@ -858,7 +858,7 @@ services:
   # literal string and matches nothing. The connector would sync no tickets,
   # and a test written against that would pass while proving nothing.
   zammad-db:
-    image: postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+    image: docker.io/postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
     profiles: ["zammad-source"]
     restart: always
     environment:
@@ -876,7 +876,7 @@ services:
     # The image entrypoint drops to the redis user (SETUID, SETGID); with no volume
     # an earlier redis wrote, there is nothing to hand over.
     cap_add: [SETUID, SETGID]
-    image: redis:7-alpine@sha256:7b1753b4c5ad8458906c272a8132b8c15f5557b000379eb115fb239706a384b7
+    image: docker.io/redis:7-alpine@sha256:7b1753b4c5ad8458906c272a8132b8c15f5557b000379eb115fb239706a384b7
     ulimits:
       nofile:
         soft: 65536
@@ -909,7 +909,7 @@ services:
       retries: 60
 
   zammad-init:
-    image: zammad/zammad-docker-compose:6.4.1-63@sha256:bf7d5afa5d943040ad26153d86cdad7a2f02cca484eb73c5390b76b202ba1159
+    image: docker.io/zammad/zammad-docker-compose:6.4.1-63@sha256:bf7d5afa5d943040ad26153d86cdad7a2f02cca484eb73c5390b76b202ba1159
     profiles: ["zammad-source"]
     depends_on:
       zammad-db:
@@ -934,7 +934,7 @@ services:
       - zammad-storage:/opt/zammad/storage
 
   zammad-railsserver:
-    image: zammad/zammad-docker-compose:6.4.1-63@sha256:bf7d5afa5d943040ad26153d86cdad7a2f02cca484eb73c5390b76b202ba1159
+    image: docker.io/zammad/zammad-docker-compose:6.4.1-63@sha256:bf7d5afa5d943040ad26153d86cdad7a2f02cca484eb73c5390b76b202ba1159
     profiles: ["zammad-source"]
     restart: always
     depends_on:
@@ -962,7 +962,7 @@ services:
       - zammad-storage:/opt/zammad/storage
 
   zammad-scheduler:
-    image: zammad/zammad-docker-compose:6.4.1-63@sha256:bf7d5afa5d943040ad26153d86cdad7a2f02cca484eb73c5390b76b202ba1159
+    image: docker.io/zammad/zammad-docker-compose:6.4.1-63@sha256:bf7d5afa5d943040ad26153d86cdad7a2f02cca484eb73c5390b76b202ba1159
     profiles: ["zammad-source"]
     restart: always
     depends_on:

@@ -26,7 +26,7 @@ x-read-only-root: &read-only-root
 services:
   qdrant-vector-it:
     <<: *hardened
-    image: qdrant/qdrant:v1.15.5@sha256:0fb8897412abc81d1c0430a899b9a81eb8328aa634e7242d1bc804c1fe8fe863
+    image: docker.io/qdrant/qdrant:v1.15.5@sha256:0fb8897412abc81d1c0430a899b9a81eb8328aa634e7242d1bc804c1fe8fe863
     ulimits:
       nofile:
         soft: 50000
@@ -49,7 +49,7 @@ services:
           pids: 4096
 
   opensearch-vector-it:
-    image: opensearchproject/opensearch:3.6.0@sha256:b5dd1512af2a99748c942cfbbd7f32162623336b210667d0fc6333c6321f171d
+    image: docker.io/opensearchproject/opensearch:3.6.0@sha256:b5dd1512af2a99748c942cfbbd7f32162623336b210667d0fc6333c6321f171d
     ports:
       - "9299:9200"
     environment:
@@ -82,7 +82,7 @@ services:
     # redis-server, the image's entrypoint loads its bundled modules (search
     # among them) itself; loading search again aborts the server.
     # Exact version: a test pins how this server treats query dialect 1 (deprecated), so a floating tag could break CI by itself.
-    image: redis:8.4.8@sha256:319f54e668c14f68cee51d1fdf9dba699deecac048fc0e52962433a3ef5562c0
+    image: docker.io/redis:8.4.8@sha256:319f54e668c14f68cee51d1fdf9dba699deecac048fc0e52962433a3ef5562c0
     ulimits:
       nofile:
         soft: 65536

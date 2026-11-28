@@ -727,7 +727,7 @@ check "PIPESHUB_NO_PULL=yes skips the refresh" "$(should_pull_image false false 
 check "refresh target honours the pinned tag" "$inner" '_APP_IMAGE="${APP_IMAGE_REPO}:${IMAGE_TAG:-latest}"'
 
 # Downstream builds: image repository and extra compose files.
-check "app image repository defaults to pipeshubai/pipeshub-ai" "$inner" 'APP_IMAGE_REPO="${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}"'
+check "app image repository defaults to docker.io/pipeshubai/pipeshub-ai" "$inner" 'APP_IMAGE_REPO="${PIPESHUB_IMAGE:-docker.io/pipeshubai/pipeshub-ai}"'
 check "compose app image follows PIPESHUB_IMAGE" "$(cat "$REPO_ROOT/deployment/docker-compose/docker-compose.yml")" 'image: ${PIPESHUB_APP_PINNED:-${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}:${IMAGE_TAG:-latest}}'
 check "extra compose files are read from PIPESHUB_COMPOSE_OVERRIDES" "$inner" 'read -r -a _compose_overrides <<< "$PIPESHUB_COMPOSE_OVERRIDES"'
 check "image and overrides are saved in .env" "$inner" 'printf '"'"'PIPESHUB_COMPOSE_OVERRIDES=%s\n'"'"' "$PIPESHUB_COMPOSE_OVERRIDES" >> "$ENV_FILE"'

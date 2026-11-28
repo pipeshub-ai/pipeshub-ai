@@ -459,7 +459,7 @@ services:
     # it (SETUID, SETGID); redis-server holds none of them. The command goes through
     # that entrypoint: started straight from sh, redis-server ran as root.
     cap_add: [CHOWN, DAC_READ_SEARCH, SETUID, SETGID]
-    image: redis:7-alpine@sha256:7b1753b4c5ad8458906c272a8132b8c15f5557b000379eb115fb239706a384b7
+    image: docker.io/redis:7-alpine@sha256:7b1753b4c5ad8458906c272a8132b8c15f5557b000379eb115fb239706a384b7
     ulimits:
       nofile:
         soft: 65536
@@ -486,7 +486,7 @@ services:
           pids: 4096
 
   opensearch:
-    image: opensearchproject/opensearch:3.6.0@sha256:b5dd1512af2a99748c942cfbbd7f32162623336b210667d0fc6333c6321f171d
+    image: docker.io/opensearchproject/opensearch:3.6.0@sha256:b5dd1512af2a99748c942cfbbd7f32162623336b210667d0fc6333c6321f171d
     restart: always
     environment:
       - cluster.name=pipeshub-cluster
@@ -535,7 +535,7 @@ services:
       start_period: 60s
 
   opensearch-dashboards:
-    image: opensearchproject/opensearch-dashboards:3.6.0@sha256:1ddd64e3a07fd98bc20ccf5174760b51795630a602b81102b37d1e9ee82cb7a9
+    image: docker.io/opensearchproject/opensearch-dashboards:3.6.0@sha256:1ddd64e3a07fd98bc20ccf5174760b51795630a602b81102b37d1e9ee82cb7a9
     restart: always
     ports:
       - "5601:5601"
@@ -558,7 +558,7 @@ services:
     # Its entrypoint, as root, hands /data, /logs and the plugin folder to the
     # neo4j user (CHOWN, DAC_OVERRIDE, FOWNER) and drops to it (SETUID, SETGID).
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, KILL]
-    image: neo4j:5.26.0@sha256:5a015e53de1895e7eee1574ae0325cf8c4b89587222778108c594bdd45a474b5
+    image: docker.io/neo4j:5.26.0@sha256:5a015e53de1895e7eee1574ae0325cf8c4b89587222778108c594bdd45a474b5
     ulimits:
       nofile:
         soft: 60000
@@ -594,7 +594,7 @@ services:
   zookeeper:
     <<: *hardened
     profiles: ["kafka"]
-    image: confluentinc/cp-zookeeper:7.9.0@sha256:5ae28c2f45b89e12e8ba27bd0cfbe6488ef7082a17f01c878ab7f1841a58874b
+    image: docker.io/confluentinc/cp-zookeeper:7.9.0@sha256:5ae28c2f45b89e12e8ba27bd0cfbe6488ef7082a17f01c878ab7f1841a58874b
     ulimits:
       nofile:
         soft: 65536
@@ -617,7 +617,7 @@ services:
   kafka-1:
     <<: *hardened
     profiles: ["kafka"]
-    image: confluentinc/cp-kafka:7.9.0@sha256:02170e46da5c36b1581cd42ebfbf2a55edae6348c62bc772bc2166841db745b2
+    image: docker.io/confluentinc/cp-kafka:7.9.0@sha256:02170e46da5c36b1581cd42ebfbf2a55edae6348c62bc772bc2166841db745b2
     ulimits:
       nofile:
         soft: 100000

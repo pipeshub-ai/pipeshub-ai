@@ -17,7 +17,7 @@ services:
         condition: service_healthy
 
   parsing:
-    image: ${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}:${IMAGE_TAG:-latest}
+    image: ${PIPESHUB_IMAGE:-docker.io/pipeshubai/pipeshub-ai}:${IMAGE_TAG:-latest}
     restart: always
     # The app's image entrypoint, as in the base file: it takes earlier root-owned volumes for uid 1000 (CHOWN,
     # DAC_OVERRIDE, FOWNER), drops to it (SETUID, SETGID) and empties its bounding set (SETPCAP). There is no root

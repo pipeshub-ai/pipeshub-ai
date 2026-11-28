@@ -24,7 +24,7 @@ services:
     # Its entrypoint, as root, hands /data, /logs and the plugin folder to the
     # neo4j user (CHOWN, DAC_OVERRIDE, FOWNER) and drops to it (SETUID, SETGID).
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, KILL]
-    image: neo4j:5.26.0@sha256:5a015e53de1895e7eee1574ae0325cf8c4b89587222778108c594bdd45a474b5
+    image: docker.io/neo4j:5.26.0@sha256:5a015e53de1895e7eee1574ae0325cf8c4b89587222778108c594bdd45a474b5
     ulimits:
       nofile:
         soft: 60000
@@ -56,7 +56,7 @@ services:
 
   arango-graph-it:
     <<: *hardened
-    image: arangodb:3.12.4@sha256:b7cc8dbf5f24c0fe235b6e50a26dbcfaebaf9abe0d322acefcf3dab63b5a0102
+    image: docker.io/arangodb:3.12.4@sha256:b7cc8dbf5f24c0fe235b6e50a26dbcfaebaf9abe0d322acefcf3dab63b5a0102
     ulimits:
       nofile:
         soft: 65536
