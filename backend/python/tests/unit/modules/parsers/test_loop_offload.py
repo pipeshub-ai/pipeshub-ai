@@ -369,3 +369,47 @@ async def test_loop_ticks_during_html_clean(monkeypatch: pytest.MonkeyPatch) -> 
 
     assert with_hop >= 20, with_hop
     assert control < with_hop / 4, (control, with_hop)
+
+
+# -- the two other loop-resident HTML call sites (blocks parser, file-content parser) --------------
+
+
+@pytest.mark.parametrize(("pad", "off_loop"), [(0, False), (8, True)], ids=["small-inline", "large-hops"])
+async def test_blocks_parser_html_clean_runs_off_the_loop_only_when_large(
+    monkeypatch: pytest.MonkeyPatch, pad: int, off_loop: bool
+) -> None:
+    from app.models.blocks import BlockGroup, DataFormat, GroupType
+    from app.modules.parsers import loop_offload
+    from app.modules.parsers.blocks.blocks_parser import BlocksParser
+
+    monkeypatch.setattr(loop_offload, "HTML_CLEAN_THRESHOLD_BYTES", 2048)
+    parser = _RecordingSelectolax()
+    parser.parse_to_blocks = AsyncMock(side_effect=RuntimeError("stop"))  # type: ignore[method-assign]
+    group = BlockGroup(
+        index=0, type=GroupType.TEXT_SECTION, format=DataFormat.HTML, data="<p>" + "w" * (pad * 1024) + "</p>"
+    )
+    with pytest.raises(RuntimeError, match="stop"):
+        await BlocksParser(MagicMock(), MagicMock())._process_single_blockgroup_html(
+            group, "r", parser, allow_remote_fetch=False
+        )
+    assert (parser.threads["clean_html"] != MAIN()) is off_loop
+
+
+@pytest.mark.parametrize(("pad", "off_loop"), [(0, False), (8, True)], ids=["small-inline", "large-hops"])
+async def test_file_content_parser_html_passes_run_off_the_loop_only_when_large(
+    monkeypatch: pytest.MonkeyPatch, pad: int, off_loop: bool
+) -> None:
+    from app.agents.actions.util.parse_file import FileContentParser
+    from app.modules.parsers import loop_offload
+
+    monkeypatch.setattr(loop_offload, "HTML_CLEAN_THRESHOLD_BYTES", 2048)
+    fcp = object.__new__(FileContentParser)
+    parser = _RecordingSelectolax()
+    parser.parse_to_blocks = AsyncMock(side_effect=RuntimeError("stop"))  # type: ignore[method-assign]
+    fcp._html_parser = parser
+    fcp._image_parser = MagicMock()
+    raw = ("<html><body><p>" + "w" * (pad * 1024) + "</p></body></html>").encode()
+    with pytest.raises(RuntimeError, match="stop"):
+        await fcp.handle_html(raw, "a.html")
+    assert set(parser.threads) == {"clean_html", "replace_relative_image_urls"}
+    assert {t != MAIN() for t in parser.threads.values()} == {off_loop}

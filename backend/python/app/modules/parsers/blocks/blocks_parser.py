@@ -7,6 +7,7 @@ from app.modules.parsers.html_parser.html_parser import HTMLParser
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.lightweight_group_parsers import lightweight_group_parsers
+from app.modules.parsers.loop_offload import html_pass
 from app.modules.parsers.push_origin import assert_images_inline, content_is_push_origin
 from app.services.parsing.interface import ParseErrorCode, ParseError, ParseResult
 from app.utils.cpu_offload import offload_if_large
@@ -349,7 +350,7 @@ class BlocksParser:
                 f"BlockGroup {block_group.index} has no valid HTML data"
             )
 
-        html_content = html_parser.clean_html(html_data)
+        html_content = await html_pass(html_parser, "clean_html", html_data)
 
         caption_map: dict[str, str] = {}
         modified_html, images = await offload_if_large(

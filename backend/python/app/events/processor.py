@@ -68,7 +68,7 @@ from app.modules.parsers.email.msg_to_html import msg_to_html
 from app.modules.parsers.epub.epub_reader import read_epub
 from app.modules.parsers.excel.excel_parser import ExcelParser
 from app.modules.parsers.lightweight_group_parsers import lightweight_group_parsers
-from app.modules.parsers.loop_offload import HTML_CLEAN_THRESHOLD_BYTES
+from app.modules.parsers.loop_offload import HTML_CLEAN_THRESHOLD_BYTES, html_pass
 from app.modules.parsers.markdown.image_references import extract_and_replace_images
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
@@ -133,17 +133,8 @@ def _dumps_payload(payload: object) -> bytes:
 
 
 async def _html_pass(html_parser: object, method: str, html: str) -> str:
-    """Run a whole-document HTML pass (``clean_html``, ``replace_relative_image_urls``).
-
-    BeautifulSoup parses and re-serialises the whole page in pure Python, which holds the
-    event loop for as long as the page is large. A backend that says it is safe to run these
-    on a thread does so above ``HTML_CLEAN_THRESHOLD_BYTES``; any other backend (Docling), or
-    a stand-in that does not set the flag to exactly ``True``, runs it inline as it always did.
-    """
-    fn = getattr(html_parser, method)
-    if getattr(html_parser, "PASSES_MAY_RUN_OFF_LOOP", False) is True:
-        return await offload_if_large(fn, html, threshold_bytes=HTML_CLEAN_THRESHOLD_BYTES)
-    return fn(html)
+    """See ``loop_offload.html_pass``; the threshold is read here so it can be tuned per module."""
+    return await html_pass(html_parser, method, html, threshold_bytes=HTML_CLEAN_THRESHOLD_BYTES)
 
 
 class Processor:

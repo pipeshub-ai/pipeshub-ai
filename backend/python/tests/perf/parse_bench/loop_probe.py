@@ -115,23 +115,35 @@ class PhaseRing:
     names: list[str | None] = field(init=False)
     starts: array = field(init=False)
     ends: array = field(init=False)
+    gens: array = field(init=False)  # token of the interval each slot holds (token + 1; 0 is empty)
     n: int = 0
+    stale_closes: int = 0  # closes refused because the slot was overwritten by a newer phase
 
     def __post_init__(self) -> None:
         self.names = [None] * self.capacity
         self.starts = array("d", bytes(8 * self.capacity))
         self.ends = array("d", bytes(8 * self.capacity))
+        self.gens = array("q", bytes(8 * self.capacity))
 
     def open(self, name: str) -> int:
-        slot = self.n % self.capacity
+        """Start an interval and return its generation token (pass it to ``close``)."""
+        token = self.n
+        slot = token % self.capacity
         self.n += 1
+        self.gens[slot] = token + 1
         self.names[slot] = name
         self.starts[slot] = time.perf_counter()
         self.ends[slot] = 0.0
-        return slot
+        return token
 
-    def close(self, slot: int) -> None:
+    def close(self, token: int) -> bool:
+        """End the interval ``token`` names. A no-op (counted) if a newer phase now owns its slot."""
+        slot = token % self.capacity
+        if self.gens[slot] != token + 1:
+            self.stale_closes += 1
+            return False
         self.ends[slot] = time.perf_counter()
+        return True
 
     @contextmanager
     def phase(self, name: str) -> Any:  # noqa: ANN401
@@ -152,20 +164,38 @@ class PhaseRing:
         ]
 
 
+def _unions(intervals: Iterable[tuple[str, float, float]]) -> dict[str, list[tuple[float, float]]]:
+    by_name: dict[str, list[tuple[float, float]]] = {}
+    for name, a, b in intervals:
+        by_name.setdefault(name, []).append((a, b))
+    merged: dict[str, list[tuple[float, float]]] = {}
+    for name, spans in by_name.items():
+        out: list[tuple[float, float]] = []
+        for a, b in sorted(spans):
+            if out and a <= out[-1][1]:
+                out[-1] = (out[-1][0], max(out[-1][1], b))
+            else:
+                out.append((a, b))
+        merged[name] = out
+    return merged
+
+
 def attribute(freezes: Iterable[Freeze], ring: PhaseRing, floor_s: float = 0.0) -> dict[str, dict[str, float]]:
     """Per phase name: number of freezes it overlaps and the freeze time inside its intervals.
 
-    A freeze overlapping several phases (a nested phase and its parent) counts for each; the
-    overlap in seconds is the time of the freeze that falls inside the interval.
+    A freeze overlapping several different phase names (a nested phase and its parent) counts for
+    each name. Within one name the intervals are merged into their union first, so one freeze
+    overlapping two invocations of the same phase counts once, and nested or overlapping intervals
+    of one name do not count the same time twice.
     """
-    intervals = ring.intervals()
+    unions = _unions(ring.intervals())
     out: dict[str, dict[str, float]] = {}
     for f in freezes:
         if f.seconds <= floor_s:
             continue
         hit = False
-        for name, a, b in intervals:
-            overlap = min(f.end, b) - max(f.start, a)
+        for name, spans in unions.items():
+            overlap = sum(max(0.0, min(f.end, b) - max(f.start, a)) for a, b in spans)
             if overlap > 0.001:  # under 1 ms is the tick, not the phase
                 row = out.setdefault(name, {"freezes": 0, "overlap_ms": 0.0, "max_freeze_ms": 0.0})
                 row["freezes"] += 1

@@ -112,20 +112,30 @@ def _write_text(path: Path, chunks: Iterator[str]) -> None:
             f.write(c)
 
 
+_ZIP_EPOCH = (2020, 1, 1, 0, 0, 0)  # a fixed member timestamp: the archive bytes depend on the seed only
+
+
+def _member(name: str, compress_type: int = zipfile.ZIP_DEFLATED) -> zipfile.ZipInfo:
+    """A ``ZipInfo`` with a fixed timestamp. ``writestr`` with a str name stamps the current time."""
+    info = zipfile.ZipInfo(name, _ZIP_EPOCH)
+    info.compress_type = compress_type
+    return info
+
+
 def _epub(path: Path, target: int, rng: random.Random) -> None:
     chapters = max(1, target // (256 * 1024))
     per = target // chapters
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr(zipfile.ZipInfo("mimetype", (2020, 1, 1, 0, 0, 0)), "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        z.writestr(_member("mimetype", zipfile.ZIP_STORED), "application/epub+zip")
         z.writestr(
-            "META-INF/container.xml",
+            _member("META-INF/container.xml"),
             '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
             '<rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>',
         )
         manifest = "".join(f'<item id="c{i}" href="c{i}.xhtml" media-type="application/xhtml+xml"/>' for i in range(chapters))
         spine = "".join(f'<itemref idref="c{i}"/>' for i in range(chapters))
         z.writestr(
-            "OEBPS/content.opf",
+            _member("OEBPS/content.opf"),
             '<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="id">'
             '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>T</dc:title><dc:identifier id="id">x</dc:identifier>'
             f"<dc:language>en</dc:language></metadata><manifest>{manifest}</manifest><spine>{spine}</spine></package>",
@@ -133,7 +143,7 @@ def _epub(path: Path, target: int, rng: random.Random) -> None:
         for i in range(chapters):
             body = "".join(f"<p>{'word ' * rng.randint(20, 60)}</p>" for _ in range(max(1, per // 200)))
             z.writestr(
-                f"OEBPS/c{i}.xhtml",
+                _member(f"OEBPS/c{i}.xhtml"),
                 f'<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>c{i}</title></head>'
                 f"<body><h1>Chapter {i}</h1>{body}</body></html>",
             )
@@ -169,17 +179,17 @@ def _xlsx(path: Path, rows: int, cols: int, rng: random.Random) -> None:
     rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr(
-            "[Content_Types].xml",
+            _member("[Content_Types].xml"),
             '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
             '<Default Extension="xml" ContentType="application/xml"/>'
             '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
             '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
             '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>',
         )
-        z.writestr("_rels/.rels", f'<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{rel}/officeDocument" Target="xl/workbook.xml"/></Relationships>')
-        z.writestr("xl/workbook.xml", f'<?xml version="1.0"?><workbook xmlns="{main}" xmlns:r="{rel}"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>')
-        z.writestr("xl/_rels/workbook.xml.rels", f'<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{rel}/worksheet" Target="worksheets/sheet1.xml"/></Relationships>')
-        with z.open("xl/worksheets/sheet1.xml", "w") as f:
+        z.writestr(_member("_rels/.rels"), f'<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{rel}/officeDocument" Target="xl/workbook.xml"/></Relationships>')
+        z.writestr(_member("xl/workbook.xml"), f'<?xml version="1.0"?><workbook xmlns="{main}" xmlns:r="{rel}"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>')
+        z.writestr(_member("xl/_rels/workbook.xml.rels"), f'<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{rel}/worksheet" Target="worksheets/sheet1.xml"/></Relationships>')
+        with z.open(_member("xl/worksheets/sheet1.xml"), "w") as f:
             for chunk in sheet():
                 f.write(chunk.encode())
 

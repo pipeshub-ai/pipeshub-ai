@@ -33,6 +33,7 @@ from app.modules.parsers.excel.excel_parser import ExcelParser
 from app.modules.parsers.excel.xls_parser import XLSParser
 from app.modules.parsers.html_parser.html_parser import HTMLParser
 from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.modules.parsers.loop_offload import html_pass
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.markdown.mdx_parser import MDXParser
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
@@ -40,6 +41,7 @@ from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCV
 from app.modules.parsers.pptx.ppt_parser import PPTParser
 from app.modules.parsers.text_decoding import decode_text
 from app.utils.chat_helpers import count_tokens_text
+from app.utils.cpu_offload import offload_if_large
 from app.utils.llm import LLMNotConfiguredError, get_llm_for_role
 from app.utils.run_model_scope import note_records_read
 
@@ -362,11 +364,13 @@ class FileContentParser:
 
     async def handle_html(self, raw: bytes, file_name: str) -> BlocksContainer:
         html_content = raw.decode("utf-8", errors="replace")
-        html_content = self._html_parser.clean_html(html_content)
-        html_content = self._html_parser.replace_relative_image_urls(html_content)
+        html_content = await html_pass(self._html_parser, "clean_html", html_content)
+        html_content = await html_pass(self._html_parser, "replace_relative_image_urls", html_content)
 
         caption_map: dict[str, str] = {}
-        modified_html, images = self._html_parser.extract_and_replace_images(html_content)
+        modified_html, images = await offload_if_large(
+            self._html_parser.extract_and_replace_images, html_content
+        )
         urls_to_convert = [image["url"] for image in images]
         if urls_to_convert:
             base64_urls = await self._image_parser.urls_to_base64(urls_to_convert, allow_remote_fetch=True)
