@@ -21,6 +21,7 @@ import { SourceReport, toCanonical, toNeutral } from './source';
 import { dropKeys, keysOf } from './carry/keymap';
 import { deleteKeyedRow, recordKeys } from './keyed-rows';
 import { putRefusals } from './refusals';
+import { writeWithDocuments } from './carry/run';
 
 const IDENT = /^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$/;
 const ident = (s: string): string => {
@@ -282,6 +283,12 @@ export async function replaceDocs(
       if (inPlace && skipped.length && !folds(m))
         await deleteDocs(k, m, skipped);
       const refused = new Set(stats.skipped.map((x) => x.id));
+      await writeWithDocuments(
+        k,
+        m.collection,
+        raw as Array<Record<string, unknown>>,
+        new Set([...refused].map((id) => id.toLowerCase())),
+      );
       await recordKeys(k, m, docs, refused);
       // a document refused now joins the refusals, and one the importer takes now leaves them
       await putRefusals(

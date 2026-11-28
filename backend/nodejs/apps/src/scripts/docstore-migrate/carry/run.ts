@@ -84,6 +84,86 @@ export function mongoCarry(db: Db): CarryMongo {
   };
 }
 
+/**
+ * The documents the copy refused whole, out of `ids`: a refusal names its document by the document's id (lower case); the refusal of a
+ * part of one (a member, `<id>.members[i]`) is not the document's. The one rule writeWithDocuments, the resync's rewrite and the verify
+ * share, so a refused document never has carried fields and is never expected to.
+ */
+export const refusedWhole = (
+  ids: Iterable<string>,
+  refusals: ReadonlySet<string>,
+): Set<string> =>
+  new Set([...ids].filter((id) => refusals.has(id.toLowerCase())));
+
+/** The source ids (lower case) of the collection's refusals as the copy recorded them (`platform.docstore_refused`). */
+async function refusalsOf(
+  k: KernelTx,
+  collection: string,
+): Promise<Set<string>> {
+  const { rows } = await k.query<{ s: string }>(
+    `/* pipeshub:migrate.carry_refusals */ SELECT source_id AS s FROM platform.docstore_refused WHERE collection = $1`,
+    [collection],
+  );
+  return new Set(rows.map((r) => r.s.toLowerCase()));
+}
+
+/** The collection's fields are written with its documents (`withDocument`), not by the carrier's own step. */
+const withDocument = (c: Carrier, collection: string): boolean =>
+  c.withDocument === true && !c.collections.includes(collection);
+
+/**
+ * In the unit that wrote these documents of a mapped collection: the fields `withDocument` carriers keep of them. `skipped`: ids
+ * (lower-case) of documents the importer did not take, whose fields have no row to hang on.
+ */
+export async function writeWithDocuments(
+  k: KernelTx,
+  collection: string,
+  raw: readonly Doc[],
+  skipped: ReadonlySet<string> = new Set(),
+  carriers: readonly Carrier[] = CARRIERS,
+): Promise<void> {
+  for (const c of carriers) {
+    if (!withDocument(c, collection) || !(c.fields[collection] ?? []).length)
+      continue;
+    const read = raw.map((d) =>
+      sourceDoc(d, collection, readOf(c, collection)),
+    );
+    const out = refusedWhole(
+      read.map((d) => d.id),
+      skipped,
+    );
+    const docs = read.filter((d) => !out.has(d.id));
+    // a document the importer skips has no rows now (the follower and a repair removed them in this unit): its fields go too. A
+    // skip of part of a document (a member, reported as `<id>.members[i]`) is not one of these ids and removes nothing.
+    const gone = [
+      ...refusedWhole(
+        read.map((d) => d.id),
+        skipped,
+      ),
+    ];
+    const bad = docs.find((d) => d.refused);
+    if (bad)
+      throw new Error(
+        `${bad.refused ?? ''}: nothing of this batch was written; correct the document, then run again`,
+      );
+    if (gone.length) await c.remove(k, collection, gone);
+    if (docs.length) await c.write(k, collection, docs);
+  }
+}
+
+/** In the unit that removed these documents' rows: the fields `withDocument` carriers keep of them go too. */
+export async function removeWithDocuments(
+  k: KernelTx,
+  collection: string,
+  ids: readonly string[],
+  carriers: readonly Carrier[] = CARRIERS,
+): Promise<void> {
+  if (!ids.length) return;
+  for (const c of carriers)
+    if (withDocument(c, collection) && (c.fields[collection] ?? []).length)
+      await c.remove(k, collection, [...ids]);
+}
+
 /** Carriers that read any of the collections named (all of them without a list). */
 export const carriersFor = (only?: readonly string[]): Carrier[] =>
   only
@@ -97,10 +177,17 @@ export async function copyCarried(
   carriers: readonly Carrier[],
   log: (event: string, data?: Record<string, unknown>) => void = () =>
     undefined,
+  withDocuments = false,
 ): Promise<Record<string, number>> {
   const out: Record<string, number> = {};
   for (const c of carriers)
     for (const coll of carriedSources(c)) {
+      // copied with the documents, except when the carrier's rows are written again on their own (a resync)
+      if (withDocument(c, coll) && !withDocuments) continue;
+      // fields written with their documents: a document the copy refused has none, so a rewrite leaves it out too
+      const refusals = withDocument(c, coll)
+        ? await pg((k) => refusalsOf(k, coll), false)
+        : new Set<string>();
       let n = 0;
       let batch: SourceDoc[] = [];
       const flush = async (): Promise<void> => {
@@ -113,6 +200,7 @@ export async function copyCarried(
           throw new Error(
             `${d.refused}: nothing more was copied; correct the document, then copy again`,
           );
+        if (refusedWhole([d.id], refusals).size) continue;
         batch.push(d);
         n += 1;
         if (batch.length >= BATCH) await flush();
@@ -135,9 +223,9 @@ export async function applyCarried(
   if (!upserts.length && !deletes.length) return;
   for (const c of carriers) {
     if (!carriedSources(c).includes(collection)) continue;
-    const docs = upserts.map((raw) =>
-      sourceDoc(raw, collection, readOf(c, collection)),
-    );
+    const docs = withDocument(c, collection)
+      ? []
+      : upserts.map((raw) => sourceDoc(raw, collection, readOf(c, collection)));
     const bad = docs.find((d) => d.refused);
     if (bad)
       throw new Error(
@@ -197,11 +285,16 @@ export async function verifyCarried(
       const note = (t: string): void => {
         transforms[t] = (transforms[t] ?? 0) + 1;
       };
+      // the fields of a document the copy refused are not expected (writeWithDocuments never writes them)
+      const refusals = withDocument(c, coll)
+        ? await pg((k) => refusalsOf(k, coll), false)
+        : new Set<string>();
       for await (const d of mongo.scan(coll, readOf(c, coll))) {
         if (d.refused) {
           refused.push(d.refused);
           continue;
         }
+        if (refusedWhole([d.id], refusals).size) continue;
         let entries: Array<[string, unknown]>;
         try {
           entries = c.expected(coll, d, note);
@@ -310,6 +403,6 @@ export async function resyncCarried(
 ): Promise<void> {
   for (const c of carriers) {
     await pg((k) => c.clear(k), true);
-    await copyCarried(pg, mongo, [c]);
+    await copyCarried(pg, mongo, [c], undefined, true);
   }
 }
