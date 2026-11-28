@@ -37,6 +37,24 @@ interface QueuedNotification {
   retryCount: number;
 }
 
+/**
+ * Between replicas, with Redis: a user has just connected on the replica that sends it, so each other replica sends
+ * them now what it holds for them.
+ */
+const HELD_NOTIFICATIONS_WANTED = 'notifications:held-wanted';
+
+/**
+ * Between replicas, with Redis: whether the replica that answers has a socket for a user. Only the yes or no crosses
+ * Redis, never a socket's handshake.
+ */
+const HAS_SOCKET_FOR = 'notifications:has-socket-for';
+
+/**
+ * How long a replica waits for the others to answer `HAS_SOCKET_FOR`: longer than the Redis adapter's own wait for
+ * every replica (5 s), which a Redis error skips without answering at all.
+ */
+const PRESENCE_ANSWER_TIMEOUT_MS = 6_000;
+
 /** An authenticated socket: its user and org are the ones its token was verified for at the handshake. */
 export type NotificationSocket = CustomSocket;
 
@@ -71,6 +89,15 @@ export class NotificationService {
   private readonly MAX_QUEUE_SIZE_PER_USER = 100; // Maximum notifications per user to prevent memory issues
   /** Pushes go through Redis to every replica: a user with no socket here may have one on another. */
   private distributed = false;
+  /**
+   * With Redis, per user, the notifications waiting for the replicas to say whether the user has a socket on any of
+   * them. Those sent while one answer is on its way share it, so they are held in the order they were sent.
+   */
+  private readonly awaitingPresence = new Map<
+    string,
+    Array<{ event: string; data: unknown }>
+  >();
+  private presenceAnswerTimeoutMs = PRESENCE_ANSWER_TIMEOUT_MS;
   private subClient: RedisClient | null = null;
   // The same session rules authMiddleware holds every HTTP request to.
   private sessionRefusal: typeof findSessionRefusal = findSessionRefusal;
@@ -100,6 +127,19 @@ export class NotificationService {
       ...(usesInProcessCache() ? {} : { adapter: this.redisAdapter() }),
     });
     this.distributed = !usesInProcessCache();
+    if (this.distributed) {
+      // A user connected on another replica: what this replica holds for them goes out now, through Redis.
+      this.io.on(HELD_NOTIFICATIONS_WANTED, (userId: unknown) => {
+        if (typeof userId === 'string' && userId !== '') {
+          this.processQueuedNotificationsForUser(userId, true);
+        }
+      });
+      this.io.on(HAS_SOCKET_FOR, (userId: unknown, reply: unknown) => {
+        if (typeof reply !== 'function') return;
+        const answer = reply as (hasSocket: boolean) => void;
+        answer(typeof userId === 'string' && this.isUserConnected(userId));
+      });
+    }
 
     // engine.io turns these away before Socket.IO sees a connection (a session id another process holds, a bad
     // transport or handshake), so they are logged nowhere else. The request's headers, cookies and session id stay out.
@@ -208,6 +248,10 @@ export class NotificationService {
 
         // Process any queued notifications for this user immediately upon connection
         this.processQueuedNotificationsForUser(userId);
+        // With Redis, another replica may hold some from while they had no socket on any replica.
+        if (this.distributed) {
+          this.io?.serverSideEmit(HELD_NOTIFICATIONS_WANTED, userId);
+        }
 
         // You can also join organization room if needed
         if (orgId) {
@@ -311,15 +355,18 @@ export class NotificationService {
   }
 
   /**
-   * Process queued notifications for a specific user
+   * Process queued notifications for a specific user: one connected here, or, when another replica says so, there.
    */
-  private processQueuedNotificationsForUser(userId: string): void {
+  private processQueuedNotificationsForUser(
+    userId: string,
+    connectedElsewhere = false,
+  ): void {
     const queue = this.notificationQueue.get(userId);
     if (!queue || queue.length === 0) {
       return;
     }
 
-    if (!this.isUserConnected(userId)) {
+    if (!connectedElsewhere && !this.isUserConnected(userId)) {
       return;
     }
 
@@ -499,8 +546,8 @@ export class NotificationService {
    * Send a message to a specific user.
    * If user is not connected, the notification is queued for delivery when they connect.
    * Returns true if sent immediately, false if queued or failed.
-   * With Redis, a user with no socket on this replica may have one on another: it is sent there at once too (true), and
-   * the copy held here reaches them when they next connect to this replica (the app keeps one copy of a notification).
+   * With Redis, a user with no socket on this replica may have one on another: it is sent there at once too (true).
+   * It is held here only if no replica has a socket for them, and sent when they connect on any replica.
    */
   sendToUser(userId: string, event: string, data: any): boolean {
     // A scheduled notification is never pushed and never queued for an offline user: a client sees it through its own
@@ -535,17 +582,89 @@ export class NotificationService {
         event,
       });
       return true;
+    } else if (this.distributed) {
+      // To their sockets on the other replicas, through Redis; held here only if none of them has one.
+      this.sendToUserDirect(userId, event, data);
+      this.holdUnlessConnectedElsewhere(userId, event, data);
+      this.logger.debug(
+        'No socket here; notification sent to the other replicas',
+        {
+          target_user_id: userId,
+          event,
+        },
+      );
+      return true;
     } else {
-      const sentThroughRedis =
-        this.distributed && this.sendToUserDirect(userId, event, data);
       // User is not connected, queue for later delivery
       this.queueNotification(userId, event, data);
       this.logger.debug('User not connected, notification queued', {
         target_user_id: userId,
         event,
       });
-      // Queued only (false), unless it also went out to the other replicas through Redis.
-      return sentThroughRedis;
+      return false; // Indicates notification was queued, not sent immediately
+    }
+  }
+
+  /**
+   * Holds a notification only for a user with no socket on any replica, as a replica without Redis holds one for a
+   * user with no socket on it. A user with a socket on another replica got it there through Redis: a copy held here
+   * would reach them a second time when they next connect here, an old unread copy over the row they may have read.
+   */
+  private holdUnlessConnectedElsewhere(
+    userId: string,
+    event: string,
+    data: unknown,
+  ): void {
+    const waiting = this.awaitingPresence.get(userId);
+    if (waiting) {
+      waiting.push({ event, data });
+      return;
+    }
+    const batch = [{ event, data }];
+    this.awaitingPresence.set(userId, batch);
+    void this.connectedOnAnyReplica(userId).then((connected) => {
+      this.awaitingPresence.delete(userId);
+      if (connected || !this.io) return;
+      for (const held of batch) {
+        this.queueNotification(userId, held.event, held.data);
+      }
+      // They may have connected here while the replicas answered.
+      this.processQueuedNotificationsForUser(userId);
+    });
+  }
+
+  /**
+   * Whether another replica has a socket for the user (the caller found none here). When the replicas cannot all be
+   * asked, the answer is no, so the notification is held, as it is for a user with no socket here on a replica
+   * without Redis.
+   */
+  private async connectedOnAnyReplica(userId: string): Promise<boolean> {
+    if (!this.io) return false;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const answers: unknown[] = await Promise.race([
+        this.io.serverSideEmitWithAck(HAS_SOCKET_FOR, userId),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(new Error('the other replicas did not answer in time')),
+            this.presenceAnswerTimeoutMs,
+          );
+          timer.unref();
+        }),
+      ]);
+      return answers.some((answer) => answer === true);
+    } catch (error) {
+      this.logger.warn(
+        'Could not ask the other replicas for a user; the notification is held here',
+        {
+          target_user_id: userId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      return false;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -601,6 +720,7 @@ export class NotificationService {
 
     this.connectedUsers.clear();
     this.notificationQueue.clear();
+    this.awaitingPresence.clear();
   }
 
   private extractToken(token: string): string | null {

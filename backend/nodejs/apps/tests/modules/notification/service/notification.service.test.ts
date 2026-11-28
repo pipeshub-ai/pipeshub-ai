@@ -111,18 +111,53 @@ describe('NotificationService', () => {
       expect(emitStub.calledWith('test-event', { data: 'test' })).to.be.true
     })
 
-    it('with Redis, a user with no socket here gets it through Redis at once, and a copy is held for this replica', () => {
-      const emitStub = sinon.stub()
-      const toStub = sinon.stub().returns({ emit: emitStub })
-      ;(service as any).io = { sockets: { adapter: { rooms: new Map() } }, to: toStub }
-      ;(service as any).distributed = true
+    describe('with Redis, a user with no socket here', () => {
+      /** This replica's server, with no socket for user-1 here; asked, the other replicas answer `answers`. */
+      function replicaWhereOthersAnswer(answers: unknown[]) {
+        const emitStub = sinon.stub()
+        const toStub = sinon.stub().returns({ emit: emitStub })
+        const askStub = sinon.stub().resolves(answers)
+        ;(service as any).io = { sockets: { adapter: { rooms: new Map() } }, to: toStub, serverSideEmitWithAck: askStub }
+        ;(service as any).distributed = true
+        return { emitStub, toStub, askStub }
+      }
+      const answered = () => new Promise((resolve) => setImmediate(resolve))
 
-      const result = service.sendToUser('user-1', 'test-event', { data: 'test' })
+      it('gets it through Redis at once, and it is held here when no replica has a socket for them', async () => {
+        const { emitStub, toStub, askStub } = replicaWhereOthersAnswer([false])
 
-      expect(result).to.be.true
-      expect(toStub.calledOnceWith('user-1')).to.be.true
-      expect(emitStub.calledOnceWith('test-event', { data: 'test' })).to.be.true
-      expect((service as any).notificationQueue.get('user-1')).to.have.lengthOf(1)
+        const result = service.sendToUser('user-1', 'test-event', { data: 'test' })
+
+        expect(result).to.be.true
+        expect(toStub.calledOnceWith('user-1')).to.be.true
+        expect(emitStub.calledOnceWith('test-event', { data: 'test' })).to.be.true
+        await answered()
+        expect(askStub.calledOnce).to.be.true
+        expect(askStub.firstCall.args[1]).to.equal('user-1')
+        expect((service as any).notificationQueue.get('user-1')).to.have.lengthOf(1)
+      })
+
+      it('has nothing held here when another replica has their socket, which got it through Redis', async () => {
+        const { emitStub } = replicaWhereOthersAnswer([false, true])
+
+        expect(service.sendToUser('user-1', 'test-event', { data: 'test' })).to.be.true
+        await answered()
+
+        expect(emitStub.calledOnceWith('test-event', { data: 'test' })).to.be.true
+        expect((service as any).notificationQueue.has('user-1')).to.be.false
+      })
+
+      it('has what is sent while the answer is on its way held in order, after one question to the replicas', async () => {
+        const { askStub } = replicaWhereOthersAnswer([])
+
+        service.sendToUser('user-1', 'test-event', { n: 1 })
+        service.sendToUser('user-1', 'test-event', { n: 2 })
+        await answered()
+
+        expect(askStub.calledOnce).to.be.true
+        const held = (service as any).notificationQueue.get('user-1') as Array<{ data: unknown }>
+        expect(held.map((h) => h.data)).to.deep.equal([{ n: 1 }, { n: 2 }])
+      })
     })
   })
 

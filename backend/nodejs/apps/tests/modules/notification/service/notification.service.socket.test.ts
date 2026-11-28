@@ -36,6 +36,8 @@ interface NotificationServiceInternals {
   connectedUsers: Set<string>;
   notificationQueue: Map<string, unknown[]>;
   queueNotification(userId: string, event: string, data: unknown): void;
+  presenceAnswerTimeoutMs: number;
+  awaitingPresence: Map<string, unknown[]>;
 }
 const RECORD_SEPARATOR = '\x1e';
 
@@ -99,6 +101,17 @@ class FakePubSub extends EventEmitter {
       }
     }
     return Promise.resolve(1);
+  }
+
+  /** `PUBSUB NUMSUB` and `SHARDNUMSUB`: how many of the bus's clients subscribe to a channel, as Redis counts them. */
+  send_command(command: string, args: string[], callback: (error: Error | null, reply?: [string, number]) => void) {
+    const [count, channel] = args;
+    if (command !== 'PUBSUB' || (count !== 'NUMSUB' && count !== 'SHARDNUMSUB') || channel === undefined) {
+      setImmediate(() => callback(new Error(`the fake does not run ${command} ${args.join(' ')}`)));
+      return;
+    }
+    const subscribers = [...this.bus].filter((client) => client.channels.has(channel)).length;
+    setImmediate(() => callback(null, [channel, subscribers]));
   }
 
   duplicate(_startupNodes: unknown, options: unknown) {
@@ -417,16 +430,35 @@ describe('NotificationService over a real socket', () => {
     });
 
     it('holds notifications for a user who is offline and delivers them in order on connect', async () => {
-      // With Redis another replica may hold the user's socket, so each also goes out through Redis (true).
+      // With Redis another replica may hold the user's socket, so each also goes out through Redis (true). Each is held
+      // here once the other replicas say none of them has a socket for her: alone on its Redis, as main held it.
       expect(service.sendToUser(alice.userId, 'notification', { n: 1 })).to.be.true;
       expect(service.sendToUser(alice.userId, 'notification', { n: 2 })).to.be.true;
-      expect(internals().notificationQueue.get(alice.userId)).to.have.length(2);
+      expect(service.sendToUser(alice.userId, 'notification', { n: 3 })).to.be.true;
+      await waitFor(() => internals().notificationQueue.get(alice.userId)?.length === 3);
 
       const aliceSocket = await connectAs(alice);
 
       expect(await within(1000, aliceSocket.nextEvent())).to.deep.equal(['notification', { n: 1 }]);
       expect(await within(1000, aliceSocket.nextEvent())).to.deep.equal(['notification', { n: 2 }]);
+      expect(await within(1000, aliceSocket.nextEvent())).to.deep.equal(['notification', { n: 3 }]);
       expect(internals().notificationQueue.has(alice.userId)).to.equal(false);
+    });
+
+    it('holds a notification when the replicas cannot be asked, as for a user with no socket here', async () => {
+      // The adapter drops a Redis error without answering, so the replica stops waiting on its own.
+      internals().presenceAnswerTimeoutMs = 50;
+      sinon
+        .stub(FakePubSub.prototype, 'send_command')
+        .callsFake((_command: string, _args: string[], callback: (error: Error | null) => void) =>
+          setImmediate(() => callback(new Error('Redis is not answering'))),
+        );
+      expect(service.sendToUser(alice.userId, 'notification', { unknown: true })).to.be.true;
+      await waitFor(() => internals().notificationQueue.get(alice.userId)?.length === 1);
+
+      const aliceSocket = await connectAs(alice);
+
+      expect(await within(1000, aliceSocket.nextEvent())).to.deep.equal(['notification', { unknown: true }]);
     });
 
     describe('a scheduled notification (visibleAt ahead)', () => {
@@ -590,6 +622,54 @@ describe('NotificationService over a real socket', () => {
       expect(await aliceSocket.nextEvent()).to.deep.equal(['notification', { from: 'replica A' }]);
       expect(await bobSocket.nextEvent()).to.deep.equal(['notification', { for: 'bob' }]);
     });
+
+    for (const cluster of [false, true]) {
+      const on = cluster ? ' (Redis Cluster)' : '';
+      /** Another replica on this one's Redis; on Redis Cluster, this one is replaced by a replica on the cluster. */
+      async function anotherReplica() {
+        if (cluster) {
+          replicas[0]!.service.shutdown();
+          ({ service, base } = await addReplica(true));
+        }
+        return addReplica(cluster);
+      }
+
+      it(`holds nothing for a user whose socket is on another replica, so a later connect here brings back no old copy${on}`, async () => {
+        const other = await anotherReplica();
+        const there = await connectAs(alice, other.base);
+
+        expect(service.sendToUser(alice.userId, 'newNotification', { _id: 'n-1', status: 'unread' })).to.be.true;
+        expect(await within(1000, there.nextEvent())).to.deep.equal(['newNotification', { _id: 'n-1', status: 'unread' }]);
+        // Let this replica hear back from the other one.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(internals().notificationQueue.has(alice.userId), 'nothing is kept for her here').to.equal(false);
+        expect(internals().awaitingPresence.size, 'the other replica has answered').to.equal(0);
+
+        // She reads it there. Later her socket reconnects through this replica (a deploy, a network blip).
+        const here = await connectAs(alice);
+        service.sendToUser(alice.userId, 'newNotification', { _id: 'n-2', status: 'unread' });
+
+        // The first thing it gets is the new notification, not the old unread copy, which would undo her read.
+        expect(await within(1000, here.nextEvent())).to.deep.equal(['newNotification', { _id: 'n-2', status: 'unread' }]);
+      });
+
+      it(`holds a notification for a user with no socket on any replica, and sends it once when they connect on another${on}`, async () => {
+        const other = await anotherReplica();
+
+        expect(service.sendToUser(alice.userId, 'newNotification', { _id: 'n-1' })).to.be.true;
+        expect(service.sendToUser(alice.userId, 'newNotification', { _id: 'n-2' })).to.be.true;
+        await waitFor(() => internals().notificationQueue.get(alice.userId)?.length === 2);
+
+        const there = await connectAs(alice, other.base);
+
+        expect(await within(1000, there.nextEvent())).to.deep.equal(['newNotification', { _id: 'n-1' }]);
+        expect(await within(1000, there.nextEvent())).to.deep.equal(['newNotification', { _id: 'n-2' }]);
+        await waitFor(() => !internals().notificationQueue.has(alice.userId));
+        // Nothing of it follows: the next thing she receives is the next notification.
+        other.service.sendToUser(alice.userId, 'newNotification', { _id: 'n-3' });
+        expect(await within(1000, there.nextEvent())).to.deep.equal(['newNotification', { _id: 'n-3' }]);
+      });
+    }
 
     it('reaches every tab of a user, whichever replica holds each', async () => {
       const other = await addReplica();
