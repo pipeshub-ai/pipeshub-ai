@@ -51,6 +51,7 @@ _NEVER = float("inf")
 _DIFFERED: dict[tuple[str, str], int] = {}                # connectors whose verify found a difference, and how many times in a row
 _RECOPY: set[tuple[str, str]] = set()                      # of those, the ones whose next turn starts with a fresh copy
 _FAILED: dict[tuple[str, str], int] = {}                  # connectors whose turn raised, and how many times in a row
+_STARTED: dict[tuple[str, str], float] = {}               # when each connector's turn last started in a worker (in this process): the longest waiting is offered a slot first
 _HELD: dict[tuple[str, str], float] = {}                  # connectors the net took back to the walk: not tried again before this time
 _STAMP_AFTER: dict[tuple[str, str], str | None] = {}      # where a connector's unfinished stamping goes on (in this process; a restart stamps again from the start)
 _FILL_AFTER: dict[tuple[str, str], str] = {}              # where a connector's unfinished trash fill goes on (in this process; a restart fills again from the start)
@@ -85,6 +86,10 @@ async def bring_to_enforce(db: KernelDB, org: str, due: dict[tuple[str, str], fl
         await bf.backfill_scope(db, org, None, page=PAGE, max_batches=BATCHES, stop=stop)
         if not await bf.principals_copied(db, org):
             return 1                                               # unfinished: the next pass goes on, and the other orgs get their turn
+    if turns is not None:
+        # No drain here: a drain waits for the lock of a connector whose verify is in flight, and the other connectors' turns would wait with it. Each turn drains
+        # before its own stamping and verify, in its own task (a copy does not drain).
+        return await _turns_apart(db, org, apps, due, stop, turns)
     # The log is the org's: drained here once, as one turn would, so that the turns' own drains do not find a page another turn has in flight and wait out RETRY_S for it.
     # A failure here holds up no turn: each turn drains again and backs off on its own failure, as it did before this drain.
     try:
@@ -93,8 +98,6 @@ async def bring_to_enforce(db: KernelDB, org: str, due: dict[tuple[str, str], fl
                 break
     except Exception:
         logger.exception("kg: the change log could not be drained before the connectors' turns; each turn drains it itself")
-    if turns is not None:
-        return await _turns_apart(db, org, apps, due, stop, turns)
     gate = asyncio.Semaphore(CONNECTORS_AT_ONCE)
 
     async def one(app: str) -> int:
@@ -114,14 +117,16 @@ def _reap(org: str, turns: dict[tuple[str, str], asyncio.Task]) -> int:
 
 async def _turns_apart(db: KernelDB, org: str, apps: list[str], due: dict[tuple[str, str], float], stop: asyncio.Event | None,
                        turns: dict[tuple[str, str], asyncio.Task]) -> int:
-    """Up to CONNECTORS_AT_ONCE turns of the org in flight, each a task that may outlast this call. Returns the progress of the turns that ended, plus 1 while one is still running
-    (the caller looks again at once instead of sleeping its poll)."""
+    """Up to CONNECTORS_AT_ONCE turns of the org in flight, each a task that may outlast this call. A free slot goes to a connector whose turn is not running and whose time has
+    come (``due``, ``_HELD``), the one whose turn started longest ago first: a connector that is copied over many turns does not keep its slot while the others wait. Returns the
+    progress of the turns that ended, plus 1 while one is still running (the caller looks again at once instead of sleeping its poll)."""
     made = _reap(org, turns)
-    for app in apps:
-        if sum(1 for k in turns if k[0] == org) >= CONNECTORS_AT_ONCE:
-            break
-        if (org, app) not in turns:
-            turns[(org, app)] = asyncio.create_task(_turn(db, org, app, due, stop), name=f"kg-turn-{app}")
+    now = time.monotonic()
+    free = CONNECTORS_AT_ONCE - sum(1 for k in turns if k[0] == org)
+    ready = sorted((a for a in apps if (org, a) not in turns and _may_turn(org, a, due, now)), key=lambda a: _STARTED.get((org, a), 0.0))
+    for app in ready[:max(free, 0)]:
+        _STARTED[(org, app)] = now
+        turns[(org, app)] = asyncio.create_task(_turn(db, org, app, due, stop), name=f"kg-turn-{app}")
     running = [t for k, t in turns.items() if k[0] == org]
     if running:
         await asyncio.wait(running, timeout=TURN_WAIT_S, return_when=asyncio.FIRST_COMPLETED)
@@ -129,9 +134,14 @@ async def _turns_apart(db: KernelDB, org: str, apps: list[str], due: dict[tuple[
     return made + (1 if any(k[0] == org for k in turns) else 0)
 
 
+def _may_turn(org: str, app: str, due: dict[tuple[str, str], float], now: float) -> bool:
+    """The connector's turn has come: not waiting on a retry (``due``) nor held back by the net (``_HELD``)."""
+    return due.get((org, app), 0.0) <= now and _HELD.get((org, app), 0.0) <= now
+
+
 async def _turn(db: KernelDB, org: str, app: str, due: dict[tuple[str, str], float], stop: asyncio.Event | None) -> int:
     """One connector's turn of :func:`bring_to_enforce`: 1 when it made progress."""
-    if (stop is not None and stop.is_set()) or due.get((org, app), 0.0) > time.monotonic() or _HELD.get((org, app), 0.0) > time.monotonic():
+    if (stop is not None and stop.is_set()) or not _may_turn(org, app, due, time.monotonic()):
         return 0
     due[(org, app)] = _NEVER                                  # until the outcome says otherwise
     failed = False

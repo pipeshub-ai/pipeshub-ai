@@ -52,6 +52,36 @@ async def test_a_turn_that_outlasts_the_pass_carries_over_and_the_other_connecto
     assert await bootstrap.bring_to_enforce(None, "org", {}, None, turns) >= 1 and ("org", "slow") not in turns      # its end is reaped and counted
 
 
+async def test_with_more_connectors_than_slots_each_gets_a_turn_and_one_not_due_takes_no_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Five connectors and four slots: each turn ends at once and asks to go on (an unfinished copy sets its due to 0). The fifth starts within two passes, and a connector whose
+    retry is still ahead is never started (its deadline is left as it was)."""
+    apps = ["a", "b", "c", "d", "e"]
+    no_db(monkeypatch, apps)
+    monkeypatch.setattr(bootstrap, "TURN_WAIT_S", 0.01)
+    monkeypatch.setattr(bootstrap, "_STARTED", {}, raising=False)
+    started: list[str] = []
+
+    async def turn(_db: object, _org: str, app: str, due: dict, _stop: object) -> int:
+        started.append(app)
+        due[("org", app)] = 0.0                       # unfinished: it may go on at once
+        return 1
+    monkeypatch.setattr(bootstrap, "_turn", turn)
+    turns: dict = {}
+    for _ in range(2):
+        await bootstrap.bring_to_enforce(None, "org", {}, None, turns)
+        await asyncio.sleep(0)
+    assert set(started) == set(apps), started
+    started.clear()
+    later = bootstrap.time.monotonic() + 3600
+    due = {("org", "a"): later}
+    for _ in range(6):
+        await bootstrap.bring_to_enforce(None, "org", due, None, turns)
+        await asyncio.sleep(0)
+    assert "a" not in started and {"b", "c", "d", "e"} <= set(started) and due[("org", "a")] == later, started
+    counts = [started.count(x) for x in "bcde"]
+    assert max(counts) - min(counts) <= 1, counts         # round and round, none ahead of the others
+
+
 async def test_without_the_workers_turns_a_call_still_waits_for_every_turn(monkeypatch: pytest.MonkeyPatch) -> None:
     no_db(monkeypatch, ["a", "b"])
     ended = []
@@ -110,3 +140,40 @@ async def test_stop_cuts_a_turn_carried_over_from_an_earlier_pass(monkeypatch: p
     w._turns[("org", "app")] = stuck
     await asyncio.wait_for(w.stop(), 2.0)
     assert stuck.cancelled()
+
+
+async def test_a_started_worker_starts_turns_while_its_drain_waits_on_a_verifys_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The drain of a change of a connector whose verify holds its lock waits until the verify commits; the other connectors' turns must not wait with it."""
+    from app.services.graph_db.postgres.kg import net
+    no_db(monkeypatch, ["a", "b"])
+    monkeypatch.setattr(bootstrap, "TURN_WAIT_S", 0.01)
+    blocked, started = asyncio.Event(), []
+
+    async def drain(*_a: object, **_k: object) -> int:
+        await blocked.wait()                          # the lock of a verify in flight
+        return 0
+
+    async def none(*_a: object, **_k: object) -> int:
+        return 0
+
+    async def turn(_db: object, _org: str, app: str, _due: object, _stop: object) -> int:
+        started.append(app)
+        return 1
+
+    async def orgs() -> list[str]:
+        return ["org"]
+    monkeypatch.setattr(worker_mod, "drain_or_retry", drain)
+    monkeypatch.setattr(net, "demote_pending", none)
+    monkeypatch.setattr(net, "verify_due", none)
+    monkeypatch.setattr(bootstrap, "_turn", turn)
+    w = KgWorker(None, orgs, dsn=None, poll_s=0.05)  # type: ignore[arg-type]
+    w.start()
+    try:
+        for _ in range(200):
+            if len(started) >= 6:
+                break
+            await asyncio.sleep(0.01)
+        assert len(started) >= 6 and set(started) == {"a", "b"}, started
+    finally:
+        blocked.set()
+        await w.stop()
