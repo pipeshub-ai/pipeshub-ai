@@ -277,6 +277,9 @@ def skip_unused_tokenizer() -> None:
     _ = sys.modules.setdefault("transformers", None)  # pyright: ignore[reportArgumentType]
 
 
+# Read by the agent-loop route checks: this main serves no FastAPI routes.
+NO_HTTP_APP = "a token-checked model proxy for sandboxes, not a FastAPI app"
+
 if __name__ == "__main__":
     skip_unused_tokenizer()
     asyncio.run(run_gateway())

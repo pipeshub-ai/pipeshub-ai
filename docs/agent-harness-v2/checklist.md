@@ -183,7 +183,7 @@ This checklist is how we track whether the harness runtime is complete, robust, 
 
 - [x] **P0** `knowledge_search` and `knowledge_fetch` are separated from `ChatState` and run as a stateless service API. — ✅ `backend/python/tests/unit/harness/knowledge/test_wp12_knowledge_service.py` (`test_c3_17_*`, `test_parity_through_the_gateway_*`)
 - [ ] **P0** Searches are filtered by ACL under the principal, using `get_accessible_virtual_record_ids` (KN-01).
-- [ ] **P0** A service-account principal searches with that account's access only (KN-03).
+- [ ] **P0** A service-account agent searches with the running person's access, limited to sources shared with the org (KN-03).
 - [x] **P0** Filters for connector, date, collection/KB and record type are applied server-side (KN-04). — ✅ `backend/python/tests/unit/harness/knowledge/test_wp12_knowledge_service.py` (`test_kn04_*`)
 - [ ] **P0** Results carry stable citation IDs and deep links built with `app/utils/text_fragments/`. Citations in final answers resolve (KN-05).
 - [x] **P0** Output is concise by default, with a `response_format=detailed` option. Results over the cap are offloaded to `/pipeshub/knowledge/` (KN-06). — ✅ `backend/python/tests/unit/harness/knowledge/test_wp12_knowledge_service.py` (`test_kn06_*`), `backend/python/tests/unit/harness/gateway/test_wp12_knowledge_shelf.py`

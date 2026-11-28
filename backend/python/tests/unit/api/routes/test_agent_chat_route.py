@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn
 
@@ -134,59 +135,8 @@ class TestChatStreamAccess:
         assert other.json() == missing.json()
         assert not loop.calls
 
-    def test_service_account_agent_retrieves_as_its_creator(self, graph, loop) -> None:
-        c, _ = make_client(graph)
-        response = _stream(c, "sa", "bob", {"query": "hi", "callerDisplayName": "Bob B."})
-        assert response.status_code == 200
-        (call,) = loop.calls
-        # Retrieval ACL is the creator's; only the name the LLM sees is the caller's.
-        assert call["user_info"]["userId"] == "u-alice"
-        assert call["user_info"]["fullName"] == "Bob B."
-        assert call["query_info"]["is_service_account"] is True
-        assert call["cancellation_owner"].user_id == "u-bob"
-
-    def test_service_account_chat_logs_the_agent_id_not_who_is_chatting(self, graph, loop, caplog) -> None:
-        caplog.set_level(logging.DEBUG, logger="test.agent_routes")
-        c, _ = make_client(graph)
-        body = {"query": "hi", "callerDisplayName": "Bob B.", "callerEmail": "bob@acme.test"}
-        assert _stream(c, "sa", "bob", body).status_code == 200
-
-        messages = [r.getMessage() for r in caplog.records if r.name == "test.agent_routes"]
-        for personal in ("Bob B.", "bob@acme.test", "Alice", "alice@acme.test"):
-            assert not any(personal in m for m in messages), f"{personal!r} was logged"
-        # Retrieval runs as the creator, so the id logged is u-alice, not the caller.
-        assert "Loaded service account agent sa (retrieval runs as user u-alice)" in messages
-
-    def test_service_account_artifacts_belong_to_the_person_chatting(self, graph, loop) -> None:
-        c, _ = make_client(graph)
-        assert _stream(c, "sa", "bob", {"query": "hi", "callerDisplayName": "Bob B."}).status_code == 200
-        (call,) = loop.calls
-        # Only what the run makes changes hands; the run itself is still the creator's.
-        assert call["query_info"]["artifact_owner_user_id"] == "u-bob"
-        assert call["user_info"]["userId"] == "u-alice"
-
-    def test_service_account_artifacts_of_a_service_caller_stay_the_creators(self, graph, loop) -> None:
-        """The Slack bot's JWT is a service identity with no user to grant files to."""
-        bot = {"slack-bot": {"userId": "u-slack-bot", "orgId": "org-1", "isServiceAccount": True}}
-        c, _ = make_client(graph, extra_users=bot)
-        assert _stream(c, "sa", "slack-bot", {"query": "hi", "callerDisplayName": "Bob"}).status_code == 200
-        (call,) = loop.calls
-        assert call["query_info"]["artifact_owner_user_id"] is None
-        assert call["user_info"]["userId"] == "u-alice"
-
-    @pytest.mark.parametrize("change", ["missing", "other-org"])
-    def test_service_account_artifacts_of_an_unknown_caller_stay_the_creators(self, graph, loop, change) -> None:
-        if change == "missing":
-            del graph.nodes["users"][user_key("bob")]
-        else:
-            graph.nodes["users"][user_key("bob")]["orgId"] = "org-2"
-        c, _ = make_client(graph)
-        assert _stream(c, "sa", "bob", {"query": "hi", "callerDisplayName": "Bob B."}).status_code == 200
-        (call,) = loop.calls
-        assert call["query_info"]["artifact_owner_user_id"] is None
-
-    def test_service_account_chat_fails_rather_than_guess_the_owner(self, graph, loop) -> None:
-        """A caller who cannot be read is not handed to the creator: their files would go to the wrong person."""
+    def test_service_account_chat_fails_rather_than_guess_the_caller(self, graph, loop) -> None:
+        """A caller whose record cannot be read is never replaced by anyone else."""
         graph.fail("get_user_by_user_id")
         c, _ = make_client(graph)
         response = _stream(c, "sa", "bob", {"query": "hi", "callerDisplayName": "Bob B."})
@@ -277,17 +227,6 @@ class TestChatStreamToolsets:
         assert _resolved(config, call["query_info"]["toolsetConfigs"]["inst-1"])["who"] == "bob"
         (toolset,) = call["query_info"]["toolsets"]
         assert [t["fullName"] for t in toolset["tools"]] == ["jira.search"]
-
-    def test_service_account_uses_the_agents_own_credentials(self, graph, loop) -> None:
-        self._with_toolset(graph, "sa")
-        config = FakeConfigService(owned_toolsets({
-            "/services/toolsets/inst-1/sa": {"isAuthenticated": True, "who": "agent"},
-            "/services/toolsets/inst-1/u-bob": {"isAuthenticated": True, "who": "bob"},
-        }, org_id="org"))
-        c, _ = make_client(graph, config)
-        _stream(c, "sa", "bob")
-        (call,) = loop.calls
-        assert _resolved(config, call["query_info"]["toolsetConfigs"]["inst-1"])["who"] == "agent"
 
     @pytest.mark.parametrize("stored,fragment", [
         (None, "not configured: 'Jira'"),
@@ -396,15 +335,6 @@ class TestChatStreamMcpServers:
         assert server["sharedCredential"] is True
         assert server["authMode"] == "api_token"
 
-    def test_a_service_account_agent_says_so(self, graph, loop) -> None:
-        self._attach(graph, "sa")
-        c, _ = make_client(graph, self._config(**{"/services/mcp/instances/inst-m": self._instance()}))
-
-        error = self._run_error(_stream(c, "sa", "bob"))
-
-        assert error["details"]["serviceAccount"] is True
-        assert error["details"]["agentId"] == "sa"
-
 
 class TestChatStreamKnowledge:
     def test_agent_knowledge_becomes_the_retrieval_scope(self, graph, loop) -> None:
@@ -467,11 +397,85 @@ class TestChatStreamKnowledge:
         c, _ = make_client(graph)
         _stream(c, "sa", "bob")
         (call,) = loop.calls
-        assert call["user_info"]["userId"] == "u-alice"
+        # The run is bob's own, and the narrowing looks the sources up as bob.
+        assert call["user_info"]["userId"] == "u-bob"
+        assert [a[1:3] for a, _ in graph.calls_to("get_user_connector_instances")] == [("u-bob", "org-1")]
         assert self._knowledge(call) == {"pg-team", "drive-team"}
         assert sorted(call["query_info"]["filters"]["apps"]) == ["drive-team", "pg-team"]
         # The same bound limits every tool that reads a record by id (fetch_full_record and the rest).
         assert sorted(call["query_info"]["filters"]["allowedApps"]) == ["drive-team", "pg-team"]
+        assert call["query_info"]["service_agent_shared_databases_only"] is True
+        assert call["query_info"]["is_service_account"] is False
+
+    @pytest.mark.parametrize("body", [
+        {"query": "hi", "isServiceAccount": False},
+        {"query": "hi", "isServiceAccount": False, "filters": {"apps": ["pg-alice", "pg-team", "drive-alice"]}},
+        {"query": "hi", "agentIsServiceAccount": False, "service_agent_shared_databases_only": False},
+        {"query": "hi", "serviceAccountUserId": "u-svc", "filters": {"kb": ["kb-1"]}},
+        {"query": "hi", "agent": {"isServiceAccount": False, "knowledge": [{"connectorId": "pg-alice"}]}},
+    ])
+    def test_a_caller_cannot_widen_a_service_agents_sources(self, graph, loop, body) -> None:
+        # The narrowing reads the agent record's flags; nothing in the request turns it off or admits collections.
+        self._sources(graph, "sa")
+        c, _ = make_client(graph)
+        _stream(c, "sa", "bob", body)
+        (call,) = loop.calls
+        # A selection may narrow further (to pg-team alone), never widen.
+        assert "pg-team" in self._knowledge(call)
+        assert self._knowledge(call) <= {"pg-team", "drive-team"}
+        assert set(call["query_info"]["filters"]["apps"]) <= {"pg-team", "drive-team"}
+        assert "kb-1" not in call["query_info"]["filters"].get("kb", [])
+        assert call["query_info"]["service_agent_shared_databases_only"] is True
+
+    def test_an_org_shared_agent_that_is_not_a_service_agent_is_not_narrowed(self, graph, loop) -> None:
+        self._sources(graph, "shared")
+        c, _ = make_client(graph)
+        _stream(c, "shared", "bob", {"query": "hi", "isServiceAccount": True})
+        (call,) = loop.calls
+        assert call["query_info"]["service_agent_shared_databases_only"] is False
+        assert {"pg-team", "drive-team", "kb-1"} <= self._knowledge(call)
+        assert not graph.calls_to("get_user_connector_instances")
+
+    def test_the_query_string_cannot_turn_the_narrowing_off(self, graph, loop) -> None:
+        self._sources(graph, "sa")
+        c, _ = make_client(graph)
+        c.post(
+            "/api/v1/agent/sa/chat/stream?isServiceAccount=false&service_agent_shared_databases_only=false",
+            headers=as_user("bob"), json={"query": "hi"},
+        )
+        (call,) = loop.calls
+        assert self._knowledge(call) == {"pg-team", "drive-team"}
+
+    @pytest.mark.parametrize("stored", ["false", "0", 1])
+    def test_any_truthy_stored_flag_narrows(self, graph, loop, stored) -> None:
+        self._sources(graph, "sa")
+        graph.nodes[AGENTS]["sa"]["isServiceAccount"] = stored
+        c, _ = make_client(graph)
+        _stream(c, "sa", "bob")
+        (call,) = loop.calls
+        assert self._knowledge(call) == {"pg-team", "drive-team"}
+
+    def test_the_creator_is_narrowed_on_her_own_service_agent(self, graph, loop) -> None:
+        self._sources(graph, "sa")
+        c, _ = make_client(graph)
+        _stream(c, "sa", "alice")
+        (call,) = loop.calls
+        assert self._knowledge(call) == {"pg-team", "drive-team"}
+        assert [a[1:3] for a, _ in graph.calls_to("get_user_connector_instances")] == [("u-alice", "org-1")]
+
+    def test_concurrent_callers_are_each_narrowed_as_themselves(self, graph, loop) -> None:
+        self._sources(graph, "sa")
+        c, _ = make_client(graph)
+        callers = ["bob", "carol", "alice"] * 5
+        threads = [threading.Thread(target=_stream, args=(c, "sa", who)) for who in callers]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert sorted(call["user_info"]["userId"] for call in loop.calls) == sorted(f"u-{w}" for w in callers)
+        assert all(self._knowledge(call) == {"pg-team", "drive-team"} for call in loop.calls)
+        looked_up = sorted(a[1] for a, _ in graph.calls_to("get_user_connector_instances"))
+        assert looked_up == sorted(f"u-{w}" for w in callers)
 
     def test_a_service_account_agent_bound_to_a_service_account_keeps_its_collections(self, graph, loop) -> None:
         graph.add_node("users", {"_key": "k-svc", "userId": "u-svc", "orgId": "org-1", "email": "svc@acme.test",
@@ -481,7 +485,8 @@ class TestChatStreamKnowledge:
         c, _ = make_client(graph)
         _stream(c, "sa-bound", "bob")
         (call,) = loop.calls
-        assert call["user_info"]["userId"] == "u-svc"
+        # The binding admits collections; the run is still the caller's own.
+        assert call["user_info"]["userId"] == "u-bob"
         assert self._knowledge(call) == {"pg-team", "drive-team", "kb-1"}
 
     def test_a_service_account_agent_cannot_be_pointed_at_a_personal_source(self, graph, loop) -> None:

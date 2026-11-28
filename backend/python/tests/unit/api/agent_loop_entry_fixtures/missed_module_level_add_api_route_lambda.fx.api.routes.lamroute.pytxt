@@ -1,0 +1,16 @@
+from fastapi import APIRouter, Depends, Request
+
+from fx.api.routes import chatbot
+
+router = APIRouter()
+
+
+def _req(request: Request) -> Request:
+    return request
+
+
+router.add_api_route(
+    "/lambda-route",
+    lambda req=Depends(_req): chatbot.askAIStream(req),
+    methods=["POST"],
+)

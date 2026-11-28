@@ -59,17 +59,17 @@ afterEach(() => {
 });
 
 describe('the identity control', () => {
-  it('says it searches as its creator when nothing is bound', () => {
+  it('says it is bound to no service account when nothing is bound', () => {
     renderControl({ value: null });
     expect(
-      screen.getByText('Searches as its creator')
+      screen.getByText('Bound to no service account')
     ).toBeTruthy();
   });
 
   it('names the bound account rather than its id', () => {
     renderControl({ value: 'sa-live', boundLabel: 'Nightly sync' });
     expect(
-      screen.getByText('Searches as Nightly sync')
+      screen.getByText('Bound to Nightly sync')
     ).toBeTruthy();
   });
 
@@ -82,7 +82,7 @@ describe('the identity control', () => {
 
     await waitFor(() => expect(list).toHaveBeenCalled());
     await waitFor(() =>
-      expect(screen.getByText(/Searches as Nightly sync/)).toBeTruthy()
+      expect(screen.getByText(/Bound to Nightly sync/)).toBeTruthy()
     );
   });
 
@@ -93,7 +93,7 @@ describe('the identity control', () => {
     renderControl({ value: 'sa-live' });
 
     await waitFor(() =>
-      expect(screen.getByText(/Searches as Retired job/)).toBeTruthy()
+      expect(screen.getByText(/Bound to Retired job/)).toBeTruthy()
     );
   });
 

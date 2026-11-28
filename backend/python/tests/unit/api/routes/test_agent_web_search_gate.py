@@ -34,7 +34,7 @@ def _agent_versions(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _agent(**extra: object) -> dict:
     return {"_key": NAMED, "name": "agent", "knowledge": [], "toolsets": [], "models": [],
-            "createdBy": "caller-key", "isServiceAccount": False, **extra}
+            "createdBy": "caller-key", "orgId": ORG, "isServiceAccount": False, **extra}
 
 
 async def _run(agent_id: str, body: dict, *, agent: dict | None = None, resolved: dict | None = DUCKDUCKGO) -> dict:

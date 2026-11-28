@@ -261,7 +261,6 @@ class TestLiveMcpTools:
             assert listed == (live, frozenset({"mcp-1"}))
 
         assert resolve.await_args.kwargs["credential_lookup_id"] == "u1"
-        assert resolve.await_args.kwargs["is_service_account"] is False
         assert seen["context"].credential_owner == "u1"
         # WP-79: admission's discovery is a harness run's, so the hub (where it governs them) admits what it lists.
         assert seen["context"].harness_run is True

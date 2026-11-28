@@ -48,22 +48,25 @@ class ChatTurn:
 async def build_chat_environment(
     run: RunContext, services: RunServices, model: ResolvedModel
 ) -> ToolEnvironment:
+    from fastapi import HTTPException
+
     from app.agents.agent_loop.context import AgentContext
     from app.agents.chat_modes.setup import (
         TurnScopeRefused,
         enrich_chat_identity,
         prepare_chat_state,
     )
+    from app.api.routes.agent import _require_live_person
     from app.api.routes.chatbot import (
         DEFAULT_CONTEXT_LENGTH,
         _load_org_doc,
-        _load_user_doc,
         load_system_prompts,
     )
     from app.harness.assembly.scope import requested_filters
     from app.harness.assembly.tool_environment import ToolEnvironment, _attachment, _log
     from app.services.featureflag.platform_settings import is_user_context_enabled
     from app.utils.attachment_utils import keep_accessible_attachments
+    from app.utils.user_lookup import get_user_or_503
 
     assert run.chat is not None
     logger = services.logger()
@@ -73,14 +76,22 @@ async def build_chat_environment(
     policy = run.chat.policy()
 
     user_doc, org_doc, user_context_flag, system_prompts, entity_store = await asyncio.gather(
-        _load_user_doc(graph, run.actor_id),
+        get_user_or_503(graph, run.actor_id),
         _load_org_doc(graph, run.org_id),
         is_user_context_enabled(config_service),
         load_system_prompts(config_service, logger),
         services.entity_vector_store(run.org_id),
         return_exceptions=True,
     )
-    email = user_doc.get("email") if isinstance(user_doc, dict) else None
+    # A failed read is not a missing person: it fails this attempt, so the run is assembled again.
+    if isinstance(user_doc, BaseException):
+        raise user_doc
+    # No record, or one that is removed, disabled or not a person: the run has no live person to act as.
+    try:
+        _require_live_person(user_doc)
+    except HTTPException as exc:
+        raise RunRefused("identity_unavailable", str(exc.detail)) from exc
+    email = user_doc.get("email")
     user_info: dict[str, Any] = {
         "userId": run.actor_id,
         "orgId": run.org_id,

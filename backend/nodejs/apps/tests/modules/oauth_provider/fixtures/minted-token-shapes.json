@@ -1,0 +1,124 @@
+{
+  "description": "The identity claims of every OAuth access token shape the Node API mints, and the principal kind both the Node API (src/modules/oauth_provider/utils/principal-kind.ts) and the Python services (app/api/middlewares/principal_kind.py) must read from it. tests/modules/oauth_provider/utils/principal-kind.test.ts mints each `minted` case through the real code and checks its claims equal these; both languages' tests check the kinds. Values in angle brackets are ids each test substitutes.",
+  "minted": [
+    {
+      "name": "service account token",
+      "mintedBy": "ServiceTokenService.createToken",
+      "claims": {
+        "userId": "<SERVICE_ACCOUNT>",
+        "client_id": "svc-system:<ORG>",
+        "createdBy": "<ADMIN>",
+        "tokenType": "oauth"
+      },
+      "kind": "service_account"
+    },
+    {
+      "name": "delegated token",
+      "mintedBy": "TokenExchangeService.exchange",
+      "claims": {
+        "userId": "<PERSON>",
+        "client_id": "svc-system:<ORG>",
+        "createdBy": "<SERVICE_ACCOUNT>",
+        "act": { "sub": "<SERVICE_ACCOUNT>" },
+        "tokenType": "oauth"
+      },
+      "kind": "human"
+    },
+    {
+      "name": "client credentials token",
+      "mintedBy": "OAuthTokenService.generateTokens(app, null, ...), as the client_credentials grant calls it",
+      "claims": {
+        "userId": "<APP_CLIENT>",
+        "client_id": "<APP_CLIENT>",
+        "createdBy": "<ADMIN>",
+        "tokenType": "oauth"
+      },
+      "kind": "app"
+    },
+    {
+      "name": "client credentials token of an app pointed at a service account",
+      "mintedBy": "OAuthTokenService.generateTokens(app with tokenIdentityUserId, null, ...)",
+      "claims": {
+        "userId": "<APP_CLIENT>",
+        "client_id": "<APP_CLIENT>",
+        "createdBy": "<SERVICE_ACCOUNT>",
+        "tokenType": "oauth"
+      },
+      "kind": "app"
+    },
+    {
+      "name": "agent registration token",
+      "mintedBy": "AgentRegistrationService.issue, for the signed-in person who approved the registration",
+      "claims": {
+        "userId": "<PERSON>",
+        "client_id": "<APP_CLIENT>",
+        "tokenType": "oauth"
+      },
+      "kind": "human"
+    },
+    {
+      "name": "personal access token",
+      "mintedBy": "PatService.createToken",
+      "claims": {
+        "userId": "<PERSON>",
+        "client_id": "pat-system:<ORG>",
+        "createdBy": "<ADMIN>",
+        "tokenType": "oauth"
+      },
+      "kind": "human"
+    },
+    {
+      "name": "authorization code token",
+      "mintedBy": "OAuthTokenService.generateTokens(app, person, ...), as the authorization_code grant calls it",
+      "claims": {
+        "userId": "<PERSON>",
+        "client_id": "<APP_CLIENT>",
+        "createdBy": "<ADMIN>",
+        "tokenType": "oauth"
+      },
+      "kind": "human"
+    }
+  ],
+  "notMinted": [
+    {
+      "name": "act without a subject",
+      "claims": { "userId": "<PERSON>", "client_id": "svc-system:<ORG>", "act": {}, "tokenType": "oauth" },
+      "kind": "unknown"
+    },
+    {
+      "name": "act that is not an object",
+      "claims": { "userId": "<PERSON>", "client_id": "svc-system:<ORG>", "act": "<SERVICE_ACCOUNT>", "tokenType": "oauth" },
+      "kind": "unknown"
+    },
+    {
+      "name": "null act",
+      "claims": { "userId": "<SERVICE_ACCOUNT>", "client_id": "svc-system:<ORG>", "act": null, "tokenType": "oauth" },
+      "kind": "unknown"
+    },
+    {
+      "name": "act naming the subject itself",
+      "claims": { "userId": "<SERVICE_ACCOUNT>", "client_id": "svc-system:<ORG>", "act": { "sub": "<SERVICE_ACCOUNT>" }, "tokenType": "oauth" },
+      "kind": "unknown"
+    },
+    {
+      "name": "act on a client other than the service-token client",
+      "claims": { "userId": "<PERSON>", "client_id": "<APP_CLIENT>", "act": { "sub": "<SERVICE_ACCOUNT>" }, "tokenType": "oauth" },
+      "kind": "unknown"
+    },
+    {
+      "name": "service account token claiming to be a person",
+      "claims": { "userId": "<SERVICE_ACCOUNT>", "client_id": "svc-system:<ORG>", "principalKind": "human", "tokenType": "oauth" },
+      "kind": "service_account"
+    },
+    {
+      "name": "service-token client with userId equal to client_id",
+      "claims": { "userId": "svc-system:<ORG>", "client_id": "svc-system:<ORG>", "tokenType": "oauth" },
+      "kind": "service_account"
+    },
+    {
+      "name": "client id that only contains the service-token prefix",
+      "claims": { "userId": "<PERSON>", "client_id": "x-svc-system:<ORG>", "tokenType": "oauth" },
+      "kind": "human"
+    }
+  ]
+}

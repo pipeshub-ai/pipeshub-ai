@@ -1,0 +1,5 @@
+from ..api.routes.agent import chat_stream
+
+
+async def job(request):
+    return await chat_stream(request, "agentIdPlaceholder")

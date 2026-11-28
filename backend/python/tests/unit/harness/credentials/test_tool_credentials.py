@@ -75,7 +75,6 @@ async def test_tc1_the_route_keeps_references_only() -> None:
         executing_user_id="user-1",
         prefetched={},
         agent_id="agent-1",
-        is_service_account=False,
         logger=LOG,  # type: ignore[arg-type]
     )
     assert configs == {"inst-1": toolset_reference("inst-1", "user-1")}
@@ -135,7 +134,6 @@ async def test_tc5_mcp_auth_is_resolved_by_handle() -> None:
             credential_lookup_id="user-1",
             executing_user_id="user-1",
             agent_id="agent-1",
-            is_service_account=False,
             logger=LOG,  # type: ignore[arg-type]
         )
         assert MCP_TOKEN not in json.dumps(configs) and "auth" not in configs["mcp-1"]

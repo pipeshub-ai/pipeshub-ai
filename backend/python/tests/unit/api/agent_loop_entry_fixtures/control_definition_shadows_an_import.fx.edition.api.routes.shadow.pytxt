@@ -1,0 +1,6 @@
+from fx.api.routes import agent as _oss
+from fx.api.routes.agent import chat_stream  # noqa: F401 - re-export, then replaced
+
+
+async def chat_stream(request, agent_id):  # noqa: F811
+    return await _oss.chat_stream(request, agent_id)

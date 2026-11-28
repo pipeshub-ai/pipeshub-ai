@@ -1,0 +1,9 @@
+from fastapi import APIRouter
+from fx.api.routes import chatbot
+
+router = APIRouter()
+
+
+@router.post("/qa/chat")
+async def qa_chat(request):
+    return await chatbot.askAIStream(request)

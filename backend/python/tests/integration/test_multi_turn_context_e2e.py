@@ -42,10 +42,13 @@ from tests.integration.test_chat_stream_agent_loop_e2e import (  # noqa: F401  (
     _drain,
     _events_by_name,
 )
+from tests.support.loop_caller import loop_caller_verified  # noqa: F401 - a fixture, used by name
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+# These call the route handlers directly, below the route guard.
+pytestmark = pytest.mark.usefixtures("loop_caller_verified")
 _A = "How do I set up automated appointment reminders by SMS and email, and can patients confirm or cancel?"
 _A_ANSWER = "Enable them under Practice Settings > Reminders; patients reply C to confirm or X to cancel."
 _B = "I have access to more than one practice. How do I pick which practice to log into and set a default?"

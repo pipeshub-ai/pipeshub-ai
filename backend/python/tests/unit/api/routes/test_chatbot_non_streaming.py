@@ -20,6 +20,13 @@ def _request(body: dict | None = None, *, json_error: bool = False) -> MagicMock
     return request
 
 
+def _live_graph() -> MagicMock:
+    """A graph whose caller record is a live person, as the route checks before it runs."""
+    graph = MagicMock()
+    graph.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1", "email": "u@example.com"})
+    return graph
+
+
 def _registry(active: bool = False) -> MagicMock:
     registry = MagicMock()
     registry.is_active = AsyncMock(return_value=active)
@@ -42,7 +49,7 @@ async def _call(request, registry=None, frames=()):
         response = await askAI(
             request,
             retrieval_service=MagicMock(),
-            graph_provider=MagicMock(),
+            graph_provider=_live_graph(),
             config_service=MagicMock(),
             cancellation_registry=registry or _registry(),
         )

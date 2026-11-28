@@ -5,6 +5,7 @@
  * Run instructions in execution-store.mongo.itest.ts.
  */
 import 'reflect-metadata';
+import { createHash } from 'crypto';
 import { expect } from 'chai';
 import express from 'express';
 import { AddressInfo } from 'node:net';
@@ -57,7 +58,6 @@ import { HarnessRun } from '../../../src/modules/agent-harness/domain/execution'
 import { inlineContentRef } from '../../../src/modules/agent-harness/domain/run-content';
 import { ADMISSION_QUOTAS, AdmissionQuotas } from '../../../src/modules/agent-harness/domain/admission-quotas';
 import { HarnessAgentAccessPolicy } from '../../../src/modules/enterprise_search/adapters/harness-agent-access';
-import { stableObjectIdHexForExternalEmail } from '../../../src/modules/enterprise_search/utils/scoped-request';
 import { ChatSession } from '../../../src/modules/enterprise_search/schema/chat.session.schema';
 import { appendMessages } from '../../../src/modules/enterprise_search/utils/utils';
 import { IMessage } from '../../../src/modules/enterprise_search/types/conversation.interfaces';
@@ -503,7 +503,7 @@ describe('QA-21 races and failures at admission (MongoDB replica set)', function
   describe('QA21-12 one service identity serving many people (ADM-21, ADM-G7, R1 F35)', () => {
     it('a Slack bot’s turns count against each person’s own quota: 31 people in a minute are all admitted', async () => {
       const people = partyNames('person', ADMISSION_QUOTAS.admissionsPerUser + 1).map((name) =>
-        stableObjectIdHexForExternalEmail(`${name}@slack.example`),
+        createHash('sha256').update(name).digest('hex').slice(0, 24),
       );
       for (const actorId of people) {
         const admitted = await h.admit({ actorId, via: 'service', ...text('hello') });

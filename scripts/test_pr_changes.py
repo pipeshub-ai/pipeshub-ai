@@ -64,6 +64,10 @@ class TestDecisions(unittest.TestCase):
         checks = runs("backend/nodejs/apps/src/modules/storage/mimetypes/file-types.generated.ts")
         self.assertTrue({"node_unit", "python_unit"} <= checks)
 
+    def test_the_minted_token_shapes_run_both_principal_kind_tests(self) -> None:
+        checks = runs("backend/nodejs/apps/tests/modules/oauth_provider/fixtures/minted-token-shapes.json")
+        self.assertTrue({"node_unit", "python_unit"} <= checks)
+
     def test_a_python_only_change_runs_no_node_or_frontend(self) -> None:
         checks = runs("backend/python/app/connectors/sources/jira/connector.py")
         self.assertTrue(PYTHON_CHECKS <= checks)

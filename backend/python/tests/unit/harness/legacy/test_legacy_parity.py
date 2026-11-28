@@ -124,13 +124,14 @@ def test_legp_a_bound_and_an_unbound_toolset_and_an_mcp_server(monkeypatch: pyte
 
 def test_legp_a_service_account_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     read, read_response, fed, fed_response = _pair(
-        monkeypatch, World, "/api/v1/agent/sa/chat/stream", agent="sa", owner=("sa", "agent:sa")
+        monkeypatch, World, "/api/v1/agent/sa/chat/stream", agent="sa", owner=("u-bob", "user:u-bob")
     )
     assert read_response.status_code == fed_response.status_code == 200
     assert _handed(fed) == _handed(read)
-    assert _handed(fed)["query_info"]["credentialOwner"] == "sa"
-    assert toolset_path("inst-1", "sa") in read.world.config.reads
-    assert toolset_path("inst-1", "sa") not in fed.world.config.reads
+    assert _handed(fed)["query_info"]["credentialOwner"] == "u-bob"
+    assert toolset_path("inst-1", "u-bob") in read.world.config.reads
+    assert toolset_path("inst-1", "u-bob") not in fed.world.config.reads
+    assert toolset_path("inst-1", "sa") not in read.world.config.reads
 
 
 def test_legp_a_credential_the_store_does_not_hold_stops_both_the_same_way(monkeypatch: pytest.MonkeyPatch) -> None:

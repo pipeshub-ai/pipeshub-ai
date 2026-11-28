@@ -204,7 +204,7 @@ describe('API toolsets in the Tools section', () => {
     expect(onNotify).toHaveBeenCalledWith(expect.stringContaining('Billing is not authenticated'));
   });
 
-  it('keeps per-member toolsets off a service-account agent but allows shared ones', () => {
+  it('allows per-member and shared toolsets alike on a service-account agent: each person uses their own connection', () => {
     const { onNotify, drag } = renderPalette(
       [
         apiToolsetSidebarRow(orders),
@@ -213,9 +213,8 @@ describe('API toolsets in the Tools section', () => {
       true,
     );
     drag('Shared');
-    expect(onNotify).not.toHaveBeenCalled();
     drag('Orders');
-    expect(onNotify).toHaveBeenCalledWith('Service-account agents can only use API actions with a shared credential or no sign-in.');
+    expect(onNotify).not.toHaveBeenCalled();
   });
 
   it('shows them above the "Show more" cut, however many app actions are connected', () => {

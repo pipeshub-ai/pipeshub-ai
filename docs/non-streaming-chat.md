@@ -114,8 +114,6 @@ classDiagram
     }
     class scoped_request {
       +hydrateScopedRequestAsUser(req, appConfig)
-      +checkServiceAccountAccess(req, appConfig)
-      +stableObjectIdHexForExternalEmail(email)
     }
     class utils {
       +saveCompleteConversation()

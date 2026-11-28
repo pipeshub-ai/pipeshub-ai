@@ -233,12 +233,12 @@ async def test_lk2_the_legacy_loops_state_has_references_only(seen: _Seen) -> No
     services = _Services()
     toolsets, *_ = await _resolve_toolset_configs(
         services.config, [{"name": "jira", "instanceId": w.JIRA}], credential_lookup_id=w.ACTOR,
-        executing_user_id=w.ACTOR, prefetched={}, agent_id=w.AGENT, is_service_account=False,
+        executing_user_id=w.ACTOR, prefetched={}, agent_id=w.AGENT,
         logger=logging.getLogger("lk2"),
     )
     mcp, *_ = await _resolve_mcp_server_configs(
         services.config, [{"instanceId": w.MCP, "name": "GitHubMCP"}], org_id=w.ORG, credential_lookup_id=w.ACTOR,
-        executing_user_id=w.ACTOR, agent_id=w.AGENT, is_service_account=False, logger=logging.getLogger("lk2"),
+        executing_user_id=w.ACTOR, agent_id=w.AGENT, logger=logging.getLogger("lk2"),
     )
     query = {
         "query": "q", "messages": [], "chatMode": "auto", "toolsets": [{"name": "jira", "instanceId": w.JIRA}],

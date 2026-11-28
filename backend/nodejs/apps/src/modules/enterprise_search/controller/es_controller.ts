@@ -626,11 +626,7 @@ export {
   createConversation,
 } from './non-streaming-chat.controller';
 
-export {
-  checkServiceAccountAccess,
-  hydrateScopedRequestAsUser,
-  stableObjectIdHexForExternalEmail,
-} from '../utils/scoped-request';
+export { hydrateScopedRequestAsUser } from '../utils/scoped-request';
 
 export { handleBackendError };
 

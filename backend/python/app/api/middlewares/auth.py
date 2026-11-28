@@ -15,6 +15,13 @@ from app.api.middlewares.caller_role import (
     fetch_caller_role,
     normalize_auth_role,
 )
+from app.api.middlewares.principal_kind import (
+    PRINCIPAL_APP,
+    PRINCIPAL_HUMAN,
+    PRINCIPAL_SERVICE,
+    PRINCIPAL_UNKNOWN,
+    oauth_principal_kind,
+)
 from app.api.middlewares.token_policy import (
     ACCEPTED_SERVICE_SCOPES,
     AuthTokenType,
@@ -43,7 +50,16 @@ _OAUTH_DERIVED_CLAIMS = (
     "oauthClientId",
     "knowledgeLimit",
     "actsAsServiceAccount",
+    "principalKind",
+    "appId",
 )
+
+#: Who is behind a request, set here and never read from a claim (see
+#: `principal_kind`): `human` (a session, a PAT, an authorization-code token, or
+#: a delegated token acting as its person), `app` (a client_credentials token),
+#: `service_account` (a service account's own token), `service` (a
+#: service-to-service token). A run that must answer as a person refuses
+#: everything but `human`.
 
 #: What the user let a connected app see (``apps`` / ``recordGroups`` /
 #: ``records``), signed into the app's OAuth or personal access token by Node.
@@ -146,6 +162,9 @@ def _normalize_regular_payload(payload: dict[str, Any], token: str) -> dict[str,
     """Add metadata and normalize OAuth tokens for scope enforcement."""
     payload["user"] = token
     payload["token_type"] = AuthTokenType.REGULAR.value
+    for claim in ("principalKind", "appId"):
+        payload.pop(claim, None)
+    payload["principalKind"] = PRINCIPAL_HUMAN
     limit = payload.pop(KNOWLEDGE_LIMIT_CLAIM, None)
     # Dropped unless the client_credentials branch below puts it back, so the
     # claim on a session or a user grant is never honoured.
@@ -160,6 +179,13 @@ def _normalize_regular_payload(payload: dict[str, Any], token: str) -> dict[str,
         payload["oauthClientId"] = payload.get("client_id")
         if isinstance(limit, dict):
             payload[KNOWLEDGE_LIMIT_CLAIM] = _normalize_knowledge_limit(limit)
+        kind = oauth_principal_kind(payload)
+        if kind == PRINCIPAL_UNKNOWN:
+            raise _invalid_credentials("unknown_principal")
+        # A service account's own token keeps its `userId` (the account), so
+        # the routes that read as the account still do; the kind tells a route
+        # that needs a person that none is present.
+        payload["principalKind"] = kind
         # A client_credentials token has no caller of its own: its userId is
         # the client id. The `createdBy` claim carries the identity it acts
         # as, which Node resolves when minting the token — the application's
@@ -169,9 +195,15 @@ def _normalize_regular_payload(payload: dict[str, Any], token: str) -> dict[str,
         #
         # Pointing an application at a different identity revokes the tokens
         # it has already issued, so a claim reaching here is never stale.
-        if payload.get("userId") == payload.get("client_id") and payload.get("createdBy"):
-            payload["userId"] = payload["createdBy"]
-            payload[SERVICE_IDENTITY_CLAIM] = acts_as_service_account
+        #
+        # `userId` keeps carrying that identity so every route that reads it
+        # behaves as before, but the request is marked as an app so that a
+        # route which needs a person can tell.
+        if kind == PRINCIPAL_APP:
+            payload["appId"] = payload["client_id"]
+            if payload.get("createdBy"):
+                payload["userId"] = payload["createdBy"]
+                payload[SERVICE_IDENTITY_CLAIM] = acts_as_service_account
 
     payload["role"] = normalize_auth_role(payload.get("role"))
     return payload
@@ -189,6 +221,8 @@ def _normalize_scoped_payload(payload: dict[str, Any], token: str) -> dict[str, 
         payload.pop(claim, None)
     payload["user"] = token
     payload["token_type"] = AuthTokenType.SCOPED.value
+    payload["principalKind"] = PRINCIPAL_SERVICE
+    payload.pop("appId", None)
     # A service token never carries org-admin rights, whatever its claims say.
     payload["role"] = "member"
     return payload

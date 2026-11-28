@@ -228,12 +228,11 @@ export async function startChatTurnHarness(options: ChatTurnHarnessOptions = {})
   });
   const identify = sinon.spy(async (req: express.Request) => {
     if (options.identifyFails === true) throw new Error('User not found');
-    // The Slack hydration: a service account with no PipesHub account.
+    // The Slack hydration: the person's linked PipesHub account.
     (req as express.Request & { user?: unknown }).user = {
       userId: new Types.ObjectId(USER),
       orgId: new Types.ObjectId(ORG),
       email: SLACK_EMAIL,
-      isServiceAccount: true,
     };
   });
   const enabled = () => options.enabled ?? true;

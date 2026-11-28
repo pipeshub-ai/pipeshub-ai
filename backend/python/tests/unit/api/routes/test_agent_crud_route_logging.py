@@ -107,7 +107,6 @@ def _end(caplog: pytest.LogCaptureFixture) -> tuple[logging.LogRecord, dict[str,
     ("GET", "/private", None),
     ("PUT", "/private", {"name": "renamed"}),
     ("DELETE", "/private", None),
-    ("GET", "/sa/internal/service-account", None),
 ])
 def test_the_request_line_names_the_agent(graph: InMemoryGraph, caplog, method: str, path: str, body: dict | None) -> None:
     response = _client(graph).request(method, BASE + path, headers=as_user("alice"), json=body)
@@ -150,7 +149,6 @@ _OUTAGES = [
     ("PUT", "/template/tpl", {"name": "T2"}, "update_agent_template"),
     ("POST", "/template/create", {"name": "T", "description": "d", "systemPrompt": "p"}, "batch_upsert_nodes"),
     ("POST", "/create", {"name": "Helper"}, "batch_upsert_nodes"),
-    ("GET", "/sa/internal/service-account", None, "get_agent"),
     ("GET", "/web-search-usage/duckduckgo", None, "get_agents_by_web_search_provider"),
     ("GET", "/model-usage/m1", None, "get_agents_by_model_key"),
     ("GET", "/private", None, "check_agent_permission"),

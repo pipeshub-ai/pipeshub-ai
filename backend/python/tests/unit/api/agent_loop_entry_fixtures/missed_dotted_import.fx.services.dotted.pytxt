@@ -1,0 +1,5 @@
+import fx.api.routes.agent
+
+
+async def job(request):
+    return await fx.api.routes.agent.chat_stream(request, "agentIdPlaceholder")

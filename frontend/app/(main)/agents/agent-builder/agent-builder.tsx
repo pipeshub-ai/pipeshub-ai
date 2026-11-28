@@ -29,13 +29,11 @@ import { AgentBuilderCanvas } from './components/agent-builder-canvas';
 import { SubAgentModelsProvider } from './components/sub-agent-models';
 import { DeleteAgentDialog } from '@/app/(main)/chat/sidebar/dialogs';
 import { ServiceAccountConfirmDialog } from './components/service-account-confirm-dialog';
-import { AgentToolsetCredentialsDialog } from './components/agent-toolset-credentials-dialog';
 import { AgentVersionsPanel } from './components/agent-versions-panel';
 import { useFeatureFlagsStore, selectAgentHarnessOn } from '@/lib/store/feature-flags-store';
 import { VersionNoteDialog } from './components/version-note-dialog';
 import { hasUnpublishedChanges, nextVersionNumber } from './versions';
 import { useWorkspaceDrawerNestedModalHost } from '@/workspace/components/workspace-right-panel';
-import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { AgentWebSearchAttachment, FlowNodeData } from './types';
 import type { AgentDetail } from '../types';
 import type { WebSearchProviderType } from '../../workspace/web-search/types';
@@ -56,7 +54,7 @@ import {
 } from './sidebar-toolset-utils';
 import { findMcpServersWithoutTools, type McpInstanceIdFlowNode } from './sidebar-mcp-utils';
 import { McpLiveServersContext } from './mcp-live-servers';
-import { apiToolsetSidebarRow, isApiToolsetNode } from './api-toolset-attachments';
+import { apiToolsetSidebarRow } from './api-toolset-attachments';
 import { ErrorBoundary, ErrorFallback } from '@/app/components/ui/error-boundary';
 import { PaletteTapAddContext } from './components/sidebar-draggable-row';
 import { MobileBottomSheet } from '@/app/components/ui/mobile-bottom-sheet';
@@ -66,7 +64,6 @@ import { useIsBelowDesktop, useIsMobile } from '@/lib/hooks/use-is-mobile';
 /** Palette width: comfortable for labels; chrome matches `SecondaryPanel` / chat sidebars. */
 const AGENT_BUILDER_SIDEBAR_WIDTH = 332;
 
-const SVC_ACCT_TOOLSET_BLOCK_TOAST_MS = 9000;
 
 // ── Dirty-tracking helpers ───────────────────────────────────────────────────
 type CleanSnapshot = {
@@ -202,10 +199,6 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   const [serviceAccountConfirmOpen, setServiceAccountConfirmOpen] = useState(false);
   const [serviceAccountCreating, setServiceAccountCreating] = useState(false);
   const [serviceAccountError, setServiceAccountError] = useState<string | null>(null);
-  const [agentToolsetDialog, setAgentToolsetDialog] = useState<{
-    toolset: BuilderSidebarToolset;
-    instanceId: string;
-  } | null>(null);
   const [agentDeleteDialogOpen, setAgentDeleteDialogOpen] = useState(false);
   const [isDeletingAgent, setIsDeletingAgent] = useState(false);
   const [agentNameError, setAgentNameError] = useState<string | null>(null);
@@ -603,15 +596,6 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     [isAgentStructureLocked, setEdgeDeleteDialogOpen, setEdgeToDelete]
   );
 
-  // API toolsets don't block a service account: the backend checks they use a shared credential.
-  const hasToolsets = useMemo(
-    () =>
-      nodes.some(
-        (n) => String(n.data?.type ?? '').startsWith('toolset-') && !isApiToolsetNode(n.data?.config)
-      ),
-    [nodes]
-  );
-
   const saWelcomeShownRef = useRef(false);
   useEffect(() => {
     if (saWelcomeShownRef.current || typeof window === 'undefined' || !editingKey) return;
@@ -731,16 +715,6 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     focusAgentNameInput();
   }, [focusAgentNameInput, t]);
 
-  const notifyServiceAccountToolsetBlocked = useCallback(() => {
-    const converting = Boolean(loadedAgent);
-    toast.error(t('agentBuilder.svcAcctRemoveToolsetsTitle'), {
-      description: t('agentBuilder.svcAcctRemoveToolsetsDesc', {
-        action: converting ? t('agentBuilder.svcAcctConvertAction') : t('agentBuilder.svcAcctCreateAction'),
-      }),
-      duration: SVC_ACCT_TOOLSET_BLOCK_TOAST_MS,
-    });
-  }, [loadedAgent, t]);
-
   const handleRequestServiceAccount = useCallback(() => {
     if (!agentName.trim()) {
       toast.error(t('agentBuilder.nameRequired'), {
@@ -749,12 +723,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
       showInlineAgentNameRequired();
       return;
     }
-    if (hasToolsets) {
-      notifyServiceAccountToolsetBlocked();
-      return;
-    }
     setServiceAccountConfirmOpen(true);
-  }, [agentName, hasToolsets, notifyServiceAccountToolsetBlocked, showInlineAgentNameRequired, t]);
+  }, [agentName, showInlineAgentNameRequired, t]);
 
   /** True when a save may not go ahead; it has then already said why. */
   const blockedSave = useCallback((): boolean => {
@@ -940,12 +910,6 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
       showInlineAgentNameRequired();
       return;
     }
-    if (hasToolsets) {
-      setServiceAccountConfirmOpen(false);
-      setServiceAccountError(null);
-      notifyServiceAccountToolsetBlocked();
-      return;
-    }
     setServiceAccountCreating(true);
     setServiceAccountError(null);
     try {
@@ -999,10 +963,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     canPersist,
     edges,
     serviceAccountUserId,
-    hasToolsets,
     loadedAgent,
     nodes,
-    notifyServiceAccountToolsetBlocked,
     refreshAgent,
     router,
     setCleanSnapshot,
@@ -1094,20 +1056,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
       shareWithOrg={shareWithOrg}
       paletteStructureLocked={isAgentStructureLocked}
       paletteDragBlockedMessage={paletteDragBlockedMessage}
-      toolsetsOrgCredentialLocked={isServiceAccountToolsetOrgLocked}
       webSearchAttached={webSearchAttached}
-      onManageAgentToolsetCredentials={
-        isServiceAccountToolsetOrgLocked
-          ? undefined
-          : (ts) => {
-              if (!effectiveAgentKey) {
-                setBanner(t('agentBuilder.saveAsServiceAgentFirst'));
-                return;
-              }
-              if (!ts.instanceId) return;
-              setAgentToolsetDialog({ toolset: ts, instanceId: ts.instanceId });
-            }
-      }
     />
   );
   // Phones: a bottom sheet. Tablets: floats over the canvas instead of squeezing it.
@@ -1500,22 +1449,6 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         }}
         onConfirm={handleConfirmServiceAccount}
       />
-
-      {agentToolsetDialog && effectiveAgentKey ? (
-        <AgentToolsetCredentialsDialog
-          toolset={agentToolsetDialog.toolset}
-          instanceId={agentToolsetDialog.instanceId}
-          agentKey={effectiveAgentKey}
-          onClose={() => {
-            setAgentToolsetDialog(null);
-            void refreshToolsets(effectiveAgentKey, true);
-          }}
-          onSuccess={() => {
-            void refreshToolsets(effectiveAgentKey, true);
-          }}
-          onNotify={setBanner}
-        />
-      ) : null}
 
       <DeleteAgentDialog
         open={agentDeleteDialogOpen}

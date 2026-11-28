@@ -1,0 +1,5 @@
+from fx.services.job import nightly
+
+
+async def weekly(request):
+    return await nightly(request)

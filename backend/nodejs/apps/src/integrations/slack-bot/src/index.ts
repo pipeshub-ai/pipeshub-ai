@@ -277,9 +277,7 @@ receiver.router.post("slack/command", (req: Request, res: Response) => {
 
 export { removeContinuousDuplicateMarkdownLinks };
 
-/** Who the bot answers as, once admitted (ADR-SLACKID-01). `email` is the linked PipesHub account's own address,
- * or, for a workspace member with no link, a stand-in made of their Slack ids (only a service-account agent answers
- * them). */
+/** Who the bot answers as, once admitted (ADR-SLACKID-01). `email` is the linked PipesHub account's own address. */
 type AdmittedSlackCaller = SlackActor;
 
 /** The organisation the bot serves is the edition's answer (`./edition`); a bot that serves none answers nobody. */

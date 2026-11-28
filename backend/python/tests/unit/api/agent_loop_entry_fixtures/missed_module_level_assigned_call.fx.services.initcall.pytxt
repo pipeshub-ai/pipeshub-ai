@@ -1,0 +1,5 @@
+import asyncio
+
+from fx.api.routes import chatbot
+
+response = asyncio.run(chatbot.askAIStream(None))

@@ -267,25 +267,18 @@ export function ServiceAccountConfirmDialog({
             </InfoCard>
 
             <InfoCard
-              icon="vpn_key"
+              icon="link"
               iconColor="var(--accent-11)"
               iconBg="var(--accent-3)"
               iconBorder="var(--accent-6)"
               title={t('agentBuilder.svcAcctToolsetsTitle')}
             >
               <ul style={LIST}>
-                <li style={isConverting ? LI : LI_LAST}>
+                <li style={LI_LAST}>
                   <Text size="2" style={BODY}>
                     {t('agentBuilder.svcAcctToolsetsNote1')}
                   </Text>
                 </li>
-                {isConverting ? (
-                  <li style={LI_LAST}>
-                    <Text size="2" style={BODY}>
-                      {t('agentBuilder.svcAcctToolsetsNote2Convert')}
-                    </Text>
-                  </li>
-                ) : null}
               </ul>
             </InfoCard>
 

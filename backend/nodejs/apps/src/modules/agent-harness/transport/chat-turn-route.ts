@@ -31,6 +31,7 @@ import { prepareResolvedTurn, signsResolvedTurn } from './resolved-turn-header';
 import {
   identityString,
   knowledgeLimited,
+  refuseUnidentifiedCaller,
   requestPrincipalKind,
   requestVia,
 } from './request-identity';
@@ -477,6 +478,13 @@ export function chatTurnMiddleware(
     res: Response,
     next: NextFunction,
   ): Promise<void> => {
+    // Before anything is read or written; a Slack turn has no user yet and is bound to its linked person below.
+    try {
+      refuseUnidentifiedCaller(req);
+    } catch (error) {
+      next(transportError(error));
+      return;
+    }
     const agentKey =
       options.kind === 'agent' ? (req.params['agentKey'] as string) : null;
     // Taken off the body here: it is admission's alone, and today's loop, which has no coding engine, never sees it.

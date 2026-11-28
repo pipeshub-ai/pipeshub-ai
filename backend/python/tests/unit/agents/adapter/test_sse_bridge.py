@@ -767,12 +767,13 @@ class TestRunAgentLoopStream:
 
         assert captured["allowed"] == {"pg-attached"}
 
-    @pytest.mark.parametrize(("is_service_account", "expected"), [
-        (False, {"pg-mine", "pg-team"}),
-        # The agent runs as its creator but anyone in the org may use it.
-        (True, {"pg-team"}),
+    @pytest.mark.parametrize(("flags", "expected"), [
+        ({"is_service_account": False}, {"pg-mine", "pg-team"}),
+        # Anyone in the org may use a service agent.
+        ({"is_service_account": True}, {"pg-team"}),
+        ({"is_service_account": False, "service_agent_shared_databases_only": True}, {"pg-team"}),
     ])
-    async def test_a_service_account_agent_queries_only_the_orgs_databases(self, is_service_account, expected) -> None:
+    async def test_a_service_account_agent_queries_only_the_orgs_databases(self, flags, expected) -> None:
         captured: dict[str, Any] = {}
 
         async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None) -> tuple[Any, Any, Any, list[Any]]:
@@ -788,7 +789,7 @@ class TestRunAgentLoopStream:
         ]
         knowledge = [{"connectorId": "pg-mine", "type": "POSTGRESQL"}, {"connectorId": "pg-team", "type": "POSTGRESQL"}]
         kwargs = self._base_kwargs()
-        kwargs["query_info"]["is_service_account"] = is_service_account
+        kwargs["query_info"].update(flags)
         with (
             patch("app.utils.connector_instances.fetch_user_connector_instances", new=AsyncMock(return_value=instances)),
             patch(

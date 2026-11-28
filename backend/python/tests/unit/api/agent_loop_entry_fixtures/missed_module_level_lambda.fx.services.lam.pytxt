@@ -1,0 +1,7 @@
+from fx.api.routes import chatbot
+
+_run = lambda request: chatbot.askAIStream(request)  # noqa: E731
+
+
+async def job(request):
+    return await _run(request)

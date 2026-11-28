@@ -8,7 +8,7 @@ decide. So the run asks; an admin's Block still refuses.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
@@ -44,25 +44,12 @@ def _org_rules() -> Iterator[None]:
         yield
 
 
-async def _service_identity(*_: Any, **__: Any) -> dict[str, Any]:  # noqa: ANN401
-    return {"userId": w.ACTOR, "orgId": w.ORG, "userEmail": "user@corp.example", "fullName": "Uma"}
-
-
 async def _build(services: w.Services) -> AssembledRuntime:
     port = ScriptedModelPort(ScriptedModel(ModelScript(id="t", turns=[Turn(reply=Reply(text="ok"))])))
     assembler = PipesHubRuntimeAssembler(services, model_factory=w.model_factory(port))
-    with (
-        patch("app.api.routes.agent._enrich_user_info_for_service_account_agent_chat", _service_identity),
-        patch("app.api.routes.agent._resolve_service_account_caller_identity", _service_identity),
-        patch("app.api.routes.agent._service_account_artifact_owner", _owner),
-    ):
-        runtime = await w.first_use(await assembler.build(w.claim(w.pinned_spec(tool_ids=[JIRA_SEARCH, JIRA_CREATE]))))
+    runtime = await w.first_use(await assembler.build(w.claim(w.pinned_spec(tool_ids=[JIRA_SEARCH, JIRA_CREATE]))))
     await refresh_policy(runtime.approval)
     return runtime
-
-
-async def _owner(*_: Any, **__: Any) -> str:  # noqa: ANN401
-    return w.ACTOR
 
 
 def _decide(runtime: AssembledRuntime, name: str) -> str:

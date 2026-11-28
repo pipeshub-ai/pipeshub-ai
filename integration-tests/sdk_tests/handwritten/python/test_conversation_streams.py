@@ -7,9 +7,9 @@ from .streams import created_conversation_id, last_answer_id, read_finished_run
 CHAT_MODE = "internal_search"
 
 
-def test_handwritten_conversation_streams(pipeshub: Pipeshub):
+def test_handwritten_conversation_streams(session: Pipeshub):
     events = list(
-        pipeshub.conversations.stream_chat(
+        session.conversations.stream_chat(
             query="Reply with the single word OK.", chat_mode=CHAT_MODE
         )
     )
@@ -18,39 +18,39 @@ def test_handwritten_conversation_streams(pipeshub: Pipeshub):
         read_finished_run(events)
 
         read_finished_run(
-            pipeshub.conversations.add_message_stream(
+            session.conversations.add_message_stream(
                 conversation_id=conversation_id,
                 query="Reply with the single word YES.",
                 chat_mode=CHAT_MODE,
             )
         )
 
-        conversation = pipeshub.conversations.get_conversation_by_id(
+        conversation = session.conversations.get_conversation_by_id(
             conversation_id=conversation_id
         ).conversation
         answer_id = last_answer_id(conversation.messages)
 
         read_finished_run(
-            pipeshub.conversations.regenerate_answer(
+            session.conversations.regenerate_answer(
                 conversation_id=conversation_id,
                 message_id=answer_id,
                 chat_mode=CHAT_MODE,
             )
         )
 
-        feedback = pipeshub.conversations.update_message_feedback(
+        feedback = session.conversations.update_message_feedback(
             conversation_id=conversation_id, message_id=answer_id, is_helpful=True
         )
         assert feedback.message_id == answer_id
         assert feedback.feedback.is_helpful is True
 
-        fork = pipeshub.conversations.fork_conversation(
+        fork = session.conversations.fork_conversation(
             conversation_id=conversation_id, message_id=answer_id
         )
-        pipeshub.conversations.delete_conversation_by_id(conversation_id=fork.id)
+        session.conversations.delete_conversation_by_id(conversation_id=fork.id)
         assert fork.forked_from.conversation_id == conversation_id
         assert fork.forked_from.message_id == answer_id
     finally:
-        pipeshub.conversations.delete_conversation_by_id(
+        session.conversations.delete_conversation_by_id(
             conversation_id=conversation_id
         )

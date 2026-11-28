@@ -42,6 +42,7 @@ def _agent_versions(monkeypatch: pytest.MonkeyPatch) -> None:
 def _agent() -> dict[str, Any]:
     return {
         "_key": "agent-1",
+        "orgId": "org-1",
         "systemPrompt": "never leaves Python",
         "updatedAtTimestamp": 1_700_000_000_123,
         "models": [
@@ -198,7 +199,7 @@ async def _run_scope_checks(route: APIRoute, user: dict[str, Any]) -> None:
 
 
 _EXECUTE_ONLY_PAT = {"userId": "u1", "orgId": "org-1", "isOAuth": True, "oauthScopes": ["agent:execute"]}
-# What Node's Slack hydration mints for a Slack user without a PipesHub account.
+# A scoped service token: what Node once minted for a Slack user without a PipesHub account.
 _SLACK_SERVICE_TOKEN = {
     "orgId": "org-1",
     "userId": "5f0c0ffee0ddba11ab5e0001",
@@ -222,13 +223,19 @@ class TestRunDefinitionRouteScopes:
         assert refused.value.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_the_slack_service_token_is_admitted_and_no_other(self) -> None:
-        # SF-6: the Slack bot admits service-account agent runs; the route decides which agents.
-        await _run_scope_checks(_route("/{agent_id}/run-definition", "GET"), _SLACK_SERVICE_TOKEN)
-        other = {**_SLACK_SERVICE_TOKEN, "scopes": ["fetch:config"]}
-        with pytest.raises(HTTPException) as refused:
-            await _run_scope_checks(_route("/{agent_id}/run-definition", "GET"), other)
-        assert refused.value.status_code == 403
+    async def test_no_service_token_is_admitted(self) -> None:
+        for scopes in (["conversation:create"], ["fetch:config"]):
+            with pytest.raises(HTTPException) as refused:
+                await _run_scope_checks(
+                    _route("/{agent_id}/run-definition", "GET"), {**_SLACK_SERVICE_TOKEN, "scopes": scopes}
+                )
+            assert refused.value.status_code == 403
+
+    def test_the_route_applies_the_identified_caller_guard(self) -> None:
+        from app.api.middlewares.identified_caller import require_identified_caller
+
+        route = _route("/{agent_id}/run-definition", "GET")
+        assert require_identified_caller in [d.call for d in route.dependant.dependencies]
 
     @pytest.mark.asyncio
     async def test_the_full_agent_read_still_needs_agent_read(self) -> None:
@@ -252,7 +259,8 @@ def _request(user: dict[str, Any] | None = None) -> MagicMock:
 
 
 def _service_account_agent() -> dict[str, Any]:
-    return {**_agent(), "isServiceAccount": True, "createdBy": "creator-key"}
+    # Placed in an org by its creator, as agents saved before `orgId` was kept are.
+    return {**_agent(), "orgId": None, "isServiceAccount": True, "createdBy": "creator-key"}
 
 
 def _defining():  # noqa: ANN202
@@ -299,56 +307,64 @@ class TestRunDefinitionRoute:
         enrich.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_sf6_a_service_token_runs_a_service_account_agent_of_its_org(self) -> None:
+    @pytest.mark.parametrize("agent", [_agent, _service_account_agent], ids=["ordinary", "service-account"])
+    @pytest.mark.parametrize(
+        "claims",
+        [
+            pytest.param({"isServiceAccount": True}, id="agent-stand-in"),
+            pytest.param({"token_type": "scoped", "principalKind": "service"}, id="service-token"),
+            pytest.param({"principalKind": "app"}, id="app"),
+            pytest.param({"principalKind": "service_account"}, id="service-account-token"),
+        ],
+    )
+    async def test_sf6_a_caller_with_no_person_behind_it_is_refused_every_agent(
+        self, agent: Any, claims: dict[str, Any]  # noqa: ANN401
+    ) -> None:
         from app.api.routes.agent import get_agent_run_definition
 
-        services = _services(None, _service_account_agent())
-        services["graph_provider"].get_document = AsyncMock(return_value={"orgId": "org-1"})
-        enrich, actions, mcp = _defining()
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock) as user_doc, \
-             enrich, actions, mcp:
-            response = await get_agent_run_definition(_request(_SLACK_SERVICE_TOKEN), "agent-1")
-        assert json.loads(response.body)["definition"]["agentKey"] == "agent-1"
-        # The synthetic Slack identity has no user document and no share, as in legacy.
-        user_doc.assert_not_awaited()
-        services["graph_provider"].check_agent_permission.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_sf6_a_service_token_is_refused_another_orgs_agent(self) -> None:
-        from app.api.routes.agent import get_agent_run_definition
-
-        services = _services(None, _service_account_agent())
-        services["graph_provider"].get_document = AsyncMock(return_value={"orgId": "org-2"})
+        services = _services({"role": "OWNER"}, agent())
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services):
             with pytest.raises(HTTPException) as refused:
-                await get_agent_run_definition(_request(_SLACK_SERVICE_TOKEN), "agent-1")
-        assert refused.value.status_code == 404
+                await get_agent_run_definition(_request({"userId": "u1", "orgId": "org-1", **claims}), "agent-1")
+        assert refused.value.status_code == 403
+        services["graph_provider"].get_agent.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_sf6_a_service_token_is_refused_an_ordinary_agent(self) -> None:
+    @pytest.mark.parametrize(("perm", "org", "status"), [
+        pytest.param(None, "org-1", 404, id="no-permission"),
+        pytest.param({"role": "READER"}, "org-2", 404, id="another-org"),
+        pytest.param({"role": "READER"}, "org-1", None, id="permitted"),
+    ])
+    async def test_sf6_a_service_account_agent_is_a_persons_to_run_as_any_other(
+        self, perm: dict[str, Any] | None, org: str, status: int | None
+    ) -> None:
+        from app.api.routes.agent import get_agent_run_definition
+
+        services = _services(perm, _service_account_agent())
+        services["graph_provider"].get_document = AsyncMock(return_value={"orgId": org})
+        enrich, actions, mcp = _defining()
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}), \
+             enrich, actions, mcp:
+            if status is None:
+                response = await get_agent_run_definition(_request(), "agent-1")
+                assert json.loads(response.body)["definition"]["agentKey"] == "agent-1"
+                return
+            with pytest.raises(HTTPException) as refused:
+                await get_agent_run_definition(_request(), "agent-1")
+        assert refused.value.status_code == status
+
+    @pytest.mark.asyncio
+    async def test_a_callers_account_that_is_a_service_account_is_refused(self) -> None:
         from app.api.routes.agent import get_agent_run_definition
 
         services = _services({"role": "OWNER"}, _agent())
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock,
+                   return_value={"_key": "uk1", "kind": "service"}):
             with pytest.raises(HTTPException) as refused:
-                await get_agent_run_definition(_request(_SLACK_SERVICE_TOKEN), "agent-1")
-        assert refused.value.status_code == 404
-        services["graph_provider"].check_agent_permission.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_sf6_a_user_of_the_org_runs_a_service_account_agent_without_a_share(self) -> None:
-        # Legacy's chat route never checks a share for a service-account agent.
-        from app.api.routes.agent import get_agent_run_definition
-
-        services = _services(None, _service_account_agent())
-        services["graph_provider"].get_document = AsyncMock(return_value={"orgId": "org-1"})
-        enrich, actions, mcp = _defining()
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             enrich, actions, mcp:
-            response = await get_agent_run_definition(_request(), "agent-1")
-        assert json.loads(response.body)["definition"]["agentKey"] == "agent-1"
+                await get_agent_run_definition(_request(), "agent-1")
+        assert refused.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_a_store_failure_is_an_error_not_a_denial(self) -> None:
@@ -451,12 +467,12 @@ class TestHubOffSavedAgentPins:
         [server] = definition["mcpServers"]
         assert [(t["name"], t["descriptorDigest"]) for t in server["tools"]] == [("list_prs", _LIVE_DIGEST)]
         listing.assert_awaited_once()
-        assert listing.await_args.kwargs == {"agent_id": "agent-1", "is_service_account": False, "failures": []}
+        assert listing.await_args.kwargs == {"agent_id": "agent-1", "failures": []}
 
     @pytest.mark.asyncio
-    async def test_hub_off_a_service_account_agent_lists_with_the_agents_own_credentials(self) -> None:
+    async def test_hub_off_a_service_account_agent_lists_as_any_other(self) -> None:
         _, listing = await self._define(_service_account_agent(), hub=False)
-        assert listing.await_args.kwargs == {"agent_id": "agent-1", "is_service_account": True, "failures": []}
+        assert listing.await_args.kwargs == {"agent_id": "agent-1", "failures": []}
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures("mcp_approvals_open")
@@ -468,16 +484,15 @@ class TestHubOffSavedAgentPins:
 
 class TestLiveListingCredentials:
     @pytest.mark.asyncio
-    async def test_a_service_account_agent_lists_with_the_agents_credential_record(self) -> None:
+    async def test_every_agent_lists_with_the_persons_credential_record(self) -> None:
         from app.api.routes.agent import _live_mcp_listing
 
         servers = [{"instanceId": "mcp-9", "name": "github"}]
         with patch("app.api.routes.agent._resolve_mcp_server_configs", new_callable=AsyncMock,
                    return_value=({}, [], [], [])) as resolve:
             assert await _live_mcp_listing(
-                servers, AsyncMock(), {"userId": "u1"}, {}, MagicMock(), agent_id="agent-1", is_service_account=True,
+                servers, AsyncMock(), {"userId": "u1"}, {}, MagicMock(), agent_id="agent-1",
             ) == ({}, frozenset())
-        assert resolve.await_args.kwargs["credential_lookup_id"] == "agent-1"
+        assert resolve.await_args.kwargs["credential_lookup_id"] == "u1"
         assert resolve.await_args.kwargs["executing_user_id"] == "u1"
         assert resolve.await_args.kwargs["agent_id"] == "agent-1"
-        assert resolve.await_args.kwargs["is_service_account"] is True

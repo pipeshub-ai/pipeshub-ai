@@ -3,8 +3,8 @@
  * of backend/python/tests/support/edition_defaults.py). A build that differs replaces this one file.
  */
 
-/** A Slack member without a PipesHub account is served under the scoped token Node mints for them. */
-export const SLACK_CALLER_WITHOUT_ACCOUNT_REFUSED = false;
+/** A Slack member without a PipesHub account is refused: an agent answers only as a person, so nothing is proxied. */
+export const SLACK_CALLER_WITHOUT_ACCOUNT_REFUSED = true;
 
 /** Whether `kvKeyBindsOrg` binds the org for a key under `<org id>/`. This build's keys belong to the whole install. */
 export const KV_ORG_PREFIXED_KEY_BINDS_ORG = false;

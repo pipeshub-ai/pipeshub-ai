@@ -933,27 +933,6 @@ class TestUsageLookups:
         assert c.get("/api/v1/agent/web-search-usage/bing", headers=as_user("alice")).json()["agents"] == []
 
 
-class TestServiceAccountInternalRoute:
-    def test_service_account_agent_in_callers_org(self, graph) -> None:
-        graph.nodes[AGENTS]["shared"]["isServiceAccount"] = True
-        c, _ = make_client(graph)
-        response = c.get("/api/v1/agent/shared/internal/service-account", headers=as_user("bob"))
-        assert response.status_code == 200
-        assert response.json()["isServiceAccount"] is True
-
-    def test_regular_agent_is_refused(self, client) -> None:
-        response = client.get("/api/v1/agent/shared/internal/service-account", headers=as_user("bob"))
-        assert response.status_code == 403
-
-    def test_other_org_gets_the_same_answer_as_a_missing_agent(self, graph) -> None:
-        graph.nodes[AGENTS]["shared"]["isServiceAccount"] = True
-        c, _ = make_client(graph)
-        other_org = c.get("/api/v1/agent/shared/internal/service-account", headers=as_user("mallory"))
-        missing = c.get("/api/v1/agent/nope/internal/service-account", headers=as_user("mallory"))
-        assert other_org.status_code == missing.status_code == 404
-        assert other_org.json() == missing.json()
-
-
 class TestCreateAgent:
     def test_creator_and_org_come_from_the_caller(self, client, graph) -> None:
         response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={

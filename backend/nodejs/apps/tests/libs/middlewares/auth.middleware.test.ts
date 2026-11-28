@@ -813,6 +813,80 @@ describe('AuthMiddleware', () => {
       expect(req.user.userId).to.equal('real-owner-id')
     })
 
+    it("marks a service account's own token as no person, keeping the account as the user", async () => {
+      // Minted against the org's svc-system: client with userId = the account and
+      // no act claim. Its userId differs from client_id, so comparing those two
+      // fields alone would call it a person.
+      sinon.stub(jwt, 'decode').returns({
+        tokenType: 'oauth',
+        client_id: 'svc-system:org1',
+        iss: 'https://example.com',
+      })
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'the-service-account',
+        orgId: 'org1',
+        client_id: 'svc-system:org1',
+        scope: 'conversation:chat',
+        createdBy: 'the-admin',
+      })
+      const appLookup = sinon.stub(OAuthApp, 'findOne')
+      sinon.stub(Users, 'findOne').returns(
+        createMockQuery({ email: 'svc@example.com', fullName: 'Sync', role: 'member', kind: 'service' }),
+      )
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer phsvc_token' } })
+      const next = createMockNext()
+      await authMiddleware.authenticate(req, createMockResponse(), next)
+
+      expect(next.firstCall.args).to.have.length(0)
+      expect(req.user.principalKind).to.equal('service_account')
+      expect(req.user.userId).to.equal('the-service-account')
+      expect(appLookup.called).to.equal(false)
+    })
+
+    it('marks a client_credentials token as an app', async () => {
+      sinon.stub(jwt, 'decode').returns({ tokenType: 'oauth', client_id: 'client123', iss: 'https://example.com' })
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'client123',
+        orgId: 'org1',
+        client_id: 'client123',
+        scope: 'kb:read',
+        createdBy: 'real-owner-id',
+        accountType: 'premium',
+      })
+      sinon.stub(OAuthApp, 'findOne').returns(createMockQuery({ createdBy: 'real-owner-id' }))
+      sinon.stub(Users, 'findOne').returns(createMockQuery({ email: 'owner@example.com', fullName: 'Owner' }))
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
+      const next = createMockNext()
+      await authMiddleware.authenticate(req, createMockResponse(), next)
+
+      expect(next.firstCall.args).to.have.length(0)
+      expect(req.user.principalKind).to.equal('app')
+    })
+
+    for (const act of [{}, 'the-service-account', null, { sub: 'the-person' }]) {
+      it(`refuses a token whose act claim no minting path produces (${JSON.stringify(act)})`, async () => {
+        sinon.stub(jwt, 'decode').returns({ tokenType: 'oauth', client_id: 'svc-system:org1', iss: 'https://example.com' })
+        mockOAuthTokenService.verifyAccessToken.resolves({
+          userId: 'the-person',
+          orgId: 'org1',
+          client_id: 'svc-system:org1',
+          scope: 'kb:read',
+          act,
+        })
+        const users = sinon.stub(Users, 'findOne')
+
+        const req = createMockRequest({ headers: { authorization: 'Bearer phsvc_token' } })
+        const next = createMockNext()
+        await authMiddleware.authenticate(req, createMockResponse(), next)
+
+        expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
+        expect(next.firstCall.args[0].message).to.equal('Token not recognised')
+        expect(users.called).to.equal(false)
+      })
+    }
+
     it('authenticates a delegated token as the person, not the service account', async () => {
       // The keystone of delegation. The issued token names the person in
       // `userId`, so it travels this path as an ordinary user token and every
@@ -859,6 +933,7 @@ describe('AuthMiddleware', () => {
 
       expect(next.firstCall.args).to.have.length(0)
       expect(req.user.userId).to.equal('the-person')
+      expect(req.user.principalKind).to.equal('human')
       // `createdBy` names the service account on a delegated token, and must
       // not be substituted the way a client_credentials token's is. That
       // substitution happens only when userId === client_id, which is the

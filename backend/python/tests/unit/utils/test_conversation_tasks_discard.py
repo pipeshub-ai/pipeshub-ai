@@ -5,6 +5,10 @@ import asyncio
 import pytest
 
 from app.utils import conversation_tasks as ct
+from tests.support.loop_caller import loop_caller_verified  # noqa: F401 - a fixture, used by name
+
+# The stream tests drive the agent loop below its route guard.
+pytestmark = pytest.mark.usefixtures("loop_caller_verified")
 
 
 @pytest.mark.asyncio

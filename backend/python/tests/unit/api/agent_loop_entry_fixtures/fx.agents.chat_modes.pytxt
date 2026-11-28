@@ -1,0 +1,2 @@
+def run_chat_stream(*args):
+    return iter(())

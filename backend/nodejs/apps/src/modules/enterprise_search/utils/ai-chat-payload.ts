@@ -29,8 +29,7 @@ export const assignToolsToPayload = (
 };
 
 /** Forward Slack / internal caller display name and email to the AI backend for LLM user context.
- * Does not change retrieval ACL — the Python agent still keys permissions on the service-account
- * agent creator's userId/orgId.
+ * Never an identity: a run answers as the authenticated caller, whatever these say.
  */
 export const assignCallerContextToAiPayload = (
   payload: Record<string, unknown>,

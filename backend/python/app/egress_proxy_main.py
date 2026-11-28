@@ -245,5 +245,8 @@ async def run_proxy(data_port: int = EGRESS_PROXY_PORT, control_port: int = EGRE
             await shutdown
 
 
+# Read by the agent-loop route checks: this main serves no FastAPI routes.
+NO_HTTP_APP = "the sandbox egress proxy and its control socket, not a FastAPI app"
+
 if __name__ == "__main__":
     asyncio.run(run_proxy())

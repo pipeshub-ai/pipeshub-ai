@@ -13,7 +13,7 @@ import (
 
 func TestHandwritten_ConversationLifecycle(t *testing.T) {
 	ctx := context.Background()
-	s := newClient()
+	s := newSessionClient()
 
 	chat, err := s.Conversations.StreamChat(ctx, components.ConversationStreamRequest{
 		Query:    "Reply with the single word OK.",

@@ -13,7 +13,7 @@ import (
 
 func TestHandwritten_AgentConversationStreams(t *testing.T) {
 	ctx := context.Background()
-	s := newClient()
+	s := newSessionClient()
 
 	created, err := s.Agents.CreateAgent(ctx, components.AgentCreateRequest{Name: "sdk-test-agent-streams"})
 	require.NoError(t, err)

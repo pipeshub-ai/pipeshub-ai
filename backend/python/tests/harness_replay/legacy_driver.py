@@ -413,6 +413,11 @@ async def drive(spec: DriveSpec) -> DriveResult:
     try:
         with ExitStack() as stack:
             for target, value in (
+                # Driven below the routes, whose guard verifies the caller.
+                (
+                    "app.agents.agent_loop.stream_bridge.loop_caller_refusal",
+                    lambda _user: None,
+                ),
                 (
                     "app.agents.agent_loop.factory.LangChainTransport",
                     lambda *a, **k: transport,

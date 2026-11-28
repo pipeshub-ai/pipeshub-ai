@@ -19,7 +19,6 @@ import {
   isLoopbackUrl,
   rebaseFormOnSpec,
   toggleOperation,
-  usableByServiceAccount,
   withAuthScheme,
 } from '../toolset-form';
 import { compiledSpec, operation, toolset, toolsetConfig } from './fixtures';
@@ -175,12 +174,6 @@ describe('who connects', () => {
     expect(connectionMode(toolset(), false)).toBe('own');
     expect(connectionMode(toolset({ useSharedCredential: true }), true)).toBe('shared');
     expect(connectionMode(toolset({ useSharedCredential: true }), false)).toBe('managed');
-  });
-
-  it('lets service-account agents use only shared or no-credential toolsets', () => {
-    expect(usableByServiceAccount(toolset())).toBe(false);
-    expect(usableByServiceAccount(toolset({ useSharedCredential: true }))).toBe(true);
-    expect(usableByServiceAccount(toolset({ authType: 'none' }))).toBe(true);
   });
 });
 

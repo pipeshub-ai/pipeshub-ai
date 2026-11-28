@@ -9,7 +9,6 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from app.agents.openapi.models import AuthType
 from app.agents.openapi.service import ApiToolsetError
 
 if TYPE_CHECKING:
@@ -31,12 +30,12 @@ def by_instance(entries: list[str]) -> dict[str, list[str]]:
 
 
 async def checked_attachments(
-    store: ApiToolsetStore, org_id: str, raw: object, *, service_account: bool,
+    store: ApiToolsetStore, org_id: str, raw: object,
 ) -> list[str]:
     """The attachments to store. Raises `ApiToolsetError` naming the first problem.
 
-    A service-account agent runs as nobody in particular, so it can only use toolsets
-    that need no credential or share one.
+    Whatever credential an action needs is the credential of the person running the
+    agent, so no kind of agent is limited to shared or credential-free actions.
     """
     if not isinstance(raw, list):
         raise ApiToolsetError(f"{AGENT_FIELD} must be a list.")
@@ -54,9 +53,4 @@ async def checked_attachments(
         missing = [name for name in tool_names if name not in offered]
         if missing:
             raise ApiToolsetError(f"{instance.name} has no operation {missing[0]}.")
-        if service_account and not instance.use_shared_credential and instance.auth_scheme.type is not AuthType.NONE:
-            raise ApiToolsetError(
-                f"A service-account agent can only use API actions with a shared credential, and {instance.name} "
-                "has one credential per member."
-            )
     return entries

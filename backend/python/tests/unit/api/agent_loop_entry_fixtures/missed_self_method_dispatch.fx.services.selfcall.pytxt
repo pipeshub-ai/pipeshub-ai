@@ -1,0 +1,13 @@
+from fx.api.routes import chatbot
+
+
+class Job:
+    async def run(self, request):
+        return await self._go(request)
+
+    async def _go(self, request):
+        return await chatbot.askAIStream(request)
+
+
+async def nightly(request):
+    return await Job().run(request)

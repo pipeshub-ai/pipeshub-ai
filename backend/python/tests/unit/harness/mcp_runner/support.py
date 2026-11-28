@@ -133,7 +133,6 @@ async def stdio_context(
             credential_lookup_id=owner,
             executing_user_id=owner,
             agent_id="agent-1",
-            is_service_account=False,
             logger=LOG,  # type: ignore[arg-type]
         )
     context = make_context(

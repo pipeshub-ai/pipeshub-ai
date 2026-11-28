@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from langchain_core.messages import AIMessage
 
 from app.api.routes.chatbot import askAIStream
@@ -23,6 +24,10 @@ from tests.integration.test_chat_stream_agent_loop_e2e import (  # noqa: F401  (
     _drain,
     _events_by_name,
 )
+from tests.support.loop_caller import loop_caller_verified  # noqa: F401 - a fixture, used by name
+
+# These call the route handler directly, below the route guard.
+pytestmark = pytest.mark.usefixtures("loop_caller_verified")
 
 _QUESTION = "Which tools can search indexed knowledge?"
 _ANSWER = "The knowledge search tool can."

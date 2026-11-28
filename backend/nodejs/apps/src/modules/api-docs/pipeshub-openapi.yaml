@@ -106,6 +106,7 @@ tags:
       **Who authorizes vs. client credentials**
       - **Authorization code:** Any authenticated user in the workspace may complete consent for a valid `client_id`; issued tokens represent **that user**.
       - **Client credentials:** Access tokens represent the **service account the app is pointed at**, never the caller. An app that allows this grant must name one at creation, and only an administrator may choose it. Apps created before that rule, and never bound, still represent the **OAuth app creator** — the fallback this rule exists to remove.
+      - **Agents and chat need a person:** agents and the assistant answer as the person asking, so a token with no person behind it (a `client_credentials` token, or a service account's own token) gets `403` on every route that runs an agent or a chat turn, starts or continues a run, or creates, resumes or runs a schedule. An integration that chats uses a personal access token or a user's OAuth token; a delegated token acts as its person and is accepted.
 
       **Scopes**
       - `GET /oauth-clients/scopes` returns scopes grouped by category for the **signed-in user's role**.
@@ -18488,8 +18489,9 @@ components:
           maxItems: 500
           description: |
             API toolset operations the agent may call, each `<toolsetId>:<operation>`
-            (see `/api-toolsets`). A service-account agent may only use toolsets with a
-            shared credential.
+            (see `/api-toolsets`). A call uses the connection of the person asking.
+            A toolset set to use a shared credential always uses that credential
+            instead, for every kind of agent.
           items:
             type: string
             pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
@@ -18529,9 +18531,10 @@ components:
           type: string
           nullable: true
           description: |
-            The `userId` of the service account this agent searches knowledge
-            as, or null when it searches as its creator. Only set on a
-            service-account agent.
+            The `userId` of the service account an administrator bound this
+            agent to, or null. Only set on a service-account agent. A run never
+            uses it as an identity: every answer uses what the person asking
+            may read.
         access_type:
           type: string
           description: How the user can access this agent.
@@ -18634,9 +18637,10 @@ components:
           type: string
           nullable: true
           description: |
-            The `userId` of the service account this agent searches knowledge
-            as, or null when it searches as its creator. Only set on a
-            service-account agent.
+            The `userId` of the service account an administrator bound this
+            agent to, or null. Only set on a service-account agent. A run never
+            uses it as an identity: every answer uses what the person asking
+            may read.
         models:
           type: array
           description: |
@@ -18705,8 +18709,9 @@ components:
           maxItems: 500
           description: |
             API toolset operations the agent may call, each `<toolsetId>:<operation>`
-            (see `/api-toolsets`). A service-account agent may only use toolsets with a
-            shared credential.
+            (see `/api-toolsets`). A call uses the connection of the person asking.
+            A toolset set to use a shared credential always uses that credential
+            instead, for every kind of agent.
           items:
             type: string
             pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
@@ -19097,12 +19102,12 @@ components:
         serviceAccountUserId:
           type: string
           description: |
-            The `userId` of the service account this agent should search
-            knowledge as, as returned by the service accounts API. Only valid
-            on a service-account agent: sending it without `isServiceAccount`
-            is refused rather than ignored, so a request cannot quietly create
-            an agent that searches as its creator. Omit it and the agent
-            searches as its creator.
+            The `userId` of the service account to bind this agent to, as
+            returned by the service accounts API. Only valid on a
+            service-account agent: sending it without `isServiceAccount` is
+            refused rather than ignored. A run never uses it as an identity:
+            every answer uses what the person asking may read. An unbound
+            service-account agent may not be given collections.
             Whitespace around it is removed first; 1-128 characters.
           minLength: 1
           maxLength: 128
@@ -19146,8 +19151,9 @@ components:
           maxItems: 500
           description: |
             API toolset operations the agent may call, each `<toolsetId>:<operation>`
-            (see `/api-toolsets`). A service-account agent may only use toolsets with a
-            shared credential.
+            (see `/api-toolsets`). A call uses the connection of the person asking.
+            A toolset set to use a shared credential always uses that credential
+            instead, for every kind of agent.
           items:
             type: string
             pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
@@ -19409,8 +19415,9 @@ components:
           maxItems: 500
           description: |
             API toolset operations the agent may call, each `<toolsetId>:<operation>`
-            (see `/api-toolsets`). A service-account agent may only use toolsets with a
-            shared credential.
+            (see `/api-toolsets`). A call uses the connection of the person asking.
+            A toolset set to use a shared credential always uses that credential
+            instead, for every kind of agent.
           items:
             type: string
             pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
@@ -19425,9 +19432,10 @@ components:
           type: string
           nullable: true
           description: |
-            The `userId` of the service account this agent searches knowledge
-            as, or null when it searches as its creator. Only set on a
-            service-account agent.
+            The `userId` of the service account an administrator bound this
+            agent to, or null. Only set on a service-account agent. A run never
+            uses it as an identity: every answer uses what the person asking
+            may read.
         createdBy:
           type: string
         updatedBy:
@@ -19547,12 +19555,11 @@ components:
           type: string
           nullable: true
           description: |
-            The `userId` of the service account this agent should search
-            knowledge as. Only valid on a service-account agent, checked
-            against what the agent will be once the request is applied, so one
-            request may convert an agent and bind it. Null is accepted on any
-            agent and clears the binding, going back to searching as the
-            agent's creator.
+            The `userId` of the service account to bind this agent to. Only
+            valid on a service-account agent, checked against what the agent
+            will be once the request is applied, so one request may convert an
+            agent and bind it. Null is accepted on any agent and clears the
+            binding. A run never uses it as an identity.
             Whitespace around it is removed first; 1-128 characters.
           minLength: 1
           maxLength: 128
@@ -19597,8 +19604,9 @@ components:
           maxItems: 500
           description: |
             API toolset operations the agent may call, each `<toolsetId>:<operation>`
-            (see `/api-toolsets`). A service-account agent may only use toolsets with a
-            shared credential.
+            (see `/api-toolsets`). A call uses the connection of the person asking.
+            A toolset set to use a shared credential always uses that credential
+            instead, for every kind of agent.
           items:
             type: string
             pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
@@ -59734,14 +59742,13 @@ paths:
         needs `can_share`. Converting a regular agent into a service-account
         agent (changing `isServiceAccount` from `false` to `true`) is limited
         to the agent's owner or an organization administrator, because a
-        service-account agent searches with its creator's access unless it is
-        bound to a service account (`serviceAccountUserId`). A conversion
+        service-account agent is shared with the whole organization. A conversion
         may turn on `shareWithOrg` in the same request without `can_share`.
         Resending `isServiceAccount: true` for an agent that is already a
         service-account agent needs no extra permission. Changing the
         `knowledge` of a service-account agent that has no
         `serviceAccountUserId` is also limited to its owner or an
-        administrator, because it searches with its creator's access. What
+        administrator, because it is shared with the whole organization. What
         counts is what the agent can search: resending the same sources with
         the same record-group and record limits, in any order or spelling, is
         not a change, while adding or removing a source or changing its

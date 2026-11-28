@@ -131,25 +131,25 @@ def test_leg10a_without_bindings_every_credential_is_read_as_today(rig: Rig) -> 
 
 
 def test_leg10a_a_binding_of_another_owner_is_not_this_turn_s(rig: Rig) -> None:
-    """A user's binding never stands in for a service-account agent's own credential, nor another user's for the
-    caller's."""
+    """Neither another user's binding nor an agent's stands in for the caller's own credential, whatever kind of
+    agent runs."""
     others = [
         {"installation": "inst-1", "owner": "user:u-alice", "ref": "bnd-1"},
         {"installation": "inst-1", "owner": "agent:u-bob", "ref": "bnd-3"},
+        {"installation": "inst-1", "owner": "agent:sa", "ref": "bnd-9"},
     ]
     _served(rig.agent_stream(header=rig.header(bindings=others)))
     assert rig.world.reads_of(toolset_path("inst-1", "u-bob")) == 1
-
-    sa = [{"installation": "inst-1", "owner": "user:u-bob", "ref": "bnd-1"}]
-    _served(rig.agent_stream("sa", header=rig.header(agent="sa", bindings=sa)))
-    assert rig.world.reads_of(toolset_path("inst-1", "sa")) == 1
-
-
-def test_leg10a_a_service_account_agent_s_binding_is_the_agent_s(rig: Rig) -> None:
-    bound = [{"installation": "inst-1", "owner": "agent:sa", "ref": "bnd-9"}]
-    _served(rig.agent_stream("sa", header=rig.header(agent="sa", bindings=bound)))
+    _served(rig.agent_stream("sa", header=rig.header(agent="sa", bindings=others)))
+    assert rig.world.reads_of(toolset_path("inst-1", "u-bob")) == 2
     assert rig.world.reads_of(toolset_path("inst-1", "sa")) == 0
-    assert rig.loop.calls[-1]["query_info"]["toolsetConfigs"] == {"inst-1": toolset_reference("inst-1", "sa")}
+
+
+def test_leg10a_a_service_account_agent_s_binding_is_the_caller_s(rig: Rig) -> None:
+    bound = [{"installation": "inst-1", "owner": "user:u-bob", "ref": "bnd-9"}]
+    _served(rig.agent_stream("sa", header=rig.header(agent="sa", bindings=bound)))
+    assert rig.world.reads_of(toolset_path("inst-1", "u-bob")) == 0
+    assert rig.loop.calls[-1]["query_info"]["toolsetConfigs"] == {"inst-1": toolset_reference("inst-1", "u-bob")}
 
 
 def test_leg10a_the_flow_rules_reach_the_loop(rig: Rig) -> None:
@@ -299,9 +299,11 @@ def test_the_identity_compared_is_the_request_s_own_never_the_body_s(rig: Rig) -
     assert _refusal(rig.agent_stream(header=foreign)) == "resolved_subject_mismatch"
 
 
-def test_a_client_credentials_caller_is_the_identity_it_acts_as(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``auth.py`` replaces a client-credentials token's ``userId`` (the client id) by ``createdBy``: the identity
-    the routes act as. Node signs ``sub`` for that identity; the client id is nobody's turn."""
+def test_a_client_credentials_caller_runs_nothing_even_with_a_header_for_the_identity_it_acts_as(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``auth.py`` replaces a client-credentials token's ``userId`` (the client id) by ``createdBy``, but no person is
+    behind it, so a turn Node signed for that identity does not make it one."""
     monkeypatch.delenv(POLICY_STORE_ENV, raising=False)
     token_claims = {
         "userId": "client-7", "client_id": "client-7", "createdBy": "u-bob", "orgId": "org-1",
@@ -309,10 +311,10 @@ def test_a_client_credentials_caller_is_the_identity_it_acts_as(world: World, mo
     }
     rig = Rig(world, monkeypatch, extra_users={"app": _normalize_regular_payload(dict(token_claims), "bearer")})
     as_identity = sign(claims(NOW, org="org-1", sub="u-bob", agent="shared", cid=CONVERSATION, access={"run": True}))
-    as_client = sign(claims(NOW, org="org-1", sub="client-7", agent="shared", cid=CONVERSATION, access={"run": True}))
-    assert _refusal(rig.agent_stream(caller="app", header=as_client)) == "resolved_subject_mismatch"
-    _served(rig.agent_stream(caller="app", header=as_identity))
-    assert rig.loop.user_info["userId"] == "u-bob"
+    response = rig.agent_stream(caller="app", header=as_identity)
+    assert response.status_code == 403
+    assert "unidentified users" in response.text
+    assert not rig.loop.calls
 
 
 # -- CPD10-24 -----------------------------------------------------------------------------------------------------

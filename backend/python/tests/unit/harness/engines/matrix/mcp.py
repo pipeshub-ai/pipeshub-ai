@@ -161,7 +161,6 @@ async def first_listing(config: FakeConfigurationService, org: Org) -> list[str]
         credential_lookup_id=org.user_id("alice"),
         executing_user_id=org.user_id("alice"),
         agent_id="admin-review",
-        is_service_account=False,
         logger=LOG,  # type: ignore[arg-type]
     )
     context = make_context(

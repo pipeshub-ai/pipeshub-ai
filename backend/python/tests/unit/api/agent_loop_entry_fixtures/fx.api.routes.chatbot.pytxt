@@ -1,0 +1,9 @@
+from fx.agents.chat_modes import run_chat_stream
+
+
+def _generate(request):
+    return run_chat_stream(request)
+
+
+async def askAIStream(request):
+    return _generate(request)

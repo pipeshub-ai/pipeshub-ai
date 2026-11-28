@@ -471,6 +471,8 @@ async def record_stream(
         stack.callback(org_context.pop, org_context.push(None))
         stack.enter_context(org_context.bind(org_context.OrgContext(ORG_ID, USER_ID, "user", "jwt", "-")))
         for target, value in (
+            # Driven below the routes, whose guard verifies the caller.
+            ("app.agents.agent_loop.stream_bridge.loop_caller_refusal", lambda _user: None),
             ("app.agents.agent_loop.factory.LangChainTransport", lambda *a, **k: transport),
             ("app.agents.registry.toolset_registry.get_toolset_registry", scenario.toolset_registry()),
             ("app.api.routes.chatbot.get_llm_for_chat", llm_for_chat(scenario)),

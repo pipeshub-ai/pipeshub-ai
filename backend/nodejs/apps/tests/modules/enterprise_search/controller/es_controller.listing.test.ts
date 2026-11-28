@@ -1,14 +1,12 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
-import jwt from 'jsonwebtoken'
 import { Types } from 'mongoose'
 import * as controller from '../../../../src/modules/enterprise_search/controller/es_controller'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import { EncryptionService } from '../../../../src/libs/encryptor/encryptor'
 import { loadConfigurationManagerConfig } from '../../../../src/modules/configuration_manager/config/config'
-import { TokenScopes } from '../../../../src/libs/enums/token-scopes.enum'
 import { setSlackUserLinkRepository } from '../../../../src/libs/repositories/slack-user-link'
 import { SLACK_LINK_REQUIRED_MESSAGE } from '../../../../src/modules/enterprise_search/utils/scoped-request'
 import { InMemorySlackUserLinks } from '../../../support/slack/in-memory-slack-links'
@@ -347,37 +345,21 @@ describe('es_controller listing and paging', () => {
     })
     afterEach(() => setSlackUserLinkRepository())
 
-    it('lets a Slack person without an account in only for an agent set up for Slack that is a service account', async () => {
-      const { ai } = fresh()
-      ai.reply(/internal\/service-account/, 200, { isServiceAccount: true })
-      const req = serviceRequest()
-
-      await controller.hydrateScopedRequestAsUser(req as never, appConfig, kv([AGENT_KEY]))
-
-      expect(ai.calls[0]?.url).to.equal(`http://ai.test/api/v1/agent/${AGENT_KEY}/internal/service-account`)
-      // Who they are is their Slack identity, never the profile email the token carries.
-      const subject = 'slack-t0home-u0guest@slack.invalid'
-      expect(String(req.user?.userId)).to.equal(controller.stableObjectIdHexForExternalEmail(subject))
-      expect(req.user).to.include({ isServiceAccount: true })
-      expect(req.user?.scopes).to.deep.equal([TokenScopes.CONVERSATION_CREATE])
-      const token = jwt.verify((req.headers.authorization ?? '').replace('Bearer ', ''), 'test-scoped-secret') as Record<string, unknown>
-      expect(token).to.include({ isServiceAccount: true, email: subject })
-    })
-
-    const refusals: Array<{ name: string; agents: string[]; reply?: [number, unknown] }> = [
+    const cases: Array<{ name: string; agents: string[]; reply?: [number, unknown] }> = [
+      { name: 'the agent is set up for Slack and is a service account', agents: [AGENT_KEY], reply: [200, { isServiceAccount: true }] },
       { name: 'the agent is not set up for Slack', agents: ['another-agent'] },
       { name: 'the agent is not a service account', agents: [AGENT_KEY], reply: [200, { isServiceAccount: false }] },
       { name: 'the AI service cannot confirm it', agents: [AGENT_KEY], reply: [500, { detail: 'boom' }] },
     ]
-    for (const r of refusals) {
-      it(`refuses a Slack person without an account when ${r.name}`, async () => {
+    for (const c of cases) {
+      it(`refuses a Slack person without an account, and mints no stand-in caller, when ${c.name}`, async () => {
         const { ai } = fresh()
-        if (r.reply) ai.reply(/internal\/service-account/, r.reply[0], r.reply[1])
+        if (c.reply) ai.reply(/internal\/service-account/, c.reply[0], c.reply[1])
         const req = serviceRequest()
 
         let error: (Error & { statusCode?: number }) | undefined
         try {
-          await controller.hydrateScopedRequestAsUser(req as never, appConfig, kv(r.agents))
+          await controller.hydrateScopedRequestAsUser(req as never, appConfig, kv(c.agents))
         } catch (e) {
           error = e as Error & { statusCode?: number }
         }
@@ -386,6 +368,8 @@ describe('es_controller listing and paging', () => {
         expect(error?.message).to.equal(SLACK_LINK_REQUIRED_MESSAGE)
         expect(req.user).to.equal(undefined)
         expect(req.headers.authorization).to.equal('Bearer scoped')
+        // Nothing about the agent decides this, so the AI service is not even asked.
+        expect(ai.calls).to.have.length(0)
       })
     }
   })
