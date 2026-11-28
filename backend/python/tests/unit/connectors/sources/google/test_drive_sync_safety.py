@@ -372,6 +372,9 @@ class TestRunReport:
                 raise outcomes[user.email]
 
         conn._run_sync_with_yield = AsyncMock(side_effect=sync)
+        conn._prune_foreign_drives = AsyncMock()
+        conn._check_foreign_limited_subtrees = AsyncMock()
+        conn._read_reopened_drives_again = AsyncMock()
         conn._run_report = DriveRunReport(personal=False, notify=AsyncMock(), title=str, sync_point=_SyncPoint(),
                                           logger=conn.logger, client_id="1234", scopes=["s1"])
 

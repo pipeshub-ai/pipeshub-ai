@@ -166,7 +166,7 @@ class _Neo4jBackend:
         return {r["id"] for r in rows}
 
 
-async def _seed_org(backend) -> None:
+async def _seed_org(backend, org: str = ORG) -> None:
     """The Organization node every record group belongs to.
 
     Same reason as the App: Neo4j's batch_create_edges MATCHes both endpoints,
@@ -177,7 +177,7 @@ async def _seed_org(backend) -> None:
     """
     await backend.provider.batch_upsert_nodes(
         [{
-            "_key": ORG,
+            "_key": org,
             "accountType": "enterprise",
             "isActive": True,
             "name": "Test Org",
@@ -190,7 +190,7 @@ async def _seed_org(backend) -> None:
 
 async def _seed_app(
     backend, connector_id: str, *, name: str = "Confluence",
-    app_type: str = Connectors.CONFLUENCE.value, app_group: str = "Atlassian",
+    app_type: str = Connectors.CONFLUENCE.value, app_group: str = "Atlassian", org: str = ORG,
 ) -> None:
     """Create the App node connector registration would already have written.
 
@@ -200,11 +200,11 @@ async def _seed_app(
     `_key` rather than `id`: the strict Arango validator forbids unknown fields,
     and batch_upsert_nodes renames it for Neo4j.
     """
-    await _seed_org(backend)
+    await _seed_org(backend, org)
     await backend.provider.batch_upsert_nodes(
         [{
             "_key": connector_id,
-            "orgId": ORG,
+            "orgId": org,
             "name": name,
             "type": app_type,
             "appGroup": app_group,

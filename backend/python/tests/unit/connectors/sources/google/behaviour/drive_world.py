@@ -586,6 +586,10 @@ class DriveWorld:
             return m.group(1) in (state.meta.get("parents") or [])
         raise AssertionError(f"DriveWorld does not understand query term {atom!r}")
 
+    def _listed_to(self, file_id: str, email: str) -> bool:
+        """Whether a listing shows the item to the caller at all, for a world that models more than membership."""
+        return True
+
     def _files_list(self, req: ApiRequest) -> object:
         if invalid := _invalid_field_selection(req, "files"):
             return invalid
@@ -600,7 +604,7 @@ class DriveWorld:
         roots = {u.root_id for u in self.users.values()} | set(self.drives)
         matches = []
         for file_id, state in self.files.items():
-            if state.deleted or file_id in roots:
+            if state.deleted or file_id in roots or not self._listed_to(file_id, email):
                 continue
             item_drive = state.meta.get("driveId")
             if drive_id:
@@ -746,13 +750,18 @@ class DriveWorld:
             })
         if m := re.fullmatch(r"name contains '(.*)'", req.query.get("q", "")):
             drives = [d for d in drives if m.group(1).lower() in d["name"].lower()]
+        elif m := re.fullmatch(r"name = '(.*)'", req.query.get("q", "")):
+            name = re.sub(r"\\(.)", r"\1", m.group(1))
+            drives = [d for d in drives if d["name"] == name]
         return paginate(drives, req.query, default_size=self.page_size, key="drives")
 
     def _drives_get(self, req: ApiRequest) -> object:
         if req.query.get("useDomainAdminAccess") != "true" or self._caller(req) != self.admin_email:
             return google_error(403, "forbidden")
         drive = self.drives.get(req.path.split("/drives/")[1])
-        if drive is None:
+        # Another organization's drive is not this admin's to see, unless the admin is a member of it: the flag
+        # opens the domain's drives without refusing a member.
+        if drive is None or (drive.get("foreign") and not self.drive_role(drive["id"], self.admin_email)):
             return google_error(404, "notFound")
         if self.restrictions_unreadable:
             return google_error(500, "backendError")

@@ -46,6 +46,7 @@ def grants_to_store(
     is_drive: bool,
     organizer_permissions: list = (),
     inherits_from_drive: bool = True,
+    keep_managers: bool = False,
 ) -> list:
     """Shared Drive items store only grants written on the item.
 
@@ -54,9 +55,12 @@ def grants_to_store(
     exception: they keep access, and the item no longer inherits it from the drive.
     An item filed outside its drive (a drive this connector does not sync) has no
     drive group to take the members from, so it keeps the whole list.
+    An item that will not inherit from its drive although it is not limited itself
+    (``keep_managers``: a limited folder above it may be hidden) keeps its Managers
+    the same way; the rest of the inherited entries may be people that folder cuts out.
     """
     if saw_permission_details and not is_drive:
-        if inherited_permissions_disabled:
+        if inherited_permissions_disabled or (keep_managers and inherits_from_drive):
             return direct_permissions + [p for p in organizer_permissions if p not in direct_permissions]
         if inherits_from_drive:
             return direct_permissions
