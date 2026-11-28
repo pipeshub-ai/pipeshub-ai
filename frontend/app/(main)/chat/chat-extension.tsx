@@ -573,6 +573,8 @@ export interface ChatResponseExtension {
   approvalCardHeld?: string;
   /** Someone else answered their approval card and their run goes on: no line about it, and no actions, until it ends. */
   approvalCardAnswered?: boolean;
+  /** The row has no answer of its own to rate, copy or read aloud (only a card or its line): no actions under it. */
+  hideActions?: boolean;
   /**
    * Someone else asked this question and stopped its answer: the stopped card's words, naming them. Unset, the viewer
    * stopped it ("You stopped this response").

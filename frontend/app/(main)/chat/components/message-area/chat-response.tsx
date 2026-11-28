@@ -1815,7 +1815,7 @@ export const ChatResponse = React.memo(function ChatResponse({
 
       {/* Message Actions (feedback, copy, regenerate, model info) */}
       {/* A stopped reply with no text has nothing to rate, copy or read aloud. */}
-      {!unanswered && !answerHidden && !columnMode && !ext.approvalCardAnswered && activeTab === 'answer' && !(status === 'stopped' && !isStreaming && !visibleAnswer.trim()) && renderActions()}
+      {!unanswered && !answerHidden && !columnMode && !ext.approvalCardAnswered && !ext.hideActions && activeTab === 'answer' && !(status === 'stopped' && !isStreaming && !visibleAnswer.trim()) && renderActions()}
 
       {previewDialog}
     </Box>

@@ -1,11 +1,14 @@
-/** The answer offers Like and Dislike unless the response extension turns them off (`allowFeedback: false`). */
+/**
+ * The answer offers Like and Dislike unless the response extension turns them off (`allowFeedback: false`), and no
+ * action at all under a row it says has no answer of its own (`hideActions`).
+ */
 import React from 'react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
 import '@/lib/__tests__/test-i18n';
 
-const response = vi.hoisted(() => ({ allowFeedback: undefined as boolean | undefined }));
+const response = vi.hoisted(() => ({ allowFeedback: undefined as boolean | undefined, hideActions: undefined as boolean | undefined }));
 
 vi.mock('@/config', async (importOriginal) => {
   const real = await importOriginal<typeof import('@/config')>();
@@ -18,6 +21,7 @@ vi.mock('@/config', async (importOriginal) => {
         hideConfidence: false,
         allowRegenerate: true,
         ...(response.allowFeedback === undefined ? {} : { allowFeedback: response.allowFeedback }),
+        ...(response.hideActions === undefined ? {} : { hideActions: response.hideActions }),
       }),
     },
   };
@@ -39,6 +43,7 @@ import { ChatResponse } from '../chat-response';
 afterEach(() => {
   cleanup();
   response.allowFeedback = undefined;
+  response.hideActions = undefined;
 });
 
 const row = () =>
@@ -61,5 +66,20 @@ describe('Feedback on the answer', () => {
     expect(screen.queryByRole('button', { name: 'Like' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Dislike' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Regenerate' })).toBeTruthy();
+  });
+});
+
+describe('Actions under a row with no answer of its own', () => {
+  it('are none when the extension says so, and the row itself still shows', () => {
+    response.hideActions = true;
+    row();
+    expect(screen.getByText('Here is the chart.')).toBeTruthy();
+    for (const name of ['Like', 'Dislike', 'Regenerate']) expect(screen.queryByRole('button', { name })).toBeNull();
+  });
+
+  it('are all there when it does not', () => {
+    response.hideActions = false;
+    row();
+    for (const name of ['Like', 'Dislike', 'Regenerate']) expect(screen.getByRole('button', { name })).toBeTruthy();
   });
 });
