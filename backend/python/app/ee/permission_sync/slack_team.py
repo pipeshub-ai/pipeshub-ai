@@ -1,3 +1,8 @@
+# Copyright (c) 2026 PipesHub Inc.
+# Licensed under the PipesHub Enterprise License. See the LICENSE file in this
+# ee folder. Free for development, testing and evaluation. Production use needs
+# a PipesHub licence key.
+
 """Slack (workspace): reading who may see what from Slack.
 
 Channel members as grants (the workspace role on a public channel, its guests, a private channel's or group

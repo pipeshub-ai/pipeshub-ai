@@ -1,3 +1,8 @@
+# Copyright (c) 2026 PipesHub Inc.
+# Licensed under the PipesHub Enterprise License. See the LICENSE file in this
+# ee folder. Free for development, testing and evaluation. Production use needs
+# a PipesHub licence key.
+
 """Gmail for Workspace: reading who may see what from Google Workspace.
 
 Google groups with their members. The free connector keeps syncing every mailbox and its mail, each granted to
