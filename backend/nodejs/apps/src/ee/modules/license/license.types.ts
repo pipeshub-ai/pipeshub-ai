@@ -119,6 +119,22 @@ export const licensePayloadSchema = z
         'letters, digits, dot, dash or underscore, at most 100',
       )
       .optional(),
+    /**
+     * The paid features this license turns on. A license issued before this
+     * field existed has none and grants LEGACY_FEATURES (license-policy.ts).
+     * Names this version does not know are kept, so a newer issuer's are not refused.
+     */
+    features: z
+      .array(
+        z
+          .string()
+          .regex(
+            /^[A-Za-z0-9._-]{1,100}$/,
+            'letters, digits, dot, dash or underscore, at most 100',
+          ),
+      )
+      .max(100)
+      .optional(),
     /** The web address users open; the license runs only where FRONTEND_PUBLIC_URL is that address. */
     url: z
       .string()

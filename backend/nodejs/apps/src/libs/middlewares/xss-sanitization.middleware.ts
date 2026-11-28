@@ -558,6 +558,13 @@ export const xssSanitizationMiddleware = (
       return;
     }
 
+    // A license file is checked against its signature, so it must arrive byte for byte (sanitizing turns the
+    // `/` of its web address into `&#x2F;`). Only a file PipesHub signed is installed; its text is shown as React text.
+    if (req.path === '/api/v1/license' && req.method === 'POST') {
+      next();
+      return;
+    }
+
     // An MCP server logo is a base64 data URL. The checks below misread it (its last segment
     // can look like an `on…=` handler) and their length cap is below the upload limit. Python
     // decodes it and keeps only a PNG it draws again, never the string sent.

@@ -102,7 +102,7 @@ export { resolvePlatformAdminRecipients } from './modules/notification/utils/pla
 export type { PlatformRecipientOrg } from './modules/notification/utils/platform-admin-recipients';
 
 // --- Edition boot hooks ---
-export { noopEditionBoot as editionBoot } from './libs/edition/edition-boot';
+export { licenseEditionBoot as editionBoot } from './ee/modules/license/license-boot';
 
 // --- Agent harness extension point: binders, admin and internal routes, index migrations (this build: none) ---
 export { noopHarnessEdition as harnessEdition } from './modules/agent-harness/edition';

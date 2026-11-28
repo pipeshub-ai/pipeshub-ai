@@ -3,12 +3,14 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import { noopEditionBoot } from '../../../src/libs/edition/edition-boot';
 import { editionBoot } from '../../../src/config';
+import { licenseEditionBoot } from '../../../src/ee/modules/license/license-boot';
 
 describe('noopEditionBoot', () => {
   const logger: any = { info: sinon.stub(), warn: sinon.stub(), error: sinon.stub(), debug: sinon.stub() };
 
-  it('is the boot object this build uses', () => {
-    expect(editionBoot).to.equal(noopEditionBoot);
+  it('is not the boot object this build uses: the license check is', () => {
+    expect(editionBoot).to.equal(licenseEditionBoot);
+    expect(editionBoot).to.not.equal(noopEditionBoot);
   });
 
   it('adds no broker topics', () => {

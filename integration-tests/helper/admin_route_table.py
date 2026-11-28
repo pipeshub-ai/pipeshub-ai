@@ -188,6 +188,10 @@ NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
               "exchanges an OAuth code and stores the result; no validator follows the check"),
     # tokens_manager/routes/health.routes.ts (read-only: estimates index memory)
     AdminRoute("GET", "/api/v1/health/vector-db/memory"),
+    # ee/modules/license/license-boot.ts (ORG_ADMIN scope, then userAdminCheck)
+    AdminRoute("GET", "/api/v1/license"),
+    # The admin's body is not a licence file, so the licence check refuses it (400) before anything is stored.
+    AdminRoute("POST", "/api/v1/license", admin="admin_body"),
     # user_management/routes/org.routes.ts
     AdminRoute("PUT", "/api/v1/org", admin="invalid"),
     _no_admin("DELETE", "/api/v1/org", "deletes the test org"),
@@ -312,6 +316,7 @@ ADMIN_BODIES: dict[tuple[str, str], Any] = {
         "oauthInstanceName": "it-admin-probe", "config": {}, "baseUrl": "http://localhost",
     },
     ("POST", f"{_API_TOOLSETS}/validate"): {"spec": "not a spec"},
+    ("POST", "/api/v1/license"): {"license": "not a licence file"},
     ("POST", f"{_API_TOOLSETS}/instances"): _API_TOOLSET_BODY,
 }
 

@@ -437,6 +437,23 @@ describe('XSS Sanitization Middleware', () => {
       }
     })
 
+    it('passes a license file through unchanged, and only on its install route', () => {
+      const body = { license: { license: { url: 'https://pipeshub.example', licensee: 'A & B <x>' } } }
+      const res = createMockResponse()
+      const req = createMockRequest({ path: '/api/v1/license', method: 'POST', body: structuredClone(body) })
+      const next = createMockNext()
+      xssSanitizationMiddleware(req, res, next)
+      expect(next.firstCall.args).to.have.length(0)
+      expect(req.body).to.deep.equal(body)
+
+      // Anywhere else the same body is checked as usual: rewritten or refused, never passed through as sent.
+      const elsewhere = createMockRequest({ path: '/api/v1/license/other', method: 'POST', body: structuredClone(body) })
+      const nextElsewhere = createMockNext()
+      xssSanitizationMiddleware(elsewhere, res, nextElsewhere)
+      const refused = nextElsewhere.called && nextElsewhere.firstCall.args.length > 0
+      expect(refused || JSON.stringify(elsewhere.body) !== JSON.stringify(body)).to.be.true
+    })
+
     it('passes an MCP server logo through and checks the same string anywhere else', () => {
       // Base64 whose last segment reads like an event handler (`/onAb=`).
       const logo = `data:image/png;base64,iVBORw0KGgo${'A'.repeat(120_000)}/onAb=`
