@@ -1931,6 +1931,9 @@ async def handle_oauth_callback(
         "updatedAt": now_ms,
         "connectedAt": now_ms,
     }
+    if state_record.get("ownerType") == "agent":
+        # Saved through the agent guard above, admin-only where agent credentials are.
+        record["setByAdmin"] = tool_approvals.agent_credentials_admin_only()
     if not await legacy_records(config_service).save("mcp", org_id, instance_id, user_id, record, user_id=user_id):
         return _callback_failure(request, {
             "success": False,
@@ -2471,6 +2474,7 @@ async def authenticate_agent_instance(
         )
     record = _build_credential_record(instance, payload, agent_key, org_id)
     record["agentKey"] = agent_key
+    record["setByAdmin"] = tool_approvals.agent_credentials_admin_only()
 
     success = await legacy_records(config_service).save(
         "mcp", org_id, instance_id, agent_key, record, user_id=user_context["user_id"]

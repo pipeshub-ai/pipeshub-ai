@@ -13,6 +13,8 @@ import { corsOptions } from './libs/middlewares/cors.options';
 import http from 'http';
 import { Container } from 'inversify';
 import { Logger } from './libs/services/logger.service';
+import { useRateLimitCache } from './libs/middlewares/shared-rate-limit-store';
+import { ICacheService } from './libs/services/cache/cacheService.interface';
 import { createHealthRouter } from './modules/tokens_manager/routes/health.routes';
 import { HttpDrain, trackRequests } from './libs/services/http-drain';
 import { ConfigService } from './modules/tokens_manager/services/cm.service';
@@ -38,6 +40,8 @@ import {
   configureInbox,
 } from './libs/context/envelope';
 import { PgInbox } from './libs/services/consumer-inbox';
+import { AuthTokenService } from './libs/services/authtoken.service';
+import { useRunTokenMinter } from './libs/services/token-class';
 import { OutboxDispatcher } from './libs/services/outbox/outbox.dispatcher';
 import { TtlSweeper } from './libs/services/ttl-sweeper.service';
 import { docStore } from './libs/repositories/store-select';
@@ -89,6 +93,7 @@ import {
   OAuthAppsContainer,
   createOAuthAppsRouter,
   editionBoot,
+  conversationEdition,
   dynamicClientOrg,
   harnessEdition,
   orgLifecycleHook,
@@ -171,6 +176,13 @@ import {
   createMcpClientMetadataHandler,
   MCP_CLIENT_METADATA_PATH,
 } from './modules/mcp_servers/routes/mcp_client_metadata';
+import { CONVERSATION_TYPES } from './modules/enterprise_search/services/conversation/conversation.types';
+import { IConversationGuards } from './modules/enterprise_search/services/conversation/http/conversation-guards';
+import { ConversationEditionContainers } from './modules/enterprise_search/services/conversation/conversation-edition';
+import {
+  drainRuns,
+  stopAllRuns,
+} from './modules/enterprise_search/utils/active-runs';
 import { ProjectsContainer } from './modules/projects/container/project.container';
 import { createProjectsRouter } from './modules/projects/routes/project.routes';
 import { createArtifactsRouter } from './modules/artifacts/routes/artifacts.routes';
@@ -269,11 +281,23 @@ import {
 } from './libs/services/redis/connectionProviderFactory';
 
 /**
- * How long a stopping process waits for the requests it accepted. The image's
- * process monitor gives the workers up to 40 s of the container's 60 s grace
- * before it signals Node, so this and the disposals after it fit in the rest.
+ * How long a stopping process waits for the requests it accepted, unless
+ * SHUTDOWN_DRAIN_MS says otherwise. The image's process monitor gives the
+ * workers up to 40 s of the container's 60 s grace before it signals Node, so
+ * this, the answers' stop after it and the disposals fit in the rest. Keep
+ * SHUTDOWN_DRAIN_MS under the platform's grace period.
  */
-const SHUTDOWN_DRAIN_MS = 10_000;
+const DEFAULT_SHUTDOWN_DRAIN_MS = 10_000;
+// Answers still running after the drain are stopped, saving what they have, within this.
+const RUN_STOP_MS = 5_000;
+// A schedule-repair pass gets at most this before the drain starts (the default drain time): waiting a whole
+// longer drain for it as well could run past the platform's grace period.
+const SCHEDULE_REPAIR_WAIT_MS = 10_000;
+
+const shutdownDrainMs = (): number => {
+  const configured = Number.parseInt(process.env.SHUTDOWN_DRAIN_MS ?? '', 10);
+  return configured >= 0 ? configured : DEFAULT_SHUTDOWN_DRAIN_MS;
+};
 
 const loggerConfig = {
   service: 'Application',
@@ -377,6 +401,12 @@ export class Application {
       configureEnvelopeFromSecret(appConfig.scopedJwtSecret, () =>
         ConfigService.getInstance().getScopedJwtSecret(),
       );
+      // What the AI backend is sent in place of a caller's app session, so a run never holds one.
+      const runTokens = new AuthTokenService(
+        appConfig.jwtSecret,
+        appConfig.scopedJwtSecret,
+      );
+      useRunTokenMinter((bearer) => runTokens.runTokenFor(bearer));
 
       // Ensure message broker topics/streams exist
       try {
@@ -396,6 +426,11 @@ export class Application {
       this.tokenManagerContainer = await TokenManagerContainer.initialize(
         configurationManagerConfig,
       );
+      if (this.tokenManagerContainer.isBound('RedisService')) {
+        const cache =
+          this.tokenManagerContainer.get<ICacheService>('RedisService');
+        useRateLimitCache(cache);
+      }
 
       this.configurationManagerContainer =
         await ConfigurationManagerContainer.initialize(
@@ -470,6 +505,24 @@ export class Application {
         configurationManagerConfig,
         appConfig,
       );
+      conversationEdition.bind(
+        this.conversationContainers(),
+        appConfig,
+        this.logger,
+      );
+      // The project conversation list, the artifacts gallery and the notification routes authorize with the same guards as the chat routes.
+      const guards = this.esAgentContainer.get<IConversationGuards>(
+        CONVERSATION_TYPES.ConversationGuards,
+      );
+      for (const container of [
+        this.projectsContainer,
+        this.knowledgeBaseContainer,
+        this.entityManagerContainer,
+      ]) {
+        container
+          .bind<IConversationGuards>(CONVERSATION_TYPES.ConversationGuards)
+          .toConstantValue(guards);
+      }
 
       await this.addOAuthServicesToAuthMiddleware();
 
@@ -647,6 +700,16 @@ export class Application {
     applyDocumentCsp(res, this.requireHeaderPolicy(), this.shellHashes, htmlFile, requestPath);
   }
 
+  private conversationContainers(): ConversationEditionContainers {
+    return {
+      enterpriseSearch: this.esAgentContainer,
+      projects: this.projectsContainer,
+      knowledgeBase: this.knowledgeBaseContainer,
+      entityManager: this.entityManagerContainer,
+      notification: this.notificationContainer,
+    };
+  }
+
   private configureMiddleware(appConfig: AppConfig): void {
     // Unset means trust no proxy: req.ip is the socket address.
     if (appConfig.trustProxy.warning) {
@@ -682,7 +745,9 @@ export class Application {
     this.app.use(createResolvedTurnGuard(() => this.esAgentContainer));
 
     // CORS - ensure this matches your frontend domain
-    this.app.use(cors(corsOptions()));
+    this.app.use(
+      cors(corsOptions(process.env, conversationEdition.exposedHeaders)),
+    );
 
     // One access line per request; before the body parsers so their 400/413 are logged too.
     this.app.use(accessLog());
@@ -1005,6 +1070,8 @@ export class Application {
       createProjectsRouter(this.projectsContainer),
     );
 
+    conversationEdition.mountRoutes(this.app, this.conversationContainers());
+
     this.app.use(
       '/api/v1/mail',
       createMailServiceRouter(this.mailServiceContainer),
@@ -1241,15 +1308,19 @@ export class Application {
   private async stopOnce(): Promise<void> {
     try {
       this.logger.info('Shutting down application...');
+      const drainMs = shutdownDrainMs();
       if (this.scheduleRepairTimer) clearInterval(this.scheduleRepairTimer);
       // A pass still running calls the scheduler: let it end before its services are disposed, but
-      // never hold the shutdown longer than the request drain does.
+      // never hold the shutdown longer than the request drain does, nor than `SCHEDULE_REPAIR_WAIT_MS`.
       if (this.scheduleRepairPass) {
         let waited: NodeJS.Timeout | undefined;
         await Promise.race([
           this.scheduleRepairPass,
           new Promise<void>((resolve) => {
-            waited = setTimeout(resolve, SHUTDOWN_DRAIN_MS);
+            waited = setTimeout(
+              resolve,
+              Math.min(drainMs, SCHEDULE_REPAIR_WAIT_MS),
+            );
           }),
         ]).finally(() => clearTimeout(waited));
       }
@@ -1257,9 +1328,21 @@ export class Application {
       // leases lapse; then the answers this process owes. The stores close
       // after both: a lease is released, and a request answered, through them.
       await EnterpriseSearchAgentContainer.quiesce();
-      await Promise.all(
-        this.drains.map((server) => server.drain(SHUTDOWN_DRAIN_MS)),
+      // Stop accepting first. Requests already in flight get the drain; answers
+      // still streaming get it too, and the rest are stopped, saving what they
+      // have, before their connections are cut and Mongo closes.
+      const drained = Promise.all(
+        this.drains.map((server) => server.drain(drainMs + RUN_STOP_MS)),
       );
+      await drainRuns(drainMs);
+      const stopped = await stopAllRuns(RUN_STOP_MS);
+      if (stopped > 0) {
+        this.logger.warn('Stopped answers still running after the drain', {
+          stopped,
+          drainMs,
+        });
+      }
+      await drained;
       try {
         await editionBoot.stop(this.logger, this.editionContainers());
       } catch (err) {

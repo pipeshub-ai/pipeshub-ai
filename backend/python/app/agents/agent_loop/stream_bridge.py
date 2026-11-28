@@ -62,6 +62,13 @@ from app.agents.chat_modes.setup import (
     start_prefetch,
 )
 from app.core.org_context import spawn_in_request
+from app.modules.agents.chat_extension import get_chat_extension
+from app.modules.agents.privacy.ledger import (
+    bind_ledger,
+    note_request_sources,
+    open_ledger,
+    with_unopened_provenance,
+)
 from app.modules.demo_data.chat import (
     demo_exclusions_for_run,
     exclude_from_query,
@@ -69,7 +76,13 @@ from app.modules.demo_data.chat import (
     note_org_real_data,
 )
 from app.modules.retrieval import degraded_notice
-from app.utils.conversation_tasks import begin_run, discard_tasks
+from app.services.artifact_registry.models import mark_service_agent_run
+from app.utils.conversation_tasks import (
+    begin_run,
+    cancel_run_tasks,
+    discard_tasks,
+    set_task_run,
+)
 from app.utils.error_class import log_failure
 from app.utils.logging_fields import bind_log_fields
 from app.utils.stage_timer import RunTimer
@@ -108,9 +121,10 @@ def _pre_stream_error_frame(protocol: str, message: str, code: str) -> str:
     if protocol == "agui":
         from app.agents.agent_loop.protocol.agui import AGUIEventType, frame
 
-        evt = frame(AGUIEventType.RUN_ERROR, message=message, code=code)
+        evt = frame(AGUIEventType.RUN_ERROR, **with_unopened_provenance({"message": message, "code": code}))
         return f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
-    return f"event: error\ndata: {json.dumps({'message': message, 'type': code})}\n\n"
+    data = with_unopened_provenance({"message": message, "type": code})
+    return f"event: error\ndata: {json.dumps(data)}\n\n"
 
 
 async def _cancel_orphaned_agent_tasks(agent: Any) -> None:
@@ -320,6 +334,7 @@ def _open_context(
     run_id: str,
     cancellation_token: CancellationToken,
     configured_context_window: int | None = None,
+    invocation: str = "assistant",
 ) -> tuple[AgentContext, asyncio.Queue[Any], QueueEventSink]:
     queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=sse_queue_maxsize())
     event_sink = QueueEventSink(queue)
@@ -328,6 +343,8 @@ def _open_context(
     # direct access to AgentContext — chat_state IS tool_state in AgentContext.
     chat_state["event_sink"] = event_sink
     chat_state["sse_protocol"] = protocol
+    # The generated id when the client sent none; artifacts are stamped with it.
+    chat_state["run_id"] = run_id
     # Model profile fields from etcd llm_config go in at construction, not
     # after: `model_post_init` resolves this request's image policy from
     # `llm_provider`, and a later assignment would leave it on the
@@ -338,6 +355,7 @@ def _open_context(
         configured_context_window=configured_context_window,
         is_reasoning_model=is_reasoning_model,
         run_id=run_id, cancellation_token=cancellation_token,
+        invocation=invocation,
     )
     return context, queue, event_sink
 
@@ -364,6 +382,8 @@ async def _stream_run(
     stage_timer: StageTimer | None = None,
     stream_label: str = "agent-loop stream",
     stage_fields: dict[str, Any] | None = None,
+    ledger: Any = None,  # noqa: ANN401 - the request's label ledger (open_ledger)
+    service_agent_run: bool | None = None,
 ) -> AsyncGenerator[str, None]:
     """Runs `PipesHubAgentFactory` + `Agent.stream()` + `AnswerFinalizer` for
     one turn as a background task and drains its `QueueEventSink` into SSE
@@ -373,21 +393,34 @@ async def _stream_run(
     # Read by the search tools for their pattern-match wait span.
     context.tool_state["_run_timer"] = run_timer
 
+    label_ledger = ledger if ledger is not None else open_ledger(context)
+
     async def _produce() -> None:
         # Every line of the run carries run_id; the task dies with the turn, so no reset.
         bind_log_fields(run_id=run_id)
+        # One label ledger for every model call of the request. Bound in this
+        # task, so every tool call, sub-agent and helper the run starts reaches it.
+        label_binding = bind_ledger(label_ledger)
+        label_binding.__enter__()
         # Record headers rendered by tools show dates in the user's zone,
         # weekday included. Set inside this task so it reaches every tool
         # call of the run and nothing outside it.
         set_llm_time_zone(context.timezone)
         begin_run()
+        # Background tasks the run's tools start reach only this run's answer.
+        set_task_run(run_id)
+        if service_agent_run is not None:
+            # Files a service-account agent's run writes are stamped as its output, never shared on.
+            mark_service_agent_run(active=service_agent_run)
         agent: Any = None
         result: Any = None
         stop_reason: str | None = "error"
         parked = False
         failure: BaseException | None = None
         try:
-            if card_already_answered(context.previous_conversations, query):
+            await note_request_sources(label_ledger, context)
+            # Another member's message after the card is no reply to it: only the sender's rows count.
+            if card_already_answered(get_chat_extension().sender_history(context), query):
                 await emit_already_answered(context, event_sink=context.event_sink)
                 stop_reason = "done"
                 return
@@ -509,6 +542,8 @@ async def _stream_run(
             run_timing.end(
                 log, stop_reason, result=result, awaiting_approval=parked, ledger=context.usage_ledger, exc=failure,
             )
+            # The answer or error frame carrying the label has been written.
+            label_ledger.close()
             # Flush any pending coalesced events and signal the SSE
             # consumer loop FIRST, so the HTTP response closes promptly
             # after the last real event.  Cleanup (orphan cancellation,
@@ -522,6 +557,8 @@ async def _stream_run(
             if cancellation_registry is not None:
                 await cancellation_registry.unregister(run_id)
             await _cancel_orphaned_agent_tasks(agent)
+            if context.conversation_id:
+                cancel_run_tasks(context.conversation_id)
             if context.sandbox_manager is not None:
                 try:
                     await context.sandbox_manager.destroy_all()
@@ -541,6 +578,7 @@ async def _stream_run(
                 log_failure(log, "agent_turn.cleanup_failed", exc, step="credentials")
             await event_sink.flush()
             await queue.put(_DONE)
+            label_binding.__exit__(None, None, None)
 
     producer = asyncio.create_task(_produce())
     heartbeat = asyncio.create_task(_heartbeat(queue)) if protocol == "agui" else None
@@ -675,6 +713,8 @@ async def run_agent_loop_stream(
     # end line. Same flag, so off together; the counts are kept either way.
     run_timer = RunTimer(enabled=bool(stage_timer is not None and stage_timer.enabled))
     run_timing = AgentRunTiming(run_timer, run_id=run_id, model=model_name, mode=query_info.get("chatMode"))
+    # Whether the run is a service-account agent's: the agent record's own flag, under either key.
+    org_wide = bool(query_info.get("is_service_account") or query_info.get("service_agent_shared_databases_only"))
 
     try:
         # One query feeds every flag; they used to be one identical lookup each.
@@ -724,7 +764,11 @@ async def run_agent_loop_stream(
         context_length=context_length, is_reasoning_model=is_reasoning_model,
         run_id=run_id, cancellation_token=cancellation_token,
         configured_context_window=context_length,
+        invocation="assistant" if chat_state.get("is_placeholder_agent") else "saved_agent",
     )
+    # A service agent's run reads as the person asking (`is_service_account` stays off), yet its
+    # answer is still labelled as that agent's: `org_wide` is the agent record's own flag.
+    ledger = open_ledger(context, service_agent=org_wide)
     # `aclosing`: a client that goes away closes this generator, and only an explicit close reaches
     # `_stream_run`'s cleanup (cancel the producer) at once instead of whenever it is collected.
     async with contextlib.aclosing(_stream_run(
@@ -733,6 +777,7 @@ async def run_agent_loop_stream(
         model_name=model_name, model_key=model_key, log=log, protocol=protocol, run_id=run_id,
         cancellation_registry=cancellation_registry, run_timer=run_timer, run_timing=run_timing,
         stage_timer=stage_timer, stage_fields={"mode": query_info.get("chatMode"), "model": model_name},
+        ledger=ledger, service_agent_run=org_wide,
     )) as frames:
         async for frame in frames:
             yield frame
@@ -854,9 +899,11 @@ async def run_chat_stream(
         llm=llm, chat_mode=policy.loop_chat_mode, query=setup.query_info.get("query", ""),
         model_name=model_name, model_key=model_key, log=log, protocol=protocol, run_id=run_id,
         cancellation_registry=cancellation_registry, run_timer=run_timer, run_timing=run_timing, shaping=shaping,
-        # `/chat/stream` never reported a `final_answer` confidence or a pending
-        # question (main #3592 reports it on the agent route only); kept as it was.
-        report_confidence=False, report_needs_input=False, stream_label="run_chat_stream",
+        # `/chat/stream` never reported a `final_answer` confidence (main #3592
+        # reports it on the agent route only); kept as it was. A question card is
+        # the turn's output, so a pending question is reported: waiting, not empty.
+        report_confidence=False, report_needs_input=True, stream_label="run_chat_stream",
+        ledger=open_ledger(context),
     )) as frames:
         async for frame in frames:
             yield frame

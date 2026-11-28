@@ -28,7 +28,7 @@ def test_the_advertisement_is_the_builds_own_versions() -> None:
         "foldVersion": FOLD_VERSION,
         "features": sorted({*CORE_FEATURES, *PIPESHUB_FEATURES}),
     }
-    assert set(wire["features"]) == {"agent_code", "approval_edits", "assistant_agent", "caller", "chat", "child_asks", "child_models", "child_runs", "code_task_tool", "command_input", "compact_request", "deep_mode", "deliverable_pin", "descriptor_pins", "engine_inputs", "environment_pin", "executor_engine", "governed_memory", "inherited_grants", "inherited_labels", "keyword_search_budget", "knowledge_selection", "mcp_carried_pins", "mcp_first_use", "model_fallback", "output_locale", "region_aware", "release_pin", "resolved_config", "run_gates", "run_surface", "sandbox_command", "session_roles", "steering", "steering_by", "steering_references", "trace_content", "trigger_context", "turn_labels", "vendor_signin", "workspace_forks"}
+    assert set(wire["features"]) == {"agent_code", "answers_only_history", "approval_edits", "assistant_agent", "caller", "chat", "child_asks", "child_models", "child_runs", "code_task_tool", "command_input", "compact_request", "deep_mode", "deliverable_pin", "descriptor_pins", "engine_inputs", "environment_pin", "executor_engine", "governed_memory", "inherited_grants", "inherited_labels", "keyword_search_budget", "knowledge_selection", "mcp_carried_pins", "mcp_first_use", "model_fallback", "output_locale", "region_aware", "release_pin", "resolved_config", "run_gates", "run_surface", "sandbox_command", "session_roles", "steering", "steering_by", "steering_references", "trace_content", "trigger_context", "turn_labels", "vendor_signin", "workspace_forks"}
 
 
 def test_the_advertisement_is_a_valid_contract_instance() -> None:
@@ -52,7 +52,7 @@ def test_worker_capabilities_is_logged_once_at_start_without_content(caplog: pyt
         "harnessMajor": 2,
         "supportedSchemaVersions": ["2", "3"],
         "foldVersion": FOLD_VERSION,
-        "features": ["agent_code", "approval_edits", "assistant_agent", "caller", "chat", "child_asks", "child_models", "child_runs", "code_task_tool", "command_input", "compact_request", "deep_mode", "deliverable_pin", "descriptor_pins", "engine_inputs", "environment_pin", "executor_engine", "governed_memory", "inherited_grants", "inherited_labels", "keyword_search_budget", "knowledge_selection", "mcp_carried_pins", "mcp_first_use", "model_fallback", "output_locale", "region_aware", "release_pin", "resolved_config", "run_gates", "run_surface", "sandbox_command", "session_roles", "steering", "steering_by", "steering_references", "trace_content", "trigger_context", "turn_labels", "vendor_signin", "workspace_forks"],
+        "features": ["agent_code", "answers_only_history", "approval_edits", "assistant_agent", "caller", "chat", "child_asks", "child_models", "child_runs", "code_task_tool", "command_input", "compact_request", "deep_mode", "deliverable_pin", "descriptor_pins", "engine_inputs", "environment_pin", "executor_engine", "governed_memory", "inherited_grants", "inherited_labels", "keyword_search_budget", "knowledge_selection", "mcp_carried_pins", "mcp_first_use", "model_fallback", "output_locale", "region_aware", "release_pin", "resolved_config", "run_gates", "run_surface", "sandbox_command", "session_roles", "steering", "steering_by", "steering_references", "trace_content", "trigger_context", "turn_labels", "vendor_signin", "workspace_forks"],
     }
 
 

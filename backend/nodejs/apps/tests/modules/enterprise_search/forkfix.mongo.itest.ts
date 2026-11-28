@@ -37,6 +37,7 @@ import { planSessionImport } from '../../../src/modules/agent-harness/domain/ses
 import { forkTranscript } from '../../../src/modules/agent-harness/domain/session-forks'
 import type { HarnessRun } from '../../../src/modules/agent-harness/domain/execution'
 import { connectHarnessMongo, disconnectHarnessMongo, registerHarnessModels } from '../agent-harness/support/harness-mongo'
+import { behindGuard, realGuards } from './helpers/guarded-chat'
 
 registerHarnessModels([Citation, AgentSessionForkModel] as unknown as Array<mongoose.Model<never>>)
 
@@ -188,16 +189,17 @@ describeIfMongo('FORKFIX: forked conversations never ask for another conversatio
     return out
   }
 
+  // As the routes mount them: the guard grants the chat (`fork`, `read`), then the handler runs.
   const forkAt = async (agent: boolean, sessionId: Types.ObjectId, messageId: unknown, as = owner) =>
     agent
-      ? call(forkAgentConversation(APP_CONFIG) as never, as, { agentKey: AGENT, conversationId: String(sessionId), messageId: String(messageId) })
-      : call(forkConversation(APP_CONFIG) as never, as, { conversationId: String(sessionId), messageId: String(messageId) })
+      ? call(behindGuard(realGuards(), 'fork', forkAgentConversation(APP_CONFIG) as never, 'agent'), as, { agentKey: AGENT, conversationId: String(sessionId), messageId: String(messageId) })
+      : call(behindGuard(realGuards(), 'fork', forkConversation(APP_CONFIG) as never), as, { conversationId: String(sessionId), messageId: String(messageId) })
 
   /** What the web app reads on open: the conversation GET. */
   const open = async (agent: boolean, conversationId: string, as = owner) => {
     const got = agent
-      ? await call(getAgentConversationById(APP_CONFIG, {}) as never, as, { agentKey: AGENT, conversationId })
-      : await call(getConversationById(APP_CONFIG, {}) as never, as, { conversationId })
+      ? await call(behindGuard(realGuards(), 'read', getAgentConversationById(APP_CONFIG, {}) as never, 'agent'), as, { agentKey: AGENT, conversationId })
+      : await call(behindGuard(realGuards(), 'read', getConversationById(APP_CONFIG, undefined, {}) as never), as, { conversationId })
     return got
   }
 

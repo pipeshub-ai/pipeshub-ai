@@ -8,6 +8,7 @@ import { budgetStopLines } from '@/config';
 import { CUT_SHORT_KEYS, cutShortHintKey } from '../../cut-short';
 import { outcomeLimit, type RunOutcome } from '../../run-outcome';
 import type { BudgetScope } from '../../types';
+import { useScopedSlotId } from './answer-slot-scope';
 import { sendAgain } from './error-next-step';
 
 /** What the action sends: the harness carries on from what was kept, or tries the task again (D1). */
@@ -62,6 +63,7 @@ export function OutcomeNotice({
   actionable?: boolean;
 }) {
   const { t, i18n } = useTranslation();
+  const scoped = useScopedSlotId();
   const [sent, setSent] = useState(false);
   if (outcome.kind !== 'partial') return null;
   const { title, lines } = outcomeLines(outcome, t, budgetScope, i18n.language || 'en-US');
@@ -102,7 +104,7 @@ export function OutcomeNotice({
             data-testid="outcome-action"
             data-action={action}
             disabled={sent}
-            onClick={() => sendAgain(CONTINUE_MESSAGE) && setSent(true)}
+            onClick={() => sendAgain(CONTINUE_MESSAGE, scoped) && setSent(true)}
             style={{ minHeight: 44 }}
           >
             <MaterialIcon name={action === 'continue' ? 'play_arrow' : 'refresh'} size={16} />

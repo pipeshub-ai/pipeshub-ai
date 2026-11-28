@@ -17,7 +17,10 @@ installMemoryStorage();
 
 vi.mock('@/config', async () => {
   const auth = await vi.importActual<typeof import('@/lib/store/auth-store')>('@/lib/store/auth-store');
-  return { useAuthStore: auth.useAuthStore, logoutAndRedirect: vi.fn() };
+  const { defaultChatExtension } = await vi.importActual<typeof import('@/app/(main)/chat/chat-extension')>(
+    '@/app/(main)/chat/chat-extension',
+  );
+  return { useAuthStore: auth.useAuthStore, logoutAndRedirect: vi.fn(), chatExtension: defaultChatExtension };
 });
 
 const { useAuthStore } = await import('@/config');
@@ -718,6 +721,22 @@ describe('with Compare off, a send is the same as before', () => {
     expect(Object.keys(flagOff).sort()).toEqual(
       expect.arrayContaining(['query', 'modelKey', 'modelName', 'chatMode', 'conversationId']),
     );
+  });
+
+  it('never compares in a chat others read, even with Compare left on: the send is answered as usual', () => {
+    enableCompare();
+    const request = () => ({ query: 'q', chatMode: 'agent:auto', modelKey: 'x', modelName: 'x', modelFriendlyName: 'x', filters: { apps: [], kb: [] } });
+    for (const slot of [
+      { sharedWith: [{ userId: 'u2', accessLevel: 'read' }] },
+      { isOwner: false },
+      { projectVisibility: 'project' },
+    ]) {
+      useChatStore.getState().updateSlot(primarySlotId, { isOwner: true, sharedWith: [], projectVisibility: 'private', ...slot } as never);
+      expect(controller.applyCompareToRequest(primarySlotId, request() as never, 'q')).toBe(false);
+    }
+    expect(turn()).toBeUndefined();
+    useChatStore.getState().updateSlot(primarySlotId, { isOwner: true, sharedWith: [], projectVisibility: 'private' });
+    expect(controller.applyCompareToRequest(primarySlotId, request() as never, 'q')).toBe(true);
   });
 
   it('falls back to a normal send for a saved agent, a missing model and one picked model', async () => {

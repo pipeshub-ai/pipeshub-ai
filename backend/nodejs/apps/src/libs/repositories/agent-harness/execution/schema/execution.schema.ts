@@ -203,6 +203,8 @@ const runSchema = new Schema<RunDocument>(
     personWaitS: { type: Number, required: false },
     autoResume: { type: Boolean, required: false },
     conversationGrants: { type: Boolean, required: false },
+    // Its model was given what earlier turns' tools returned: its answer is marked so.
+    earlierResults: { type: Boolean, required: false },
     sessionRole: {
       type: String,
       enum: ['owner', 'collaborator'],

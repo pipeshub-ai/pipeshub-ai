@@ -142,7 +142,8 @@ apiClient.interceptors.request.use(
       if (sessionOver(outcome)) return dropped();
       if (outcome === 'refreshed') accessToken = useAuthStore.getState().accessToken;
       // No answer: send with the token we have and let the server decide, unless it has run out.
-      else if (isTokenExpired(accessToken, 0)) return rejectShown(sessionUnavailable(), config);
+      // The "Reconnecting…" notice says it already, and one toast shows at a time: no error toast in its place.
+      else if (isTokenExpired(accessToken, 0)) return Promise.reject(sessionUnavailable());
     }
 
     if (accessToken) {
@@ -200,7 +201,7 @@ apiClient.interceptors.response.use(
       // If a refresh is already running (timer or another 401), this just
       // awaits the existing promise; otherwise it kicks off a new one.
       const outcome = await refreshOrSignOut();
-      if (outcome === 'unreachable') return rejectShown(sessionUnavailable(error), originalRequest);
+      if (outcome === 'unreachable') return Promise.reject(sessionUnavailable(error));
       if (outcome !== 'refreshed') return dropped();
       // A write is never sent twice: the server may have acted on it before it answered 401.
       if (!REPLAYABLE_METHODS.has(originalRequest.method ?? 'get')) {

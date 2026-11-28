@@ -15,6 +15,7 @@ import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { inject, injectable } from 'inversify';
 import { getPictureRepository } from '../../../libs/repositories/picture';
+import { conversationExtensions } from '../../enterprise_search/services/conversation/conversation-extensions';
 import type {
   TeamCreatedByUser,
   TeamResponse,
@@ -90,6 +91,9 @@ const handleAIServiceResponse = (
   }
   res.status(successStatus).json(responseData);
 };
+
+const isSuccess = (statusCode: number): boolean =>
+  statusCode >= 200 && statusCode < 300;
 
 // The team service wraps the team it returns: `{ data: team }` from create,
 // `{ team }` from get, update and the member list.
@@ -353,6 +357,9 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
+      if (isSuccess(aiResponse.statusCode)) {
+        await this.cleanupDeletedTeam(String(orgId), teamId);
+      }
       handleAIServiceResponse(
         aiResponse,
         res,
@@ -373,6 +380,22 @@ export class TeamsController {
       });
       const handledError = handleBackendError(error, 'delete team');
       next(handledError);
+    }
+  }
+
+  // The team is already gone upstream, so a failure here is logged rather than
+  // surfaced as a failed delete; stale rows render as `deleted_team`.
+  private async cleanupDeletedTeam(
+    orgId: string,
+    teamId: string,
+  ): Promise<void> {
+    try {
+      await conversationExtensions().lifecycle.teamDeleted(orgId, teamId);
+    } catch (error) {
+      this.logger.error('Failed to clean up deleted team references', {
+        teamId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 

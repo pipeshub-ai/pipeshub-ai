@@ -399,8 +399,10 @@ describe('a 401 from the server', () => {
     expect(sent).toHaveLength(1);
     expect(logoutAndRedirect).not.toHaveBeenCalled();
     expect(useAuthStore.getState().accessToken).toBe(token);
-    expect(errorToasts()).toHaveLength(1);
-    expect(errorToasts()[0].title).toMatch(/try again shortly/i);
+    // The "Reconnecting…" notice says so, and stays up: no error toast replaces it.
+    expect(errorToasts()).toHaveLength(0);
+    const notices = useToastStore.getState().toasts.filter((t) => t.variant === 'loading' && !t.isExiting);
+    expect(notices.map((t) => t.title)).toEqual(['Reconnecting…']);
   });
 
   it('lets a caller suppress the toast when the refresh gets no answer', async () => {
@@ -526,7 +528,7 @@ describe('error toasts', () => {
     fakeServer({ status: 503, headers: { 'retry-after': '4' } });
     await expect(apiClient.get('/x')).rejects.toBeDefined();
     expect(errorToasts().map((t) => [t.title, t.description])).toEqual([
-      ['Please try again shortly', 'PipesHub is busy right now. Please try again in 4 seconds.'],
+      ['The server is busy', 'PipesHub is busy right now. Please try again in 4 seconds.'],
     ]);
   });
 

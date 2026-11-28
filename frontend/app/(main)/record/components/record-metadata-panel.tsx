@@ -3,6 +3,8 @@
 import { useCallback, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { Box, Flex, Tabs, Text, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
+import { useUserStore } from '@/lib/store/user-store';
+import { indexingReasonFor } from '@/app/(main)/knowledge-base/utils/indexing-reason';
 import { formatDate } from '@/lib/utils/formatters';
 import { formatFileSize } from '@/app/components/file-preview/utils';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -463,6 +465,7 @@ const RECORD_METADATA_TAB_CONTENT_STYLE: CSSProperties = {
 
 export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps) {
   const { t } = useTranslation();
+  const viewerId = useUserStore((s) => s.profile?.userId);
   const { record, knowledgeBase, folder, permissions, metadata } = recordDetails;
 
   const createdDate = formatTimestamp(
@@ -566,7 +569,11 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
                   <IndexingStatusChip status={record.indexingStatus} />
                   {statusHint ? (
                     <ReasonHintButton
-                      content={statusHint.content}
+                      content={
+                        statusHint.kind === 'reason'
+                          ? indexingReasonFor(statusHint.content, t, Boolean(viewerId) && record.uploadedBy === viewerId)
+                          : statusHint.content
+                      }
                       ariaLabel={t(statusHint.kind === 'note' ? 'recordView.indexingNoteAria' : 'recordView.indexingReasonAria')}
                     />
                   ) : null}

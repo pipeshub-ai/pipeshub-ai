@@ -69,6 +69,8 @@ import { ArtifactEraser, SessionDataEraser } from '../../../../src/modules/agent
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema';
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema';
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema';
+import { MongoConversationRepository } from '../../../../src/libs/repositories/conversation/mongo';
+import { CLOSURE_REV, closureKey } from '../../../../src/modules/enterprise_search/services/conversation/privacy/closure';
 import { Notifications } from '../../../../src/modules/notification/schema/notification.schema';
 import { HarnessConversationEraser } from '../../../../src/libs/repositories/agent-harness/conversation-eraser/mongo';
 import { getRedisProvider } from '../../../../src/libs/services/redis/connectionProviderFactory';
@@ -318,7 +320,7 @@ export async function seed(w: World, options: { running: boolean; tenant?: { org
     metadata: { orgId, mimeType: 'text/plain', recordId: `rec-${String(i)}`, recordName: 'r', origin: 'UPLOAD', extension: 'txt' },
   })));
   const citationIds = citations.map((c) => String(c._id));
-  await ChatSessionMessage.create({
+  const answer = await ChatSessionMessage.create({
     sessionId: new Types.ObjectId(sessionId),
     orgId: new Types.ObjectId(orgId),
     seq: 100,
@@ -326,6 +328,11 @@ export async function seed(w: World, options: { running: boolean; tenant?: { org
     content: canary,
     citations: citations.map((c) => ({ citationId: c._id })),
   });
+  // The reader check's stored closure of that answer's version, kept under the chat's id as the first read stores it.
+  const rowId = String(answer._id);
+  await new MongoConversationRepository().saveAnswerClosures(orgId, [
+    { _id: closureKey(rowId, 'legacy'), orgId, sessionId, rowId, ver: 'legacy', rev: CLOSURE_REV, self: {}, add: {}, chain: [], folded: false, size: 1, spans: [], pub: false, shares: {}, digest: 'sha256:seed', at: new Date() },
+  ]);
   // A chat attachment the owner uploaded and asked about (QA15-F4).
   const upload = new Types.ObjectId().toHexString();
   w.chatAttachments.upload(upload, { orgId, ownerId: tenant.actorId, content: canary });

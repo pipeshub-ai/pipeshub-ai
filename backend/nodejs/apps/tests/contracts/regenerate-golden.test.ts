@@ -7,9 +7,18 @@ import { AGENT_KEY, Flow, seedConversation, startStream } from '../modules/enter
 import { FakeAIBackend, settle } from '../modules/enterprise_search/controller/chat-test-harness'
 import { appConfig } from '../modules/enterprise_search/controller/streaming-flows'
 import { GOLDEN_DIR, SCENARIOS, compareOrWrite, normalize, readUpstream } from './support/golden'
-import { DURABLE_SCENARIOS, liveSteps, normalizeFrames, parseSse, project, readJournal } from './support/durable'
+import {
+  DURABLE_SCENARIOS,
+  liveSteps,
+  normalizeFrames,
+  parseSse,
+  project,
+  readJournal,
+} from './support/durable'
 import { registerUpstreams } from '../../src/libs/http/upstream-call'
 import { registerAppUpstreams } from '../../src/modules/tokens_manager/config/config'
+import { behindGuard, realGuards } from '../modules/enterprise_search/helpers/guarded-chat'
+import { turnDeps } from '../modules/enterprise_search/helpers/turn-deps'
 
 /**
  * LAT2 GP-1, GP-2: what the browser receives from the legacy regenerate
@@ -21,7 +30,14 @@ const RUN_ID = '7a1c0e52-5b1d-4c3e-9f0a-2d4e6b8c0f11'
 
 const regenerateFlow = (agent: boolean, chatMode: string | undefined): Flow => ({
   name: agent ? 'regenerateAgentAnswers' : 'regenerateAnswers',
-  handler: (c) => (agent ? c.regenerateAgentAnswers(appConfig) : c.regenerateAnswers(appConfig)) as never,
+  // As the route builds it: the conversation guard first, then the handler with the turn handlers' dependencies.
+  handler: (c) =>
+    behindGuard(
+      realGuards(),
+      'regenerate',
+      (agent ? c.regenerateAgentAnswers(appConfig, turnDeps()) : c.regenerateAnswers(appConfig, turnDeps())) as never,
+      agent ? 'agent' : 'chat',
+    ) as never,
   prepare: (store) => {
     const { session, botId } = seedConversation(store, agent)
     return {
@@ -66,7 +82,9 @@ describe('contract: the legacy regenerate routes’ frames, and the durable rege
 
       const legacy = parseSse(fs.readFileSync(path.join(GOLDEN_DIR, 'regenerate', `${scenario.name}.sse`), 'utf8')).map((f) => f.frame)
       const journal = readJournal(scenario.name)
-      const [durableFirst, ...durable] = normalizeFrames(project(journal, liveSteps(journal)).map((f) => f.frame))
+      const [durableFirst, ...durable] = normalizeFrames(
+        project(journal, liveSteps(journal)).map((f) => f.frame),
+      )
       const [legacyFirst, ...rest] = normalizeFrames(legacy)
       // The one intended difference: legacy regenerate opens with a bare greeting; a durable turn's first
       // frame names its conversation (and, for the owner, its run, which normalization drops).

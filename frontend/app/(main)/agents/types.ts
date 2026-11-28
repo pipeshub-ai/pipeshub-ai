@@ -46,6 +46,8 @@ export interface AgentListRecord {
   /** Collection-qualified id, e.g. `agentInstances/<uuid>` */
   _id: string;
   name: string;
+  /** The agent's @mention handle, where the edition has handles. */
+  handle?: string;
   description: string;
   models: string[];
   /** True when `models` is empty; the agent uses the organization's default LLM at chat time. */
@@ -476,6 +478,9 @@ export interface AgentConversationDetailApi {
   forkedFrom?: ForkOrigin;
   forks?: ForkChild[];
   access: { isOwner: boolean; accessLevel: string };
+  /** The project the conversation belongs to, and whether the project's members may read it. */
+  projectId?: string;
+  projectVisibility?: 'private' | 'project';
   /** Optional: present when the API returns paginated messages. */
   pagination?: ConversationPagination;
   /** Durable sessions only: the run still in flight, or `null`. */

@@ -8,7 +8,8 @@ import * as path from 'node:path'
  * CI ratchets for org context (direct_org_reads, detached_work). Counts per file may only go down.
  * To record an intentional change run
  *   ORG_CONTEXT_UPDATE_BASELINE=1 npx mocha --config <rc> tests/libs/context/org-context-guards.test.ts
- * and review the diff of org-context-baseline.json.
+ * and review the diff of org-context-baseline.json. Files a downstream build adds under src/ are counted in its own
+ * `*baseline*.json` files, under the directories in ORG_CONTEXT_BASELINE_DIRS (separated by the path delimiter).
  *
  * detached_work: long-lived work (timers, workers, consumers, lazily created clients) starts inside
  *   spawnDetached; AsyncLocalStorage propagates into everything created inside a request.
@@ -38,8 +39,34 @@ function* walk(dir: string): Generator<string> {
   }
 }
 
-function scan(): Record<string, Record<string, number>> {
-  const out: Record<string, Record<string, number>> = Object.fromEntries(Object.keys(GUARDS).map((g) => [g, {}]))
+type Counts = Record<string, Record<string, number>>
+
+const baselineFilesUnder = (dir: string): string[] =>
+  !fs.existsSync(dir)
+    ? []
+    : fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+        const p = path.join(dir, e.name)
+        if (e.isDirectory()) return baselineFilesUnder(p)
+        return e.name.endsWith('.json') && e.name.includes('baseline') ? [p] : []
+      })
+
+const extraDirs = (): string[] => (process.env.ORG_CONTEXT_BASELINE_DIRS ?? '').split(path.delimiter).filter(Boolean)
+
+/** The committed baseline plus every `*baseline*.json` under `dirs`, per-file counts added. */
+export function loadBaseline(dirs: string[] = extraDirs()): Counts {
+  const merged = JSON.parse(fs.readFileSync(BASELINE, 'utf8')) as Counts
+  for (const file of dirs.flatMap(baselineFilesUnder).sort()) {
+    const extra = JSON.parse(fs.readFileSync(file, 'utf8')) as Counts
+    for (const [g, counts] of Object.entries(extra)) {
+      merged[g] ??= {}
+      for (const [f, n] of Object.entries(counts)) merged[g][f] = (merged[g][f] ?? 0) + n
+    }
+  }
+  return merged
+}
+
+export function scan(): Counts {
+  const out: Counts = Object.fromEntries(Object.keys(GUARDS).map((g) => [g, {}]))
   for (const file of walk(SRC)) {
     const rel = path.relative(SRC, file).split(path.sep).join('/')
     const text = fs.readFileSync(file, 'utf8')
@@ -88,15 +115,40 @@ describe('org context CI ratchets', () => {
     expect(hits).to.deep.equal([1, 1, 1, 1, 1])
   })
 
+  it('adds the counts of baseline files found under ORG_CONTEXT_BASELINE_DIRS to the committed ones', () => {
+    const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? '.', 'org-context-baseline-'))
+    try {
+      fs.mkdirSync(path.join(dir, 'nested'))
+      fs.writeFileSync(path.join(dir, 'nested', 'extra-baseline.json'), JSON.stringify({ detached_work: { 'x/a.ts': 2 } }))
+      fs.writeFileSync(path.join(dir, 'other.json'), JSON.stringify({ detached_work: { 'x/ignored.ts': 1 } }))
+      expect(loadBaseline([dir]).detached_work).to.include({ 'x/a.ts': 2 })
+      expect(loadBaseline([dir]).detached_work).to.not.have.property('x/ignored.ts')
+      expect(loadBaseline([]).detached_work).to.not.have.property('x/a.ts')
+      expect(loadBaseline([path.join(dir, 'missing')]).detached_work).to.not.have.property('x/a.ts')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   const found = scan()
   if (process.env.ORG_CONTEXT_UPDATE_BASELINE) {
-    fs.writeFileSync(BASELINE, JSON.stringify(found, null, 1) + '\n')
+    // Counts another directory records stay there.
+    const recorded = loadBaseline(extraDirs())
+    const committed = loadBaseline([])
+    const own = Object.fromEntries(
+      Object.entries(found).map(([g, counts]) => [
+        g,
+        Object.fromEntries(Object.entries(counts).filter(([f]) => (recorded[g]?.[f] ?? 0) === (committed[g]?.[f] ?? 0))),
+      ]),
+    )
+    fs.writeFileSync(BASELINE, JSON.stringify(own, null, 1) + '\n')
   }
-  const base = withOverlays(JSON.parse(fs.readFileSync(BASELINE, 'utf8')) as typeof found)
 
   for (const [g, { hint }] of Object.entries(GUARDS)) {
     it(`${g}: no new sites`, () => {
-      const grown = Object.entries(found[g]).filter(([f, n]) => n > (base[g]![f] ?? 0)).map(([f, n]) => `${f}: ${base[g]![f] ?? 0} -> ${n}`)
+      // The committed baseline, a downstream build's own files under ORG_CONTEXT_BASELINE_DIRS, then the overlays.
+      const base = withOverlays(loadBaseline())
+      const grown = Object.entries(found[g]).filter(([f, n]) => n > (base[g]?.[f] ?? 0)).map(([f, n]) => `${f}: ${base[g]?.[f] ?? 0} -> ${n}`)
       expect(grown, `${g} new sites. ${hint}`).to.deep.equal([])
     })
   }

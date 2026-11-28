@@ -148,8 +148,8 @@ describe('BGUI-6: honest endings', () => {
     expect(report.textContent).not.toContain('notes I had time for');
     const card = within(report).getByTestId('artifact-card');
     expect(card.textContent).toContain('notes.md');
-    expect(within(card).getByRole('button', { name: 'Download artifact' })).toBeTruthy();
-    expect(within(card).getByRole('button', { name: 'Preview artifact' })).toBeTruthy();
+    expect(within(card).getByRole('button', { name: /^Download / })).toBeTruthy();
+    expect(within(card).getByRole('button', { name: /^Preview / })).toBeTruthy();
   });
 
   it('a job that couldn’t finish says so in red, says why, and its name opens its Activity', async () => {

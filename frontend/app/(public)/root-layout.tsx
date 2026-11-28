@@ -38,7 +38,7 @@ export default function PublicLayout({
         <ThemeScript />
         <IconFontScript />
       </head>
-      <body style={{ backgroundColor: 'var(--olive-1, #f8f8f5)' }}>
+      <body style={{ backgroundColor: 'var(--surface-raised)' }}>
         <I18nextProvider i18n={i18n}>
           <BrandProvider>
             <ThemeProvider>

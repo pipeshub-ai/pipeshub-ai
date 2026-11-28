@@ -9,6 +9,8 @@ import { getUserFacingErrorMessage } from '@/lib/api/api-error';
 import {
   WorkspaceRightPanel,
   FormField,
+  LabeledTextArea,
+  LabeledTextField,
   SearchableCheckboxDropdown,
   AvatarCell,
   PaginatedMembersList,
@@ -84,6 +86,7 @@ export function TeamDetailSidebar({
     closeDetailPanel,
     setEditTeamName,
     setEditTeamDescription,
+    validation,
     isDeleting,
     isDeleteConfirmOpen,
     setIsDeleteConfirmOpen,
@@ -132,7 +135,7 @@ export function TeamDetailSidebar({
           : t('workspace.teams.edit.edit', 'Edit Team')
       }
       secondaryLabel={t('workspace.teams.edit.cancel', 'Cancel')}
-      primaryDisabled={isEditMode && isSavingEdit}
+      primaryDisabled={isEditMode && (isSavingEdit || !validation.isValid)}
       primaryLoading={isSavingEdit}
       onPrimaryClick={handlePrimaryClick}
       onSecondaryClick={handleSecondaryClick}
@@ -153,43 +156,19 @@ export function TeamDetailSidebar({
         {/* Team Name */}
         <FormField
           label={t('workspace.teams.detail.nameLabel', 'Team Name')}
+          required={isEditMode}
+          error={isEditMode ? validation.errorFor('name') : undefined}
         >
-          {(control) => (
-            <input
-              {...control}
-              type="text"
-              value={isEditMode ? editTeamName : detailTeam?.name ?? ''}
-              onChange={(e) => {
-                if (isEditMode) setEditTeamName(e.target.value);
-              }}
-              readOnly={!isEditMode}
-              style={{
-                width: '100%',
-                height: 44, // the touch-target minimum; also ~12px around the 20px line
-                padding: '0 12px',
-                backgroundColor: 'var(--color-surface)',
-                border: '1px solid var(--slate-a5)',
-                borderRadius: 'var(--radius-2)',
-                fontSize: 14,
-                lineHeight: '20px',
-                fontFamily: 'var(--default-font-family)',
-                color: 'var(--slate-12)',
-                outline: 'none',
-                boxSizing: 'border-box',
-                cursor: isEditMode ? 'text' : 'default',
-              }}
-              onFocus={(e) => {
-                if (isEditMode) {
-                  e.currentTarget.style.border = '2px solid var(--accent-8)';
-                  e.currentTarget.style.padding = '0 11px';
-                }
-              }}
-              onBlur={(e) => {
-                e.currentTarget.style.border = '1px solid var(--slate-a5)';
-                e.currentTarget.style.padding = '0 12px';
-              }}
-            />
-          )}
+          <LabeledTextField
+            value={isEditMode ? editTeamName : detailTeam?.name ?? ''}
+            onChange={(e) => {
+              if (!isEditMode) return;
+              setEditTeamName(e.target.value);
+              validation.clearServerError('name');
+            }}
+            onBlur={() => validation.touch('name')}
+            readOnly={!isEditMode}
+          />
         </FormField>
 
         {/* Team Description */}
@@ -198,56 +177,32 @@ export function TeamDetailSidebar({
             'workspace.teams.detail.descriptionLabel',
             'Team Description'
           )}
+          error={isEditMode ? validation.errorFor('description') : undefined}
         >
-          {(control) => (
-            <textarea
-              {...control}
-              value={
-                isEditMode
-                  ? editTeamDescription
-                  : detailTeam?.description ?? ''
-              }
-              onChange={(e) => {
-                if (isEditMode) setEditTeamDescription(e.target.value);
-              }}
-              readOnly={!isEditMode}
-              placeholder={
-                isEditMode
-                  ? t(
-                      'workspace.teams.detail.descriptionPlaceholder',
-                      'Describe the purpose of this team'
-                    )
-                  : ''
-              }
-              rows={4}
-              style={{
-                width: '100%',
-                minHeight: 88,
-                padding: '10px 12px',
-                backgroundColor: 'var(--color-surface)',
-                border: '1px solid var(--slate-a5)',
-                borderRadius: 'var(--radius-2)',
-                fontSize: 14,
-                lineHeight: '20px',
-                fontFamily: 'var(--default-font-family)',
-                color: 'var(--slate-12)',
-                outline: 'none',
-                boxSizing: 'border-box',
-                resize: 'vertical',
-                cursor: isEditMode ? 'text' : 'default',
-              }}
-              onFocus={(e) => {
-                if (isEditMode) {
-                  e.currentTarget.style.border = '2px solid var(--accent-8)';
-                  e.currentTarget.style.padding = '9px 11px';
-                }
-              }}
-              onBlur={(e) => {
-                e.currentTarget.style.border = '1px solid var(--slate-a5)';
-                e.currentTarget.style.padding = '10px 12px';
-              }}
-            />
-          )}
+          <LabeledTextArea
+            value={
+              isEditMode
+                ? editTeamDescription
+                : detailTeam?.description ?? ''
+            }
+            onChange={(e) => {
+              if (!isEditMode) return;
+              setEditTeamDescription(e.target.value);
+              validation.clearServerError('description');
+            }}
+            onBlur={() => validation.touch('description')}
+            readOnly={!isEditMode}
+            placeholder={
+              isEditMode
+                ? t(
+                    'workspace.teams.detail.descriptionPlaceholder',
+                    'Describe the purpose of this team'
+                  )
+                : ''
+            }
+            rows={4}
+            style={{ minHeight: 88 }}
+          />
         </FormField>
 
         {/* Created By section box */}

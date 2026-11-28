@@ -3,6 +3,7 @@
 import React, { createContext, useContext, useId } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Select, Text, TextArea, TextField } from '@radix-ui/themes';
+import { SecretTextField, type SecretTextFieldProps } from '@/app/components/ui/secret-text-field';
 
 // ========================================
 // Types
@@ -27,6 +28,9 @@ interface FormFieldProps {
 export interface FormFieldControlIds {
   id: string;
   'aria-describedby'?: string;
+  /** Set while the field shows an error, so assistive tech announces it with the control. */
+  'aria-invalid'?: true;
+  'aria-required'?: true;
 }
 
 const FormFieldControlContext = createContext<FormFieldControlIds | null>(null);
@@ -77,7 +81,12 @@ export function FormField({
   const helpId = `${id}-help`;
   const errorId = `${id}-error`;
   const describedBy = [description ? helpId : null, error ? errorId : null].filter(Boolean).join(' ');
-  const control: FormFieldControlIds = { id, 'aria-describedby': describedBy || undefined };
+  const control: FormFieldControlIds = {
+    id,
+    'aria-describedby': describedBy || undefined,
+    ...(error ? { 'aria-invalid': true as const } : {}),
+    ...(required && !optional ? { 'aria-required': true as const } : {}),
+  };
 
   return (
     <Flex direction="column" gap="1">
@@ -119,6 +128,27 @@ export function FormField({
       )}
     </Flex>
   );
+}
+
+/**
+ * Radix inputs that take their id, description and invalid state from the
+ * surrounding `FormField`: its label names the control, its error line
+ * describes it, and the field turns red while there is an error.
+ */
+export function LabeledTextField(props: React.ComponentProps<typeof TextField.Root>) {
+  const control = useFormFieldControl();
+  return <TextField.Root color={control['aria-invalid'] ? 'red' : undefined} {...control} {...props} />;
+}
+
+export function LabeledTextArea(props: React.ComponentProps<typeof TextArea>) {
+  const control = useFormFieldControl();
+  return <TextArea color={control['aria-invalid'] ? 'red' : undefined} {...control} {...props} />;
+}
+
+/** A secret (an API key, a client secret) that browsers and password managers leave alone: see `SecretTextField`. */
+export function LabeledSecretTextField(props: SecretTextFieldProps) {
+  const control = useFormFieldControl();
+  return <SecretTextField color={control['aria-invalid'] ? 'red' : undefined} {...control} {...props} />;
 }
 
 export type { FormFieldProps };

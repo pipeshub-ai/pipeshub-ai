@@ -115,7 +115,8 @@ describe('AS1-13: the turn asks for the harness, and a conversation keeps its ha
     serve();
     await ChatApi.streamMessage(request({ harness: 'durable' }), { onComplete: vi.fn(), onChunk: vi.fn() });
     expect(mockedStream).toHaveBeenLastCalledWith(
-      '/api/v1/conversations/stream',
+      // Every chat turn asks its final frame for that turn's rows alone, on the same route.
+      '/api/v1/conversations/stream?frame=turn',
       expect.objectContaining({ chatMode: 'agent', harness: 'durable' }),
       expect.any(Object),
     );

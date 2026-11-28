@@ -88,9 +88,11 @@ import {
   resolveSlackErrorMessage,
   resolveSlackErrorMessageAsync,
   parseSSEEvents,
+  finalTurnRow,
   buildChatStreamUrl,
   resolveSlackBotForEvent,
   resolveThreadId,
+  slackClientMessageId,
   sendUserFacingSlackErrorMessage,
   slackCallerDisplayName,
   isIgnoredSlackMessage,
@@ -572,6 +574,7 @@ async function processSlackMessage(
       url,
       {
         query,
+        clientMessageId: slackClientMessageId(typedMessage),
         chatMode: currentAgentId? "quick" : "agent",
         // The default assistant's Agent mode asks for the agent harness as the web app's does (ASSIST1); the server
         // decides from the org's rollout, and a thread that began on the classic loop stays there.
@@ -1274,6 +1277,16 @@ async function processSlackMessage(
       return;
     }
 
+    const finalRow = finalTurnRow(conversationData.messages);
+    if (finalRow?.messageType === 'error') {
+      // A failed turn streams its error text as answer text; replace that copy so it shows once.
+      await deleteStreamMessages();
+      await sendOrUpdateNonStreamMessage(
+        resolveSlackErrorMessage(finalRow.content),
+      );
+      return;
+    }
+    // The turn's last row is not an error, so the newest answer is this turn's.
     const botResponse = newestBotResponse(conversationData.messages);
     if (!botResponse) {
       const invalidResponseMessage =

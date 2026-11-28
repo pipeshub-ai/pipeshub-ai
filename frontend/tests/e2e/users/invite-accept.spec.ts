@@ -50,7 +50,7 @@ test.describe('Invite a teammate', { tag: '@disposable' }, () => {
     const memberPage = await signInAs(browser, member);
     try {
       await expect(memberPage).toHaveURL(/\/chat\//);
-      await expect(memberPage.locator('textarea').last()).toBeVisible({ timeout: 20_000 });
+      await expect(memberPage.getByTestId('chat-composer').last()).toBeVisible({ timeout: 20_000 });
       // The prompt appears only after the profile loads, so let the page settle before checking.
       await memberPage.waitForLoadState('networkidle');
       await expect(memberPage.getByRole('dialog', { name: 'Complete Your Profile' })).toBeHidden();

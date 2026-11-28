@@ -31,6 +31,9 @@ const mockedStreamGet = vi.mocked(streamSSEGet);
 
 const ownerTurn = (): SSEEvent[] => asOwner(completedRun());
 
+/** Every chat turn asks its final frame for that turn's rows alone (`frame=turn`), on the same route. */
+const TURN_FRAME = '?frame=turn';
+
 /** Today's loop: no run id, no SSE ids. */
 function legacyTurn(): SSEEvent[] {
   return completedRun().map(({ id: _id, ...frame }) => frame);
@@ -78,7 +81,7 @@ describe('LAT1: one request per chat turn', () => {
 
     expect(mockedStream).toHaveBeenCalledTimes(1);
     expect(mockedStream).toHaveBeenCalledWith(
-      endpoint,
+      `${endpoint}${TURN_FRAME}`,
       expect.objectContaining({ query: 'Question', chatMode, protocol: 'agui', runId: request().runId }),
       expect.any(Object),
     );
@@ -272,7 +275,7 @@ describe('CPD10-F1: a chat turn names its project only for the conversation it c
     const { built, endpoint, body } = await sendFromComposer(turn);
 
     expect(mockedStream).toHaveBeenCalledTimes(1);
-    expect(endpoint).toBe(expectedEndpoint);
+    expect(endpoint).toBe(`${expectedEndpoint}${TURN_FRAME}`);
     expect(body).toStrictEqual(expectedBody);
     expect(built, 'the composer decides nothing about project scope').not.toHaveProperty('projectScoped');
   });

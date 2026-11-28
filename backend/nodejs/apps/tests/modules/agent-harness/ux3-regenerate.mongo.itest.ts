@@ -148,4 +148,91 @@ describe('UX3 durable regenerate on a MongoDB replica set', function () {
     expect(again.run.runId).to.equal(first.run.runId);
     expect((await messages(sessionId)).filter(([type]) => type === 'user_query')).to.have.length(2);
   });
+
+  /** As a worker ends a run whose model call failed: its error answer, stored as the turn's error row. */
+  const MODEL_FAILED = "The AI model's provider isn't responding right now. Please try again in a minute.";
+  const fail = async (h: ContractHarness, run: HarnessRun): Promise<void> => {
+    const claimed = await h.claim(run);
+    await h.service.commit({
+      commandId: `${run.runId}:failed`,
+      orgId: run.orgId,
+      runId: run.runId,
+      workerId: 'worker-a',
+      attemptId: 'attempt-worker-a',
+      fence: claimed.fence,
+      events: [
+        workerEvent(
+          'x.pipeshub.answer.finalized',
+          {
+            outcome: 'error',
+            answer: MODEL_FAILED,
+            partTexts: [MODEL_FAILED],
+            citations: [],
+            confidence: 'Low',
+            answerMatchType: 'Error',
+            errorCode: 'model_failed',
+          },
+          { critical: false },
+        ),
+      ],
+      legacyEvents: [],
+      transition: { status: 'failed', errorType: 'model_failed' },
+      outbox: [],
+    });
+  };
+
+  const errorRowId = async (sessionId: string): Promise<string> => {
+    const all = (await sessionMessages(sessionId)) as Array<IMessage & { _id: unknown }>;
+    return String([...all].reverse().find((m) => m.messageType === 'error')?._id);
+  };
+
+  it("Try again on a failed answer: the failed run's error row is redone in its place, from the question as stored", async () => {
+    const h = harness();
+    const first = await h.admit(text('What is the leave policy?'));
+    await answer(h, first.run, 'Twenty-five days.');
+    const second = await h.admit({ sessionId: first.sessionId, ...text('And for contractors?') });
+    await fail(h, second.run);
+    expect(await messages(first.sessionId)).to.deep.equal([
+      ['user_query', 'What is the leave policy?'],
+      ['bot_response', 'Twenty-five days.'],
+      ['user_query', 'And for contractors?'],
+      ['error', MODEL_FAILED],
+    ]);
+
+    const again = await h.admit({
+      sessionId: first.sessionId,
+      regenerate: { messageId: await errorRowId(first.sessionId) },
+      ...text('something the browser made up'),
+    });
+    expect(again.run.input?.query).to.equal('And for contractors?');
+    expect(await messages(first.sessionId), 'the failed turn left; its question is asked again').to.deep.equal([
+      ['user_query', 'What is the leave policy?'],
+      ['bot_response', 'Twenty-five days.'],
+      ['user_query', 'And for contractors?'],
+    ]);
+    expect(JSON.stringify(await admittedHistory(h.backend, again.run)), 'the run is not given the failure').not.to.contain(
+      MODEL_FAILED,
+    );
+    await answer(h, again.run, 'Ten days.');
+    expect(await messages(first.sessionId), 'the new answer stands where the failure was').to.deep.equal([
+      ['user_query', 'What is the leave policy?'],
+      ['bot_response', 'Twenty-five days.'],
+      ['user_query', 'And for contractors?'],
+      ['bot_response', 'Ten days.'],
+    ]);
+  });
+
+  it('a failed answer that a later answer followed is not the last one: refused, and nothing is removed', async () => {
+    const h = harness();
+    const first = await h.admit(text('What is the leave policy?'));
+    await fail(h, first.run);
+    const second = await h.admit({ sessionId: first.sessionId, ...text('And for contractors?') });
+    await answer(h, second.run, 'Ten days.');
+    const before = await messages(first.sessionId);
+    const refused = await h
+      .submit({ sessionId: first.sessionId, regenerate: { messageId: await errorRowId(first.sessionId) }, ...text('q') })
+      .catch((e: unknown) => e);
+    expect((refused as HarnessConflictError).code).to.equal('REGENERATE_NOT_LAST');
+    expect(await messages(first.sessionId)).to.deep.equal(before);
+  });
 });

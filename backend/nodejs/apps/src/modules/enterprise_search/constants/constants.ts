@@ -61,8 +61,8 @@ export const REASONING_EFFORT_VALUES = [
 
 export type ReasoningEffort = (typeof REASONING_EFFORT_VALUES)[number];
 
-// `chatSessions` discriminator predicates. Applied at buildFilter /
-// buildAgentConversationFilter call sites and at every id-only mutation
+// `chatSessions` discriminator predicates. Applied at buildFilter call
+// sites and at every id-only mutation
 // (findByIdAndUpdate → findOneAndUpdate) now that both session types share
 // one collection — without this, a plain-chat route could mutate an agent
 // session (or vice versa) purely by guessing/reusing an _id.

@@ -24,6 +24,7 @@ import { useFrontendPublicUrl } from '@/lib/hooks/use-frontend-public-url';
 import { joinRedirectUri } from '@/lib/api/frontend-public-url';
 import { ConnectorsApi } from '../../api';
 import { FormField, useFormFieldControl } from '@/app/(main)/workspace/components/form-field';
+import { whenPressEnds } from '@/app/(main)/workspace/components/use-form-validation';
 import {
   nestedConfigFromOAuthRegistrationDoc,
   readAuthValueFromFlatRecord,
@@ -61,6 +62,7 @@ export function AuthenticateTab() {
     instanceNameError,
     setAuthFormValue,
     setInstanceName,
+    setInstanceNameError,
     setSelectedAuthType,
     oauthCredentialBaselineTick,
     connectionCheck,
@@ -529,6 +531,12 @@ export function AuthenticateTab() {
               value={instanceName}
               disabled={isCheckingConnection}
               onChange={(e) => setInstanceName(e.target.value)}
+              onBlur={() => {
+                if (!instanceName.trim()) {
+                  // Shown once the press that left the field is over, so the press still lands.
+                  whenPressEnds(() => setInstanceNameError(t('workspace.actions.errors.instanceNameRequired')));
+                }
+              }}
               placeholder={t('workspace.actions.instanceNamePlaceholder', { name: connectorTypeName })}
               aria-invalid={instanceNameError ? true : undefined}
               style={{

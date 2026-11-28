@@ -21,7 +21,12 @@ import pytest
 
 from app.agents.agent_loop.protocol.formatter import AGUI_FORMATTER
 from app.harness.credentials.sources import ToolsetSecretSource
-from app.harness.credentials.tool_credentials import scope_of, toolset_reference
+from app.harness.credentials.tool_credentials import (
+    REF_KEY,
+    mcp_reference,
+    scope_of,
+    toolset_reference,
+)
 from app.utils.logger import log_record_fields
 from tests.support.agent_routes import (
     AGENTS,
@@ -90,6 +95,22 @@ def loop(monkeypatch) -> FakeLoop:
         return object(), {"isMultimodal": False, "provider": "openai"}, {}
     monkeypatch.setattr("app.api.routes.agent.get_llm_for_chat", llm)
     return fake
+
+
+def _frames(response: Response) -> list[tuple[str, dict]]:
+    frames = []
+    for block in response.text.split("\n\n"):
+        if block.startswith("event: ") and "\ndata: " in block:
+            event, data = block.split("\ndata: ", 1)
+            frames.append((event[len("event: "):], json.loads(data)))
+    return frames
+
+
+def _run_error(response: Response) -> dict:
+    for event, data in _frames(response):
+        if event == "RUN_ERROR":
+            return data
+    raise AssertionError(f"no RUN_ERROR in {response.text!r}")
 
 
 def _stream(client: TestClient, agent: str, caller: str, body: dict | None = None) -> Response:
@@ -289,30 +310,109 @@ class TestChatStreamToolsets:
         (call,) = loop.calls
         assert _resolved(config, call["query_info"]["toolsetConfigs"]["inst-1"])["who"] == "agent"
 
-    @pytest.mark.parametrize("stored,fragment", [
-        (None, "not configured: 'Jira'"),
-        ({"isAuthenticated": False}, "not authenticated: 'Jira'"),
-    ])
-    def test_unusable_credentials_stop_the_run_with_a_next_step(self, graph, loop, stored, fragment) -> None:
-        self._with_toolset(graph, "private")
-        config = FakeConfigService({"/services/toolsets/inst-1/u-alice": stored} if stored else {})
+    @pytest.mark.usefixtures("agents_run_as_the_caller")
+    def test_a_service_agent_runs_on_the_callers_own_credentials(self, graph, loop) -> None:
+        self._with_toolset(graph, "sa")
+        config = FakeConfigService({
+            "/services/toolsets/inst-1/sa": {"isAuthenticated": True, "who": "agent"},
+            "/services/toolsets/inst-1/u-bob": {"isAuthenticated": True, "who": "bob"},
+        })
         c, _ = make_client(graph, config)
-        response = _stream(c, "private", "alice")
-        assert response.status_code == 200
-        assert "RUN_ERROR" in response.text
-        assert fragment in response.text
-        assert "Workspace" in response.text
-        assert not loop.calls
+        _stream(c, "sa", "bob")
+        (call,) = loop.calls
+        # A reference to the caller's own record, resolved at the effect boundary, never the record.
+        assert call["query_info"]["toolsetConfigs"]["inst-1"] == toolset_reference("inst-1", "u-bob")
 
-    @pytest.mark.parametrize("stored,counts", [(None, (1, 0)), ({"isAuthenticated": False}, (0, 1))])
-    def test_the_stopped_run_logs_one_end_line_with_counts_not_names(
-        self, graph, loop, caplog, stored, counts,
+    @pytest.mark.parametrize("stored,problem", [
+        (None, "not_configured"),
+        ({"isAuthenticated": False}, "not_authenticated"),
+    ])
+    def test_a_toolset_the_user_has_not_connected_is_left_out_and_the_run_goes_on(
+        self, graph, loop, stored, problem,
     ) -> None:
         self._with_toolset(graph, "private")
         config = FakeConfigService({"/services/toolsets/inst-1/u-alice": stored} if stored else {})
         c, _ = make_client(graph, config)
+
+        response = _stream(c, "private", "alice", {"query": "do you like coffee?"})
+
+        assert response.status_code == 200
+        assert "RUN_ERROR" not in response.text
+        (call,) = loop.calls
+        assert call["query_info"]["toolsets"] == []
+        assert call["query_info"]["toolsetConfigs"] == {}
+        item = {
+            "kind": "toolset", "instanceId": "inst-1", "displayName": "Jira", "name": "jira",
+            "problem": problem, "authMode": None, "sharedCredential": False, "userCanConnect": True,
+        }
+        assert call["query_info"]["unavailableTools"] == [item]
+        # The run keeps it as a stub; only an answer that calls the stub offers Connect.
+        assert "tools_unavailable" not in response.text
+        assert "42" in response.text
+
+    def test_the_connected_toolsets_still_run_beside_a_missing_one(self, graph, loop) -> None:
+        self._with_toolset(graph, "shared")
+        graph.add_node("agentToolsets", {"_key": "ts2", "name": "gmail", "displayName": "Gmail", "instanceId": "inst-2"})
+        graph.add_edge("agentHasToolset", {"_from": f"{AGENTS}/shared", "_to": "agentToolsets/ts2"})
+        config = FakeConfigService({
+            "/services/toolsets/inst-1/u-bob": {"isAuthenticated": True, "who": "bob"},
+            # Alice (the agent's owner) connected Gmail; Bob never borrows her credential.
+            "/services/toolsets/inst-2/u-alice": {"isAuthenticated": True, "who": "alice"},
+        })
+        c, _ = make_client(graph, config)
+
+        _stream(c, "shared", "bob")
+
+        (call,) = loop.calls
+        assert [t["instanceId"] for t in call["query_info"]["toolsets"]] == ["inst-1"]
+        assert call["query_info"]["toolsetConfigs"] == {"inst-1": toolset_reference("inst-1", "u-bob")}
+        assert [i["instanceId"] for i in call["query_info"]["unavailableTools"]] == ["inst-2"]
+
+    def test_everything_connected_sends_no_notice(self, graph, loop) -> None:
+        self._with_toolset(graph, "private")
+        config = FakeConfigService({"/services/toolsets/inst-1/u-alice": {"isAuthenticated": True}})
+        c, _ = make_client(graph, config)
+        response = _stream(c, "private", "alice")
+        assert "tools_unavailable" not in response.text
+        assert loop.calls[0]["query_info"]["unavailableTools"] == []
+
+    @pytest.mark.usefixtures("agents_run_as_the_caller")
+    def test_a_service_agent_the_caller_has_not_connected_still_stops_and_names_it(self, graph, loop) -> None:
+        self._with_toolset(graph, "sa")
+        # A credential kept under the agent's key never stands in for the caller's own.
+        config = FakeConfigService({"/services/toolsets/inst-1/sa": {"isAuthenticated": True}})
+        c, _ = make_client(graph, config)
+
+        response = _stream(c, "sa", "bob")
+
+        error = _run_error(response)
+        assert error["code"] == "toolset_config_missing"
+        assert error["message"] == (
+            "This agent requires the following actions to be set up — not configured: 'Jira'. "
+            "Please connect your actions in Workspace → Actions before using this agent."
+        )
+        assert error["details"] == {
+            "agentId": "sa",
+            "serviceAccount": False,
+            "items": [{
+                "kind": "toolset", "instanceId": "inst-1", "displayName": "Jira", "name": "jira",
+                "problem": "not_configured", "authMode": None, "sharedCredential": False, "userCanConnect": True,
+            }],
+            "servers": [],
+        }
+        assert not loop.calls
+
+    @pytest.mark.usefixtures("agents_run_as_the_caller")
+    @pytest.mark.parametrize("stored,counts", [(None, (1, 0)), ({"isAuthenticated": False}, (0, 1))])
+    def test_the_stopped_run_logs_one_end_line_with_counts_not_names(
+        self, graph, loop, caplog, stored, counts,
+    ) -> None:
+        # A personal agent now runs without the toolset it cannot use; a service-account agent still stops.
+        self._with_toolset(graph, "sa")
+        config = FakeConfigService({"/services/toolsets/inst-1/u-bob": stored} if stored else {})
+        c, _ = make_client(graph, config)
         with caplog.at_level(logging.INFO):
-            _stream(c, "private", "alice", {"query": "hi", "runId": _RUN_ID})
+            _stream(c, "sa", "bob", {"query": "hi", "runId": _RUN_ID})
 
         [end] = _turn_ends(caplog)
         assert (end["stop_reason"], end["error_class"], end["code"], end["run_id"], end["level"]) == (
@@ -333,7 +433,8 @@ class TestChatStreamToolsets:
 
 
 class TestChatStreamMcpServers:
-    """An MCP server the run can't use stops it with a frame the chat can act on."""
+    """An MCP server the user can't use is left out of the run and named; a service-account
+    agent missing one still stops, with a frame the chat can act on."""
 
     def _attach(self, graph: InMemoryGraph, agent: str, instance_id: str = "inst-m", name: str = "GitHub") -> None:
         graph.add_node("agentMcpServers", {"_key": "ms", "instanceId": instance_id, "name": "github", "displayName": name})
@@ -352,58 +453,119 @@ class TestChatStreamMcpServers:
             **overrides,
         }
 
-    @staticmethod
-    def _run_error(response: Response) -> dict:
-        for block in response.text.split("\n\n"):
-            if block.startswith("event: RUN_ERROR"):
-                return json.loads(block.split("data: ", 1)[1])
-        raise AssertionError(f"no RUN_ERROR in {response.text!r}")
-
-    def test_a_server_the_user_has_not_connected_is_named_with_its_sign_in(self, graph, loop, caplog) -> None:
+    def test_a_server_the_user_has_not_connected_is_left_out_and_named(self, graph, loop) -> None:
         self._attach(graph, "private")
         c, _ = make_client(graph, self._config(**{"/services/mcp/instances/inst-m": self._instance()}))
 
-        with caplog.at_level(logging.INFO):
-            error = self._run_error(_stream(c, "private", "alice"))
+        response = _stream(c, "private", "alice")
 
-        assert error["code"] == "mcp_server_config_missing"
-        assert [(e["code"], e["unauthenticated"]) for e in _turn_ends(caplog)] == [("mcp_server_config_missing", 1)]
-        assert error["details"] == {
-            "agentId": "private",
-            "serviceAccount": False,
-            "servers": [{
-                "instanceId": "inst-m", "name": "GitHub", "problem": "not_connected",
-                "authMode": "oauth", "sharedCredential": False,
-            }],
-        }
-        assert not loop.calls
+        assert "RUN_ERROR" not in response.text
+        (call,) = loop.calls
+        assert call["query_info"]["mcpServers"] == []
+        assert call["query_info"]["mcpServerConfigs"] == {}
+        assert call["query_info"]["unavailableTools"] == [{
+            "kind": "mcp", "instanceId": "inst-m", "displayName": "GitHub", "name": "github",
+            "problem": "not_authenticated", "authMode": "oauth", "sharedCredential": False, "userCanConnect": True,
+        }]
+        assert "tools_unavailable" not in response.text
+
+    def test_a_connected_server_runs_with_the_users_own_credential(self, graph, loop) -> None:
+        self._attach(graph, "shared")
+        c, _ = make_client(graph, self._config(**{
+            "/services/mcp/instances/inst-m": self._instance(),
+            "/services/mcp/credentials/inst-m/u-bob": {"isAuthenticated": True, "who": "bob"},
+            "/services/mcp/credentials/inst-m/u-alice": {"isAuthenticated": True, "who": "alice"},
+        }))
+
+        _stream(c, "shared", "bob")
+
+        (call,) = loop.calls
+        config = call["query_info"]["mcpServerConfigs"]["inst-m"]
+        # A reference to the user's own credential, resolved when the session opens, never the record.
+        assert config[REF_KEY] == mcp_reference("inst-m", "u-bob") and config["ownerId"] == "u-bob"
+        assert call["query_info"]["unavailableTools"] == []
 
     def test_a_removed_server_is_marked_not_found(self, graph, loop) -> None:
         self._attach(graph, "private")
         c, _ = make_client(graph, self._config())
 
-        error = self._run_error(_stream(c, "private", "alice"))
+        _stream(c, "private", "alice")
+        (item,) = loop.calls[0]["query_info"]["unavailableTools"]
 
-        assert error["details"]["servers"] == [{"instanceId": "inst-m", "name": "GitHub", "problem": "not_found"}]
+        assert item["problem"] == "not_found"
+        assert item["userCanConnect"] is False
 
-    def test_a_missing_shared_credential_is_flagged(self, graph, loop) -> None:
+    def test_a_missing_shared_credential_is_for_an_admin(self, graph, loop) -> None:
         self._attach(graph, "private")
         shared = self._instance(authMode="api_token", useAdminAuth=True)
         c, _ = make_client(graph, self._config(**{"/services/mcp/instances/inst-m": shared}))
 
-        (server,) = self._run_error(_stream(c, "private", "alice"))["details"]["servers"]
+        _stream(c, "private", "alice")
+        (item,) = loop.calls[0]["query_info"]["unavailableTools"]
 
-        assert server["sharedCredential"] is True
-        assert server["authMode"] == "api_token"
+        assert item["sharedCredential"] is True
+        assert item["authMode"] == "api_token"
+        assert item["userCanConnect"] is False
+
+    @pytest.mark.usefixtures("agents_run_as_the_caller")
+    def test_a_service_agent_stops_until_the_caller_connects_its_servers(self, graph, loop) -> None:
+        self._attach(graph, "sa")
+        c, _ = make_client(graph, self._config(**{
+            "/services/mcp/instances/inst-m": self._instance(),
+            # A credential kept for the agent never backs anyone's run.
+            "/services/mcp/credentials/inst-m/sa": {"isAuthenticated": True},
+        }))
+
+        error = _run_error(_stream(c, "sa", "bob"))
+
+        assert error["code"] == "mcp_server_config_missing"
+        assert error["details"]["serviceAccount"] is False
+        assert error["details"]["agentId"] == "sa"
+        assert error["details"]["servers"] == [{
+            "instanceId": "inst-m", "name": "GitHub", "problem": "not_connected",
+            "authMode": "oauth", "sharedCredential": False,
+        }]
+        (item,) = error["details"]["items"]
+        assert item["kind"] == "mcp" and item["userCanConnect"] is True
+        assert not loop.calls
+
+    @pytest.mark.usefixtures("agents_run_as_the_caller")
+    def test_a_service_agent_runs_on_the_callers_own_server_credential(self, graph, loop) -> None:
+        self._attach(graph, "sa")
+        c, _ = make_client(graph, self._config(**{
+            "/services/mcp/instances/inst-m": self._instance(),
+            "/services/mcp/credentials/inst-m/sa": {"isAuthenticated": True, "who": "agent"},
+            "/services/mcp/credentials/inst-m/u-bob": {"isAuthenticated": True, "who": "bob"},
+        }))
+
+        _stream(c, "sa", "bob")
+
+        (call,) = loop.calls
+        assert call["query_info"]["mcpServerConfigs"]["inst-m"]["ownerId"] == "u-bob"
 
     def test_a_service_account_agent_says_so(self, graph, loop) -> None:
         self._attach(graph, "sa")
         c, _ = make_client(graph, self._config(**{"/services/mcp/instances/inst-m": self._instance()}))
 
-        error = self._run_error(_stream(c, "sa", "bob"))
+        error = _run_error(_stream(c, "sa", "bob"))
 
         assert error["details"]["serviceAccount"] is True
         assert error["details"]["agentId"] == "sa"
+
+
+class TestChatStreamProject:
+    def test_the_project_its_instructions_came_from_reaches_the_run(self, graph, loop) -> None:
+        c, _ = make_client(graph)
+        _stream(c, "private", "alice", {"query": "hi", "projectInstructions": "Cite the Q3 report.", "projectId": "proj-1"})
+        (call,) = loop.calls
+        assert call["query_info"]["projectInstructions"] == "Cite the Q3 report."
+        assert call["query_info"]["projectId"] == "proj-1"
+
+    def test_a_chat_in_no_project_names_none(self, graph, loop) -> None:
+        c, _ = make_client(graph)
+        _stream(c, "private", "alice")
+        (call,) = loop.calls
+        assert call["query_info"]["projectId"] is None
 
 
 class TestChatStreamKnowledge:
@@ -622,13 +784,29 @@ class TestNonStreamingChat:
         assert response.status_code == 429
         assert response.json()["message"] == "The model is busy. Try again shortly."
 
-    def test_missing_credentials_reach_the_caller_with_the_next_step(self, graph, loop) -> None:
+    def test_a_missing_toolset_the_answer_did_not_call_is_not_named(self, graph, loop) -> None:
+        # Only an answer that called the tool's stub names it (`not_connected_tools`).
         graph.add_node("agentToolsets", {"_key": "ts", "name": "jira", "displayName": "Jira", "instanceId": "inst-1"})
         graph.add_edge("agentHasToolset", {"_from": f"{AGENTS}/private", "_to": "agentToolsets/ts"})
         c, _ = make_client(graph)
         response = c.post("/api/v1/agent/private/chat", headers=as_user("alice"), json={"query": "hi"})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["answer"] == "42"
+        assert [i["instanceId"] for i in loop.calls[0]["query_info"]["unavailableTools"]] == ["inst-1"]
+        assert "unavailableTools" not in body
+        assert "events" not in body
+
+    @pytest.mark.usefixtures("agents_run_as_the_caller")
+    def test_a_service_agent_missing_the_callers_credentials_reaches_them_with_the_tools(self, graph, loop) -> None:
+        graph.add_node("agentToolsets", {"_key": "ts", "name": "jira", "displayName": "Jira", "instanceId": "inst-1"})
+        graph.add_edge("agentHasToolset", {"_from": f"{AGENTS}/sa", "_to": "agentToolsets/ts"})
+        c, _ = make_client(graph)
+        response = c.post("/api/v1/agent/sa/chat", headers=as_user("bob"), json={"query": "hi"})
         assert response.status_code == 424
-        assert "Workspace → Actions" in response.json()["message"]
+        body = response.json()
+        assert "Please connect your actions in Workspace → Actions" in body["message"]
+        assert [i["displayName"] for i in body["details"]["items"]] == ["Jira"]
 
     def test_agent_outside_reach_is_not_found(self, graph, loop) -> None:
         c, _ = make_client(graph)

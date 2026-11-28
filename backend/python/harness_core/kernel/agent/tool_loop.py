@@ -367,8 +367,8 @@ async def execute_tool_call(
     if runtime.tool_registry is not None and runtime.tool_registry.has(CALL_TOOL):
         # A tool found after the list was fixed is called through call_tool (R4): from here on, its own call.
         call = unwrapped(call)
-    _silent = call.name in _NO_EMIT_TOOLS
     tool_obj = _resolve_quietly(agent, call.name)
+    _silent = call.name in _NO_EMIT_TOOLS or getattr(tool_obj, "silent", False) is True
     if not _silent:
         _emit_payload: dict[str, Any] = {
             "tool": call.name, "args": call.arguments, "tool_call_id": call.id,
@@ -436,7 +436,7 @@ async def execute_tool_call(
 
         async def override_execute() -> ToolResult:
             return await handler.handle(call, ctx)
-    else:
+    elif not _silent:
         # --- Normal tool execution ---
         await obs.write_state(agent, goal, "running_tool", turn_index=turn_index, started_at=started_at, current_tool=call.name)
         await obs.append_timeline(agent, "tool_call", f"Calling tool: {call.name}", "running_tool", {"tool": call.name, "args": call.arguments})

@@ -20,7 +20,7 @@ vi.mock('next/navigation', () => ({
 }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 const mobile = vi.hoisted(() => ({ value: false }));
-vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => mobile.value }));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => mobile.value, useIsBelowDesktop: () => mobile.value }));
 
 const { JobsNavEntries } = await import('../jobs-nav-entries');
 const { MobileMenuButton } = await import('@/app/(main)/components/mobile-menu-button');
@@ -86,7 +86,7 @@ describe('the Needs you and Jobs entries', () => {
     renderInTheme(<JobsNavEntries />);
     const jobs = screen.getByRole('link', { name: 'Jobs' });
     const needsYou = screen.getByRole('link', { name: /^Needs you/ });
-    expect(jobs.style.backgroundColor).toBe('var(--olive-3)');
+    expect(jobs.style.backgroundColor).toBe('var(--fill-muted)');
     expect(needsYou.style.backgroundColor).toBe('transparent');
   });
 

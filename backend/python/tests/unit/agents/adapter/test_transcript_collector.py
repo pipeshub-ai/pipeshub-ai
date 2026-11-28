@@ -89,6 +89,30 @@ class TestDiscardedModelCall:
             ("text", "Searching."), ("text", "Answer"),
         ]
 
+    async def test_a_reply_discarded_after_it_ended_is_not_saved(self) -> None:
+        """A hook overruled the reply (`ask_in_text_recovery`) once it had ended: its text and
+        reasoning go, the earlier turn and the card that replaced it stay."""
+        collector = TranscriptCollector()
+
+        await collector.emit(_event(EventType.RUN_STARTED, {}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_START, {}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "Searching."}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_END, {}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_START, {}))
+        await collector.emit(_event(EventType.REASONING_MESSAGE_START, {}))
+        await collector.emit(_event(EventType.REASONING_MESSAGE_CONTENT, {"delta": "Ask which"}))
+        await collector.emit(_event(EventType.REASONING_MESSAGE_END, {}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "Which report do you mean?"}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_END, {}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_END, {"discarded": True}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_START, {}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_END, {}))
+        await collector.emit(_event(EventType.TOOL_CALL_START, {"tool": "ask_user_question", "tool_call_id": "c1"}))
+
+        assert [(p["type"], p.get("content")) for p in collector.parts] == [
+            ("text", "Searching."), ("text", ""), ("tool_call", None),
+        ]
+
 
 class TestToolCallParts:
     async def test_tool_call_lifecycle_produces_completed_part(self) -> None:
@@ -168,6 +192,22 @@ class TestToolCallParts:
 
         assert collector.parts[0]["approved"] is True
         assert "approved" not in collector.parts[1]
+
+    async def test_why_an_approved_call_didnt_run_is_kept_on_its_part(self) -> None:
+        """So the card still says it after a reload."""
+        collector = TranscriptCollector()
+
+        await collector.emit(_event(EventType.RUN_STARTED, {}))
+        await collector.emit(_event(EventType.TOOL_CALL_START, {
+            "tool": "mcp_jira_create_issue", "args": {}, "tool_call_id": "c1", "approval_answer": "allowed",
+            "approval_reason": "access_lost",
+        }))
+        await collector.emit(_event(EventType.TOOL_CALL_START, {
+            "tool": "jira_search", "args": {}, "tool_call_id": "c2", "approval_reason": "made_up",
+        }))
+
+        assert collector.parts[0]["approvalReason"] == "access_lost"
+        assert "approvalReason" not in collector.parts[1]
 
     async def test_result_preview_is_truncated(self) -> None:
         collector = TranscriptCollector()

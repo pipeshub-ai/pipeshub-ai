@@ -57,11 +57,14 @@ export interface ConversationHistory {
   ledger: HistoryLedger | null;
 }
 
-/** A conversation's counter and ledger as a transaction that wrote its session holds them. */
+/**
+ * A conversation's counter and ledger as a transaction that wrote its session holds them; on MongoDB, also the
+ * session's change counter, which the rows the harness writes next take their change stamps from.
+ */
 export type AccountedConversation = Pick<
   ConversationHistory,
   'lastSeq' | 'ledger'
->;
+> & { rev?: number };
 
 export type ImportMismatch = 'changed' | 'interleaved' | 'untracked';
 

@@ -13,6 +13,9 @@ from pydantic import ValidationError
 from app.utils.user_messages import DATABASE_UNREACHABLE
 from tests.support.agent_versions import versions_beside
 from tests.support.bound_org import bind_test_org
+from tests.support.edition import (
+    org_wide_service_account_agents,  # noqa: F401 - fixture
+)
 from tests.support.record_access import InMemoryRecordAccess
 
 
@@ -104,6 +107,15 @@ class TestChatQueryModel:
         from app.api.routes.agent import ChatQuery
         with pytest.raises(ValidationError):
             ChatQuery(query="q", projectInstructions="x" * 8001)
+
+    def test_project_id_defaults_to_none(self) -> None:
+        from app.api.routes.agent import ChatQuery
+        assert ChatQuery(query="q").projectId is None
+
+    def test_project_id_names_the_project_its_instructions_came_from(self) -> None:
+        from app.api.routes.agent import ChatQuery
+        q = ChatQuery(query="q", projectInstructions="Cite the Q3 report.", projectId="proj-1")
+        assert q.projectId == "proj-1"
 
 
 class TestMergeEndUserServiceAccountUserInfo:
@@ -428,6 +440,31 @@ class TestBuildPriorRoutingMessages:
                 history, blob_store=blob, org_id="org-x", is_multimodal_llm=False, **caller,
             )
             assert msgs[0].content == "read this"
+        blob.get_record_from_storage.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_access_check_is_scoped_to_this_chat(self) -> None:
+        """A history attachment is checked for this chat and its aclVersion."""
+        from app.api.routes.agent import _build_prior_routing_messages
+        blob = MagicMock()
+        blob.get_record_from_storage = AsyncMock(return_value=None)
+        check = AsyncMock(return_value=False)
+        with patch("app.utils.record_access.caller_can_read_virtual_record", check):
+            await _build_prior_routing_messages(
+                {
+                    "conversationId": "conv-7",
+                    "aclVersion": 4,
+                    "previous_conversations": [{
+                        "role": "user_query",
+                        "content": "read this",
+                        "attachments": [{"mimeType": "application/pdf", "virtualRecordId": "vr-b"}],
+                    }],
+                },
+                blob_store=blob, org_id="org-x", user_id="u1", graph_provider=_readable_graph(),
+                is_multimodal_llm=False,
+            )
+        assert check.await_args.kwargs["conversation_id"] == "conv-7"
+        assert check.await_args.kwargs["acl_version"] == 4
         blob.get_record_from_storage.assert_not_called()
 
     @pytest.mark.asyncio
@@ -2194,8 +2231,12 @@ class TestCreateSkillEdges:
         assert edges[0]["_from"] == "agentInstances/agent1"
 
     @pytest.mark.asyncio
-    async def test_links_builtin_skill_regardless_of_creator(self) -> None:
+    async def test_links_builtin_skill_regardless_of_creator(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.agents.agent_loop.skills.graph_store import skill_visible_to
         from app.api.routes.agent import _create_skill_edges
+
+        # The default rule: a builtin-sourced skill is the whole org's.
+        monkeypatch.setattr("app.edition_services.skill_visible_to", skill_visible_to)
         graph_provider = AsyncMock()
         graph_provider.get_document = AsyncMock(
             return_value={"orgId": "org1", "createdBy": "someone-else", "source": "builtin"}
@@ -3538,6 +3579,7 @@ class TestChatStream:
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
+            "orgId": "o1",
             "name": "A1", "knowledge": [], "toolsets": [],
             "models": ["mk1_mn1"],
         })
@@ -3582,6 +3624,7 @@ class TestChatStream:
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
+            "orgId": "o1",
             "name": "A1", "knowledge": [], "toolsets": [],
             "models": [],
         })
@@ -3626,6 +3669,7 @@ class TestChatStream:
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
+            "orgId": "o1",
             "name": "A1",
             "knowledge": [
                 {"connectorId": "google_drive", "filters": {}},
@@ -3681,6 +3725,7 @@ class TestChatStream:
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
+            "orgId": "o1",
             "name": "A1",
             "knowledge": [],
             "toolsets": [
@@ -3733,6 +3778,7 @@ class TestChatStream:
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
+            "orgId": "o1",
             "name": "A1",
             "knowledge": [{"connectorId": "google_drive", "filters": {}}],
             "toolsets": [],
@@ -3775,6 +3821,7 @@ class TestChatStream:
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
+            "orgId": "o1",
             "name": "A1", "knowledge": [], "toolsets": [], "models": ["mk1_mn1"],
         })
         services["config_service"].get_config = AsyncMock(return_value={"llm": []})
@@ -4297,6 +4344,7 @@ class TestCreateKnowledgeEdgesFullCoverage:
             await _create_knowledge_edges("ak1", knowledge, "uk1", gp, log)
 
 
+@pytest.mark.usefixtures("org_wide_service_account_agents")
 class TestServiceAccountAgentRoutes:
     @pytest.mark.asyncio
     async def test_create_agent_service_account_forces_org_permission(self) -> None:
@@ -4364,8 +4412,13 @@ class TestServiceAccountAgentRoutes:
                 await update_agent(request, "a1")
 
     @pytest.mark.asyncio
-    async def test_chat_stream_service_account_uses_agent_credentials_lookup(self) -> None:
+    async def test_chat_stream_service_account_uses_agent_credentials_lookup(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from fastapi.responses import StreamingResponse
+
+        from app.modules.agents.caller_policy import default_agent_caller_policy
+
+        # The default policy: a service-account agent runs as itself, on the credentials kept for it.
+        monkeypatch.setattr("app.edition_services.agent_caller_policy", default_agent_caller_policy)
 
         from app.api.routes.agent import chat_stream
 
@@ -4393,7 +4446,7 @@ class TestServiceAccountAgentRoutes:
             "email": "creator@example.com",
         })
 
-        async def mock_config(path, *args, **kwargs):
+        async def mock_config(path, *args, **kwargs) -> dict:
             if "toolsets" in str(path):
                 return {"isAuthenticated": True}
             return {"llm": []}

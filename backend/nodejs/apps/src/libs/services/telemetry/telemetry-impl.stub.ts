@@ -12,6 +12,10 @@ export const telemetryOffMessage = 'Telemetry disabled';
 
 export const isTelemetryEnabled = (): boolean => false;
 
+export const isCollecting = (): boolean => false;
+
+export const setCollectionConsent = (_given: boolean): void => {};
+
 export const recordEvent = (
   _event: string,
   _props?: Record<string, unknown>,
@@ -26,6 +30,10 @@ export const setMetricCollectionEnabled = (
   _org: string,
   _enabled: boolean,
 ): void => {};
+
+export const setMongoMissingIndexes = (_count: number): void => {};
+
+export const recordRateLimitStoreFallback = (_prefix: string): void => {};
 
 const instrument = {
   inc(_labels?: Labels, _value?: number): void {},

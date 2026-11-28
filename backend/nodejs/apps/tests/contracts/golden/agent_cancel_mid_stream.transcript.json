@@ -1,5 +1,8 @@
 {
   "conversation": {
+    "modelInfo": {
+      "chatMode": "quick"
+    },
     "sessionType": "agent",
     "nextSeq": 2,
     "userId": "oid-1",
@@ -11,11 +14,9 @@
     "isArchived": false,
     "lastActivityAt": "<clock>",
     "status": "Stopped",
-    "modelInfo": {
-      "chatMode": "quick"
-    },
     "agentKey": "agent-1",
     "conversationSource": "agent_chat",
+    "rev": 2,
     "_id": "oid-3",
     "sharedWith": [],
     "conversationErrors": [],
@@ -25,12 +26,6 @@
   },
   "messages": [
     {
-      "sessionId": "oid-3",
-      "orgId": "oid-2",
-      "seq": 1,
-      "messageType": "user_query",
-      "content": "Export the Q3 report",
-      "contentFormat": "MARKDOWN",
       "modelInfo": {
         "chatMode": "quick"
       },
@@ -41,6 +36,14 @@
         "records": [],
         "recordsExact": []
       },
+      "sessionId": "oid-3",
+      "orgId": "oid-2",
+      "seq": 1,
+      "changeRev": 1,
+      "authorUserId": "oid-1",
+      "messageType": "user_query",
+      "content": "Export the Q3 report",
+      "contentFormat": "MARKDOWN",
       "parts": [],
       "_id": "oid-4",
       "createdAt": "<timestamp>",
@@ -54,15 +57,6 @@
       "reasoning": []
     },
     {
-      "sessionId": "oid-3",
-      "orgId": "oid-2",
-      "seq": 2,
-      "messageType": "bot_response",
-      "content": "",
-      "contentFormat": "MARKDOWN",
-      "status": "stopped",
-      "citations": [],
-      "followUpQuestions": [],
       "modelInfo": {
         "chatMode": "quick"
       },
@@ -73,12 +67,23 @@
         "records": [],
         "recordsExact": []
       },
+      "sessionId": "oid-3",
+      "orgId": "oid-2",
+      "seq": 2,
+      "changeRev": 2,
+      "requestedBy": "oid-1",
+      "inReplyTo": "oid-4",
+      "messageType": "bot_response",
+      "content": "",
+      "contentFormat": "MARKDOWN",
+      "status": "stopped",
+      "citations": [],
+      "followUpQuestions": [],
       "parts": [
         {
           "type": "text",
           "content": "",
-          "runId": "uuid-1",
-          "isFinal": true
+          "runId": "uuid-1"
         },
         {
           "type": "tool_call",
@@ -90,9 +95,15 @@
           "argsSummary": "Export Report: \"q3\"",
           "resultPreview": "{\"name\": \"q3\", \"rows\": 3}",
           "resultSummary": "Completed successfully"
+        },
+        {
+          "type": "text",
+          "content": "",
+          "isFinal": true
         }
       ],
-      "_id": "oid-5",
+      "labelVer": "oid-5",
+      "_id": "oid-6",
       "createdAt": "<timestamp>",
       "updatedAt": "<timestamp>",
       "feedback": [],

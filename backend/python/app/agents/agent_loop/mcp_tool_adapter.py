@@ -63,7 +63,9 @@ from app.agents.mcp.failure import (
     misconfigured_level,
 )
 from app.agents.mcp.oauth_client import MCPOAuthError
+from app.agents.mcp.service import uses_shared_credential
 from app.agents.mcp.token_refresh import MCPTokenRefreshError
+from app.modules.agents.privacy.ledger import note_shared_sign_in
 from app.utils.url_redaction import redact_urls_in_text
 from harness_core.effects.failures import tool_error_code
 from harness_core.mcp_hub.annotations import declared_hints, hint_tags
@@ -193,6 +195,11 @@ class MCPToolAdapter(SchemaShallowValidationMixin, Tool):
         return {"mcp_server_id": self._server.instance_id}
 
     @property
+    def shared_sign_in(self) -> str | None:
+        """The server's id when its calls sign in as the one account an admin shares with everyone."""
+        return self._server.instance_id if uses_shared_credential(self._server.instance) else None
+
+    @property
     def raw_name(self) -> str:
         """The server's own name for the tool. Unlike `name`, it doesn't depend on which other
         servers this request loaded."""
@@ -281,6 +288,9 @@ class MCPToolAdapter(SchemaShallowValidationMixin, Tool):
         return copy.deepcopy(self._raw_input_schema)
 
     async def execute(self, **kwargs: Any) -> ToolOutput:  # noqa: ANN401
+        if (shared := self.shared_sign_in) is not None:
+            # Here, where the call is made, whatever asked for it; an error can hold what the server said too.
+            note_shared_sign_in(shared)
         try:
             raw_result = await self._call_unless_stopped(kwargs)
         except _StoppedByUser:

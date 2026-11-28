@@ -15,7 +15,7 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(),
   usePathname: () => '/chat/',
 }));
-vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false, useIsBelowDesktop: () => false }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 
 const api = vi.hoisted(() => ({ setConversationPinned: vi.fn() }));
@@ -41,7 +41,7 @@ function chat(overrides: Partial<Conversation> = {}): Conversation {
 }
 
 /** Reads the row from the store, as the sidebar does, so the menu follows the pin. */
-function StoreRow(props: { agentId?: string; projectId?: string; onPinnedChange?: (pinned: boolean) => void }) {
+function StoreRow(props: { agentId?: string; projectId?: string }) {
   const conversation = useChatStore((s) => s.conversations.find((c) => c.id === 'conv-1'));
   if (!conversation) return null;
   return <ChatSectionElement conversation={conversation} isActive={false} onClick={vi.fn()} {...props} />;
@@ -52,7 +52,7 @@ const version = () => useChatStore.getState().conversationsVersion;
 const toastLines = () => useToastStore.getState().toasts.map((t) => `${t.variant}:${t.title}`);
 
 async function openMenu() {
-  const row = screen.getByRole('link', { name: 'Quarterly plan' }).parentElement as HTMLElement;
+  const row = screen.getByRole('link', { name: /^Quarterly plan/ }).parentElement as HTMLElement;
   fireEvent.mouseEnter(row);
   const trigger = within(row).getByRole('button');
   await act(async () => {
@@ -95,12 +95,15 @@ describe('pinning a chat from the sidebar', () => {
     expect(screen.getByRole('menuitem', { name: 'Unpin' })).toBeTruthy();
   });
 
-  it('reloads the list once the server has confirmed, so the order matches the server’s', async () => {
+  it('reloads nothing once the server has confirmed: the row already moved, in the order the server lists it', async () => {
     renderInTheme(<StoreRow />);
 
     await choose('Pin');
 
-    await waitFor(() => expect(version()).toBe(1));
+    await waitFor(() => expect(api.setConversationPinned).toHaveBeenCalledWith('conv-1', true));
+    await act(async () => {});
+    expect(pinnedInStore()).toBe(true);
+    expect(version()).toBe(0);
   });
 
   it('shows the pin before the server has answered', async () => {
@@ -113,7 +116,8 @@ describe('pinning a chat from the sidebar', () => {
     expect(pinnedInStore()).toBe(true);
     expect(version()).toBe(0);
     await act(async () => answer());
-    expect(version()).toBe(1);
+    expect(pinnedInStore()).toBe(true);
+    expect(version()).toBe(0);
   });
 
   it('unpins a pinned chat and removes the field', async () => {
@@ -135,6 +139,20 @@ describe('pinning a chat from the sidebar', () => {
     await waitFor(() => expect(toastLines()).toEqual(['error:Could not pin the chat']));
     expect(pinnedInStore()).toBeUndefined();
     expect(version()).toBe(0);
+  });
+
+  it('puts a chat whose pin failed back in its place, not at the top where the pin had moved it', async () => {
+    let release: (value?: unknown) => void = () => {};
+    api.setConversationPinned.mockImplementation(() => new Promise((_resolve, reject) => { release = () => reject(new Error('500')); }));
+    useChatStore.setState({ conversations: [chat({ id: 'conv-0', title: 'Newer', lastActivityAt: 2000 }), chat()] });
+    renderInTheme(<StoreRow />);
+    const ids = () => useChatStore.getState().conversations.map((c) => `${c.id}${c.isPinned ? '*' : ''}`);
+
+    await choose('Pin');
+    expect(ids()).toEqual(['conv-1*', 'conv-0']);
+
+    await act(async () => release());
+    await waitFor(() => expect(ids()).toEqual(['conv-0', 'conv-1']));
   });
 
   it('keeps the chat pinned and says so when unpinning fails', async () => {
@@ -166,7 +184,8 @@ describe('pinning a chat from the sidebar', () => {
     renderInTheme(<StoreRow />);
 
     await choose('Pin');
-    await waitFor(() => expect(version()).toBe(1));
+    await waitFor(() => expect(api.setConversationPinned).toHaveBeenCalledTimes(1));
+    await act(async () => {});
     await choose('Unpin');
 
     expect(api.setConversationPinned.mock.calls).toEqual([
@@ -176,14 +195,21 @@ describe('pinning a chat from the sidebar', () => {
     expect(pinnedInStore()).toBeUndefined();
   });
 
-  it('tells a list that keeps its own rows about the change, and about the undo when it fails', async () => {
-    const onPinnedChange = vi.fn();
-    api.setConversationPinned.mockRejectedValue(new Error('500'));
-    renderInTheme(<StoreRow onPinnedChange={onPinnedChange} />);
+  it('pins the row in the open More chats list too, and puts it back in its place when the request fails', async () => {
+    let release: (value?: unknown) => void = () => {};
+    api.setConversationPinned.mockImplementation(() => new Promise((_resolve, reject) => { release = () => reject(new Error('500')); }));
+    const row = useChatStore.getState().conversations[0];
+    useChatStore.setState({
+      moreChats: { key: 4, rows: [{ ...row, id: 'conv-0', title: 'Other' }, row], page: 1, hasNextPage: false, isLoading: false, isLoadingMore: false },
+    });
+    renderInTheme(<StoreRow />);
 
     await choose('Pin');
+    const moreIds = () => useChatStore.getState().moreChats.rows.map((c) => `${c.id}${c.isPinned ? '*' : ''}`);
+    expect(moreIds()).toEqual(['conv-1*', 'conv-0']);
 
-    await waitFor(() => expect(onPinnedChange.mock.calls).toEqual([[true], [false]]));
+    await act(async () => release());
+    await waitFor(() => expect(moreIds()).toEqual(['conv-0', 'conv-1']));
   });
 
   it('does not offer Pin on an agent chat, which has no pin', async () => {

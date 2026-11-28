@@ -6,13 +6,13 @@ import {
   Box,
   DropdownMenu,
   Flex,
-  IconButton,
   SegmentedControl,
   Text,
   TextField,
 } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { IconMenuItem } from '@/app/components/ui/icon-menu-item';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { ProjectApi } from '@/chat/project-api';
@@ -24,8 +24,6 @@ import { toast } from '@/lib/store/toast-store';
 import { formatRelativeTime } from '@/lib/utils/formatters';
 import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-button';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { BetaBadge } from '@/app/components/ui/beta-badge';
-import { MOBILE_HAMBURGER_GUTTER_PX } from '@/app/components/sidebar/constants';
 import { pageInlinePadding } from '@/app/(main)/workspace/components/settings-page-container';
 
 const PROJECT_LIST_PAGE_SIZE = 30;
@@ -49,8 +47,8 @@ export function projectCardActions(project: Pick<ProjectSummary, 'role' | 'isPin
 }
 
 const ACTION_ICON: Record<ProjectCardAction, string> = {
-  pin: 'star_outline',
-  unpin: 'star',
+  pin: 'keep',
+  unpin: 'keep_off',
   archive: 'archive',
   unarchive: 'unarchive',
   delete: 'delete',
@@ -133,7 +131,7 @@ function ProjectCard({ project, onOpen, onAction, isBusy = false }: ProjectCardP
             <MaterialIcon name="folder" size={18} color={project.color || 'var(--accent-11)'} />
           </Box>
           <Flex align="center" gap="2">
-            {project.isPinned && <MaterialIcon name="star" size={16} color="var(--amber-11)" />}
+            {project.isPinned && <MaterialIcon name="keep" variant="filled" size={16} color="var(--text-secondary)" />}
             <Text size="1" style={{ color: 'var(--slate-11)' }}>
               {t(`chat.projects.roles.${project.role === 'none' ? 'viewer' : project.role}`)}
             </Text>
@@ -212,25 +210,17 @@ function ProjectCard({ project, onOpen, onAction, isBusy = false }: ProjectCardP
               </button>
             </DropdownMenu.Trigger>
             <DropdownMenu.Content side="bottom" align="end" sideOffset={4} style={{ minWidth: 170 }}>
-              {actions.map((action) => {
-                const danger = action === 'delete' || action === 'leave';
-                const color = danger ? 'var(--red-11)' : 'var(--slate-11)';
-                return (
-                  <DropdownMenu.Item
-                    key={action}
-                    color={danger ? 'red' : undefined}
-                    disabled={isBusy}
-                    onSelect={() => onAction(action)}
-                  >
-                    <Flex align="center" gap="2">
-                      <MaterialIcon name={ACTION_ICON[action]} size={16} color={color} />
-                      <Text size="2" style={{ color }}>
-                        {t(ACTION_LABEL_KEY[action])}
-                      </Text>
-                    </Flex>
-                  </DropdownMenu.Item>
-                );
-              })}
+              {actions.map((action) => (
+                <IconMenuItem
+                  key={action}
+                  icon={ACTION_ICON[action]}
+                  color={action === 'delete' || action === 'leave' ? 'red' : undefined}
+                  disabled={isBusy}
+                  onSelect={() => onAction(action)}
+                >
+                  {t(ACTION_LABEL_KEY[action])}
+                </IconMenuItem>
+              ))}
             </DropdownMenu.Content>
           </DropdownMenu.Root>
         </Box>
@@ -409,197 +399,148 @@ export function ProjectList() {
   });
 
   return (
-    <Flex direction="column" style={{ width: '100%' }}>
-      {isMobile && <ProjectsMobileHeader onCreate={() => setCreateOpen(true)} />}
-      <Flex
-        direction="column"
-        gap="5"
-        style={{
-          width: '100%',
-          paddingTop: isMobile ? 'var(--space-4)' : 'var(--space-6)',
-          paddingBottom: 'var(--space-6)',
-          paddingInline: pageInlinePadding(PROJECTS_MAX_WIDTH),
-        }}
-      >
-        {!isMobile && (
-          <Flex align="center" justify="between" wrap="wrap" gap="3">
-            <Flex align="center" gap="3" style={{ minWidth: 0 }}>
-              <SidebarExpandButton placement="inline" />
-              <Text size="6" weight="bold" style={{ color: 'var(--slate-12)' }}>
-                {t('projects.pageTitle')}
-              </Text>
-            </Flex>
-            <LoadingButton color="jade" className="touch-hit" onClick={() => setCreateOpen(true)}>
-              <Flex align="center" gap="2">
-                <MaterialIcon name="add" size={16} />
-                {t('chat.projects.newProject')}
-              </Flex>
-            </LoadingButton>
-          </Flex>
-        )}
-
-        <SegmentedControl.Root
-          value={activeTab}
-          onValueChange={(value) => setActiveTab(value as ProjectListTab)}
-          size={isMobile ? '3' : '2'}
-          style={{ alignSelf: 'flex-start', ...(isMobile ? { height: 44 } : {}) }}
-        >
-          <SegmentedControl.Item value="active">
-            {t('projects.tabYourProjects')}
-          </SegmentedControl.Item>
-          <SegmentedControl.Item value="archived">
-            {t('projects.tabArchived')}
-          </SegmentedControl.Item>
-        </SegmentedControl.Root>
-
-        <TextField.Root
-          placeholder={t('projects.searchPlaceholder')}
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          style={{ maxWidth: 360 }}
-        >
-          <TextField.Slot>
-            <MaterialIcon name="search" size={16} color="var(--slate-11)" />
-          </TextField.Slot>
-        </TextField.Root>
-
-        {isLoading ? (
-          <Flex align="center" justify="center" style={{ padding: 'var(--space-8) 0' }}>
-            <LottieLoader autoplay loop style={{ width: 48, height: 48 }} />
-          </Flex>
-        ) : hasError ? (
-          <Text size="2" style={{ color: '#ef4444' }}>
-            {t('projects.failedToLoad')}
-          </Text>
-        ) : sorted.length === 0 && search.trim() ? (
-          <Flex direction="column" align="center" gap="2" role="status" style={{ padding: 'var(--space-8) 0' }}>
-            <MaterialIcon name="search_off" size={40} color="var(--slate-11)" />
-            <Text size="3" weight="medium" style={{ color: 'var(--slate-11)', textAlign: 'center', overflowWrap: 'anywhere' }}>
-              {t('projects.noSearchResults', { query: search.trim() })}
-            </Text>
-            <Text size="2" style={{ color: 'var(--slate-11)' }}>
-              {t('projects.noSearchResultsHint')}
-            </Text>
-            <LoadingButton variant="soft" color="gray" onClick={() => setSearch('')}>
-              {t('projects.clearSearch')}
-            </LoadingButton>
-          </Flex>
-        ) : sorted.length === 0 ? (
-          <Flex direction="column" align="center" gap="2" style={{ padding: 'var(--space-8) 0' }}>
-            <MaterialIcon name="folder_open" size={40} color="var(--slate-11)" />
-            <Text size="3" weight="medium" style={{ color: 'var(--slate-11)' }}>
-              {t(
-                activeTab === 'archived'
-                  ? 'projects.archivedEmptyState'
-                  : 'projects.emptyState',
-              )}
-            </Text>
-            <Text size="2" style={{ color: 'var(--slate-11)' }}>
-              {t(
-                activeTab === 'archived'
-                  ? 'projects.archivedEmptyStateHint'
-                  : 'projects.emptyStateHint',
-              )}
-            </Text>
-          </Flex>
-        ) : (
-          <Flex direction="column" gap="4">
-            <Box
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
-                gap: 'var(--space-4)',
-              }}
-            >
-              {sorted.map((project) => (
-                <ProjectCard
-                  key={project._id}
-                  project={project}
-                  isBusy={busyId === project._id}
-                  onOpen={() => openProject(project._id)}
-                  onAction={(action) => void runCardAction(project, action)}
-                />
-              ))}
-            </Box>
-            {hasMore && (
-              <Flex justify="center">
-                <LoadingButton variant="outline" loading={isLoadingMore} onClick={loadMore}>
-                  {t('projects.loadMore')}
-                </LoadingButton>
-              </Flex>
-            )}
-          </Flex>
-        )}
-
-        <DeleteProjectDialog
-          open={pendingDelete !== null}
-          onOpenChange={(open) => !open && setPendingDelete(null)}
-          onConfirm={confirmDelete}
-          isDeleting={pendingDelete !== null && busyId === pendingDelete._id}
-          projectName={pendingDelete?.name}
-        />
-
-        <LeaveProjectDialog
-          open={pendingLeave !== null}
-          onOpenChange={(open) => !open && setPendingLeave(null)}
-          projectName={pendingLeave?.name ?? ''}
-          onConfirm={confirmLeave}
-          isLeaving={pendingLeave !== null && busyId === pendingLeave._id}
-        />
-
-        <CreateProjectDialog
-          open={createOpen}
-          onOpenChange={setCreateOpen}
-          onCreated={(project) => {
-            upsertProjectInList({ ...project, conversationCount: 0 });
-            openProject(project._id);
-          }}
-        />
-      </Flex>
-    </Flex>
-  );
-}
-
-/** Phones: the same 40px title bar as All artifacts, beside the fixed menu button. */
-function ProjectsMobileHeader({ onCreate }: { onCreate: () => void }) {
-  const { t } = useTranslation();
-  return (
     <Flex
-      align="center"
-      justify="between"
-      gap="3"
+      direction="column"
+      gap="5"
       style={{
-        height: 40,
-        padding: `0 var(--space-2) 0 ${MOBILE_HAMBURGER_GUTTER_PX}px`,
-        borderBottom: '1px solid var(--olive-3)',
-        flexShrink: 0,
+        width: '100%',
+        paddingTop: 'var(--space-6)',
+        paddingBottom: 'var(--space-6)',
+        paddingInline: pageInlinePadding(PROJECTS_MAX_WIDTH),
       }}
     >
-      <Flex align="center" gap="2" style={{ minWidth: 0 }}>
-        <h1
-          style={{
-            margin: 0,
-            fontSize: 'var(--font-size-2)',
-            fontWeight: 'var(--font-weight-medium)',
-            lineHeight: 'var(--line-height-2)',
-            whiteSpace: 'nowrap',
-            color: 'var(--slate-12)',
-          }}
-        >
-          {t('projects.pageTitle')}
-        </h1>
-        <BetaBadge />
+      <Flex align="center" justify="between" wrap="wrap" gap="3">
+        <Flex align="center" gap="3" style={{ minWidth: 0 }}>
+          <SidebarExpandButton placement="inline" />
+          <Text size="6" weight="bold" style={{ color: 'var(--slate-12)' }}>
+            {t('projects.pageTitle')}
+          </Text>
+        </Flex>
+        <LoadingButton color="jade" className="touch-hit" onClick={() => setCreateOpen(true)}>
+          <Flex align="center" gap="2">
+            <MaterialIcon name="add" size={16} />
+            {t('chat.projects.newProject')}
+          </Flex>
+        </LoadingButton>
       </Flex>
-      <IconButton
-        className="touch-hit"
-        variant="ghost"
-        size="2"
-        color="gray"
-        onClick={onCreate}
-        aria-label={t('chat.projects.newProject')}
+
+      <SegmentedControl.Root
+        value={activeTab}
+        onValueChange={(value) => setActiveTab(value as ProjectListTab)}
+        size={isMobile ? '3' : '2'}
+        style={{ alignSelf: 'flex-start', ...(isMobile ? { height: 44 } : {}) }}
       >
-        <MaterialIcon name="add" size={18} />
-      </IconButton>
+        <SegmentedControl.Item value="active">
+          {t('projects.tabYourProjects')}
+        </SegmentedControl.Item>
+        <SegmentedControl.Item value="archived">
+          {t('projects.tabArchived')}
+        </SegmentedControl.Item>
+      </SegmentedControl.Root>
+
+      <TextField.Root
+        placeholder={t('projects.searchPlaceholder')}
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        style={{ maxWidth: 360 }}
+      >
+        <TextField.Slot>
+          <MaterialIcon name="search" size={16} color="var(--slate-11)" />
+        </TextField.Slot>
+      </TextField.Root>
+
+      {isLoading ? (
+        <Flex align="center" justify="center" style={{ padding: 'var(--space-8) 0' }}>
+          <LottieLoader autoplay loop style={{ width: 48, height: 48 }} />
+        </Flex>
+      ) : hasError ? (
+        <Text size="2" style={{ color: '#ef4444' }}>
+          {t('projects.failedToLoad')}
+        </Text>
+      ) : sorted.length === 0 && search.trim() ? (
+        <Flex direction="column" align="center" gap="2" role="status" style={{ padding: 'var(--space-8) 0' }}>
+          <MaterialIcon name="search_off" size={40} color="var(--slate-11)" />
+          <Text size="3" weight="medium" style={{ color: 'var(--slate-11)', textAlign: 'center', overflowWrap: 'anywhere' }}>
+            {t('projects.noSearchResults', { query: search.trim() })}
+          </Text>
+          <Text size="2" style={{ color: 'var(--slate-11)' }}>
+            {t('projects.noSearchResultsHint')}
+          </Text>
+          <LoadingButton variant="soft" color="gray" onClick={() => setSearch('')}>
+            {t('projects.clearSearch')}
+          </LoadingButton>
+        </Flex>
+      ) : sorted.length === 0 ? (
+        <Flex direction="column" align="center" gap="2" style={{ padding: 'var(--space-8) 0' }}>
+          <MaterialIcon name="folder_open" size={40} color="var(--slate-11)" />
+          <Text size="3" weight="medium" style={{ color: 'var(--slate-11)' }}>
+            {t(
+              activeTab === 'archived'
+                ? 'projects.archivedEmptyState'
+                : 'projects.emptyState',
+            )}
+          </Text>
+          <Text size="2" style={{ color: 'var(--slate-11)' }}>
+            {t(
+              activeTab === 'archived'
+                ? 'projects.archivedEmptyStateHint'
+                : 'projects.emptyStateHint',
+            )}
+          </Text>
+        </Flex>
+      ) : (
+        <Flex direction="column" gap="4">
+          <Box
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
+              gap: 'var(--space-4)',
+            }}
+          >
+            {sorted.map((project) => (
+              <ProjectCard
+                key={project._id}
+                project={project}
+                isBusy={busyId === project._id}
+                onOpen={() => openProject(project._id)}
+                onAction={(action) => void runCardAction(project, action)}
+              />
+            ))}
+          </Box>
+          {hasMore && (
+            <Flex justify="center">
+              <LoadingButton variant="outline" loading={isLoadingMore} onClick={loadMore}>
+                {t('projects.loadMore')}
+              </LoadingButton>
+            </Flex>
+          )}
+        </Flex>
+      )}
+
+      <DeleteProjectDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => !open && setPendingDelete(null)}
+        onConfirm={confirmDelete}
+        isDeleting={pendingDelete !== null && busyId === pendingDelete._id}
+        projectName={pendingDelete?.name}
+      />
+
+      <LeaveProjectDialog
+        open={pendingLeave !== null}
+        onOpenChange={(open) => !open && setPendingLeave(null)}
+        projectName={pendingLeave?.name ?? ''}
+        onConfirm={confirmLeave}
+        isLeaving={pendingLeave !== null && busyId === pendingLeave._id}
+      />
+
+      <CreateProjectDialog
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        onCreated={(project) => {
+          upsertProjectInList({ ...project, conversationCount: 0 });
+          openProject(project._id);
+        }}
+      />
     </Flex>
   );
 }

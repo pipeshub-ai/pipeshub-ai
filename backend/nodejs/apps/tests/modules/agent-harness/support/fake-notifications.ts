@@ -3,6 +3,7 @@
  * (createdAt, id), `limit + 1` rows, archived only when asked for, deleted never; every call scoped to its person.
  */
 import type {
+  InsertNewResult,
   NewNotification,
   NotificationRepository,
   NotificationRow,
@@ -33,6 +34,30 @@ export class FakeNotifications implements NotificationRepository {
 
   async insertMany(rows: NewNotification[]): Promise<NotificationRow[]> {
     return Promise.all(rows.map((row) => this.insert(row)));
+  }
+
+  /** A row whose recipient already has its `dedupeKey`, or whose `_id` the org already has, was delivered before. */
+  async insertNew(rows: readonly NewNotification[]): Promise<InsertNewResult> {
+    const inserted: NotificationRow[] = [];
+    let duplicates = 0;
+    for (const row of rows) {
+      const { _id: id, dedupeKey } = row as { _id?: unknown; dedupeKey?: unknown };
+      const taken = this.rows.some(
+        (r) =>
+          r.orgId === row.orgId &&
+          ((typeof id === 'string' && r._id === id) ||
+            (dedupeKey !== undefined && r.assignedTo === row.assignedTo && r.dedupeKey === dedupeKey)),
+      );
+      if (taken) duplicates += 1;
+      else inserted.push(await this.insert(row));
+    }
+    return { inserted, duplicates, refused: [] };
+  }
+
+  async deleteByIds(orgId: string, ids: readonly string[]): Promise<number> {
+    const before = this.rows.length;
+    this.rows.splice(0, this.rows.length, ...this.rows.filter((r) => r.orgId !== orgId || !ids.includes(r._id)));
+    return before - this.rows.length;
   }
 
   async exists(scope: NotificationScope, id: string): Promise<boolean> {

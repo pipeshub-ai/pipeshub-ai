@@ -1,5 +1,6 @@
+import type { TFunction } from 'i18next';
 import { toolDisplayName } from '../workspace/mcp-servers/tool-rules';
-import type { MessagePart, ToolApprovalDecision, ToolApprovalDetails } from './types';
+import type { ApprovalStubStatus, MessagePart, ToolApprovalDecision, ToolApprovalDetails } from './types';
 
 const MAX_VALUE_CHARS = 300;
 // How the app's answer to a card starts (Python `TOOL_APPROVAL_RESUME_PREFIX`).
@@ -12,6 +13,17 @@ export function toolApprovalResumeQuery(decision: ToolApprovalDecision): string 
 
 export function isToolApprovalResumeQuery(text: string | undefined | null): boolean {
   return typeof text === 'string' && text.trimStart().startsWith(RESUME_PREFIX);
+}
+
+/** A restricted card's hosts; one without its reached form is dropped, and one without a readable form reads as reached. */
+function approvalHosts(value: unknown): Array<{ host: string; unicode: string }> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const { host, unicode } = item as Record<string, unknown>;
+    if (typeof host !== 'string' || !host) return [];
+    return [{ host, unicode: typeof unicode === 'string' && unicode ? unicode : host }];
+  });
 }
 
 /** The card's details from a wire frame or a saved part; anything not shaped like them is dropped. */
@@ -37,6 +49,8 @@ export function toolApprovalDetails(value: unknown): ToolApprovalDetails | null 
     expiresAt: raw.expiresAt,
     arguments: args && typeof args === 'object' && !Array.isArray(args) ? (args as Record<string, unknown>) : null,
     ...(text('argumentsPreview') ? { argumentsPreview: text('argumentsPreview') as string } : {}),
+    // About this call's content, which no rule can approve ahead of time: never "Don't ask again".
+    ...(raw.restricted === true ? { restricted: true, canRemember: false, hosts: approvalHosts(raw.hosts) } : {}),
   };
 }
 
@@ -64,12 +78,32 @@ export function approvalToolLabel(details: Pick<ToolApprovalDetails, 'toolTitle'
   return toolDisplayName(details.toolName, details.toolTitle);
 }
 
+// The built-in tools that can wait on a card, and what their cards hold where others hold a server's name, since these
+// have none: the server's words for the tool, and on a card saved before it had any, its name or its label.
+const BUILT_IN_TOOLS = new Map([
+  ['dynamic__fetch_url', { key: 'chat.toolApproval.builtIn.openWebPage', noServer: ['Open a web page', 'dynamic__fetch_url'] }],
+  ['run_code', { key: 'chat.toolApproval.builtIn.runCode', noServer: ['Run code', 'Ran code'] }],
+  ['install_packages', { key: 'chat.toolApproval.builtIn.installPackages', noServer: ['Install code packages', 'Installed packages'] }],
+]);
+
+/** The words for a built-in tool, which has no server to name; none for a tool of an MCP server or a toolset. */
+export function builtInToolKey(toolName: string | undefined, serverName?: string): string | undefined {
+  const tool = BUILT_IN_TOOLS.get(toolName ?? '');
+  return tool && (serverName === undefined || tool.noServer.includes(serverName)) ? tool.key : undefined;
+}
+
 export interface SettledToolApproval {
   key: string;
   tool: string;
+  /** The words for a built-in tool, in place of `tool`. */
+  toolKey?: string;
+  /** Empty when the tool has none. */
   server: string;
-  /** `allowedNotRun`: allowed, but stopped before it ran (a Deny set since, or the tool is gone). */
-  answer: NonNullable<MessagePart['approvalAnswer']> | 'allowedNotRun';
+  /**
+   * `allowedNotRun`: allowed, but stopped before it ran (a Deny set since, or the tool is gone). `accessLost`: allowed,
+   * and not run because the person no longer has access to the turn it was in.
+   */
+  answer: NonNullable<MessagePart['approvalAnswer']> | 'allowedNotRun' | 'accessLost';
 }
 
 /** The cards this reply answered, in order, at any depth. */
@@ -79,11 +113,18 @@ export function settledToolApprovals(parts: MessagePart[] | undefined): SettledT
     for (const part of list ?? []) {
       if (part.type === 'tool_call' && part.approvalAnswer) {
         const details = toolApprovalDetails(part.approval);
+        const toolKey = details ? builtInToolKey(details.toolName, details.serverName) : builtInToolKey(part.toolName);
         settled.push({
           key: part.toolCallId ?? String(settled.length),
           tool: details ? approvalToolLabel(details) : part.displayName || toolDisplayName(part.toolName ?? ''),
-          server: details?.serverName ?? '',
-          answer: part.approvalAnswer === 'allowed' && part.status === 'blocked' ? 'allowedNotRun' : part.approvalAnswer,
+          ...(toolKey ? { toolKey } : {}),
+          server: toolKey ? '' : details?.serverName ?? '',
+          answer:
+            part.approvalReason === 'access_lost'
+              ? 'accessLost'
+              : part.approvalAnswer === 'allowed' && part.status === 'blocked'
+                ? 'allowedNotRun'
+                : part.approvalAnswer,
         });
       }
       walk(part.parts);
@@ -93,12 +134,61 @@ export function settledToolApprovals(parts: MessagePart[] | undefined): SettledT
   return settled;
 }
 
+const STUB_STATUSES: ReadonlySet<string> = new Set<ApprovalStubStatus>(['approved', 'not_run', 'denied', 'expired']);
+
+/** Whether `status` is one a stub of someone else's card says once the card no longer waits. */
+export const isApprovalStubStatus = (status: string | undefined): status is ApprovalStubStatus =>
+  status !== undefined && STUB_STATUSES.has(status);
+
+/**
+ * How someone else's approval card stands once it no longer waits, from the stub the server's reader view gives in
+ * its place: approved (it ran), approved but not run, declined, or expired. A card that still waits is
+ * `findToolApproval`'s.
+ */
+export function findApprovalStub(
+  parts: MessagePart[] | undefined,
+): { status: ApprovalStubStatus; details: ToolApprovalDetails } | null {
+  for (const part of parts ?? []) {
+    if (part.type !== 'tool_call' || part.stub !== true || !isApprovalStubStatus(part.status)) continue;
+    const details = toolApprovalDetails(part.approval);
+    if (details) return { status: part.status, details };
+  }
+  return null;
+}
+
+/** Whether a reply waits on a card its person can still answer: there is no answer yet. */
+export function waitsForApproval(parts: MessagePart[] | undefined, now: number = Date.now()): boolean {
+  const card = findToolApproval(parts);
+  return card !== null && card.expiresAt > now;
+}
+
+/** Whether a reply stopped on an approval card, or carries on from one: waiting, answered, or someone else's stub. */
+export function hasApprovalCard(parts: MessagePart[] | undefined): boolean {
+  return findToolApproval(parts) !== null || settledToolApprovals(parts).length > 0 || findApprovalStub(parts) !== null;
+}
+
 // The server's closing words for a turn that stopped on a card (Python `tool_approvals._WAITING`).
 const WAITING_LINE = /\s*Waiting for your approval to run [^\n]*\.\s*$/;
+
+// The same words as they were saved before the server had words for a built-in tool.
+const NAMED_WAITING_LINE = /^(Waiting for your approval to run )(.+) on (.+)\.$/;
+
+/** A waiting call's saved words, with a built-in tool in words. */
+export function waitingWords(text: string, t: TFunction): string {
+  const [, start, tool, server] = NAMED_WAITING_LINE.exec(text) ?? [];
+  const key = builtInToolKey(tool, server ?? '');
+  return key ? `${start}“${t(key)}”.` : text;
+}
 
 /** The answer without "Waiting for your approval to run …": the card says it. */
 export function withoutWaitingLine(text: string): string {
   return text.replace(WAITING_LINE, '');
+}
+
+/** An answer's own words: none while its run waits on a card, and never the line that says it does. */
+export function answerWords(pair: { answer: string; persistedParts?: MessagePart[] }): string {
+  if (waitsForApproval(pair.persistedParts)) return '';
+  return hasApprovalCard(pair.persistedParts) ? withoutWaitingLine(pair.answer) : pair.answer;
 }
 
 /** Whether a reply carries on from an answered approval card: the server won't regenerate it. */

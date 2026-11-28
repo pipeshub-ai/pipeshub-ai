@@ -1,6 +1,7 @@
 import mongoose, { Schema, Model } from 'mongoose';
 import { IChatSessionDocument } from '../types/conversation.interfaces';
 import { REASONING_EFFORT_VALUES } from '../constants/constants';
+import { schemaExtensions } from '../../../edition-schemas';
 
 /**
  * Single collection backing both plain chat and agent chat threads
@@ -12,7 +13,9 @@ import { REASONING_EFFORT_VALUES } from '../constants/constants';
  * `sessionType` and `nextSeq` are internal bookkeeping fields, not part of
  * any documented API response shape, so they are `select: false` — this is
  * the structural guard against leaking them into a response even from a
- * `.lean()` query that forgets to project them out explicitly.
+ * `.lean()` query that forgets to project them out explicitly. A session
+ * just created still holds every `select: false` field, so `attachMessages()`
+ * leaves them all out of a response built from one.
  */
 const chatSessionSchema = new Schema<IChatSessionDocument>(
   {
@@ -59,7 +62,7 @@ const chatSessionSchema = new Schema<IChatSessionDocument>(
       select: false,
     },
 
-    userId: { type: Schema.Types.ObjectId, required: true, index: true },
+    userId: { type: Schema.Types.ObjectId, required: true },
     orgId: { type: Schema.Types.ObjectId, required: true, index: true },
     title: { type: String },
     initiator: { type: Schema.Types.ObjectId, required: true, index: true },
@@ -102,6 +105,8 @@ const chatSessionSchema = new Schema<IChatSessionDocument>(
       enum: ['None', 'Inprogress', 'Complete', 'Failed', 'Stopped'],
     },
     failReason: { type: String },
+    // Who asked the run that left the session `Failed`: only they are told it failed.
+    failedRunBy: { type: Schema.Types.ObjectId },
     // Model information used for this session
     modelInfo: {
       modelKey: { type: String },
@@ -120,6 +125,8 @@ const chatSessionSchema = new Schema<IChatSessionDocument>(
         messageId: { type: Schema.Types.ObjectId },
         stack: { type: String },
         metadata: { type: Map, of: Schema.Types.Mixed },
+        // Who asked the run that failed: a reader is given only the failures of runs they asked.
+        requestedBy: { type: Schema.Types.ObjectId },
       },
     ],
     // Additional metadata for useful information
@@ -129,7 +136,7 @@ const chatSessionSchema = new Schema<IChatSessionDocument>(
     },
 
     // ---- Agent-only fields (undefined when sessionType === 'chat') ----
-    agentKey: { type: String, index: true }, // Reference to agent _key in ArangoDB
+    agentKey: { type: String }, // Reference to agent _key in ArangoDB
     conversationSource: {
       type: String,
       enum: ['agent_chat'],
@@ -143,7 +150,7 @@ const chatSessionSchema = new Schema<IChatSessionDocument>(
 
     // ---- Project linking (optional on both chat and agent sessions) ----
     /** Reference to `projects` collection. Absent = not linked to a project. */
-    projectId: { type: Schema.Types.ObjectId, index: true },
+    projectId: { type: Schema.Types.ObjectId },
     /**
      * Per-conversation override of the owning project's `chatSharing`
      * default. 'project' exposes this chat to every project member with at
@@ -152,6 +159,11 @@ const chatSessionSchema = new Schema<IChatSessionDocument>(
      * getProjectConversations for the read-side of this rule.
      */
     projectVisibility: { type: String, enum: ['private', 'project'] },
+    // When it last became visible to its project, written by every change to `project` and cleared on `private`:
+    // the project's readers count as readers from before the privacy rules only while no such change is recorded.
+    projectVisibleAt: { type: Date },
+    // Bumped on every visible change, so a reader can tell its copy is stale.
+    rev: { type: Number, default: 0 },
 
     // ---- Compare models: a hidden branch of another chat; no default, so ordinary chats never carry the key ----
     compareOf: { type: Schema.Types.ObjectId, index: true },
@@ -161,17 +173,26 @@ const chatSessionSchema = new Schema<IChatSessionDocument>(
 );
 
 // Create additional indexes as needed
+// List indexes end in `_id` so each list branch is read in sort order (`lastActivityAt`, then `_id`).
+// No single-field userId, agentKey or projectId index: each leads a compound index below.
 chatSessionSchema.index({
   sessionType: 1,
   orgId: 1,
   userId: 1,
   lastActivityAt: -1,
+  _id: -1,
 });
 chatSessionSchema.index({ sessionType: 1, orgId: 1, initiator: 1 });
 chatSessionSchema.index({ agentKey: 1, orgId: 1 });
 chatSessionSchema.index({ userId: 1, agentKey: 1 });
 chatSessionSchema.index({ isShared: 1 });
-chatSessionSchema.index({ projectId: 1, orgId: 1, isDeleted: 1, lastActivityAt: -1 });
+chatSessionSchema.index({
+  projectId: 1,
+  orgId: 1,
+  isDeleted: 1,
+  lastActivityAt: -1,
+  _id: -1,
+});
 chatSessionSchema.index({ lastActivityAt: -1 });
 // Only sessions whose erasure is still under way carry the marker (erasure
 // deletes the document), so the sweeper's lost-enqueue pass reads a small index.
@@ -182,6 +203,8 @@ chatSessionSchema.index(
     partialFilterExpression: { erasureRequestedAt: { $exists: true } },
   },
 );
+
+schemaExtensions.chatSession(chatSessionSchema);
 
 export const ChatSession: Model<IChatSessionDocument> =
   mongoose.model<IChatSessionDocument>('ChatSession', chatSessionSchema);

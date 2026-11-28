@@ -45,8 +45,22 @@ class TestNodeIds:
     async def test_only_the_asked_nodes_that_came_back_are_accessible(self) -> None:
         provider, calls = _provider([_row("n1")])
         result = await provider.check_access("user-key", "org-1", node_ids=["n1", "n2", "n1"])
-        assert result == AccessCheck(node_ids=frozenset({"n1"}), node_ids_in_scope=frozenset({"n1"}))
+        assert result == AccessCheck(
+            node_ids=frozenset({"n1"}), node_ids_in_scope=frozenset({"n1"}), names={"n1": ""},
+        )
         assert calls["node_ids"] == {"n1", "n2"} and calls["vrids"] == set()
+
+    @pytest.mark.asyncio
+    async def test_each_accessible_asked_node_comes_with_its_current_name(self) -> None:
+        # A shared chat names its sources from this one query, never one read per source.
+        folder, group = _row("n1"), _row("n2")
+        folder["name"], group["name"] = "Plans 2026", "Design"
+        cited = _row("r9", "v9")
+        cited["name"] = "Not asked"
+        provider, calls = _provider([folder, group, cited])
+        result = await provider.check_access("user-key", "org-1", node_ids=["n1", "n2", "n3"], virtual_record_ids=["v9"])
+        assert result.names == {"n1": "Plans 2026", "n2": "Design"}
+        assert calls["node_ids"] == {"n1", "n2", "n3"}
 
     @pytest.mark.asyncio
     async def test_a_placeholder_is_openable_and_is_not_a_citation(self) -> None:
@@ -179,6 +193,7 @@ class TestBothInOneCall:
         result = await provider.check_access("k", "o", node_ids=["n1"], virtual_record_ids=["v1"])
         assert result == AccessCheck(
             node_ids=frozenset({"n1"}), records_by_vrid={"v1": "r1"}, node_ids_in_scope=frozenset({"n1"}),
+            names={"n1": ""},
         )
         assert calls["node_ids"] == {"n1"} and calls["vrids"] == {"v1"}
 

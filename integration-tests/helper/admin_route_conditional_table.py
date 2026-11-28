@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from helper import suite_extensions
+from helper.admin_routes import PYTHON_APP
 
 ADMIN = "admin"
 # The member who created the target.
@@ -90,6 +91,10 @@ WORLD_GROUPS: dict[str, tuple[str, ...]] = {
     # An agent of the admin's, which nobody else can see, and one a member
     # made and may edit.
     "agents": ("admin_agent", "member_agent"),
+    # Service account agents, which carry credentials of their own: the admin's, shared with the org so
+    # a member who may not edit it still opens it, and one the creator made. With an agent sign-in's
+    # OAuth `state` for the admin's agent and the keyed `toolset`.
+    "service_agents": ("admin_service_agent", "member_service_agent", "admin_service_agent_state"),
     # A service account, waited for until it reaches the graph the directory
     # reads. Its address is what a listing is searched for, and `all_team` is
     # the organisation's All team, which it joins on the way in.
@@ -272,7 +277,8 @@ def _create_body(scope: str) -> dict[str, str]:
 _MALFORMED_FILTERS = {"filters": {"sync": "it-not-an-object"}}
 _FILTERS_REFUSED = "filters.sync must be an object"
 _DELETING = "Connector deletion initiated"
-_NO_RECORD_ACCESS = "You do not have permission to access this record"
+# A record the caller can't open gets the answer an id that names no record gets.
+_RECORD_NOT_FOUND = "Record not found"
 _SERVICE_TOKEN_ONLY = "This route requires a service token"
 _ADMIN_ONLY_SKILL = "only an organization admin can change its availability"
 _WRONG_SKILL_STATE = "cannot transition"
@@ -361,6 +367,42 @@ def _mcp_listing(name: str, path: str, target: str, refused: Case) -> Conditiona
         f"api/routes/mcp_servers.py::{name}", "GET", path,
         cases=(refused, Case(target, ADMIN, True, 200, MCP_SERVER_URL)),
         params={"includeTools": "false"},
+    )
+
+
+def _agent_credentials_admin_only() -> bool:
+    """`agent_credentials_admin_only` as this tree's edition config sets it, which the stack under test runs."""
+    text = (PYTHON_APP / "edition_config.py").read_text(encoding="utf-8")
+    match = re.search(r"^agent_credentials_admin_only\s*=\s*(True|False)\b", text, re.MULTILINE)
+    return match is not None and match.group(1) == "True"
+
+
+# Whether only an org admin sets a service account agent's own credentials, or any editor of the agent.
+AGENT_CREDENTIALS_ADMIN_ONLY = _agent_credentials_admin_only()
+_NOT_AN_EDITOR = "You do not have permission to manage toolsets for this agent"
+_ADMIN_SETS_THEM = "Only an organization admin can manage toolsets credentials for a service account agent"
+_AGENT_SIGN_IN_REFUSED = "agent_permission_denied"
+_AGENT_TOOLSET = f"{_TOOLSETS}/agents/{{target}}/instances/{{toolset}}"
+
+
+def _agent_credentials(name: str, method: str, suffix: str, status: int, words: str,
+                       body: Any = None) -> ConditionalRoute:
+    """A service account agent's own credentials for the keyed toolset. The admin, who edits their
+    agent, gets past the check; another member, who may only open it, is no editor; and the creator
+    of their own agent is let through, or refused as no admin where the edition says so."""
+    creator = (
+        Case("member_service_agent", CREATOR, False, 403, _ADMIN_SETS_THEM, absent=(words,))
+        if AGENT_CREDENTIALS_ADMIN_ONLY
+        else Case("member_service_agent", CREATOR, True, status, words, absent=(_ADMIN_SETS_THEM,))
+    )
+    return ConditionalRoute(
+        f"api/routes/toolsets.py::{name}", method, f"{_AGENT_TOOLSET}{suffix}",
+        cases=(
+            Case("admin_service_agent", ADMIN, True, status, words, absent=(_ADMIN_SETS_THEM, _NOT_AN_EDITOR)),
+            Case("admin_service_agent", MEMBER, False, 403, _NOT_AN_EDITOR, absent=(words,)),
+            creator,
+        ),
+        body=body,
     )
 
 
@@ -552,15 +594,38 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
         ),
         body={"tools": {}},
     ),
+    # Nothing is stored past the check: no credentials go with a save, the agents hold none to remove
+    # or clear, and the keyed toolset has no sign-in.
+    _agent_credentials("authenticate_agent_toolset", "POST", "/authenticate", 400, "Credentials are required",
+                       body={"auth": {}}),
+    _agent_credentials("update_agent_toolset_credentials", "PUT", "/credentials", 400, "Credentials are required",
+                       body={"auth": {}}),
+    _agent_credentials("remove_agent_toolset_credentials", "DELETE", "/credentials", 200,
+                       "Agent credentials removed successfully"),
+    _agent_credentials("reauthenticate_agent_toolset", "POST", "/reauthenticate", 200, "Agent credentials cleared",
+                       body={}),
+    _agent_credentials("get_agent_toolset_oauth_url", "GET", "/oauth/authorize", 400, "authentication, not OAuth"),
+    # The agent travels in `state`, and the handler answers 200 with an error name either way. Past the
+    # check the keyed toolset has no sign-in app. It refuses a creator who is no admin with the same name
+    # as a member who is no editor, so the rows above are where the edition's admin rule shows.
+    ConditionalRoute(
+        "api/routes/toolsets.py::handle_toolset_oauth_callback", "GET", f"{_TOOLSETS}/oauth/callback",
+        cases=(
+            Case("admin_service_agent", ADMIN, True, 200, '"success":false', absent=(_AGENT_SIGN_IN_REFUSED,)),
+            Case("admin_service_agent", MEMBER, False, 200, _AGENT_SIGN_IN_REFUSED),
+        ),
+        params={"code": "it-code", "state": "{admin_service_agent_state}"},
+    ),
     # Being an admin opens no record: the admin is refused a member's private
-    # note exactly as a member is refused the admin's.
+    # note exactly as a member is refused the admin's, and both get the answer an
+    # id that names no record gets (response-validation pins that the two match).
     ConditionalRoute(
         f"{_ROUTER}::stream_record", "GET", "/api/v1/knowledgeBase/stream/record/{target}",
         cases=(
-            Case("admin_record", MEMBER, False, 403, _NO_RECORD_ACCESS),
+            Case("admin_record", MEMBER, False, 404, _RECORD_NOT_FOUND),
             Case("admin_record", ADMIN, True, 200, "{admin_record_text}"),
             Case("member_record", CREATOR, True, 200, "{member_record_text}"),
-            Case("member_record", ADMIN, False, 403, _NO_RECORD_ACCESS),
+            Case("member_record", ADMIN, False, 404, _RECORD_NOT_FOUND),
         ),
     ),
     # A download link works only for the person it was made out to.
@@ -568,7 +633,7 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
         f"{_ROUTER}::download_file", "GET", "/api/v1/index/{org}/knowledgebase/record/{target}",
         cases=(
             Case("admin_record", ADMIN, True, 200, "{admin_record_text}"),
-            Case("admin_record", MEMBER, False, 404, "Record not found"),
+            Case("admin_record", MEMBER, False, 404, _RECORD_NOT_FOUND),
         ),
         params={"token": "{signed_token}"}, service=CONNECTOR_SERVICE,
     ),
@@ -591,7 +656,7 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
             Case("admin_record", ADMIN, False, 403, _SERVICE_TOKEN_ONLY),
             Case("admin_record", MEMBER, False, 403, _SERVICE_TOKEN_ONLY),
             Case("admin_record", SERVICE_FOR_ADMIN, True, 200, "{admin_record_text}"),
-            Case("admin_record", SERVICE_FOR_MEMBER, False, 403, _NO_RECORD_ACCESS),
+            Case("admin_record", SERVICE_FOR_MEMBER, False, 404, _RECORD_NOT_FOUND),
         ),
         service=CONNECTOR_SERVICE,
     ),

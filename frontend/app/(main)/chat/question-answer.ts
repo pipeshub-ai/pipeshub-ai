@@ -4,7 +4,7 @@ import { useChatStore } from './store';
 import { buildStreamChatRequestForSlot } from './runtime';
 import { streamMessageForSlot } from './streaming';
 import { cancelCardSend, cardSendRunning, clearCardSend, questionSendKey, SEND_ABORTED, sendCard, type SendAttempt } from './card-send';
-import type { AskUserQuestionAnswer } from './types';
+import type { AskUserQuestionAnswer, PendingAskUserQuestion, StreamChatRequest } from './types';
 
 /**
  * One answer's turn id, kept while the same answer is sent again (CARDFAIL): the server admits a turn once per run id
@@ -30,6 +30,8 @@ export async function answerQuestionCard(
   slotId: string,
   message: string,
   answers: Record<string, AskUserQuestionAnswer>,
+  /** Adds to the resume request before it goes (a chat extension's fields); nothing by default. */
+  decorate?: (request: StreamChatRequest, pending: PendingAskUserQuestion) => void,
 ): Promise<void> {
   const pending = useChatStore.getState().slots[slotId]?.pendingAskUserQuestion;
   if (!pending || pending.status !== 'pending') return;
@@ -45,6 +47,7 @@ export async function answerQuestionCard(
         resolve({ failed: { retry: false, code: SEND_ABORTED } });
         return;
       }
+      decorate?.(request, p);
       useChatStore.getState().updateSlot(slotId, { pendingAskUserQuestion: { ...p, answers, status: 'submitted' } });
       // A stream that ends without a first frame or a failure was held back before it started (another tab's run
       // still writes the thread); the card stays sent, as it always did, rather than offering a second answer.

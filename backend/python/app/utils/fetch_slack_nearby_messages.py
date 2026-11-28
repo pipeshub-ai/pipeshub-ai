@@ -494,11 +494,16 @@ async def _user_can_read_channel(
         return False
     if rg_id not in await accessible_node_ids(graph_provider, {rg_id}, user_id or "", org_id):
         return False
-    if scope_state is None:
-        return True
-    from app.agents.actions.knowledge_graph.ops.scope import ids_within_scope
+    if scope_state is not None:
+        from app.agents.actions.knowledge_graph.ops.scope import ids_within_scope
 
-    return rg_id in await ids_within_scope(scope_state, graph_provider, user_key, org_id, [rg_id])
+        if rg_id not in await ids_within_scope(scope_state, graph_provider, user_key, org_id, [rg_id]):
+            return False
+    from app.modules.agents.privacy.ledger import note_shown
+
+    # The live messages read next are the channel's: whoever may open the channel may see them.
+    note_shown(nodes=[rg_id])
+    return True
 
 
 async def _fetch_nearby_messages_impl(

@@ -1,11 +1,12 @@
 /**
- * CJ14-FU-2: the main sidebar folds Recents by default, so a chat that needs the person showed no mark until it was
- * opened. Folded, the Recents header carries the strongest mark of the chats it holds (needs you over working over
- * finished and not seen), from the list the sidebar already loaded: no added request.
+ * CJ14-FU-2: a chat that needs the person says so even when its row is out of sight. The sidebar shows each list's pins
+ * and newest chats, then "More" for the rest, so a chat past that cap showed no mark until More was opened. Each More
+ * carries the strongest mark of the chats it hides (needs you over working over finished and not seen), from the list
+ * the sidebar already loaded: no added request.
  */
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, screen } from '@testing-library/react';
+import { act, cleanup, screen, within } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 import { installMemoryStorage } from '@/lib/api/__tests__/sse-response';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
@@ -20,11 +21,12 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams('conversationId=open'),
   usePathname: () => '/chat/',
 }));
-vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false, useIsBelowDesktop: () => false }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 
 const { useChatStore } = await import('@/chat/store');
 const { ChatSections } = await import('../chat-sections');
+const { chatSlots } = await import('@/config');
 const initialState = useChatStore.getState();
 
 type State = NonNullable<Conversation['harnessState']>;
@@ -34,11 +36,17 @@ function chat(id: string, harnessState?: State): Conversation {
   return { id, title: id, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', isShared: false, sharedWith: [], isOwner: true, ...(harnessState ? { harnessState } : {}) };
 }
 
+/** `n` quiet chats, newest first: the rows a list shows before its More (three shared, five of yours). */
+const quiet = (prefix: string, n: number) => Array.from({ length: n }, (_, i) => chat(`${prefix}${String(i + 1)}`));
+
 function render(conversations: Conversation[], shared: Conversation[] = []) {
   useChatStore.setState({ conversations, sharedConversations: shared, isConversationsLoading: false, conversationsError: null });
   renderInTheme(<ChatSections onOpenMoreChats={vi.fn()} />);
-  return screen.getByTestId('recents-toggle');
 }
+
+/** Each list's More row, top to bottom: Shared chats', then Your chats'. */
+const moreRows = () => screen.getAllByText('More').map((label) => label.closest('[role="button"]') as HTMLElement);
+const markOn = (row: HTMLElement) => row.querySelector('[data-testid="chat-dot"]')?.getAttribute('data-dot') ?? null;
 
 beforeEach(() => {
   installBrowserShims();
@@ -46,30 +54,90 @@ beforeEach(() => {
 });
 afterEach(() => cleanup());
 
-describe('CJ14-FU-2 a folded Recents keeps its marks', () => {
-  it('says a hidden chat needs you, over one working and one finished', () => {
-    const toggle = render(
-      [chat('a', state({ runState: 'working' })), chat('b', state({ finishedUnseen: true }))],
-      [chat('c', state({ runState: 'needs_you', needsYou: true }))],
+describe('CJ14-FU-2 each More keeps the marks of the chats it hides', () => {
+  it('says a hidden chat needs you, over one working and one finished; the other list’s More has only its own', () => {
+    render(
+      [...quiet('y', 5), chat('a', state({ runState: 'working' })), chat('b', state({ finishedUnseen: true })), chat('c', state({ runState: 'needs_you', needsYou: true }))],
+      [...quiet('s', 3), chat('d', state({ finishedUnseen: true }))],
     );
-    expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(toggle.querySelector('[data-testid="chat-dot"]')?.getAttribute('data-dot')).toBe('needsYou');
-    expect(screen.getByRole('button', { name: 'Recents Needs you' })).toBe(toggle);
+    const [shared, yours] = moreRows();
+    expect(markOn(yours)).toBe('needsYou');
+    expect(screen.getByRole('button', { name: 'More Needs you' })).toBe(yours);
+    expect(markOn(shared)).toBe('finished');
   });
 
-  it('shows working, then nothing for the chat open now, and drops the header mark once Recents is open', () => {
-    const toggle = render([chat('a', state({ runState: 'working' })), chat('open', state({ finishedUnseen: true }))]);
-    expect(toggle.querySelector('[data-testid="chat-dot"]')?.getAttribute('data-dot')).toBe('working');
-    // A native button: the browser turns Enter and Space into this click.
-    fireEvent.click(toggle);
-    expect(toggle.getAttribute('aria-expanded')).toBe('true');
-    expect(toggle.querySelector('[data-testid="chat-dot"]')).toBeNull();
-    expect(screen.getAllByTestId('chat-dot').map((d) => d.getAttribute('data-dot'))).toEqual(['working']);
+  it('shows working, then nothing for the chat open now, and drops the mark once the chat it stood for is shown', () => {
+    render([...quiet('y', 5), chat('a', state({ runState: 'working' })), chat('open', state({ finishedUnseen: true }))]);
+    expect(markOn(moreRows()[0])).toBe('working');
+    // The run moves its chat up the list: its row says it is working, and More, left with the open chat, says nothing.
+    act(() => useChatStore.setState({ conversations: [chat('a', state({ runState: 'working' })), ...quiet('y', 5), chat('open', state({ finishedUnseen: true }))] }));
+    expect(markOn(moreRows()[0])).toBeNull();
+    expect(screen.queryAllByTestId('chat-dot')).toEqual([]);
+    expect(screen.getByRole('img', { name: 'Working in the background' })).toBeTruthy();
   });
 
-  it('has no mark when no chat holds one', () => {
-    const toggle = render([chat('a'), chat('open', state({ finishedUnseen: true }))]);
-    expect(toggle.querySelector('[data-testid="chat-dot"]')).toBeNull();
+  it('has no mark when no hidden chat holds one', () => {
+    render([...quiet('y', 5), chat('a'), chat('open', state({ finishedUnseen: true }))]);
+    expect(markOn(moreRows()[0])).toBeNull();
+  });
+
+  describe('with the agent harness off, when the server sends no run state', () => {
+    it('says working for a hidden chat this tab is answering, as its row would', () => {
+      render([...quiet('y', 5), chat('a')]);
+      expect(markOn(moreRows()[0])).toBeNull();
+      act(() => {
+        const slotId = useChatStore.getState().createSlot('a');
+        useChatStore.getState().updateSlot(slotId, { isStreaming: true });
+      });
+      expect(markOn(moreRows()[0])).toBe('working');
+    });
+
+    it('says a hidden chat needs you while its question card waits on the person', () => {
+      render([...quiet('y', 5), chat('a')]);
+      act(() => {
+        const slotId = useChatStore.getState().createSlot('a');
+        useChatStore.getState().updateSlot(slotId, {
+          pendingAskUserQuestion: { status: 'pending', assistantMessageId: 'r1' } as never,
+          messages: [{ id: 'r1', role: 'assistant', content: [] } as never],
+        });
+      });
+      expect(markOn(moreRows()[0])).toBe('needsYou');
+    });
+
+    it('says finished for a hidden chat whose answer this tab saw finish out of view, until it is read', () => {
+      render([...quiet('y', 5), chat('a')]);
+      act(() => useChatStore.setState({ unreadConversationIds: new Set(['a']) }));
+      expect(markOn(moreRows()[0])).toBe('finished');
+      act(() => useChatStore.getState().markConversationRead('a'));
+      expect(markOn(moreRows()[0])).toBeNull();
+    });
+  });
+
+  describe('in a build whose chat slots draw the More mark', () => {
+    afterEach(() => {
+      delete chatSlots.useMoreMark;
+    });
+
+    it('shows the mark the slots draw from the chats each More hides, in place of the rail’s own', () => {
+      const asked: string[][] = [];
+      chatSlots.useMoreMark = (hidden, open) => {
+        asked.push([...hidden.map((c) => c.id), `open:${String(open)}`]);
+        return hidden.length > 0 ? <span data-testid="slot-mark">{hidden.map((c) => c.id).join(',')}</span> : null;
+      };
+      render([...quiet('y', 5), chat('a', state({ runState: 'needs_you', needsYou: true }))], [...quiet('s', 3), chat('d')]);
+      const [shared, yours] = moreRows();
+      expect(within(yours).getByTestId('slot-mark').textContent).toBe('a');
+      expect(within(shared).getByTestId('slot-mark').textContent).toBe('d');
+      expect(markOn(yours)).toBeNull();
+      expect(asked).toContainEqual(['a', 'open:open']);
+    });
+
+    it('draws no mark where the slots draw none, even for a hidden chat that needs you', () => {
+      chatSlots.useMoreMark = () => null;
+      render([...quiet('y', 5), chat('a', state({ runState: 'needs_you', needsYou: true }))]);
+      expect(markOn(moreRows()[0])).toBeNull();
+      expect(screen.queryByRole('button', { name: 'More Needs you' })).toBeNull();
+    });
   });
 
   it('strongestDot ranks needs you, working, then finished and not seen', () => {

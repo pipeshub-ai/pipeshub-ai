@@ -1,7 +1,9 @@
-import { apiClient, streamSSERequest, type SSEEvent } from '@/lib/api';
+import { apiClient, sharedGet, streamSSERequest, type SSEEvent } from '@/lib/api';
 import { onSessionEnd } from '@/lib/api/session-cache';
 import { OrgApi, type OrgResponse } from '@/app/(main)/workspace/general/api';
-import { CHAT_STREAM_ERROR_MESSAGES, StreamError } from '@/lib/api/stream-errors';
+import { blobToDataUrl } from '@/lib/utils/blob-to-data-url';
+import { CHAT_STREAM_ERROR_MESSAGES, StreamDroppedError, StreamError } from '@/lib/api/stream-errors';
+import { detailToast } from '@/lib/api/api-error';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
 import { PROJECT_ID_UNASSIGNED } from './project-types';
 import {
@@ -42,6 +44,7 @@ import {
 import { hasAnyFilter } from './utils/tree-selection';
 import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
 import { createAGUIEventHandler, type AGUIEventHandler, type AGUIStreamTracking } from './agui-event-handler';
+import { chatExtension } from '@/config';
 import { durableStreamLog, followDurableRun, isRootTerminalFrame } from './durable-run-stream';
 import { DurableAdmissionError } from './harness-errors';
 import { sendFailureOf, type SendFailure } from './card-send';
@@ -121,6 +124,8 @@ export interface StreamMessageCallbacks {
   onInteractionWaiting?: (data: SSEInteractionWaitingEvent) => void;
   /** The root run's whole plan after it changed (UXR-B1, AG-UI protocol only). */
   onPlan?: (data: SSEPlanEvent) => void;
+  /** An AG-UI `CUSTOM` event the handler has no callback of its own for. */
+  onCustomEvent?: (name: string, value: unknown) => void;
   /**
    * The answer is settled and only persistence remains (AG-UI protocol only —
    * `AnswerFinalizer`'s `snapshot.final` STATE_SNAPSHOT, which reaches us
@@ -144,6 +149,8 @@ export interface StreamMessageCallbacks {
   /** Compare mode: the question is saved and its id known, so the branch for the second model can start. */
   onTurnStarted?: (data: { conversationId?: string; userMessageId?: string }) => void;
   onError?: (error: Error) => void;
+  /** The `X-Run-Id` response header, when the server sends one. */
+  onRunId?: (runId: string) => void;
   signal?: AbortSignal;
 }
 
@@ -189,7 +196,8 @@ async function runTurnStream(
   let lastEventId: string | null = null;
   let finished = false;
   let failure: Error | null = null;
-  await streamSSERequest(endpoint, { ...payload, protocol: 'agui' }, {
+  // `frame=turn`: the final frame carries only this turn's rows; a send merges them by id, a regenerate reloads.
+  await streamSSERequest(`${endpoint}?frame=turn`, { ...payload, protocol: 'agui' }, {
     onEvent: (event) => {
       if (handler === null) {
         target = durableHandle(event, agentId);
@@ -206,6 +214,10 @@ async function runTurnStream(
       handler(event);
       if (event.id) lastEventId = event.id;
       if (isRootTerminalFrame(event)) finished = true;
+    },
+    onResponse: (response) => {
+      const runId = response.headers.get('X-Run-Id');
+      if (runId) callbacks.onRunId?.(runId);
     },
     onError: (error) => {
       failure = error;
@@ -226,7 +238,7 @@ async function runTurnStream(
   // A connection that closes cleanly without a terminal frame would otherwise
   // leave the turn "streaming" forever, with Stop showing and no answer.
   if (!tracking.receivedComplete && !tracking.receivedError) {
-    callbacks.onError?.(new Error(CHAT_STREAM_ERROR_MESSAGES.interrupted));
+    callbacks.onError?.(new StreamDroppedError(CHAT_STREAM_ERROR_MESSAGES.interrupted, true));
   }
 }
 
@@ -344,7 +356,7 @@ async function postDecision(
 export function mapApiConversationToConversation(conv: ConversationApiResponse): Conversation {
   return {
     id: conv._id,
-    title: conv.title,
+    title: chatExtension.formatConversationTitle(conv.title) ?? conv.title,
     createdAt: conv.createdAt,
     updatedAt: conv.updatedAt,
     isShared: conv.isShared,
@@ -361,10 +373,16 @@ export function mapApiConversationToConversation(conv: ConversationApiResponse):
     sharedBy: conv.sharedBy,
     agentKey: conv.agentKey,
     ...(conv.harnessState ? { harnessState: conv.harnessState } : {}),
+    ...chatExtension.conversationFields(conv),
   };
 }
 
 const transformConversation = mapApiConversationToConversation;
+
+/** A row of an archive list: membership means the caller archived it. */
+export function mapArchivedConversation(conv: ConversationApiResponse): Conversation {
+  return { ...mapApiConversationToConversation(conv), ...chatExtension.conversationFields(conv, { archived: true }) };
+}
 
 export interface FetchConversationsOptions {
   /** 'owned' fetches the user's own chats; 'shared' fetches chats shared with them. */
@@ -965,6 +983,8 @@ export const ChatApi = {
     conversationId: string,
     page: number = 1,
     limit: number = CONVERSATION_MESSAGES_PAGE_SIZE,
+    /** `quiet`: no toast for any failure (a background check); the others as `detailToast` has them. */
+    options?: { quietWhenGone?: boolean; quietWhenTransient?: boolean; quiet?: boolean },
   ): Promise<{
     conversation: {
       id: string;
@@ -976,6 +996,8 @@ export const ChatApi = {
       modelInfo: ModelInfo;
       isShared: boolean;
       sharedWith: SharedWithEntry[];
+      /** `project` when the chat is open to its project's members. */
+      projectVisibility?: 'private' | 'project';
       forkedFrom?: ForkOrigin;
       forks?: ForkChild[];
       access: {
@@ -998,6 +1020,7 @@ export const ChatApi = {
         createdAt: string;
         isShared: boolean;
         sharedWith: SharedWithEntry[];
+        projectVisibility?: 'private' | 'project';
         status: string;
         messages: ConversationMessage[];
         modelInfo: ModelInfo;
@@ -1014,8 +1037,9 @@ export const ChatApi = {
       };
       filters: Record<string, unknown>;
       meta: Record<string, unknown>;
-    }>(`/api/v1/conversations/${conversationId}/`, {
+    }>(`${chatExtension.conversationPath(conversationId)}/`, {
       params: { page, limit },
+      ...(options?.quiet ? { suppressErrorToast: true } : detailToast(options)),
     });
 
     const pagination = data.conversation.pagination ?? {
@@ -1046,15 +1070,14 @@ export const ChatApi = {
     let payload: Record<string, unknown>;
 
     if (request.agentId) {
-      const agentChatMode = streamChatModeToAgentApiChatMode(request.chatMode);
       endpoint = request.conversationId
-        ? `/api/v1/agents/${request.agentId}/conversations/${request.conversationId}/messages/stream`
+        ? `${chatExtension.conversationPath(request.conversationId, request.agentId)}/messages/stream`
         : `/api/v1/agents/${request.agentId}/conversations/stream`;
       const f = request.filters;
       payload = {
         query: request.query,
         ...buildModelPayload(request),
-        chatMode: agentChatMode,
+        chatMode: streamChatModeToAgentApiChatMode(request.chatMode),
         timezone: getClientTimezone(),
         currentTime: getClientCurrentTime(),
         ...(request.runId ? { runId: request.runId } : {}),
@@ -1075,10 +1098,11 @@ export const ChatApi = {
         ...(request.repository ? { repository: request.repository } : {}),
         ...(request.gates ? { gates: request.gates } : {}),
         ...(request.toolApproval ? { toolApproval: request.toolApproval } : {}),
+        ...chatExtension.agentStreamBodyFields(request),
       };
     } else {
       endpoint = request.conversationId
-        ? `/api/v1/conversations/${request.conversationId}/messages/stream`
+        ? `${chatExtension.conversationPath(request.conversationId)}/messages/stream`
         : `/api/v1/conversations/stream`;
       // Rename `agentStreamTools` → `tools` (Node.js controller reads `req.body.tools`
       // uniformly for both agent and non-agent paths) and validate filters.
@@ -1141,7 +1165,7 @@ export const ChatApi = {
       answers?: string;
     }
   ): Promise<void> {
-    const endpoint = `/api/v1/conversations/${conversationId}/message/${messageId}/regenerate`;
+    const endpoint = `${chatExtension.conversationPath(conversationId)}/message/${messageId}/regenerate`;
 
     const body: Record<string, unknown> = {
       ...buildModelPayload(request),
@@ -1207,7 +1231,7 @@ export const ChatApi = {
       answers?: string;
     }
   ): Promise<void> {
-    const endpoint = `/api/v1/agents/${agentId}/conversations/${conversationId}/message/${messageId}/regenerate`;
+    const endpoint = `${chatExtension.conversationPath(conversationId, agentId)}/message/${messageId}/regenerate`;
 
     const agentRegenBody: Record<string, unknown> = {
       ...buildModelPayload(model),
@@ -1261,9 +1285,7 @@ export const ChatApi = {
     runId: string,
     agentId?: string | null,
   ): Promise<{ cancelled: boolean }> {
-    const endpoint = agentId
-      ? `/api/v1/agents/${agentId}/conversations/${conversationId}/cancel`
-      : `/api/v1/conversations/${conversationId}/cancel`;
+    const endpoint = `${chatExtension.conversationPath(conversationId, agentId)}/cancel`;
     const { data } = await apiClient.post<{ cancelled: boolean }>(
       endpoint,
       { runId },
@@ -1310,8 +1332,8 @@ export const ChatApi = {
   },
 
   /**
-   * Submit feedback for a bot response in an agent conversation.
-   * Endpoint: POST /api/v1/agents/:agentId/conversations/:conversationId/message/:messageId/feedback
+   * Submit feedback for a bot response in an agent conversation, on the conversation's own routes (as regenerate and
+   * cancel are): POST /api/v1/agents/:agentId/conversations/:conversationId/message/:messageId/feedback by default.
    */
   async submitAgentFeedback(
     agentId: string,
@@ -1320,7 +1342,7 @@ export const ChatApi = {
     feedback: FeedbackPayload
   ): Promise<void> {
     await apiClient.post(
-      `/api/v1/agents/${agentId}/conversations/${conversationId}/message/${messageId}/feedback`,
+      `${chatExtension.conversationPath(conversationId, agentId)}/message/${messageId}/feedback`,
       feedback
     );
   },
@@ -1415,7 +1437,7 @@ export const ChatApi = {
     });
 
     return {
-      conversations: raw.map(transformConversation),
+      conversations: raw.map(mapArchivedConversation),
       messagesMap,
       pagination: data.pagination,
     };
@@ -1463,7 +1485,7 @@ export const ChatApi = {
 
     return {
       conversations: (data.conversations ?? []).map((c) => ({
-        ...transformConversation(c),
+        ...mapArchivedConversation(c),
         source: c.source,
         agentKey: c.agentKey,
       })),
@@ -1524,15 +1546,20 @@ export const ChatApi = {
    * The chat UI paginates with `page` / `limit` and merges `serverPagination` when present.
    * Chevron rules live in `collections-tab` (`showExpandChevron`).
    */
-  async listCollectionsForChat(params?: {
-    cursor?: string | null;
-    limit?: number;
-    origins?: 'COLLECTION' | 'CONNECTOR';
-  }): Promise<ListCollectionsForChatResult> {
+  async listCollectionsForChat(
+    params?: {
+      cursor?: string | null;
+      limit?: number;
+      origins?: 'COLLECTION' | 'CONNECTOR';
+    },
+    // A caller with its own fallback for a failed listing says so, and no error toast shows.
+    options?: { suppressErrorToast?: boolean },
+  ): Promise<ListCollectionsForChatResult> {
     const limit = params?.limit ?? 100;
     const { data } = await apiClient.get<KnowledgeHubNodesResponse>(
       '/api/v1/knowledgeBase/knowledge-hub/nodes',
       {
+        ...(options?.suppressErrorToast ? { suppressErrorToast: true } : {}),
         params: {
           // Only a cursor the server issued is ever sent back; one it did not
           // issue is a 400.

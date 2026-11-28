@@ -150,6 +150,7 @@ describe('enterprise_search/utils/ai-chat-payload', () => {
       )
 
       expect(payload.projectInstructions).to.equal('Answer as the release team.')
+      expect(payload.projectId).to.equal('p1')
       expect(payload.tools).to.deep.equal(['jira.search'])
     })
   })

@@ -2,8 +2,8 @@
  * Unit tests for `loadHistoricalMessages`: how a stored conversation becomes
  * the thread shown after a reload.
  */
-import { describe, it, expect, vi } from 'vitest';
-import type { ConversationMessage } from '../types';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import type { ConversationMessage, PendingAskUserQuestion } from '../types';
 
 // `../runtime` pulls in `@/lib/api`, whose auth store reads localStorage at
 // import time; nothing here makes a request.
@@ -12,6 +12,7 @@ vi.mock('@/lib/api', () => ({
 }));
 
 const { loadHistoricalMessages } = await import('../runtime');
+const { chatExtension } = await import('@/config');
 
 function message(overrides: Partial<ConversationMessage>): ConversationMessage {
   return {
@@ -66,6 +67,50 @@ describe('loadHistoricalMessages, an answered approval card', () => {
     });
   });
 
+  describe('who may see the answer is the reply\'s own', () => {
+    const HIDDEN = { content: 'Hidden.', parts: [], answerHidden: { redacted: true, reason: 'no_longer_accessible' } } as Partial<ConversationMessage>;
+    const joined = (card: Partial<ConversationMessage>, reply: Partial<ConversationMessage>) => {
+      const { messages } = loadHistoricalMessages([
+        message({ _id: 'q', messageType: 'user_query', content: 'how does sync work?' }),
+        message({ _id: 'a1', messageType: 'bot_response', content: WAITING, ...card }),
+        message({ _id: 'ans', messageType: 'user_query', content: 'Tool approval: allow' }),
+        message({ _id: 'a2', messageType: 'bot_response', content: 'It syncs hourly.', ...reply }),
+      ]);
+      expect(messages).toHaveLength(2);
+      return messages[1];
+    };
+
+    it('shows a reply the reader may see (shared with them) though the card before it is hidden', () => {
+      const row = joined(HIDDEN, {});
+      expect(row.content).toEqual([{ type: 'text', text: 'It syncs hourly.' }]);
+      expect(row.metadata?.custom?.messageId).toBe('a2');
+      expect(row.metadata?.custom?.answerHidden).toBeUndefined();
+    });
+
+    it('marks a hidden reply hidden though the card before it is shown', () => {
+      expect(joined({}, HIDDEN).metadata?.custom?.answerHidden).toEqual(HIDDEN.answerHidden);
+    });
+
+    it('marks the row hidden when both are, and not when neither is', () => {
+      expect(joined(HIDDEN, HIDDEN).metadata?.custom?.answerHidden).toEqual(HIDDEN.answerHidden);
+      expect(joined({}, {}).metadata?.custom?.answerHidden).toBeUndefined();
+    });
+  });
+
+  it('carries on the newest reply in a conversation of one person, whatever came before it', () => {
+    const { messages } = loadHistoricalMessages([
+      message({ _id: 'q0', messageType: 'user_query', content: 'hello' }),
+      message({ _id: 'a0', messageType: 'bot_response', content: 'Hi.' }),
+      message({ _id: 'q', messageType: 'user_query', content: 'file a bug' }),
+      message({ _id: 'a1', messageType: 'bot_response', content: WAITING }),
+      message({ _id: 'ans', messageType: 'user_query', content: 'Tool approval: allow' }),
+      message({ _id: 'a2', messageType: 'bot_response', content: 'Filed JIRA-7.' }),
+    ]);
+    expect(messages.map((m) => [m.id, (m.content as Array<{ text: string }>)[0].text])).toEqual([
+      ['q0', 'hello'], ['a0', 'Hi.'], ['q', 'file a bug'], ['a1', 'Filed JIRA-7.'],
+    ]);
+  });
+
   it('keeps the next question\'s reply on its own row after an answer that failed', () => {
     const { messages } = loadHistoricalMessages([
       message({ _id: 'q', messageType: 'user_query', content: 'file a bug' }),
@@ -83,6 +128,19 @@ describe('loadHistoricalMessages, an answered approval card', () => {
       ['user', 'q'], ['assistant', 'a1'], ['user', 'q2'], ['assistant', 'a2'],
     ]);
     expect((messages[1].metadata?.custom?.persistedParts as Array<Record<string, unknown>>)[0].status).toBe('awaiting_approval');
+  });
+
+  it('leaves the card as it was when the run its answer started was stopped with nothing saved', () => {
+    const { messages } = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'file a bug' }),
+      message({ _id: 'a1', messageType: 'bot_response', content: WAITING }),
+      message({ _id: 'ans', messageType: 'user_query', content: 'Tool approval: allow' }),
+      message({ _id: 'a2', messageType: 'bot_response', content: '', status: 'stopped' }),
+    ]);
+
+    expect(messages.map((m) => [m.role, m.id])).toEqual([['user', 'q'], ['assistant', 'a1']]);
+    expect(messages[1].content).toEqual([{ type: 'text', text: WAITING }]);
+    expect(messages[1].metadata?.custom?.messageId).toBe('a1');
   });
 
   it('hides the error row of an answer whose run failed, leaving the card to answer again', () => {
@@ -543,7 +601,7 @@ describe('loadHistoricalMessages', () => {
     expect(unansweredAskUserQuestion).toBeNull();
   });
 
-  it('keeps the card interactive when the resume asked another question', () => {
+  it('opens the question the resume asked as its own card, the first one answered on the row', () => {
     const first = {
       name: 'ask_user_question',
       questions: [{
@@ -594,17 +652,14 @@ describe('loadHistoricalMessages', () => {
     expect(unansweredAskUserQuestion).toMatchObject({
       assistantMessageId: 'a1',
       status: 'pending',
-      answers: {
-        'q-proceed': {
-          questionUuid: 'q-proceed',
-          selectedOptionIds: ['kb'],
-          userInputs: {},
-        },
-      },
+      answers: {},
     });
     expect(
       unansweredAskUserQuestion?.payload.questions.map((q) => q.uuid),
-    ).toEqual(['q-proceed', 'q-topic']);
+    ).toEqual(['q-topic']);
+    expect(messages[1].metadata?.custom?.persistedAskUserQuestionAnswers).toEqual({
+      'q-proceed': { questionUuid: 'q-proceed', selectedOptionIds: ['kb'], userInputs: {} },
+    });
   });
 
   it('keeps the card on its own row, closed, when the user chats on past an unanswered question', () => {
@@ -1014,8 +1069,8 @@ describe('an agent that re-asks a question the user already answered', () => {
     ]);
 
     expect(unansweredAskUserQuestion?.assistantMessageId).toBe('b1');
-    expect(unansweredAskUserQuestion?.payload.questions).toHaveLength(2);
-    expect(Object.keys(unansweredAskUserQuestion?.answers ?? {})).toEqual(['q-fy']);
+    expect(unansweredAskUserQuestion?.payload.questions.map((q) => q.uuid)).toEqual(['q-scope']);
+    expect(unansweredAskUserQuestion?.answers).toEqual({});
   });
 
   it('still lets the user retry when the resume came back empty without asking again', () => {
@@ -1038,6 +1093,85 @@ describe('an agent that re-asks a question the user already answered', () => {
   });
 });
 
+describe('loadHistoricalMessages, question cards put to different people', () => {
+  // Dana is reading. Each card and answer row belongs to the person its id starts with.
+  const personOf = (id: string) => id.split('-')[0];
+  const askedOf = new WeakMap<Partial<PendingAskUserQuestion>, string>();
+
+  function useCardOwners() {
+    vi.spyOn(chatExtension.history, 'askCardFields').mockImplementation((msg) => {
+      const card: Partial<PendingAskUserQuestion> = {};
+      askedOf.set(card, personOf(msg._id));
+      return card;
+    });
+    vi.spyOn(chatExtension.history, 'cardIsAnswerable').mockImplementation((card) => askedOf.get(card) === 'dana');
+    vi.spyOn(chatExtension.history, 'answersCard').mockImplementation(
+      (answer, card) => askedOf.get(card) === undefined || askedOf.get(card) === personOf(answer._id),
+    );
+    // Someone else's question leaves a card put to another person open.
+    vi.spyOn(chatExtension.history, 'typedReplyClosesCard').mockImplementation(
+      (question, card) => askedOf.get(card) === undefined || askedOf.get(card) === personOf(question._id),
+    );
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const card = (question: string) => ({ name: 'ask_user_question', questions: [{ question, options: ['EU', 'US'] }] });
+
+  /** Dana's card, then Sam's newer one, then `after`. */
+  function twoCards(...after: ConversationMessage[]): ConversationMessage[] {
+    return [
+      message({ _id: 'dana-q', messageType: 'user_query', content: 'plan my trip' }),
+      message({ _id: 'dana-t', messageType: 'tool_call', tools: [{ toolName: 'ask_user_question', toolResult: card('Dana, which region?') }] } as Partial<ConversationMessage>),
+      message({ _id: 'dana-a', messageType: 'bot_response', content: '' }),
+      message({ _id: 'sam-q', messageType: 'user_query', content: 'plan mine too' }),
+      message({ _id: 'sam-t', messageType: 'tool_call', tools: [{ toolName: 'ask_user_question', toolResult: card('Sam, which region?') }] } as Partial<ConversationMessage>),
+      message({ _id: 'sam-a', messageType: 'bot_response', content: '' }),
+      ...after,
+    ];
+  }
+
+  const answered = (person: string, question: string) => [
+    message({ _id: `${person}-sel`, messageType: 'user_query', content: `User selections:\n1. "${question}" → EU` }),
+    message({ _id: `${person}-done`, messageType: 'bot_response', content: 'Booked for EU.' }),
+  ];
+
+  it('opens the newest card when the extension says nothing', () => {
+    expect(loadHistoricalMessages(twoCards()).unansweredAskUserQuestion?.assistantMessageId).toBe('sam-a');
+  });
+
+  it("keeps the viewer's own card open when someone else's newer card follows", () => {
+    useCardOwners();
+    const { messages, unansweredAskUserQuestion } = loadHistoricalMessages(twoCards());
+
+    expect(unansweredAskUserQuestion).toMatchObject({ assistantMessageId: 'dana-a', status: 'pending' });
+    // The other card shows read-only from its row.
+    expect(messages.find((m) => m.id === 'sam-a')?.metadata?.custom?.persistedAskUserQuestion).toEqual(card('Sam, which region?'));
+  });
+
+  it("does not let someone else's answer to their card close the viewer's card", () => {
+    useCardOwners();
+    const { messages, unansweredAskUserQuestion } = loadHistoricalMessages(twoCards(...answered('sam', 'Sam, which region?')));
+
+    expect(unansweredAskUserQuestion?.assistantMessageId).toBe('dana-a');
+    const samRow = messages.find((m) => m.id === 'sam-a');
+    expect(samRow?.metadata?.custom?.persistedAskUserQuestionAnswers).toBeDefined();
+    expect(messages.map((m) => m.id)).not.toContain('sam-done');
+  });
+
+  it("closes the viewer's card on their own answer, on that card's row", () => {
+    useCardOwners();
+    const { messages, unansweredAskUserQuestion } = loadHistoricalMessages(twoCards(...answered('dana', 'Dana, which region?')));
+
+    // Sam's card is still his to answer; Dana sees it read-only.
+    expect(unansweredAskUserQuestion?.assistantMessageId).toBe('sam-a');
+    expect(messages.find((m) => m.id === 'dana-a')?.metadata?.custom?.persistedAskUserQuestionAnswers).toBeDefined();
+    expect(messages.find((m) => m.id === 'sam-a')?.metadata?.custom?.persistedAskUserQuestionAnswers).toBeUndefined();
+  });
+});
+
 describe('loadHistoricalMessages, feedback', () => {
   const fb = (isHelpful: boolean) => ({ isHelpful, categories: [] });
   const feedbackOf = (feedback: Array<{ isHelpful: boolean }>) => {
@@ -1056,5 +1190,20 @@ describe('loadHistoricalMessages, feedback', () => {
 
   it('shows no rating for an unrated reply', () => {
     expect(feedbackOf([])).toBeUndefined();
+  });
+
+  it('keeps the code a stored refusal carries, so the card knows Try again cannot help', () => {
+    const refused = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'Q' }),
+      message({ _id: 'err', messageType: 'error', content: 'This request is not allowed right now.', errorCode: 'request_not_allowed' }),
+    ]);
+    expect(refused.messages[1].metadata?.custom).toMatchObject({ failed: true, streamError: { code: 'request_not_allowed' } });
+
+    // A failure with no code of its own reads as a failed reply, as a live one does: not a refusal, so Try again stays.
+    const plain = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'Q' }),
+      message({ _id: 'err', messageType: 'error', content: 'The model failed.' }),
+    ]);
+    expect(plain.messages[1].metadata?.custom).toMatchObject({ failed: true, streamError: { code: 'answer_failed' } });
   });
 });

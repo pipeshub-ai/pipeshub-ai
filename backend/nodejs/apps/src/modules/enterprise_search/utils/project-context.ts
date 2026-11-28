@@ -6,7 +6,7 @@ import {
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { getConversationRepository } from '../../../libs/repositories/conversation';
-import { isValidId } from '../../../libs/repositories/ids';
+import { idOf, isValidId } from '../../../libs/repositories/ids';
 import { getProjectRepository } from '../../../libs/repositories/project';
 import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -160,7 +160,9 @@ const SELECTION_FILTER_KEYS = ['recordGroups', 'records', 'recordsExact'];
  * runs — this function is the one that gets the final say on both
  * `filters` and `tools` for a project-scoped turn:
  *  - `projectInstructions` — set whenever the project has instructions
- *    (additive; never touches `filters`/agent identity — see prompt_builder.py).
+ *    (additive; never touches `filters`/agent identity — see prompt_builder.py),
+ *    with `projectId`, the project they came from: an answer given them is
+ *    labelled with that project, so only people who can open it read the answer.
  *  - `filters.apps`/`filters.kb` — `requested ∩ project.knowledgeScope`,
  *    falling back to the *whole* project set when the request carried none
  *    for that dimension. `filters.kb` additionally always includes the
@@ -190,6 +192,8 @@ export function applyProjectScope(
 
   if (context.instructions) {
     aiPayload.projectInstructions = context.instructions;
+    // As text: a project read from the store may carry its id as an ObjectId.
+    aiPayload.projectId = idOf(context.projectId);
   }
 
   const requestedFilters =

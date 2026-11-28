@@ -74,6 +74,7 @@ export class SharedArtifactService {
       statuses = await this.artifacts.decide({
         authorization: viewer.authorization,
         artifactIds: distinct,
+        ...(viewer.timeoutMs !== undefined && { timeoutMs: viewer.timeoutMs }),
       });
     } catch (error) {
       return fail(

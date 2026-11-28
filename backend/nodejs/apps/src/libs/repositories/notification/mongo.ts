@@ -4,6 +4,7 @@ import { retentionCutoff } from '../../../modules/notification/utils/notificatio
 import { toPlain } from '../plain';
 import { prepareNotification } from './dates';
 import type {
+  InsertNewResult,
   NewNotification,
   NotificationCursor,
   NotificationRepository,
@@ -31,6 +32,7 @@ function retentionFilter(
       : includeArchived
         ? {}
         : { status: { $ne: 'archived' } }),
+    ...(scope.hideChatNotices && { type: { $not: /^chat\./ } }),
   };
 }
 
@@ -44,6 +46,31 @@ function cursorFilter(cursor: NotificationCursor): Record<string, unknown> {
 }
 
 const rowOf = (doc: unknown): NotificationRow => toPlain<NotificationRow>(doc);
+
+const DUPLICATE_KEY_CODE = 11000;
+const HEX_ID = /^[0-9a-f]{24}$/i;
+
+interface WriteFailure {
+  code?: unknown;
+  errmsg?: unknown;
+  err?: { code?: unknown; errmsg?: unknown };
+}
+
+interface InsertManyFailure extends WriteFailure {
+  message?: unknown;
+  writeErrors?: WriteFailure[];
+  insertedDocs?: unknown[];
+}
+
+// Mongoose copies `insertMany` write errors as plain objects, losing the
+// driver's `code` getter, so the code is only on the nested `err`.
+const isDuplicateKey = (e: WriteFailure): boolean =>
+  (e.code ?? e.err?.code) === DUPLICATE_KEY_CODE;
+
+const messageOf = (e: InsertManyFailure): string =>
+  [e.err?.errmsg, e.errmsg, e.message].find(
+    (m): m is string => typeof m === 'string',
+  ) ?? 'write error';
 
 /**
  * The row to store, with both timestamps set here: the schema's `timestamps: true` would stamp `updatedAt` with the time of the
@@ -128,6 +155,55 @@ export class MongoNotificationRepository implements NotificationRepository {
         assignedTo: oid(scope.userId),
       })) > 0
     );
+  }
+
+  async insertNew(rows: readonly NewNotification[]): Promise<InsertNewResult> {
+    if (rows.length === 0) {
+      return { inserted: [], duplicates: 0, refused: [] };
+    }
+    const now = new Date();
+    // as in insertMany: every row is stamped and checked before any is written, so a refused row leaves the others unstored
+    const docs = rows.map((r) => stamped(r, now));
+    for (const d of docs) await new Notifications(d).validate();
+    try {
+      // a taken `_id` and a taken `(assignedTo, dedupeKey)` both fail with a duplicate key, and are counted as delivered before
+      const saved = await Notifications.insertMany(docs, {
+        ordered: false,
+        timestamps: false,
+      });
+      return { inserted: saved.map(rowOf), duplicates: 0, refused: [] };
+    } catch (error) {
+      const failure = error as InsertManyFailure;
+      // Mongoose attaches `insertedDocs` to every failure; with no per-document
+      // errors (an empty list after an election) the whole write failed and
+      // `insertedDocs` lists docs that were never stored, so it is thrown.
+      const perDocument = failure.writeErrors ?? [];
+      if (
+        !Array.isArray(failure.insertedDocs) ||
+        (perDocument.length === 0 && !isDuplicateKey(failure))
+      ) {
+        throw error;
+      }
+      const writeErrors = perDocument.length > 0 ? perDocument : [failure];
+      const refused = writeErrors.filter((e) => !isDuplicateKey(e));
+      return {
+        inserted: failure.insertedDocs.map(rowOf),
+        duplicates: writeErrors.length - refused.length,
+        refused: refused.map(messageOf),
+      };
+    }
+  }
+
+  async deleteByIds(orgId: string, ids: readonly string[]): Promise<number> {
+    const valid = ids.filter((id) => HEX_ID.test(id));
+    if (valid.length === 0 || !HEX_ID.test(orgId)) {
+      return 0;
+    }
+    const result = await Notifications.deleteMany({
+      orgId: oid(orgId),
+      _id: { $in: valid.map(oid) },
+    });
+    return result.deletedCount;
   }
 
   async list(

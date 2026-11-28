@@ -2,6 +2,7 @@
 import { expect } from 'chai';
 import mongoose from 'mongoose';
 import {
+  buildTokenScopeFilter,
   clampPageSize,
   decodeCursor,
   encodeCursor,
@@ -20,6 +21,15 @@ describe('notification/notification-api.utils', () => {
     const cutoff = retentionCutoff(now);
     const expected = new Date(now.getTime() - NOTIFICATION_RETENTION_DAYS * 24 * 60 * 60 * 1000);
     expect(cutoff.toISOString()).to.equal(expected.toISOString());
+  });
+
+  it('buildTokenScopeFilter hides chat notices only from tokens without conversation:read', () => {
+    const hidden = { hideChatNotices: true };
+    expect(buildTokenScopeFilter(undefined)).to.deep.equal({});
+    expect(buildTokenScopeFilter({ userId: 'u', orgId: 'o' })).to.deep.equal({});
+    expect(buildTokenScopeFilter({ isOAuth: true, oauthScopes: ['conversation:read'] })).to.deep.equal({});
+    expect(buildTokenScopeFilter({ isOAuth: true, oauthScopes: ['kb:read', 'conversation:chat'] })).to.deep.equal(hidden);
+    expect(buildTokenScopeFilter({ isOAuth: true })).to.deep.equal(hidden);
   });
 
   it('resolveNotificationAuthContext returns string ids for a valid user', () => {

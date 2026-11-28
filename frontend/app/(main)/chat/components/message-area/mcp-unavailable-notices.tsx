@@ -16,7 +16,7 @@ import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { selectIsAdmin, useUserStore } from '@/lib/store/user-store';
 import type { MessagePart } from '../../types';
 import { useChatStore } from '../../store';
-import { useRenderSlotId } from './render-slot';
+import { useAnswerSlotId } from './answer-slot-scope';
 import { signedInAt } from './mcp-sign-in-card';
 
 /** Why a server was left out (MCPNOTE-1); `unknown`: an older Node named the server without a reason. */
@@ -156,8 +156,8 @@ function McpUnusedNotice({ group }: { group: McpUnusedGroup }) {
 function McpNoticeSignIn({ servers, touch }: { servers: McpUnusedServer[]; touch: { minHeight: number } | undefined }) {
   const { t } = useTranslation();
   // Someone reading a conversation shared with them can't sign in for its owner.
-  const renderSlotId = useRenderSlotId();
-  const isOwner = useChatStore((s) => (renderSlotId ? s.slots[renderSlotId]?.isOwner ?? null : null)) !== false;
+  const answerSlotId = useAnswerSlotId();
+  const isOwner = useChatStore((s) => (answerSlotId ? s.slots[answerSlotId]?.isOwner ?? null : null)) !== false;
   const [signedIn, setSignedIn] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<{ instance: string; message: string } | null>(null);

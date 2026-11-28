@@ -192,6 +192,16 @@ export function slotWaitingCount(
   return approvals + (questionWaits(slot) ? 1 : 0);
 }
 
+/** A slot of this chat, in a sidebar's scope (an agent's, or none), holds an ask open on its person (`slotWaitingCount`). */
+export function waitsInScope(slots: Record<string, ChatSlot>, conversationId: string, scopeAgentId: string | null): boolean {
+  return Object.values(slots).some(
+    (slot) =>
+      slot.convId === conversationId &&
+      (scopeAgentId === null ? !slot.threadAgentId : slot.threadAgentId === scopeAgentId) &&
+      slotWaitingCount(slot) > 0,
+  );
+}
+
 /** The slot's question still waits: open, and on the newest reply; a newer turn skipped it (D6). */
 export function questionWaits(slot: Partial<Pick<ChatSlot, 'pendingAskUserQuestion' | 'messages'>>): boolean {
   const question = slot.pendingAskUserQuestion;

@@ -168,6 +168,8 @@ export abstract class BaseRedisStreamsProducerConnection
   protected initialized = false;
   /** Set only in legacy `maxlen` retention mode; otherwise nothing is trimmed on write. */
   protected maxLen: number | undefined;
+  /** The connect under way, which every other caller waits for: a client refuses a second one meanwhile. */
+  private connecting: Promise<void> | undefined;
 
   constructor(
     @unmanaged() protected readonly config: RedisBrokerConfig,
@@ -196,18 +198,29 @@ export abstract class BaseRedisStreamsProducerConnection
       : ['MAXLEN', REDIS_STREAM_MAXLEN_STRATEGY, String(this.maxLen)];
   }
 
+  /**
+   * Connects once: callers that come while a connect is under way (the first publishes after a start, each checking
+   * the producer first) wait for that one and share its outcome, instead of each calling the client's connect, which
+   * refuses all but the first. A connect that fails fails them all; the next call tries again.
+   */
   async connect(): Promise<void> {
+    if (this.initialized) return;
+    this.connecting ??= this.openConnection().finally(() => {
+      this.connecting = undefined;
+    });
+    await this.connecting;
+  }
+
+  private async openConnection(): Promise<void> {
     try {
-      if (!this.initialized) {
-        await this.redis.connect();
-        this.initialized = true;
-        this.logger.info('Successfully connected Redis Streams producer');
-        if (this.maxLen !== undefined) {
-          this.logger.warn(
-            'REDIS_STREAMS_RETENTION_MODE=maxlen: streams are capped and unconsumed events beyond the cap are dropped',
-            { maxLen: this.maxLen },
-          );
-        }
+      await this.redis.connect();
+      this.initialized = true;
+      this.logger.info('Successfully connected Redis Streams producer');
+      if (this.maxLen !== undefined) {
+        this.logger.warn(
+          'REDIS_STREAMS_RETENTION_MODE=maxlen: streams are capped and unconsumed events beyond the cap are dropped',
+          { maxLen: this.maxLen },
+        );
       }
     } catch (error) {
       this.initialized = false;

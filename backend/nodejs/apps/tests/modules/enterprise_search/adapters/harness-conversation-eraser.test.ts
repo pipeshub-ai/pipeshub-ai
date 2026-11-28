@@ -7,6 +7,7 @@ import Citation from '../../../../src/modules/enterprise_search/schema/citation.
 import { Conversation } from '../../../../src/modules/enterprise_search/schema/conversation.schema';
 import { AgentConversation } from '../../../../src/modules/enterprise_search/schema/agent.conversation.schema';
 import { Notifications } from '../../../../src/modules/notification/schema/notification.schema';
+import { ChatAnswerClosure } from '../../../../src/modules/enterprise_search/schema/chat.answer.closure.schema';
 import { HarnessConversationEraser } from '../../../../src/libs/repositories/agent-harness/conversation-eraser/mongo';
 import { FakeChatAttachments } from '../../agent-harness/support/chat-attachments';
 
@@ -20,7 +21,7 @@ const citationId = (n: number) =>
 describe('HarnessConversationEraser', () => {
   afterEach(() => sinon.restore());
 
-  const stubWorld = (messages: unknown[]) => {
+  const stubWorld = (messages: unknown[], closures = 0) => {
     const read = sinon.stub().returns({ lean: sinon.stub().resolves(messages) });
     const find = sinon.stub(ChatSessionMessage, 'find').returns({ read } as never);
     const citations = sinon
@@ -38,10 +39,13 @@ describe('HarnessConversationEraser', () => {
       .stub(AgentConversation, 'deleteOne')
       .resolves({} as never);
     const notices = sinon.stub(Notifications, 'deleteMany').resolves({ deletedCount: 1 } as never);
+    const removeClosures = sinon
+      .stub(ChatAnswerClosure, 'deleteMany')
+      .resolves({ deletedCount: closures } as never);
     sinon.stub(ChatSession, 'findOne').returns({
       read: sinon.stub().returns({ lean: sinon.stub().resolves({ userId: new Types.ObjectId() }) }),
     } as never);
-    return { find, read, citations, removeMessages, removeSession, legacy, agentLegacy, notices };
+    return { find, read, citations, removeMessages, removeSession, legacy, agentLegacy, notices, removeClosures };
   };
 
   it('erases nothing for malformed ids', async () => {
@@ -102,6 +106,26 @@ describe('HarnessConversationEraser', () => {
     expect(String(noticeFilter.orgId)).to.equal(ORG);
     expect(noticeFilter['payload.conversationId']).to.equal(SESSION);
     expect(noticeOptions).to.deep.equal(MAJORITY);
+  });
+
+  it("removes the chat's stored answer closures after its messages and before the session, and counts them", async () => {
+    const world = stubWorld([{}, {}], 2);
+
+    const counts = await new HarnessConversationEraser(new FakeChatAttachments()).erase(ORG, SESSION);
+
+    expect(counts).to.deep.equal({ citations: 0, messages: 2, sessions: 1, attachments: 0, attachmentBlobs: 0, answerClosures: 2 });
+    const [filter, options] = world.removeClosures.firstCall.args as unknown as [
+      Record<string, Types.ObjectId>,
+      unknown,
+    ];
+    expect(Object.keys(filter).sort()).to.deep.equal(['orgId', 'sessionId']);
+    expect(filter.orgId).to.be.instanceOf(Types.ObjectId);
+    expect(String(filter.orgId)).to.equal(ORG);
+    expect(filter.sessionId).to.be.instanceOf(Types.ObjectId);
+    expect(String(filter.sessionId)).to.equal(SESSION);
+    expect(options).to.deep.equal(MAJORITY);
+    expect(world.removeMessages.calledBefore(world.removeClosures)).to.equal(true);
+    expect(world.removeClosures.calledBefore(world.removeSession)).to.equal(true);
   });
 
   it('deletes citations in batches of a thousand', async () => {

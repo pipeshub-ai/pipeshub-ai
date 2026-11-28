@@ -547,9 +547,22 @@ def approval(stack: Stack) -> None:
           f"run {run} ended {frames[-1].type if frames else 'none'}")
 
 
+def saved_reply(frames: list[Frame]) -> str:
+    """The reply Node's final frame saved (``RUN_FINISHED``'s conversation, its last message that is not the
+    person's); "" when the stream ends otherwise or saved none."""
+    last = frames[-1] if frames else None
+    if last is None or last.type != "RUN_FINISHED":
+        return ""
+    messages = ((last.data.get("result") or {}).get("conversation") or {}).get("messages") or []
+    replies = [m for m in messages if isinstance(m, dict) and m.get("messageType") != "user_query"]
+    return str(replies[-1].get("content") or "") if replies else ""
+
+
 def shown_answer(frames: list[Frame]) -> str:
     """The answer as the web app leaves it on screen: a message the stream retracted (#4442: its end says
-    ``discarded``, or a ``message_discarded`` names it) is taken away, and the final answer snapshot is shown."""
+    ``discarded``, or a ``message_discarded`` names it) is taken away, and the final answer snapshot is shown. A chat
+    turn's final snapshot carries no answer (the relay sends its progress only): the web app then shows the reply
+    the final frame saved."""
     gone = {f.data.get("messageId") for f in frames if f.type == "TEXT_MESSAGE_END" and f.data.get("discarded")}
     gone |= {(f.data.get("value") or {}).get("messageId") for f in frames
              if f.type == "CUSTOM" and f.name == "message_discarded"}
@@ -557,7 +570,9 @@ def shown_answer(frames: list[Frame]) -> str:
                    if f.type == "TEXT_MESSAGE_CONTENT" and f.data.get("messageId") not in gone)
     finals = [str((f.data.get("snapshot") or {}).get("answer") or "") for f in frames
               if f.type == "STATE_SNAPSHOT" and (f.data.get("snapshot") or {}).get("final")]
-    return kept + "".join(finals)
+    if any(finals):
+        return kept + "".join(finals)
+    return saved_reply(frames) or kept
 
 
 def shown_outcome(frames: list[Frame]) -> dict[str, Any]:

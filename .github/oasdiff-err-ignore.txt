@@ -1,0 +1,68 @@
+# Errors the OpenAPI breaking-change check lets through. openapi-validator.yml gives this file
+# to its oasdiff step as `err-ignore`; oasdiff reads it for errors only, so warnings stay.
+#
+# oasdiff skips an error when one line names its METHOD /path and holds its text word for word,
+# value, property path and response status included. So each line lets one change through, and
+# the same value in another operation, property or status is still an error. To let another
+# through, copy its error from the check's log, with a comment that says why.
+#
+# answerHidden.reason says why an answer in a shared chat is hidden from its reader. Each value
+# below is an intended, additive class of reason (HiddenAnswer in the spec says what each means):
+# no_access, personal, agent, deleted and stopped. A client must accept a reason it does not know
+# and show the answer as hidden. The archive listing gets the same values as warnings, not errors,
+# so it is not listed here.
+
+# no_access
+POST /agents/{agentKey}/conversations added the new `no_access` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `201`
+DELETE /agents/{agentKey}/conversations/{conversationId} added the new `no_access` enum value to the `conversation/anyOf[#/components/schemas/StoredAgentConversation]/messages/items/answerHidden/reason` response property for the response status `200`
+GET /agents/{agentKey}/conversations/{conversationId} added the new `no_access` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `200`
+POST /agents/{agentKey}/conversations/{conversationId}/messages added the new `no_access` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `200`
+PATCH /agents/{agentKey}/conversations/{conversationId}/title added the new `no_access` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `200`
+POST /conversations/create added the new `no_access` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `201`
+POST /conversations/{conversationId}/messages added the new `no_access` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `200`
+POST /conversations/internal/create added the new `no_access` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `201`
+POST /conversations/internal/{conversationId}/messages added the new `no_access` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `200`
+
+# personal
+POST /agents/{agentKey}/conversations added the new `personal` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `201`
+DELETE /agents/{agentKey}/conversations/{conversationId} added the new `personal` enum value to the `conversation/anyOf[#/components/schemas/StoredAgentConversation]/messages/items/answerHidden/reason` response property for the response status `200`
+GET /agents/{agentKey}/conversations/{conversationId} added the new `personal` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `200`
+POST /agents/{agentKey}/conversations/{conversationId}/messages added the new `personal` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `200`
+PATCH /agents/{agentKey}/conversations/{conversationId}/title added the new `personal` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `200`
+POST /conversations/create added the new `personal` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `201`
+POST /conversations/{conversationId}/messages added the new `personal` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `200`
+POST /conversations/internal/create added the new `personal` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `201`
+POST /conversations/internal/{conversationId}/messages added the new `personal` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `200`
+
+# agent
+POST /agents/{agentKey}/conversations added the new `agent` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `201`
+DELETE /agents/{agentKey}/conversations/{conversationId} added the new `agent` enum value to the `conversation/anyOf[#/components/schemas/StoredAgentConversation]/messages/items/answerHidden/reason` response property for the response status `200`
+GET /agents/{agentKey}/conversations/{conversationId} added the new `agent` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `200`
+POST /agents/{agentKey}/conversations/{conversationId}/messages added the new `agent` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `200`
+PATCH /agents/{agentKey}/conversations/{conversationId}/title added the new `agent` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `200`
+POST /conversations/create added the new `agent` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `201`
+POST /conversations/{conversationId}/messages added the new `agent` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `200`
+POST /conversations/internal/create added the new `agent` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `201`
+POST /conversations/internal/{conversationId}/messages added the new `agent` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `200`
+
+# deleted
+POST /agents/{agentKey}/conversations added the new `deleted` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `201`
+DELETE /agents/{agentKey}/conversations/{conversationId} added the new `deleted` enum value to the `conversation/anyOf[#/components/schemas/StoredAgentConversation]/messages/items/answerHidden/reason` response property for the response status `200`
+GET /agents/{agentKey}/conversations/{conversationId} added the new `deleted` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `200`
+POST /agents/{agentKey}/conversations/{conversationId}/messages added the new `deleted` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `200`
+PATCH /agents/{agentKey}/conversations/{conversationId}/title added the new `deleted` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `200`
+POST /conversations/create added the new `deleted` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `201`
+POST /conversations/{conversationId}/messages added the new `deleted` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `200`
+POST /conversations/internal/create added the new `deleted` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `201`
+POST /conversations/internal/{conversationId}/messages added the new `deleted` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `200`
+
+# stopped
+POST /agents/{agentKey}/conversations added the new `stopped` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `201`
+DELETE /agents/{agentKey}/conversations/{conversationId} added the new `stopped` enum value to the `conversation/anyOf[#/components/schemas/StoredAgentConversation]/messages/items/answerHidden/reason` response property for the response status `200`
+GET /agents/{agentKey}/conversations/{conversationId} added the new `stopped` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `200`
+POST /agents/{agentKey}/conversations/{conversationId}/messages added the new `stopped` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `200`
+PATCH /agents/{agentKey}/conversations/{conversationId}/title added the new `stopped` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `200`
+POST /conversations/create added the new `stopped` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `201`
+POST /conversations/{conversationId}/messages added the new `stopped` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `200`
+POST /conversations/internal/create added the new `stopped` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `201`
+POST /conversations/internal/{conversationId}/messages added the new `stopped` enum value to the `conversation/messages/items/answerHidden/reason` response property for the response status `200`

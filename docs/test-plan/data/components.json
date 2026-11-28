@@ -841,6 +841,7 @@
         "backend/nodejs/apps/tests/modules/agent-harness/run-key-digest.test.ts",
         "backend/nodejs/apps/tests/modules/agent-harness/admission-pipeline.test.ts",
         "backend/nodejs/apps/tests/modules/agent-harness/run-history*.ts",
+        "backend/nodejs/apps/tests/modules/agent-harness/answers-only-history*.ts",
         "integration-tests/harness/fault/test_history_skew.py",
         "backend/nodejs/apps/tests/modules/agent-harness/assist1-assistant-agent.test.ts",
         "backend/nodejs/apps/tests/modules/agent-harness/ctl5b-run-notice.test.ts",
@@ -3151,6 +3152,7 @@
         "backend/nodejs/apps/tests/modules/enterprise_search/adapters/harness-chat-session-repository.test.ts",
         "backend/nodejs/apps/tests/modules/enterprise_search/adapters/harness-conversation-writer.test.ts",
         "backend/nodejs/apps/tests/modules/agent-harness/conversation-writer-shape.mongo.itest.ts",
+        "backend/nodejs/apps/tests/modules/agent-harness/conversation-writer.failed-answer.test.ts",
         "frontend/app/(main)/chat/__tests__/continue-privately.test.tsx",
         "backend/python/tests/unit/harness/engines/test_p9_backup_drill.py",
         "backend/nodejs/apps/tests/modules/agent-harness/support/session-participant-recorder-contract.ts"

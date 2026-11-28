@@ -15,15 +15,19 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetCategory,
 )
 
-# One card: a few questions, each a small set of real choices (the app adds "Something else").
+# One card: a few questions, each a small set of real choices (the app adds "Something else"), or
+# one isUserInput option for a value only the user can type.
 _ASK_USER_QUESTION_MIN_OPTIONS = 2
 _ASK_USER_QUESTION_MAX_OPTIONS = 4
+_ONE_TYPED_OPTION = "or one isUserInput option when the user must type the value"
 ASK_USER_QUESTION_MAX_QUESTIONS = 3
 _MAX_QUESTION_CHARS = 300
 _MAX_LABEL_CHARS = 120
 _MAX_DESCRIPTION_CHARS = 200
 _MAX_HEADER_CHARS = 20
 _MAX_USER_INTENT_CHARS = 500
+# The key of a question under which a guard says what it added at its end; never the model's.
+NAMED = "named"
 
 # The app adds its own 'Something else' choice, so a model's catch-all would show twice.
 _CATCH_ALL_LABEL = re.compile(
@@ -89,10 +93,10 @@ class AskUserQuestionItemInput(BaseModel):
     )
     options: list[AskUserQuestionOptionInput] = Field(
         description=(
-            "2 to 4 options that lead to different results. "
+            f"2 to 4 options that lead to different results, {_ONE_TYPED_OPTION}. "
             f"{_NO_ANSWER_IN_OPTIONS_RULE} {_CATCH_ALL_RULE}"
         ),
-        min_length=_ASK_USER_QUESTION_MIN_OPTIONS,
+        min_length=1,
         max_length=_ASK_USER_QUESTION_MAX_OPTIONS,
     )
     multiSelect: bool = Field(
@@ -134,10 +138,11 @@ class AskUserQuestionItemInput(BaseModel):
     @model_validator(mode='after')
     def options_are_distinct_choices(self) -> "AskUserQuestionItemInput":
         self.options = [o for o in self.options if not _CATCH_ALL_LABEL.fullmatch(o.label.strip())]
-        if len(self.options) < _ASK_USER_QUESTION_MIN_OPTIONS:
+        typed_only = len(self.options) == 1 and self.options[0].isUserInput
+        if len(self.options) < _ASK_USER_QUESTION_MIN_OPTIONS and not typed_only:
             raise ValueError(
-                f"give at least {_ASK_USER_QUESTION_MIN_OPTIONS} concrete options; the app already adds "
-                "'Something else'"
+                f"give at least {_ASK_USER_QUESTION_MIN_OPTIONS} concrete options, {_ONE_TYPED_OPTION}; "
+                "the app already adds 'Something else'"
             )
         labels = [option.label.strip().lower() for option in self.options]
         if len(set(labels)) != len(labels):
@@ -196,8 +201,8 @@ def _invalid_input_error(error: ValidationError) -> str:
     return (
         "ask_user_question was not shown: " + "; ".join(problems) + ". "
         f"Use 1 to {ASK_USER_QUESTION_MAX_QUESTIONS} questions, each with "
-        f"{_ASK_USER_QUESTION_MIN_OPTIONS} to {_ASK_USER_QUESTION_MAX_OPTIONS} different options, "
-        "and call it again, or carry on without asking."
+        f"{_ASK_USER_QUESTION_MIN_OPTIONS} to {_ASK_USER_QUESTION_MAX_OPTIONS} different options "
+        f"({_ONE_TYPED_OPTION}), and call it again, or carry on without asking."
     )
 
 
@@ -317,14 +322,16 @@ class InternalTools:
             "When you do need an answer before continuing, ask with this tool, not in your reply text. "
             f"Put every question you need in one call (at most {ASK_USER_QUESTION_MAX_QUESTIONS}), each "
             f"about one decision, with {_ASK_USER_QUESTION_MIN_OPTIONS} to {_ASK_USER_QUESTION_MAX_OPTIONS} "
-            "options that lead to different results. Add a short description only when the label alone "
+            f"options that lead to different results, {_ONE_TYPED_OPTION}. "
+            "Add a short description only when the label alone "
             "does not make the choice clear, and never put the answer to the question in an option. "
             "Don't mark any option as recommended or best. "
             "Choosing options: "
             "(1) live data (channels, users, projects, boards, spaces): if a read tool can list them, call it "
             "first and use its results; "
             "(2) fixed values (issue types, priorities, formats): offer only values the target tool accepts; "
-            "(3) nothing can list the value: add one isUserInput option so the user can type it. "
+            "(3) nothing can list the value: add one isUserInput option so the user can type it; it can "
+            "be the question's only option. "
             "The app adds a 'Something else' choice for typed answers and a Skip button, so never add an "
             "'Other' option. Provide user_intent saying what you understood and why you are asking."
         ),
@@ -361,9 +368,10 @@ class InternalTools:
                             "type": "array",
                             "description": (
                                 f"{_ASK_USER_QUESTION_MIN_OPTIONS} to {_ASK_USER_QUESTION_MAX_OPTIONS} options "
-                                f"that lead to different results. {_NO_ANSWER_IN_OPTIONS_RULE} {_CATCH_ALL_RULE}"
+                                f"that lead to different results, {_ONE_TYPED_OPTION}. "
+                                f"{_NO_ANSWER_IN_OPTIONS_RULE} {_CATCH_ALL_RULE}"
                             ),
-                            "minItems": _ASK_USER_QUESTION_MIN_OPTIONS,
+                            "minItems": 1,
                             "maxItems": _ASK_USER_QUESTION_MAX_OPTIONS,
                             "items": {
                                 "type": "object",
@@ -430,8 +438,18 @@ class InternalTools:
         questions = asked_questions(questions)
         if not questions:
             return ToolOutput(success=False, error=_NO_QUESTIONS_ERROR)
+        # What a guard added to a question to name what a yes confirms (`NAMED`) is as long as it is:
+        # the limits are for the model's own words.
+        named = [q[NAMED] if isinstance(q, dict) and isinstance(q.get(NAMED), str) else "" for q in questions]
+        written = [
+            {**q, "question": _question_text(q).removesuffix(added)} if added else q
+            for q, added in zip(questions, named, strict=True)
+        ]
         try:
-            parsed = AskUserQuestionInput.model_validate({"user_intent": user_intent, "questions": questions})
+            parsed = AskUserQuestionInput.model_validate({"user_intent": user_intent, "questions": written})
         except ValidationError as e:
             return ToolOutput(success=False, error=_invalid_input_error(e))
-        return json.dumps(question_payload(parsed.user_intent, parsed.questions), ensure_ascii=False)
+        payload = question_payload(parsed.user_intent, parsed.questions)
+        for question, added in zip(payload["questions"], named, strict=True):
+            question["question"] += added
+        return json.dumps(payload, ensure_ascii=False)

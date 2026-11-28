@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import React from 'react';
 import { DropdownMenu, Text, Flex, Box } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import type { ShareRole } from './types';
 import { getShareRoleLabels } from './types';
 
@@ -32,6 +33,8 @@ interface RoleDropdownMenuProps {
   labels?: Record<ShareRole, { label: string; description: string }>;
   /** Roles offered in the menu (default: owner, editor, viewer). */
   roles?: ShareRole[];
+  /** Whose level the menu sets, when it is a member's: its button says so, so two members' buttons differ. */
+  memberName?: string;
 }
 
 const SELECTABLE_ROLES: ShareRole[] = ['OWNER', 'WRITER', 'READER'];
@@ -42,12 +45,13 @@ const MENU_WIDTH = 292;
  * Share dialog: it is its own focus scope and dismiss layer, so focus moves into it
  * on open, Arrow keys and Enter work, and Escape closes only the menu.
  */
-export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false, noRolesInfo, onOpenChange, labels, roles = SELECTABLE_ROLES }: RoleDropdownMenuProps) {
+export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false, noRolesInfo, onOpenChange, labels, roles = SELECTABLE_ROLES, memberName }: RoleDropdownMenuProps) {
   const { t } = useTranslation();
   const effectiveLabels = labels ?? getShareRoleLabels(t);
   const isNoRoles = isTeam || !!noRolesInfo;
   const noRolesTitle = noRolesInfo?.title ?? t('shareSidebar.team');
   const noRolesDescription = noRolesInfo?.description ?? t('shareSidebar.teamsNoRoles');
+  const isMobile = useIsMobile();
   const triggerLabel = isNoRoles
     ? noRolesTitle
     : effectiveLabels[role]?.label ?? (typeof role === 'string' ? role : t('shareSidebar.roles.reader.label'));
@@ -57,18 +61,20 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
       <DropdownMenu.Trigger>
         <button
           type="button"
+          {...(memberName && { 'aria-label': t('shareSidebar.roleOf', { role: triggerLabel, name: memberName }) })}
           style={{
             display: 'inline-flex',
             alignItems: 'center',
             gap: 4,
-            height: 28,
-            padding: '0 8px',
+            // A finger needs 44 px on a phone; the desktop row stays compact.
+            height: isMobile ? 44 : 28,
+            padding: isMobile ? '0 12px' : '0 8px',
             borderRadius: 'var(--radius-1)',
             backgroundColor: 'var(--slate-a4)',
             border: 'none',
             cursor: 'pointer',
             fontFamily: 'var(--default-font-family)',
-            fontSize: 11,
+            fontSize: isMobile ? 13 : 11,
             fontWeight: 400,
             lineHeight: '14px',
             letterSpacing: '0.02px',
@@ -88,9 +94,9 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
       <DropdownMenu.Content
         align="end"
         size="1"
-        // Soft highlight: olive-12 text (13.1:1) and olive-11 descriptions (4.8:1) on jade-a4, where the
-        // solid accent gave white on jade-9 at 3.15:1. Radix labels the menu by its trigger, whose text
-        // includes the icon ligature, so name it explicitly.
+        // The highlight is the app's (globals.css): in light, olive-12 text 14.4:1 and olive-11 descriptions
+        // 5.3:1 on it. Radix labels the menu by its trigger, whose text includes the icon ligature, so name
+        // it explicitly.
         variant="soft"
         aria-labelledby={undefined}
         aria-label={triggerLabel}

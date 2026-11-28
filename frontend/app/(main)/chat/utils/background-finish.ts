@@ -5,12 +5,15 @@ import { toast } from '@/lib/store/toast-store';
 import { buildChatHref } from '../build-chat-url';
 import { useChatStore } from '../store';
 import { turnOfBranchSlot } from '../compare/compare-store';
+import { chatExtension } from '@/config';
 
 const TOAST_DURATION_MS = 8000;
 
-/** True when the user can see this slot's thread right now. */
+/** True when the user can see this slot's thread right now: the active one, or one an edition shows beside it. */
 function isSlotInView(slotId: string, activeSlotId: string | null): boolean {
-  if (activeSlotId !== slotId) return false;
+  const slot = useChatStore.getState().slots[slotId];
+  const onScreen = activeSlotId === slotId || (slot !== undefined && chatExtension.slot.isOnScreen(slot, activeSlotId));
+  if (!onScreen) return false;
   // The active slot stays set after leaving the chat area, so the route decides.
   return typeof window === 'undefined' || window.location.pathname.startsWith('/chat');
 }
@@ -24,12 +27,13 @@ function titleOf(conversationId: string): string | undefined {
 
 /**
  * Tell the user an answer finished in a chat they are not looking at: a toast
- * that opens it, and an unread dot on its sidebar row until they do.
+ * that opens it at that answer (`answerId`, when known), and an unread dot on
+ * its sidebar row until they do.
  *
  * Stopped runs and failures are not announced. `wasStopped` is read by the
  * caller before the run settles, because settling clears the flag.
  */
-export function notifyAnswerFinishedInBackground(slotId: string, wasStopped: boolean): void {
+export function notifyAnswerFinishedInBackground(slotId: string, wasStopped: boolean, answerId?: string | null): void {
   if (wasStopped) return;
 
   const { slots, activeSlotId, markConversationUnread } = useChatStore.getState();
@@ -49,6 +53,7 @@ export function notifyAnswerFinishedInBackground(slotId: string, wasStopped: boo
         agentId: slot.threadAgentId,
         projectId: slot.projectId,
         conversationId: slot.convId,
+        messageId: answerId,
       }),
     },
   });

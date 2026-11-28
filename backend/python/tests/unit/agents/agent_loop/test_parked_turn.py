@@ -21,7 +21,7 @@ from tests.unit.agents.adapter.conftest import make_context
 
 _QUESTION = "Create a page in Testspace, then ask me whether to add a footer comment"
 _PAGE = "Created page 98765 in space TS."
-_KEY = "/services/agents/parked-turns/conv-1"
+_KEY = "/services/agents/parked-turns/conv-1/user-1"
 _CREATE = ToolCall(id="c1", name="mcp_atlassian_createConfluencePage", arguments={"title": "Plan"})
 
 
@@ -165,8 +165,25 @@ async def test_one_record_answers_an_approval_and_a_question_from_the_same_run()
 
     assert store.values[_KEY]["callIds"] == ["c1", "q1"]
     assert store.ttls[_KEY] == parked_turn.QUESTION_TTL_SECONDS
+    copy_of_the_turn = [
+        UserMessage(content=_QUESTION),
+        AssistantMessage(content="", tool_calls=[_CREATE, _ask("q1")]),
+        ToolMessage(content="Waiting for your approval to run createConfluencePage on Atlassian.", tool_call_id="c1"),
+        ToolMessage(content="Asked 1 question", tool_call_id="q1"),
+    ]
     for call_id in ("c1", "q1"):
-        assert await parked_turn.restore(_context(store), await _history(UserMessage(content=_QUESTION)), call_id=call_id) == []
+        assert await parked_turn.restore(_context(store), await _history(*copy_of_the_turn), call_id=call_id) == []
+
+
+async def test_a_turn_the_history_no_longer_carries_is_never_put_back() -> None:
+    """Its reply was removed, or blanked because the person can't read what it used any more: the
+    kept turn would bring that back."""
+    store = _Store()
+    await _keep_question(store)
+    blanked = await _history(UserMessage(content=_QUESTION), AssistantMessage(content="This answer used content you can no longer access."))
+
+    assert await parked_turn.restore(_context(store), blanked, call_id="q1") is None
+    assert not any(isinstance(m, ToolMessage) for m in await blanked.messages())
 
 
 async def test_a_long_result_is_kept_cut() -> None:
@@ -188,3 +205,26 @@ async def test_an_unreadable_kept_turn_is_one_line_without_its_content(caplog) -
     (record,) = [r for r in caplog.records if r.getMessage() == "parked_turn.read_failed"]
     assert getattr(record, "error_type", None) and getattr(record, "error_message", None) is None
     assert "the person's own words" not in (record.exc_text or "") + str(vars(record))
+
+
+async def test_each_person_in_a_conversation_keeps_their_own_turn() -> None:
+    store = _Store()
+    await _keep_question(store)
+    other = SimpleNamespace(context=await _history(*_as_the_model_had_it(page="Created page 11111.")), visible_tools=set())
+    await parked_turn.keep_question(_context(store, user_id="user-2"), other)  # type: ignore[arg-type]
+
+    for user_id, page in (("user-1", _PAGE), ("user-2", "Created page 11111.")):
+        history = await _history(*_as_the_history_has_it())
+        assert await parked_turn.restore(_context(store, user_id=user_id), history, call_id="q1") is not None
+        assert next(m.content for m in await history.messages() if isinstance(m, ToolMessage)) == page
+
+
+async def test_a_turn_kept_under_the_old_conversation_key_still_carries_on() -> None:
+    store = _Store()
+    await _keep_question(store)
+    store.values["/services/agents/parked-turns/conv-1"] = store.values.pop(_KEY)
+    history = await _history(*_as_the_history_has_it())
+
+    assert await parked_turn.restore(_context(store, user_id="user-2"), history, call_id="q1") is None
+    assert await parked_turn.restore(_context(store), history, call_id="q1") == ["mcp_atlassian_createConfluencePage"]
+    assert any(isinstance(m, ToolMessage) and m.content == _PAGE for m in await history.messages())

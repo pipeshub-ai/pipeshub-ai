@@ -115,6 +115,9 @@ describe('CPD-7 capability migration CLI', () => {
 
     it('connects to the database named, building no index on its own, and stops when there is no connection', async () => {
       const connect = sinon.stub(mongoose, 'connect').resolves(mongoose);
+      // The default connection keeps its `db` once closed, so a file that used it earlier in this worker would leave
+      // one behind. The stubbed connect is given a connection without one.
+      sinon.stub(mongoose, 'connection').value({ db: undefined });
       const refused = await rejection(connectCapabilityMigration(options({ jwtSecret: 'j', scopedJwtSecret: 's' })));
       expect((refused as Error).message).to.equal('No database connection');
       expect(connect.firstCall.args).to.deep.equal(['mongodb://x', { dbName: 'd', autoIndex: false }]);

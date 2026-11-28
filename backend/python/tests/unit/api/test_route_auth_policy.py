@@ -63,6 +63,7 @@ _SERVICE_TOKEN_ROUTES = {
     # Node's classification approver routing (OWD-15): whether a team of the token's org has an admin besides the
     # requester. A count only, org from the token.
     ("control_plane_drivers", "GET", "/directory/teams/{teamId}/owners"): {"directory:read"},
+    ("agent", "GET", "/{agent_id}/readiness"): {"conversation:create"},
     ("chatbot", "POST", "/chat/attachments/upload"): {"conversation:create"},
     ("chatbot", "POST", "/chat/attachments/permissions"): {"conversation:permissions"},
     ("chatbot", "DELETE", "/chat/attachments/permissions"): {"conversation:permissions"},

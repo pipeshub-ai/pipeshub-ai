@@ -286,6 +286,20 @@ class Audience(BaseModel):
     ] = None
 
 
+class History(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+        populate_by_name=True,
+    )
+    earlier_turns: Annotated[
+        Literal['answers'],
+        Field(
+            alias='earlierTurns',
+            description="Each earlier turn reaches the model as its question and its final answer's text: never its tool calls or their results (search results, fetched documents, tool outputs), the reference data its tools returned, or a compaction summary written before this run. A fact the answer states that no earlier answer said comes from this run's own tools, which cite it. The run's own turn reaches the model whole.",
+        ),
+    ]
+
+
 class Memory(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -409,10 +423,10 @@ class Deliverable1(BaseModel):
 
 
 class WorkerFeature(
-    RootModel[Literal['agent_code', 'approval_edits', 'assistant_agent', 'caller', 'chat', 'child_asks', 'child_models', 'child_runs', 'code_task_tool', 'command_input', 'compact_request', 'deep_mode', 'deliverable_pin', 'descriptor_pins', 'engine_inputs', 'environment_pin', 'executor_engine', 'governed_memory', 'inherited_grants', 'inherited_labels', 'keyword_search_budget', 'knowledge_selection', 'mcp_carried_pins', 'mcp_first_use', 'model_fallback', 'output_locale', 'region_aware', 'release_pin', 'resolved_config', 'run_gates', 'run_surface', 'sandbox_command', 'session_roles', 'steering', 'steering_by', 'steering_references', 'trace_content', 'trigger_context', 'turn_labels', 'vendor_signin', 'workspace_forks']]
+    RootModel[Literal['agent_code', 'answers_only_history', 'approval_edits', 'assistant_agent', 'caller', 'chat', 'child_asks', 'child_models', 'child_runs', 'code_task_tool', 'command_input', 'compact_request', 'deep_mode', 'deliverable_pin', 'descriptor_pins', 'engine_inputs', 'environment_pin', 'executor_engine', 'governed_memory', 'inherited_grants', 'inherited_labels', 'keyword_search_budget', 'knowledge_selection', 'mcp_carried_pins', 'mcp_first_use', 'model_fallback', 'output_locale', 'region_aware', 'release_pin', 'resolved_config', 'run_gates', 'run_surface', 'sandbox_command', 'session_roles', 'steering', 'steering_by', 'steering_references', 'trace_content', 'trigger_context', 'turn_labels', 'vendor_signin', 'workspace_forks']]
 ):
     root: Annotated[
-        Literal['agent_code', 'approval_edits', 'assistant_agent', 'caller', 'chat', 'child_asks', 'child_models', 'child_runs', 'code_task_tool', 'command_input', 'compact_request', 'deep_mode', 'deliverable_pin', 'descriptor_pins', 'engine_inputs', 'environment_pin', 'executor_engine', 'governed_memory', 'inherited_grants', 'inherited_labels', 'keyword_search_budget', 'knowledge_selection', 'mcp_carried_pins', 'mcp_first_use', 'model_fallback', 'output_locale', 'region_aware', 'release_pin', 'resolved_config', 'run_gates', 'run_surface', 'sandbox_command', 'session_roles', 'steering', 'steering_by', 'steering_references', 'trace_content', 'trigger_context', 'turn_labels', 'vendor_signin', 'workspace_forks'],
+        Literal['agent_code', 'answers_only_history', 'approval_edits', 'assistant_agent', 'caller', 'chat', 'child_asks', 'child_models', 'child_runs', 'code_task_tool', 'command_input', 'compact_request', 'deep_mode', 'deliverable_pin', 'descriptor_pins', 'engine_inputs', 'environment_pin', 'executor_engine', 'governed_memory', 'inherited_grants', 'inherited_labels', 'keyword_search_budget', 'knowledge_selection', 'mcp_carried_pins', 'mcp_first_use', 'model_fallback', 'output_locale', 'region_aware', 'release_pin', 'resolved_config', 'run_gates', 'run_surface', 'sandbox_command', 'session_roles', 'steering', 'steering_by', 'steering_references', 'trace_content', 'trigger_context', 'turn_labels', 'vendor_signin', 'workspace_forks'],
         Field(
             description="Every worker feature Node knows (worker-capabilities features): the harness core's run shapes (approval_edits, child_runs, steering, steering_by, steering_references) and PipesHub's. A feature is added here once workers advertise it."
         ),
@@ -691,6 +705,12 @@ class PipeshubRunSpecExtension(BaseModel):
         Audience | None,
         Field(
             description="Whose turns this run's model may see (SS2, P2.5a), pinned by Node for a run in a shared context: the actor's role, the session's owner, the actor's own earlier runs and the other participants' runs whose label passed for the actor. Absent in a personal session: the run sees its whole session."
+        ),
+    ] = None
+    history: Annotated[
+        History | None,
+        Field(
+            description="How the run's model is given the session's earlier turns. Pinned by Node on a run admitted in a chat that people besides its asker read (shared with anyone, or open to its project), and only on a run that requires the worker feature answers_only_history. Absent otherwise: the earlier turns reach the model as they were, tool results included."
         ),
     ] = None
     memory: Annotated[

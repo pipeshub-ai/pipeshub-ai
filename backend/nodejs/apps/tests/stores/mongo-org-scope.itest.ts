@@ -88,10 +88,10 @@ describe('Org scoping against a real MongoDB', function () {
     expect(await U.getMessages(sid, { orgId: B })).to.have.length(1);
     expect(await U.updateMessageById(m, A, { messageType: 'bot_response', content: 'x' } as any)).to.equal(null);
     expect(await U.appendMessageFeedback(m, A, { isHelpful: true })).to.equal(null);
-    expect(await U.deleteMessagesById([m], A)).to.equal(0);
+    expect(await U.retireMessagesById([m], { sessionId: sid, orgId: A })).to.equal(0);
     const after: any = await ChatSessionMessage.collection.findOne({ _id: m });
     expect(after.content).to.equal('secret');
     expect(after.feedback ?? []).to.have.length(0);
-    expect(await U.deleteMessagesById([m], B)).to.equal(1);
+    expect(await U.retireMessagesById([m], { sessionId: sid, orgId: B })).to.equal(1);
   });
 });

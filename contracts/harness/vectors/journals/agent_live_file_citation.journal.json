@@ -242,10 +242,10 @@
       "react": {
        "ref": {
         "ref": "sealed:memory/1",
-        "hash": "sha256:fb2e4e5bd3b5cef81c829d767e401c1d0af1cd8457ae7332083fd8e9518726bd",
-        "size": 18622
+        "hash": "sha256:23b3d7718bf3c104786745083ff14a1b6b76ceeb434f04120afc13e369e09841",
+        "size": 18782
        },
-       "digest": "sha256:a6524356e7285b6507b14699601277d86e9f56da514232554f883eaf892f134b",
+       "digest": "sha256:eaf771ae463df92f692adc9701f2e061a9cb09dd5ac99c8889c6f54568edbda2",
        "count": 16
       }
      }

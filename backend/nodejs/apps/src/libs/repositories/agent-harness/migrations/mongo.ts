@@ -715,6 +715,7 @@ export async function sealStoredRunInputs(
  * staying in the run's sealed input. One idempotent update, at every boot.
  */
 export async function typedReviewMessages(db: Db): Promise<number> {
+  // row-writer-exempt: a boot-time fix of stored `/review` questions (only what was typed stays), unstamped: a copy read before it shows the fix at its next full read
   const done = await db.collection('chatSessionMessages').updateMany(
     {
       messageType: 'user_query',

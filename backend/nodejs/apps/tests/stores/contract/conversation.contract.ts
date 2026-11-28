@@ -5,7 +5,7 @@
  * the run lease, seq allocation, and the inputs the archive/redaction views use.
  */
 import { expect } from 'chai';
-import type { ConversationRepository, NewMessage, NewSession, SessionListQuery, SessionScope } from '../../../src/libs/repositories/conversation';
+import type { ConversationRepository, MessageDto, NewMessage, NewSession, SessionListQuery, SessionScope } from '../../../src/libs/repositories/conversation';
 import type { ScopedUnitOfWork } from './unit-of-work-scope';
 
 export interface ConversationFixture {
@@ -15,6 +15,8 @@ export interface ConversationFixture {
   transactional: boolean;
   /** True when the store removes U+0000 from text before storing it (PostgreSQL cannot hold it). */
   stripsNul?: boolean;
+  /** False on a store that refuses the answer-share writes (PostgreSQL keeps no change stamps, which they take). */
+  answerShares: boolean;
   newId(): string;
 }
 
@@ -321,6 +323,40 @@ export function describeConversationContract(fx: ConversationFixture): void {
       expect(await repo.setArchived(agent('a'), s._id, { by: user })).to.equal(null);
     });
 
+    it('replaceTitle writes only over the title it expects, in the chat\'s own org, and in the unit of work it is given', async () => {
+      const org = fx.newId(), user = fx.newId();
+      const s = await open(org, user, { title: 'old' });
+      const titleOf = async () => (await repo.findById(s._id))!.title;
+      expect(await repo.replaceTitle(s._id, fx.newId(), 'old', 'another org')).to.equal(false);
+      expect(await repo.replaceTitle(s._id, org, 'renamed meanwhile', 'lost')).to.equal(false);
+      expect(await repo.replaceTitle(fx.newId(), org, 'old', 'no such chat')).to.equal(false);
+      expect(await titleOf()).to.equal('old');
+      expect(await repo.replaceTitle(s._id, org, 'old', 'new')).to.equal(true);
+      expect(await titleOf()).to.equal('new');
+      expect(await repo.replaceTitle(s._id, org, 'old', 'newer')).to.equal(false);
+      try {
+        await uow.run(async (tx) => {
+          expect(await repo.replaceTitle(s._id, org, 'new', 'rolled back', tx)).to.equal(true);
+          throw new Error('boom');
+        }, { org });
+      } catch {
+        /* expected */
+      }
+      expect(await titleOf()).to.equal(fx.transactional ? 'new' : 'rolled back');
+    });
+
+    it('replaceTitle leaves updatedAt as it was: a title rewritten for its readers is no edit of the chat', async () => {
+      const org = fx.newId(), user = fx.newId();
+      const s = await open(org, user, { title: 'old' });
+      const updatedAt = async () => (await repo.findById(s._id))!.updatedAt;
+      const before = await updatedAt();
+      expect(before).to.be.instanceOf(Date);
+      // A write that dated the chat would date it at least this much later.
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(await repo.replaceTitle(s._id, org, 'old', 'new')).to.equal(true);
+      expect(await updatedAt()).to.deep.equal(before);
+    });
+
     it('softDelete marks the row, hides it, and reports the citations of its messages', async () => {
       const org = fx.newId(), user = fx.newId();
       const s = await open(org, user);
@@ -449,6 +485,17 @@ export function describeConversationContract(fx: ConversationFixture): void {
       expect(await repo.listMessages(s._id, { orgId: fx.newId() })).to.deep.equal([]);
     });
 
+    it('listMessages: maxSeq keeps the rows up to that place, so a turn reads newest first from its answer', async () => {
+      const org = fx.newId(), user = fx.newId();
+      const s = await open(org, user);
+      await repo.appendMessages(s._id, org, [botMsg('2'), userMsg('3'), botMsg('4'), userMsg('5')]);
+      const content = async (o: object) => (await repo.listMessages(s._id, { orgId: org, ...o })).map((r) => r.dto.content);
+      expect(await content({ maxSeq: 4, order: 'desc', limit: 2 })).to.deep.equal(['4', '3']);
+      expect(await content({ maxSeq: 3 })).to.deep.equal(['hi', '2', '3']);
+      expect(await content({ maxSeq: 0 })).to.deep.equal([]);
+      expect(await content({ maxSeq: 99, order: 'desc', limit: 1 })).to.deep.equal(['5']);
+    });
+
     it('is read per session: two sessions never share a read', async () => {
       const org = fx.newId(), user = fx.newId();
       const a = await open(org, user, {}, userMsg('A'));
@@ -538,6 +585,21 @@ export function describeConversationContract(fx: ConversationFixture): void {
       expect((await repo.findMessage(s._id, org, q1!._id))!.content).to.equal('newer');
     });
 
+    it('findOpeningMessage reads a chat\'s first question and its filters as stored, in the chat\'s own org', async () => {
+      const org = fx.newId(), user = fx.newId();
+      const filters = { records: [{ id: 'rec-1', name: 'plan.pdf', nodeType: 'record', connector: 'KB', mentioned: true }] };
+      const s = await open(org, user, {}, { ...userMsg('first question'), appliedFilters: filters });
+      await repo.appendMessages(s._id, org, [botMsg('answer'), userMsg('second question')]);
+      const [stored] = await repo.listMessages(s._id, { orgId: org, limit: 1 });
+      expect(stored!.dto.appliedFilters?.records).to.have.length(1);
+      expect(await repo.findOpeningMessage(s._id, org)).to.deep.equal({ content: 'first question', appliedFilters: stored!.dto.appliedFilters });
+      expect(await repo.findOpeningMessage(s._id, fx.newId())).to.equal(null);
+      expect(await repo.findOpeningMessage(fx.newId(), org)).to.equal(null);
+      const silent = await repo.createSession({ orgId: org, userId: user, initiator: user, title: 'no question', lastActivityAt: Date.now(), status: 'Complete', sessionType: 'chat' });
+      await repo.appendMessages(silent._id, org, [botMsg('a greeting')]);
+      expect(await repo.findOpeningMessage(silent._id, org)).to.equal(null);
+    });
+
     it('a NUL character in message text is stored as written', async () => {
       const org = fx.newId(), user = fx.newId();
       const s = await open(org, user);
@@ -546,25 +608,379 @@ export function describeConversationContract(fx: ConversationFixture): void {
     });
   });
 
+  describe('answer shares', () => {
+    const ask = (by: string, ver: string) => ({ by, at: new Date(), ver, state: 'open' as const, memberSince: `direct:${by}` });
+    /** An answer of `asker` in a new chat, with its version. */
+    const answerOf = async (org: string, asker: string) => {
+      const s = await open(org, asker);
+      const [a] = (await repo.appendMessages(s._id, org, [botMsg('The launch is on the 3rd.', { requestedBy: asker } as never)])) as [MessageDto];
+      return { ref: { orgId: org, sessionId: s._id, messageId: a._id }, ver: a.labelVer as string | undefined };
+    };
+    const shareOf = async (org: string, messageId: string) => {
+      const row = (await repo.listMessageLabels(org, [messageId])).get(messageId);
+      const consent = row?.consent as { by?: unknown; scope?: unknown } | undefined;
+      const people = ((row?.consentTo ?? []) as Array<{ userId: unknown }>).map((e) => String(e.userId));
+      return consent ? { by: String(consent.by), scope: consent.scope, people } : null;
+    };
+
+    if (!fx.answerShares) {
+      it('refuses every answer-share write, naming the store', async () => {
+        const ref = { orgId: fx.newId(), sessionId: fx.newId(), messageId: fx.newId() };
+        const consent = { by: fx.newId(), at: new Date(), ver: 'v1', scope: 'everyone' as const };
+        const writes = [
+          () => repo.addShareRequest(ref, 'v1', ask(fx.newId(), 'v1'), null),
+          () => repo.closeShareRequests(ref, { ver: 'v1', state: 'dismissed' }),
+          () => repo.setAnswerConsent(ref, { labelVer: 'v1', expected: null, consent, covers: 'everyone' }),
+          () => repo.clearAnswerConsent(ref),
+          () => repo.clearArchivedConsents(ref),
+        ];
+        for (const write of writes) {
+          const refused = await write().then(() => undefined, (e: unknown) => e);
+          expect((refused as Error)?.message).to.match(/not supported on PostgreSQL/);
+        }
+      });
+      return;
+    }
+
+    it('an ask is added once per person and version, never to a version that moved on', async () => {
+      const org = fx.newId(), dana = fx.newId(), bob = fx.newId(), carol = fx.newId();
+      const { ref, ver } = await answerOf(org, dana);
+      const v = ver ?? 'legacy';
+      expect(await repo.addShareRequest(ref, ver, ask(bob, v), null)).to.equal(true);
+      expect(await repo.addShareRequest(ref, ver, ask(bob, v), null), 'the same person again').to.equal(false);
+      expect(await repo.addShareRequest(ref, ver, ask(carol, v), null)).to.equal(true);
+      expect(await repo.addShareRequest(ref, 'another-version', ask(fx.newId(), 'another-version'), null), 'the answer moved on').to.equal(false);
+      expect(await repo.addShareRequest({ ...ref, orgId: fx.newId() }, ver, ask(fx.newId(), v), null), 'another org').to.equal(false);
+    });
+
+    it('one more ask after each share that answered theirs stops: held to the share it was decided on, and one however many arrive', async () => {
+      const org = fx.newId(), dana = fx.newId(), bob = fx.newId();
+      const { ref, ver } = await answerOf(org, dana);
+      const v = ver ?? 'legacy';
+      const shareWithBob = () =>
+        repo.setAnswerConsent(ref, {
+          labelVer: ver,
+          expected: null,
+          consent: { by: dana, at: new Date(), ver: v, scope: 'people' },
+          consentTo: [{ userId: bob, memberSince: `direct:${bob}` }],
+          covers: [bob],
+        });
+      expect(await repo.addShareRequest(ref, ver, ask(bob, v), null)).to.equal(true);
+      expect(await shareWithBob()).to.deep.equal([bob]);
+      await repo.clearAnswerConsent(ref);
+      // Decided on the row read after the stop, written after a new share: that share is not the one read, so nothing is added.
+      await shareWithBob();
+      expect(await repo.addShareRequest(ref, ver, ask(bob, v), null), 'a share since').to.equal(false);
+      await repo.clearAnswerConsent(ref);
+      const together = await Promise.all([1, 2, 3, 4, 5].map(() => repo.addShareRequest(ref, ver, ask(bob, v), null)));
+      expect(together.filter(Boolean), 'five at once after the stop').to.have.length(1);
+      expect(await repo.addShareRequest(ref, ver, ask(bob, v), null), 'a double click').to.equal(false);
+      // Answered by a share with everyone, and stopped again: one more.
+      const everyone = { by: dana, at: new Date(), ver: v, scope: 'everyone' as const };
+      expect(await repo.setAnswerConsent(ref, { labelVer: ver, expected: null, consent: everyone, covers: 'everyone' })).to.deep.equal([bob]);
+      await repo.clearAnswerConsent(ref);
+      expect(await repo.addShareRequest(ref, ver, ask(bob, v), null)).to.equal(true);
+    });
+
+    it('an open ask of theirs leaves nothing to add, stop or no stop; a dismissed one leaves them free to ask again; one decided on a share with someone else is added while that share stands', async () => {
+      const org = fx.newId(), dana = fx.newId(), bob = fx.newId(), carol = fx.newId(), erin = fx.newId();
+      const { ref, ver } = await answerOf(org, dana);
+      const v = ver ?? 'legacy';
+      const shareWith = async (who: string) => {
+        const consent = { by: dana, at: new Date(), ver: v, scope: 'people' as const };
+        await repo.setAnswerConsent(ref, { labelVer: ver, expected: null, consent, consentTo: [{ userId: who, memberSince: `direct:${who}` }], covers: [who] });
+        return consent;
+      };
+      await repo.addShareRequest(ref, ver, ask(bob, v), null);
+      expect(await repo.addShareRequest(ref, ver, ask(bob, v), null), 'open').to.equal(false);
+      await repo.closeShareRequests(ref, { ver: v, state: 'dismissed' });
+      // Declined: they may ask again, as the first time, and one however many arrive.
+      const again = await Promise.all([1, 2, 3].map(() => repo.addShareRequest(ref, ver, ask(bob, v), null)));
+      expect(again.filter(Boolean), 'dismissed, then three at once').to.have.length(1);
+      expect(await repo.addShareRequest(ref, ver, ask(bob, v), null), 'open again').to.equal(false);
+      await repo.addShareRequest(ref, ver, ask(carol, v), null);
+      await shareWith(carol);
+      await repo.clearAnswerConsent(ref);
+      const toErin = await shareWith(erin);
+      expect(await repo.addShareRequest(ref, ver, ask(bob, v), toErin), 'open, whatever the share').to.equal(false);
+      expect(await repo.addShareRequest(ref, ver, ask(carol, v), toErin), 'decided on the share with Erin, which still stands').to.equal(true);
+    });
+
+    it('closing asks changes only the open ones named, and answers whose they were', async () => {
+      const org = fx.newId(), dana = fx.newId(), bob = fx.newId(), carol = fx.newId();
+      const { ref, ver } = await answerOf(org, dana);
+      const v = ver ?? 'legacy';
+      for (const who of [bob, carol]) await repo.addShareRequest(ref, ver, ask(who, v), null);
+      expect(await repo.closeShareRequests(ref, { ver: v, state: 'dismissed', by: [bob] })).to.deep.equal([bob]);
+      expect(await repo.closeShareRequests(ref, { ver: v, state: 'dismissed', by: [bob] }), 'already closed').to.deep.equal([]);
+      expect(await repo.closeShareRequests(ref, { ver: 'another-version', state: 'dismissed' }), 'another version').to.deep.equal([]);
+      expect(await repo.closeShareRequests(ref, { ver: v, state: 'dismissed' })).to.deep.equal([carol]);
+    });
+
+    it('asks made in another membership than the one given are closed as void, and no others; their sender may ask again', async () => {
+      const org = fx.newId(), dana = fx.newId(), bob = fx.newId(), carol = fx.newId(), erin = fx.newId();
+      const { ref, ver } = await answerOf(org, dana);
+      const v = ver ?? 'legacy';
+      const undated = { by: erin, at: new Date(), ver: v, state: 'open' as const };
+      for (const request of [ask(bob, v), ask(carol, v), undated]) await repo.addShareRequest(ref, ver, request, null);
+      const close = (who: string, notSince: string | null) => repo.closeShareRequests(ref, { ver: v, state: 'void', by: [who], notSince });
+      expect(await close(bob, `direct:${bob}`), 'the membership it was made in').to.deep.equal([]);
+      expect(await close(bob, 'direct:later')).to.deep.equal([bob]);
+      expect(await close(bob, 'direct:later'), 'already void').to.deep.equal([]);
+      expect(await close(carol, null), 'no row dates the membership of now').to.deep.equal([carol]);
+      expect(await close(erin, 'direct:later'), 'an ask with no membership').to.deep.equal([]);
+      expect(await repo.addShareRequest(ref, ver, ask(bob, v), null), 'asked again').to.equal(true);
+      expect((await repo.closeShareRequests(ref, { ver: v, state: 'dismissed' })).sort()).to.deep.equal([bob, erin].sort());
+    });
+
+    it("the shares an answer's earlier versions keep end: all of them, one person's or one version's; the current one is not theirs", async () => {
+      const org = fx.newId(), dana = fx.newId(), bob = fx.newId();
+      const label = {
+        v: 5, ver: '', contentHash: '', parents: [], complete: true, tagset: 1, pub: false,
+        direct: { records: [], vrids: [], nodes: [], saVrids: [], personal: [], agents: [], chat: [], projects: [], marks: [] },
+      };
+      const version = (content: string) => botMsg(content, { requestedBy: dana, provenance: label } as never);
+      const s = await open(org, dana);
+      const [a] = (await repo.appendMessages(s._id, org, [version('One.')])) as [MessageDto];
+      const ref = { orgId: org, sessionId: s._id, messageId: a._id };
+      const history = async () =>
+        (((await repo.listMessageLabels(org, [a._id])).get(a._id)?.labelHistory ?? []) as Array<{ ver?: string; consent?: { scope?: string } }>).map((e) => [e.ver, e.consent?.scope]);
+      expect(await repo.clearArchivedConsents(ref), 'nothing archived').to.deep.equal([]);
+      // Two versions shared, by two people, and the third, the one there now, shared too.
+      const vers: string[] = [];
+      for (const [by, scope, next] of [[dana, 'everyone', 'Two.'], [bob, 'people', 'Three.']] as const) {
+        const ver = String((await repo.findMessage(s._id, org, a._id))!.labelVer);
+        vers.push(ver);
+        expect(
+          await repo.setAnswerConsent(ref, {
+            labelVer: ver, expected: null, consent: { by, at: new Date(), ver, scope },
+            ...(scope === 'people' && { consentTo: [{ userId: bob, memberSince: 'direct:1' }] }), covers: scope === 'people' ? [bob] : 'everyone',
+          }),
+        ).to.deep.equal([]);
+        await repo.replaceMessage(a._id, org, version(next));
+      }
+      const current = String((await repo.findMessage(s._id, org, a._id))!.labelVer);
+      await repo.setAnswerConsent(ref, { labelVer: current, expected: null, consent: { by: dana, at: new Date(), ver: current, scope: 'everyone' }, covers: 'everyone' });
+      expect(await history()).to.deep.equal([[vers[0], 'everyone'], [vers[1], 'people']]);
+      expect(await repo.clearArchivedConsents(ref, { by: fx.newId() }), "somebody else's").to.deep.equal([]);
+      expect(await repo.clearArchivedConsents(ref, { ver: current }), 'the current version is not archived').to.deep.equal([]);
+      const one = await repo.clearArchivedConsents(ref, { ver: vers[0] });
+      expect(one.map((c) => [c.by, c.ver, c.scope])).to.deep.equal([[dana, vers[0], 'everyone']]);
+      expect(await history()).to.deep.equal([[vers[0], undefined], [vers[1], 'people']]);
+      const rest = await repo.clearArchivedConsents(ref, { by: bob });
+      expect(rest.map((c) => [c.by, c.ver, c.scope])).to.deep.equal([[bob, vers[1], 'people']]);
+      expect(await history()).to.deep.equal([[vers[0], undefined], [vers[1], undefined]]);
+      expect(await repo.clearArchivedConsents(ref), 'nothing left').to.deep.equal([]);
+      expect(await shareOf(org, a._id), 'the current version').to.deep.equal({ by: dana, scope: 'everyone', people: [] });
+      expect(await repo.clearArchivedConsents({ ...ref, orgId: fx.newId() }), 'another org').to.deep.equal([]);
+    });
+
+    it('a share is written only over the share it was read with, and answers the open asks it covers', async () => {
+      const org = fx.newId(), dana = fx.newId(), bob = fx.newId(), carol = fx.newId();
+      const { ref, ver } = await answerOf(org, dana);
+      const v = ver ?? 'legacy';
+      // No ask yet: a first share creates nothing to answer.
+      const toBob = { by: dana, at: new Date(), ver: v, scope: 'people' as const };
+      const bobOnly = [{ userId: bob, memberSince: `direct:${bob}` }];
+      expect(await repo.setAnswerConsent(ref, { labelVer: ver, expected: null, consent: toBob, consentTo: bobOnly, covers: [bob] })).to.deep.equal([]);
+      expect(await shareOf(org, ref.messageId)).to.deep.equal({ by: dana, scope: 'people', people: [bob] });
+      // Read before that share: refused, and nothing changes.
+      const stale = { by: dana, at: new Date(), ver: v, scope: 'everyone' as const };
+      expect(await repo.setAnswerConsent(ref, { labelVer: ver, expected: null, consent: stale, covers: 'everyone' })).to.equal(null);
+      expect(await repo.setAnswerConsent(ref, { labelVer: 'another-version', expected: toBob, consent: stale, covers: 'everyone' })).to.equal(null);
+      expect(await shareOf(org, ref.messageId)).to.deep.equal({ by: dana, scope: 'people', people: [bob] });
+      // Over the share it read: written, its people replaced by everyone, and the open asks of its version answered.
+      await repo.addShareRequest(ref, ver, ask(carol, v), toBob);
+      const everyone = { by: dana, at: new Date(), ver: v, scope: 'everyone' as const };
+      expect(await repo.setAnswerConsent(ref, { labelVer: ver, expected: toBob, consent: everyone, covers: 'everyone' })).to.deep.equal([carol]);
+      expect(await shareOf(org, ref.messageId)).to.deep.equal({ by: dana, scope: 'everyone', people: [] });
+      expect(await repo.closeShareRequests(ref, { ver: v, state: 'dismissed' }), 'no ask is left open').to.deep.equal([]);
+    });
+
+    it('a share with people names again nobody whose share was stopped since it was read', async () => {
+      const org = fx.newId(), dana = fx.newId(), bob = fx.newId(), carol = fx.newId(), zed = fx.newId();
+      const { ref, ver } = await answerOf(org, dana);
+      const v = ver ?? 'legacy';
+      const entry = (userId: string) => ({ userId, memberSince: `direct:${userId}` });
+      const toBob = { by: dana, at: new Date(), ver: v, scope: 'people' as const };
+      await repo.setAnswerConsent(ref, { labelVer: ver, expected: null, consent: toBob, consentTo: [entry(bob)], covers: [bob] });
+      // Carol added: the share as read names Bob, who is still named.
+      const andCarol = { by: dana, at: new Date(toBob.at.getTime() + 1), ver: v, scope: 'people' as const };
+      await repo.setAnswerConsent(ref, { labelVer: ver, expected: toBob, consent: andCarol, consentTo: [entry(bob), entry(carol)], covers: [carol] });
+      expect(await shareOf(org, ref.messageId)).to.deep.equal({ by: dana, scope: 'people', people: [bob, carol] });
+      // Zed added from that same read, after Bob's share was stopped: nothing is written.
+      expect(await repo.changeAnswerConsent(ref, { labelVer: ver, expected: andCarol, stop: true, people: [bob] })).to.equal(true);
+      const andZed = { by: dana, at: new Date(andCarol.at.getTime() + 1), ver: v, scope: 'people' as const };
+      const stale = { labelVer: ver, expected: andCarol, consent: andZed, consentTo: [entry(bob), entry(carol), entry(zed)], covers: [zed] };
+      expect(await repo.setAnswerConsent(ref, stale), 'read before the stop').to.equal(null);
+      expect(await shareOf(org, ref.messageId)).to.deep.equal({ by: dana, scope: 'people', people: [carol] });
+      // Read again, as a writer does on a miss.
+      expect(await repo.setAnswerConsent(ref, { ...stale, consentTo: [entry(carol), entry(zed)] })).to.deep.equal([]);
+      expect(await shareOf(org, ref.messageId)).to.deep.equal({ by: dana, scope: 'people', people: [carol, zed] });
+    });
+
+    it('ending a share answers the share it ended and whom it covered, once', async () => {
+      const org = fx.newId(), dana = fx.newId(), bob = fx.newId();
+      const { ref, ver } = await answerOf(org, dana);
+      const v = ver ?? 'legacy';
+      const at = new Date();
+      const toBob = { by: dana, at, ver: v, scope: 'people' as const };
+      await repo.setAnswerConsent(ref, { labelVer: ver, expected: null, consent: toBob, consentTo: [{ userId: bob, memberSince: 'direct:1' }], covers: [bob] });
+      expect(await repo.clearAnswerConsent(ref, fx.newId()), 'only the one who made it may end it this way').to.equal(null);
+      const ended = await repo.clearAnswerConsent(ref);
+      expect(ended).to.deep.equal({ consent: { by: dana, at, ver: v, scope: 'people' }, consentTo: [{ userId: bob, memberSince: 'direct:1' }] });
+      expect(await shareOf(org, ref.messageId)).to.equal(null);
+      expect(await repo.clearAnswerConsent(ref), 'nothing left to end').to.equal(null);
+    });
+  });
+
+  describe('answer labels', () => {
+    // An answer that read record R; the strings are unique so any copy of them in a returned row is found.
+    const LABEL = {
+      v: 5,
+      ver: '',
+      contentHash: '',
+      direct: { records: ['rec-CANARY-R'], vrids: ['vrid-CANARY-R'], nodes: [], saVrids: [], personal: [], agents: [], chat: [], projects: [], marks: [] },
+      parents: [],
+      complete: true,
+      tagset: 1,
+      pub: false,
+    };
+    const labelled = (content: string): NewMessage =>
+      botMsg(content, { provenance: LABEL as never, parts: [{ type: 'text', content }] as never });
+    const carriesNoLabel = (row: object | null | undefined): void => {
+      expect(row).to.be.an('object');
+      expect(row).to.not.have.any.keys('provenance', 'labelHistory');
+      expect(JSON.stringify(row)).to.not.include('CANARY');
+    };
+    /** The rows a write returned, each one there. */
+    const written = <T>(rows: T[], n: number): T[] => {
+      expect(rows).to.have.length(n);
+      return rows;
+    };
+
+    it('an answer is stored with a version id, and no write or read returns its label', async () => {
+      const org = fx.newId(), user = fx.newId();
+      const s = await open(org, user);
+      const [a] = written(await repo.appendMessages(s._id, org, [labelled('Revenue grew.')]), 1) as [MessageDto];
+      expect(a.labelVer).to.match(HEX);
+      carriesNoLabel(a);
+      carriesNoLabel(await repo.findMessage(s._id, org, a._id));
+      for (const row of await repo.listMessages(s._id, { orgId: org })) carriesNoLabel(row.dto);
+      for (const rows of (await repo.listMessagesOfSessions([s._id], { orgId: org })).values()) {
+        for (const row of rows) carriesNoLabel(row.dto);
+      }
+    });
+
+    it('a replaced answer gets a new version id and its write returns no label', async () => {
+      const org = fx.newId(), user = fx.newId();
+      const s = await open(org, user);
+      const [a] = written(await repo.appendMessages(s._id, org, [labelled('One.')]), 1) as [MessageDto];
+      const replaced = await repo.replaceMessage(a._id, org, labelled('Two.'));
+      expect(replaced!.labelVer).to.match(HEX);
+      expect(replaced!.labelVer).to.not.equal(a.labelVer);
+      carriesNoLabel(replaced!);
+      expect((await repo.findMessage(s._id, org, a._id))!.labelVer).to.equal(replaced!.labelVer);
+    });
+
+    it('listMessageLabels reads what the reader check reads: the label, the text and steps it is hashed over, and nothing of the sources, tool output or files', async () => {
+      const org = fx.newId(), user = fx.newId();
+      const s = await open(org, user);
+      const [cit] = await repo.createCitations([{ content: 'c', chunkIndex: 1, citationType: 't', metadata: { orgId: org, mimeType: 'm', recordId: 'rec', recordName: 'n', origin: 'o' } }]);
+      const [a] = written(
+        await repo.appendMessages(s._id, org, [
+          {
+            ...labelled('Revenue grew.'),
+            citations: [{ citationId: cit!._id, relevanceScore: 0.5 }],
+            referenceData: [{ name: 'PROJ-1', id: '1', type: 'issue', app: 'jira' }],
+            followUpQuestions: [{ question: 'And Q4?', confidence: 'High' }],
+            reasoning: [{ content: 'read R first' }],
+            tools: [{ toolName: 'jira__search_issues', toolResult: { rows: 3 } }],
+          } as NewMessage,
+        ]),
+        1,
+      ) as [MessageDto];
+      const row = (await repo.listMessageLabels(org, [a._id])).get(a._id);
+      expect(row).to.be.an('object');
+      expect(row).to.include({ _id: a._id, sessionId: s._id, seq: a.seq, messageType: 'bot_response', content: 'Revenue grew.', labelVer: a.labelVer });
+      expect(row!.parts).to.deep.equal([{ type: 'text', content: 'Revenue grew.' }]);
+      expect((row!.provenance as { ver?: string }).ver).to.equal(a.labelVer);
+      expect(row).to.not.have.any.keys('citations', 'referenceData', 'followUpQuestions', 'reasoning', 'tools', 'attachments', 'feedback', 'modelInfo');
+      expect(await repo.listMessageLabels(fx.newId(), [a._id])).to.have.property('size', 0);
+    });
+
+    it('listMessagesOfRuns finds nothing for a run no message of the chats carries, and reads only the org asked for', async () => {
+      const org = fx.newId(), user = fx.newId();
+      const s = await open(org, user);
+      written(await repo.appendMessages(s._id, org, [labelled('Revenue grew.')]), 1);
+      expect(await repo.listMessagesOfRuns(org, [s._id], ['run-nobody-wrote'])).to.deep.equal([]);
+      expect(await repo.listMessagesOfRuns(fx.newId(), [s._id], ['run-nobody-wrote'])).to.deep.equal([]);
+      expect(await repo.listMessagesOfRuns(org, [], ['run-nobody-wrote'])).to.deep.equal([]);
+      expect(await repo.listMessagesOfRuns(org, [s._id], [])).to.deep.equal([]);
+    });
+
+    it("the reader check's kept closures: nothing for a key never kept, nothing of another org, nothing for an empty list", async () => {
+      const org = fx.newId(), user = fx.newId();
+      const s = await open(org, user);
+      const key = `${fx.newId()}@${fx.newId()}`;
+      expect((await repo.listAnswerClosures(org, [key])).size).to.equal(0);
+      expect((await repo.listAnswerClosures(org, [])).size).to.equal(0);
+      await repo.saveAnswerClosures(org, []);
+      expect((await repo.listAnswerClosures(fx.newId(), [key])).size).to.equal(0);
+      expect(await repo.listShareMarks(org, [s._id])).to.deep.equal([]);
+      expect(await repo.listShareMarks(org, [])).to.deep.equal([]);
+    });
+
+    it('a question gets no version id: only answers and errors carry a label', async () => {
+      const org = fx.newId(), user = fx.newId();
+      const s = await open(org, user);
+      const [question, failure] = written(
+        await repo.appendMessages(s._id, org, [
+          userMsg('What changed?'),
+          { messageType: 'error', content: 'Failed.', createdAt: new Date(), updatedAt: new Date() },
+        ]),
+        2,
+      ) as [MessageDto, MessageDto];
+      expect(question.labelVer).to.equal(undefined);
+      expect(failure.labelVer).to.match(HEX);
+    });
+  });
+
   describe('search and archive inputs', () => {
-    it('findIdsByContent matches the text of any message of the session', async () => {
+    it('findIdsByContent matches the text of the owner’s questions and answers in their own chats', async () => {
       const org = fx.newId(), owner = fx.newId();
       const s = await open(org, owner, {}, userMsg('alpha topic'));
-      await repo.appendMessages(s._id, org, [userMsg('beta topic')]);
-      const hit = async (text: string) => (await repo.findIdsByContent(org, text)).ids;
+      await repo.appendMessages(s._id, org, [botMsg('beta topic')]);
+      const hit = async (text: string) => (await repo.findIdsByContent(org, owner, text)).ids;
       expect(await hit('alpha')).to.deep.equal([s._id]);
       expect(await hit('beta')).to.deep.equal([s._id]);
       expect(await hit('gamma')).to.deep.equal([]);
     });
 
+    it('findIdsByContent never matches the messages of a chat someone else owns, shared or not', async () => {
+      const org = fx.newId(), owner = fx.newId(), reader = fx.newId();
+      const s = await open(org, owner, {}, userMsg('what is the figure'));
+      await repo.appendMessages(s._id, org, [botMsg('the hidden figure is 42')]);
+      await repo.setSharing(CHAT, s._id, { isShared: true, sharedWith: [{ userId: reader, accessLevel: 'read' }] });
+      expect((await repo.findIdsByContent(org, reader, 'hidden figure')).ids).to.deep.equal([]);
+      expect((await repo.findIdsByContent(org, owner, 'hidden figure')).ids).to.deep.equal([s._id]);
+    });
+
+    it('findIdsByContent leaves tool output out', async () => {
+      const org = fx.newId(), owner = fx.newId();
+      const s = await open(org, owner, {}, userMsg('look it up'));
+      await repo.appendMessages(s._id, org, [{ ...botMsg('raw tool output'), messageType: 'tool_call' }]);
+      expect((await repo.findIdsByContent(org, owner, 'raw tool')).ids).to.deep.equal([]);
+    });
+
     it('findIdsByContent reports when the search was cut short by its limit', async () => {
       const org = fx.newId(), owner = fx.newId();
       for (let i = 0; i < 3; i++) await open(org, owner, {}, userMsg(`needle ${i}`));
-      const cut = await repo.findIdsByContent(org, 'needle', 2);
+      const cut = await repo.findIdsByContent(org, owner, 'needle', 2);
       expect(cut.ids).to.have.length(2);
       expect(cut.truncated).to.equal(true);
       for (const limit of [3, 10]) {
-        const whole = await repo.findIdsByContent(org, 'needle', limit);
+        const whole = await repo.findIdsByContent(org, owner, 'needle', limit);
         expect(whole.ids).to.have.length(3);
         expect(whole.truncated).to.equal(false);
       }

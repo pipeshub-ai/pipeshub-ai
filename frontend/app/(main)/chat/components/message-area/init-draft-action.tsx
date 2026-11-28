@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { instructionsFromAnswer, useInstructionsDraft } from '@/app/(main)/agents/agent-builder/instructions-draft';
 import { useChatStore } from '../../store';
+import { useAnswerSlotId } from './answer-slot-scope';
 
 /**
  * Under an `/init` answer (SLASH2 C4): opens the drafted instructions in the agent editor, for the agent's
@@ -16,7 +17,8 @@ export function InitDraftAction({ answer }: { answer: string }) {
   const { t } = useTranslation();
   const router = useRouter();
   const canEdit = useChatStore((s) => Boolean(s.agentContextAccess?.canEdit));
-  const agentKey = useChatStore((s) => (s.activeSlotId ? s.slots[s.activeSlotId]?.threadAgentId : null));
+  const slotId = useAnswerSlotId();
+  const agentKey = useChatStore((s) => (slotId ? s.slots[slotId]?.threadAgentId : null));
   if (!canEdit || !agentKey) return null;
   const open = () => {
     useInstructionsDraft.getState().offer(agentKey, instructionsFromAnswer(answer));

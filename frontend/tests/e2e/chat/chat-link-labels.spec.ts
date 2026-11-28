@@ -17,7 +17,7 @@ const DOC = 'https://docs.pipeshub.com/connectors/overview';
 const QUESTION = `Repeat these four links back to me as bare URLs, one per line, and nothing else: ${PR} ${ISSUE} ${JIRA} ${DOC}`;
 
 async function askAndCheck(page: Page, shot: string) {
-  const input = page.locator('textarea').last();
+  const input = page.getByTestId('chat-composer').last();
   await input.fill(QUESTION);
   await input.press('Enter');
 

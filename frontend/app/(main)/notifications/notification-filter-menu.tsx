@@ -60,12 +60,9 @@ export function NotificationFilterMenu({ value, onChange }: NotificationFilterMe
               color="gray"
               aria-label={t('notifications.filter')}
               onClick={(e) => e.stopPropagation()}
-              style={{
-                cursor: 'pointer',
-                backgroundColor: open ? 'var(--olive-5)' : undefined,
-              }}
+              style={{ cursor: 'pointer', margin: 0 }}
             >
-              <MaterialIcon name="filter_list" size={18} color="var(--slate-11)" />
+              <MaterialIcon name="filter_list" size={16} color="var(--text-secondary)" />
             </IconButton>
           </DropdownMenu.Trigger>
         </Tooltip>
@@ -74,7 +71,6 @@ export function NotificationFilterMenu({ value, onChange }: NotificationFilterMe
         side="bottom"
         align="end"
         sideOffset={4}
-        onCloseAutoFocus={(e) => e.preventDefault()}
         onClick={(e) => e.stopPropagation()}
         onPointerDown={(e) => e.stopPropagation()}
         style={{

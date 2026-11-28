@@ -29,6 +29,7 @@ from app.edition_config import (
     authMiddleware,
     chatbot_router,
     ensure_org_context,
+    query_extension_router,
     search_router,
 )
 from app.services.model_identity.principal import service_principal
@@ -99,6 +100,10 @@ async def initialize_container(container: QueryAppContainer) -> bool:
     logger.info("🚀 Initializing application resources")
 
     try:
+        from app.modules.agents.chat_extension import get_chat_extension
+
+        get_chat_extension().install(container)
+
         # Ensure connector service is healthy before starting query service
         logger.info("Checking Connector service health before startup")
         await Health.health_check_connector_service(container)
@@ -282,6 +287,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from app.services.permissions.wiring import register_viewer_scope_version
 
     await register_viewer_scope_version(app_container.config_service(), logger)
+    from app.services.permissions.wiring import register_permission_epochs
+
+    await register_permission_epochs(app_container.config_service(), logger)
     from app.services.permissions.wiring import register_scope_generation
 
     await register_scope_generation(app_container.config_service(), logger)
@@ -722,6 +730,9 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 
 # Include routes from routes.py
+# Edition routes first: some sit beside `/agent/{agent_id}` and must match before it.
+if query_extension_router is not None:
+    app.include_router(query_extension_router, prefix="/api/v1")
 app.include_router(search_router, prefix="/api/v1")
 app.include_router(knowledge_search_router, prefix="/api/v1")
 app.include_router(entity_tools_router, prefix="/api/v1")

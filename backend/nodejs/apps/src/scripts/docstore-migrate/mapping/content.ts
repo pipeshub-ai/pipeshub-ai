@@ -226,6 +226,7 @@ const notifications: CollectionMapping = {
     { col: 'is_deleted', path: 'isDeleted', type: 'bool', readAbsentAs: false },
     { col: 'deleted_by', path: 'deletedBy', type: 'oid' },
     { col: 'visible_at', path: 'visibleAt', type: 'date' },
+    { col: 'dedupe_key', path: 'dedupeKey', type: 'text' },
     ...CREATED,
   ],
   derived: [],

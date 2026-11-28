@@ -1,18 +1,51 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
-import { Types } from 'mongoose'
+import mongoose, { Types } from 'mongoose'
 import * as controllerModule from '../../../../src/modules/enterprise_search/controller/es_controller'
 import * as searchUtils from '../../../../src/modules/enterprise_search/utils/utils'
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
+import { NOT_ALLOWED, NOT_ALLOWED_TEXT, notAllowed, withTestAdminRefusals } from '../helpers/admin-refusals'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, settle } from './chat-test-harness'
-import { AGENT_KEY, Flow, ORG, OWNER, RUN, appConfig, delta, finalAnswer, flows, seedConversation, sendAgain, startStream } from './streaming-flows'
-import { MongoConversationRepository } from '../../../../src/libs/repositories/conversation/mongo'
+import { AGENT_KEY, Flow, ORG, OWNER, RUN, SEEDED_ANSWER, appConfig, delta, finalAnswer, flows, seedConversation, sendAgain, startStream, type Run } from './streaming-flows'
 import { DETACHED_RUN_MAX_MS } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
 import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
+import { turnDeps } from '../helpers/turn-deps'
+import { withOwnerGrant } from '../helpers/conversation-grant'
+
+/**
+ * Records the status each chat-session write sets, and holds a Failed one until `release`. A run saves its state
+ * with `patchTurnSession`, an update of the session on the store `startStream` installed, so this wraps that.
+ */
+function holdFailedSessionWrites(): { statuses: unknown[]; release: () => void } {
+  const stub = ChatSession.updateOne as unknown as sinon.SinonStub & { defaultBehavior?: { fakeFn?: (...args: unknown[]) => unknown } }
+  const inner = stub.defaultBehavior?.fakeFn
+  if (!inner) throw new Error('startStream installs the store first')
+  let release: () => void = () => undefined
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const statuses: unknown[] = []
+  stub.callsFake((filter: unknown, update: { $set?: { status?: unknown } } | undefined, options?: unknown) => {
+    const status = update?.$set?.status
+    if (status !== undefined) statuses.push(status)
+    return status === 'Failed' ? gate.then(() => inner(filter, update, options)) : inner(filter, update, options)
+  })
+  return { statuses, release }
+}
+
+/** A regenerate whose run never started: its answer row is as it was, and the chat is not marked failed. */
+function expectStoredAnswerKept(run: Run): void {
+  const answer = run.answer() as Record<string, unknown>
+  expect(answer.messageType).to.equal('bot_response')
+  expect(answer.content).to.equal(SEEDED_ANSWER)
+  expect(run.conversation().status).to.not.equal('Failed')
+  expect(run.conversation().failReason).to.equal(undefined)
+  expect(run.conversation().conversationErrors ?? []).to.deep.equal([])
+}
 
 // What agui_emitter.py sends when a sub-agent (child run) fails; the parent run carries on.
 const subAgentError = { runId: 'run-child', parentRunId: RUN, message: 'Sub-agent failed: tool timeout', code: 'agent_error' }
@@ -54,6 +87,22 @@ describe('es_controller streaming answers', () => {
         expect(run.conversation().status).to.not.equal('Failed')
         expect(run.messages()).to.have.length(flow.regenerate ? messagesBefore : messagesBefore + 2)
         if (!flow.regenerate) expect(run.conversation().status).to.equal('Complete')
+      })
+
+      it("the final frame of a follow-up or a regenerate counts the records its answer used; a first send's carries the conversation and meta", async () => {
+        const run = await startStream(flow)
+        run.ai.send('RUN_FINISHED', finalAnswer('Three themes.'))
+        run.ai.finish()
+        await run.res.ended
+
+        const result = run.res.eventsOf('RUN_FINISHED')[0]?.data.result as Record<string, unknown> & { meta: Record<string, unknown> }
+        if (run.prepared.existing === undefined) {
+          expect(result).to.have.all.keys('conversation', 'meta')
+          expect(result.meta).to.have.all.keys('requestId', 'timestamp', 'duration')
+        } else {
+          expect(result).to.include({ recordsUsed: 0 })
+          expect(result.meta).to.include({ recordsUsed: 0 })
+        }
       })
 
       it('shows an error the AI service reports mid-answer exactly once and keeps its reason on the conversation', async () => {
@@ -216,8 +265,114 @@ describe('es_controller streaming answers', () => {
         expect(errors).to.have.length(1)
         expect(errors[0]?.data.message).to.equal(CHAT_ERROR_MESSAGES.unavailable)
         expect(run.res.body).to.not.match(/qdrant|cluster\.local/)
-        expect(run.conversation().status).to.equal('Failed')
-        expect(run.answer()?.content).to.equal(CHAT_ERROR_MESSAGES.unavailable)
+        if (flow.regenerate) {
+          expectStoredAnswerKept(run)
+        } else {
+          expect(run.conversation().status).to.equal('Failed')
+          expect(run.answer()?.content).to.equal(CHAT_ERROR_MESSAGES.unavailable)
+          expect(run.answer()?.errorCode).to.equal(undefined)
+        }
+      })
+
+      it('passes on the code the AI service names when it refuses the request as malformed, never its reply', async () => {
+        const run = await startStream(flow, controllerModule, (ai) => {
+          ai.refuseStream(400, { detail: { code: 'REQUEST_VERSION_UNSUPPORTED', message: 'Invalid request parameters' } })
+        })
+        await run.res.ended
+        await settle()
+
+        const errors = run.res.eventsOf('RUN_ERROR')
+        expect(errors.map((e) => e.data.message)).to.deep.equal([CHAT_ERROR_MESSAGES.failed])
+        // A regeneration's error frame passes it on too.
+        expect(errors[0]?.data.code).to.equal('REQUEST_VERSION_UNSUPPORTED')
+        expect(run.res.body).to.not.include('Invalid request parameters')
+        if (flow.regenerate) expectStoredAnswerKept(run)
+        else expect(run.conversation().status).to.equal('Failed')
+      })
+
+      it('keeps the words of a refusal that names no code, as before', async () => {
+        const run = await startStream(flow, controllerModule, (ai) => {
+          ai.refuseStream(400, { detail: 'The selected model does not support files.' })
+        })
+        await run.res.ended
+        await settle()
+
+        const [error] = run.res.eventsOf('RUN_ERROR')
+        expect(error?.data.message).to.equal('The selected model does not support files.')
+        expect(error?.data.code).to.not.equal('REQUEST_VERSION_UNSUPPORTED')
+      })
+
+      describe('a refusal only an admin can lift', () => {
+        withTestAdminRefusals()
+
+        it('keeps its words and reports it as one, not as an internal error', async () => {
+          const run = await startStream(flow, controllerModule, (ai) => {
+            ai.refuseStream(403, notAllowed)
+          })
+          await run.res.ended
+          await settle()
+
+          const [error] = run.res.eventsOf('RUN_ERROR')
+          expect(error?.data.message).to.equal(NOT_ALLOWED_TEXT)
+          expect(error?.data.code).to.equal(NOT_ALLOWED)
+          if (flow.regenerate) {
+            // The run never started: the answer on record stays, for everyone who reads the chat.
+            expectStoredAnswerKept(run)
+          } else {
+            expect(run.conversation().status).to.equal('Failed')
+            expect(run.conversation().failReason).to.equal(NOT_ALLOWED_TEXT)
+            expect(run.conversation().conversationErrors?.at(-1)?.errorType).to.equal(NOT_ALLOWED)
+            // On the row too: after a reload the card knows that trying again cannot help.
+            expect(run.answer()?.errorCode).to.equal(NOT_ALLOWED)
+          }
+        })
+
+        it('partway through a run keeps its code on the stored row, as one before the run does', async () => {
+          const run = await startStream(flow)
+
+          run.ai.send('RUN_FINISHED', {
+            runId: RUN,
+            result: { answer: NOT_ALLOWED_TEXT, citations: [], confidence: 'Low', answerMatchType: 'Error', errorCode: NOT_ALLOWED },
+          })
+          run.ai.finish()
+          await run.res.ended
+          await settle()
+
+          expect(run.answer()).to.include({ messageType: 'error', content: NOT_ALLOWED_TEXT, errorCode: NOT_ALLOWED })
+        })
+      })
+
+      it('with no refusal named, a 402 before the run is a failure like any other: no refusal code, on the frame or the row', async () => {
+        const run = await startStream(flow, controllerModule, (ai) => {
+          ai.refuseStream(402, { detail: { code: 'REQUEST_NOT_ALLOWED', message: NOT_ALLOWED_TEXT } })
+        })
+        await run.res.ended
+        await settle()
+
+        const [error] = run.res.eventsOf('RUN_ERROR')
+        expect(error?.data.code).to.not.equal(NOT_ALLOWED)
+        if (flow.regenerate) expectStoredAnswerKept(run)
+        else {
+          expect(run.conversation().status).to.equal('Failed')
+          expect(run.answer()?.messageType).to.equal('error')
+          expect(run.answer()?.errorCode).to.equal(undefined)
+        }
+      })
+
+      it('any other classified failure stores its code for the web app to word (ERR-UX)', async () => {
+        const run = await startStream(flow)
+
+        run.ai.send('RUN_FINISHED', {
+          runId: RUN,
+          result: { answer: 'The AI model is not responding.', citations: [], confidence: 'Low', answerMatchType: 'Error', errorCode: 'rate_limit' },
+        })
+        run.ai.finish()
+        await run.res.ended
+        await settle()
+
+        expect(run.answer()?.messageType).to.equal('error')
+        // Not a refusal only an admin can lift: the web app still offers Try again.
+        expect(run.answer()?.errorCode).to.equal('rate_limit')
       })
 
       it('reports an interrupted answer when the AI stream ends without a final answer', async () => {
@@ -291,18 +446,8 @@ describe('es_controller streaming answers', () => {
 
       it('never writes a failure for a sub-agent error, however slow the store is', async () => {
         // Holds any Failed write until the final save is done: the order that left the conversation Failed.
-        const real = MongoConversationRepository.prototype.recordRunState
-        let release: () => void = () => undefined
-        const gate = new Promise<void>((resolve) => {
-          release = resolve
-        })
-        const statuses: unknown[] = []
-        sinon.stub(MongoConversationRepository.prototype, 'recordRunState').callsFake(async function (this: MongoConversationRepository, ...args: Parameters<typeof real>) {
-          statuses.push(args[1]?.status)
-          if (args[1]?.status === 'Failed') await gate
-          return real.apply(this, args)
-        })
         const run = await startStream(flow)
+        const { statuses, release } = holdFailedSessionWrites()
 
         run.ai.send('RUN_ERROR', subAgentError)
         run.ai.send('RUN_FINISHED', finalAnswer('Recovered answer.'))
@@ -335,16 +480,8 @@ describe('es_controller streaming answers', () => {
       })
 
       it('ends a run whose RUN_ERROR has no data as interrupted: the failure is saved before the stream closes, and the browser gets its text', async () => {
-        const real = MongoConversationRepository.prototype.recordRunState
-        let release: () => void = () => undefined
-        const gate = new Promise<void>((resolve) => {
-          release = resolve
-        })
-        sinon.stub(MongoConversationRepository.prototype, 'recordRunState').callsFake(async function (this: MongoConversationRepository, ...args: Parameters<typeof real>) {
-          if (args[1]?.status === 'Failed') await gate
-          return real.apply(this, args)
-        })
         const run = await startStream(flow)
+        const { release } = holdFailedSessionWrites()
 
         run.ai.sendRaw('event: RUN_ERROR\ndata: null\n\n')
         run.ai.finish()
@@ -458,7 +595,8 @@ describe('es_controller streaming answers', () => {
 
         expect(run.answer()?.content).to.equal('Still answered.')
         expect(run.conversation().status).to.not.equal('Failed')
-        expect(run.res.body).to.contain('{not json')
+        // A frame Node cannot read is not passed on: only what it can check reaches the browser.
+        expect(run.res.body).to.not.contain('{not json')
       })
     })
   }
@@ -545,16 +683,8 @@ describe('es_controller streaming answers', () => {
       if (flow.regenerate) {
         it('holds the conversation until a run that ended with an unreadable RUN_ERROR has saved its failure', async () => {
           const clock = fakeClock()
-          const real = MongoConversationRepository.prototype.recordRunState
-          let release: () => void = () => undefined
-          const gate = new Promise<void>((resolve) => {
-            release = resolve
-          })
-          sinon.stub(MongoConversationRepository.prototype, 'recordRunState').callsFake(async function (this: MongoConversationRepository, ...args: Parameters<typeof real>) {
-            if (args[1]?.status === 'Failed') await gate
-            return real.apply(this, args)
-          })
           const run = await startStream(flow)
+          const { release } = holdFailedSessionWrites()
           run.ai.sendRaw('event: RUN_ERROR\ndata: null\n\n')
           run.ai.finish()
           await settle(20)
@@ -566,15 +696,14 @@ describe('es_controller streaming answers', () => {
 
           release()
           await run.res.ended
+          expect(run.ai.streamCalls, 'no second run before the failure is saved').to.have.length(1)
           await clock.tickAsync(1000)
-          await second.done
+          await settle()
 
-          // Only now does it see the saved failure, which is no longer an answer it can regenerate.
-          expect(second.res.eventsOf('RUN_ERROR').map((e) => e.data.message)).to.deep.equal([
-            'Can only regenerate the last message in the conversation',
-          ])
-          expect(run.ai.streamCalls, 'no second run was started').to.have.length(1)
+          // Only now does it see the saved failure, which it redoes in its place, as Try again does.
           expect(run.conversation().failReason).to.equal(CHAT_ERROR_MESSAGES.interrupted)
+          expect(second.res.eventsOf('RUN_ERROR')).to.deep.equal([])
+          expect(run.ai.streamCalls, 'the second run started on the saved failure').to.have.length(2)
         })
       }
 
@@ -606,7 +735,7 @@ describe('es_controller streaming answers', () => {
     const res = new FakeSSEResponse()
     let error: unknown
     try {
-      await controllerModule.streamChat(appConfig)({ body: {}, query: {}, user: { userId: OWNER, orgId: ORG } } as never, res as never)
+      await controllerModule.streamChat(appConfig, turnDeps())({ body: {}, query: {}, user: { userId: OWNER, orgId: ORG } } as never, res as never)
     } catch (e) {
       error = e
     }
@@ -683,14 +812,19 @@ describe('es_controller streaming answers', () => {
         return prepared
       },
     }
-    // Connected, as in production: the final conversation then carries the whole stored history.
-    sinon.stub(MongoConversationRepository.prototype, 'isConnected').returns(true)
-    const run = await startStream(lostHistory, undefined, (ai) => ai.reply(/\/chat\/records\/access$/, 200, { accessible: [], accessibleUrls: [] }))
-    run.ai.send('RUN_FINISHED', finalAnswer('A fresh answer.'))
-    run.ai.finish()
-    await run.res.ended
+    let sent: Array<Record<string, unknown>>
+    // Connected, as in production: the final conversation then carries the stored history.
+    Object.defineProperty(mongoose.connection, 'readyState', { configurable: true, get: () => 1 })
+    try {
+      const run = await startStream(lostHistory, undefined, (ai) => ai.reply(/\/chat\/records\/access$/, 200, { accessible: [], accessibleUrls: [] }))
+      run.ai.send('RUN_FINISHED', finalAnswer('A fresh answer.'))
+      run.ai.finish()
+      await run.res.ended
+      sent = (run.res.eventsOf('RUN_FINISHED')[0]?.data as any).result.conversation.messages as Array<Record<string, unknown>>
+    } finally {
+      delete (mongoose.connection as unknown as { readyState?: number }).readyState
+    }
 
-    const sent = (run.res.eventsOf('RUN_FINISHED')[0]?.data as any).result.conversation.messages as Array<Record<string, unknown>>
     const old = sent.find((m) => m.messageType === 'bot_response' && (m.answerHidden !== undefined || m.content === 'An older answer.'))
     expect(old?.answerHidden).to.deep.equal({ redacted: true, reason: 'no_longer_accessible' })
     expect(JSON.stringify(sent)).to.not.contain('An older answer.')
@@ -721,10 +855,19 @@ describe('es_controller streaming answers', () => {
   })
 
   it('addMessageStream: a stack trace saved from an earlier failed turn never reaches the browser', async () => {
-    const run = await startStream(flows[1] as Flow)
-    run.conversation().set('conversationErrors', [
-      { message: CHAT_ERROR_MESSAGES.failed, errorType: 'internal_error', stack: 'Error: boom\n    at /srv/pipeshub/secret-internal.ts:42' },
-    ])
+    const addMessage = flows[1] as Flow
+    // The earlier turn's failure is stored before this turn reads the conversation.
+    const afterFailedTurn: Flow = {
+      ...addMessage,
+      prepare: (store) => {
+        const prepared = addMessage.prepare(store)
+        prepared.existing?.set('conversationErrors', [
+          { message: CHAT_ERROR_MESSAGES.failed, errorType: 'internal_error', stack: 'Error: boom\n    at /srv/pipeshub/secret-internal.ts:42' },
+        ])
+        return prepared
+      },
+    }
+    const run = await startStream(afterFailedTurn)
 
     run.ai.send('RUN_FINISHED', finalAnswer('Fine now.'))
     run.ai.finish()
@@ -750,11 +893,11 @@ describe('es_controller streaming answers', () => {
     } as never)
     const res = new FakeSSEResponse()
 
-    await controllerModule.regenerateAnswers(appConfig)(
-      {
+    await controllerModule.regenerateAnswers(appConfig, turnDeps())(
+      withOwnerGrant({
         headers: {}, params: { conversationId: String(session._id), messageId: String(bot._id) }, body: {}, query: {},
         user: { userId: OWNER, orgId: ORG }, context: {},
-      } as never,
+      }) as never,
       res as never,
     )
     await settle()
@@ -778,11 +921,11 @@ describe('es_controller streaming answers', () => {
     } as never)
     const res = new FakeSSEResponse()
 
-    await controllerModule.regenerateAgentAnswers(appConfig)(
-      {
+    await controllerModule.regenerateAgentAnswers(appConfig, turnDeps())(
+      withOwnerGrant({
         headers: {}, params: { conversationId: String(session._id), messageId: String(bot._id), agentKey: AGENT_KEY },
         body: {}, query: {}, user: { userId: OWNER, orgId: ORG }, context: {},
-      } as never,
+      }) as never,
       res as never,
     )
     await settle()
@@ -808,11 +951,11 @@ describe('es_controller streaming answers', () => {
     } as never)
     const res = new FakeSSEResponse()
 
-    await controllerModule.regenerateAgentAnswers(appConfig)(
-      {
+    await controllerModule.regenerateAgentAnswers(appConfig, turnDeps())(
+      withOwnerGrant({
         headers: {}, params: { conversationId: String(session._id), messageId: String(bot._id), agentKey: AGENT_KEY },
         body: {}, query: {}, user: { userId: OWNER, orgId: ORG }, context: {},
-      } as never,
+      }) as never,
       res as never,
     )
     await settle()
@@ -931,15 +1074,15 @@ describe('es_controller streaming answers', () => {
     const firstQuestion = store.messagesOf(session._id)[0] as { _id: Types.ObjectId }
     const res = new FakeSSEResponse()
 
-    await controllerModule.regenerateAnswers(appConfig)(
-      {
+    await controllerModule.regenerateAnswers(appConfig, turnDeps())(
+      withOwnerGrant({
         headers: {},
         params: { conversationId: String(session._id), messageId: String(firstQuestion._id) },
         body: {},
         query: {},
         user: { userId: OWNER, orgId: ORG },
         context: {},
-      } as never,
+      }) as never,
       res as never,
     )
     await settle()

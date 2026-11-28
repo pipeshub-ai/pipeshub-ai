@@ -3,6 +3,9 @@ oauth_apps_router = None
 knowledge_hub_service_factory = None
 sharing_router = None 
 agent_sharing_router = None
+# Routes mounted ahead of the shared query routers / beside the entity router.
+query_extension_router = None
+entity_extension_router = None
 allowed_connector_list_scopes: set[str] = {"personal", "team"}
 # Organization-wide rules for toolset tools (the "Tool approvals" editor). Off: a toolset tool
 # starts from what it does to data, and the person in the chat answers its approval card.
@@ -25,6 +28,8 @@ mcp_runner_settings = None
 # a person may answer for the conversation or for good. None: no layer governs web search or page opening, and every
 # other layer's ask is answered once, as each card asks it.
 layer_ask_answers = None
+# A service account agent's own credentials: any editor of the agent sets them.
+agent_credentials_admin_only = False
 from app.config.redaction import can_reveal_secrets, hide_secrets_by_default
 from app.api.routes.search_llm_resolver import resolve_llm_for_search
 from app.api.routes.toolset_resolvers import (
@@ -41,13 +46,17 @@ from app.api.routes.mcp_resolvers import (
     build_schedule_refresh_kwargs,
     forbid_inherited_mcp_mutation,
     get_mcp_instance as get_mcp_instance_resolved,
+    keeps_attached_mcp_servers_on_edit,  # noqa: F401
     load_mcp_instances,
     mask_mcp_instance_for_response,
     mcp_instance_visible_to_org,  # noqa: F401 - edition seam, read at call time by app.agents.mcp.instance_scope
     resolve_instance_owner_config_service,
     resolve_mcp_instances_with_inheritance,
+    unusable_agent_mcp_server_ids,  # noqa: F401
 )
 from app.utils.oauth_config import fetch_oauth_config_by_id
+# A user lookup's org binding: none, since a user id names one user.
+from app.utils.user_lookup import user_lookup_scope  # noqa: E402, F401
 from app.api.middlewares.auth import (
     authMiddleware,
     deny_service_tokens,

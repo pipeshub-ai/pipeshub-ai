@@ -211,7 +211,7 @@ async function mockConversationGet(
 }
 
 async function send(page: import('@playwright/test').Page, text: string) {
-  const textarea = page.locator('textarea').last();
+  const textarea = page.getByTestId('chat-composer').last();
   await textarea.click();
   await textarea.fill(text);
   await textarea.press('Enter');
@@ -240,7 +240,7 @@ test.describe('Ask user question — journeys', () => {
     const id = 'conv-ask-happy';
     await mockBaseline(page);
     await mockConversationGet(page, storedConversation(id, []));
-    await page.route('**/api/v1/conversations/stream', (route) => {
+    await page.route('**/api/v1/conversations/stream**', (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,
@@ -249,12 +249,12 @@ test.describe('Ask user question — journeys', () => {
       });
     });
     await page.goto('/chat/');
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
     await send(page, 'Help me write a report');
     await expect(cardQuestion(page, 'Which department are you in?')).toBeVisible({ timeout: 20_000 });
     await expect(submitBtn(page)).toHaveCount(1);
 
-    await page.route(`**/api/v1/conversations/${id}/messages/stream`, (route) => {
+    await page.route(`**/api/v1/conversations/${id}/messages/stream**`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,
@@ -273,7 +273,7 @@ test.describe('Ask user question — journeys', () => {
     let body = '';
     await mockBaseline(page);
     await mockConversationGet(page, storedConversation(id, []));
-    await page.route('**/api/v1/conversations/stream', (route) => {
+    await page.route('**/api/v1/conversations/stream**', (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,
@@ -282,11 +282,11 @@ test.describe('Ask user question — journeys', () => {
       });
     });
     await page.goto('/chat/');
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
     await send(page, 'plan the launch');
     await expect(cardQuestion(page, 'Which region?')).toBeVisible({ timeout: 20_000 });
 
-    await page.route(`**/api/v1/conversations/${id}/messages/stream`, (route) => {
+    await page.route(`**/api/v1/conversations/${id}/messages/stream**`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       body = route.request().postData() ?? '';
       return route.fulfill({
@@ -417,7 +417,7 @@ test.describe('Ask user question — journeys', () => {
     ];
     await mockBaseline(page);
     await mockConversationGet(page, storedConversation(id, []));
-    await page.route('**/api/v1/conversations/stream', (route) => {
+    await page.route('**/api/v1/conversations/stream**', (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,
@@ -426,11 +426,11 @@ test.describe('Ask user question — journeys', () => {
       });
     });
     await page.goto('/chat/');
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
     await send(page, 'helpme');
     await expect(cardQuestion(page, 'Which region?')).toBeVisible({ timeout: 20_000 });
 
-    await page.route(`**/api/v1/conversations/${id}/messages/stream`, (route) => {
+    await page.route(`**/api/v1/conversations/${id}/messages/stream**`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       const query = String(route.request().postDataJSON().query ?? '');
       return route.fulfill({
@@ -452,7 +452,7 @@ test.describe('Ask user question — journeys', () => {
     await expect(submitBtn(page)).toHaveCount(0);
     await expect(page.locator('[role="radio"]')).toHaveCount(0);
     await expect(page.getByText('Hi! How can I help you today?')).toHaveCount(1);
-    await expect(page.getByTestId('chat-stopped-marker')).toHaveCount(0);
+    await expect(page.getByTestId('chat-stopped-card')).toHaveCount(0);
   });
 
   test('a later chat answers the card and is not copied onto it', async ({ page }) => {
@@ -469,7 +469,7 @@ test.describe('Ask user question — journeys', () => {
     ];
     await mockBaseline(page);
     await mockConversationGet(page, storedConversation(id, []));
-    await page.route('**/api/v1/conversations/stream', (route) => {
+    await page.route('**/api/v1/conversations/stream**', (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,
@@ -478,11 +478,11 @@ test.describe('Ask user question — journeys', () => {
       });
     });
     await page.goto('/chat/');
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
     await send(page, 'ask me one question');
     await expect(cardQuestion(page, 'Which region?')).toBeVisible({ timeout: 20_000 });
 
-    await page.route(`**/api/v1/conversations/${id}/messages/stream`, (route) => {
+    await page.route(`**/api/v1/conversations/${id}/messages/stream**`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       const query = String(route.request().postDataJSON().query ?? '');
       return route.fulfill({
@@ -514,7 +514,7 @@ test.describe('Ask user question — journeys', () => {
     );
     await mockBaseline(page);
     await mockConversationGet(page, storedConversation(id, []));
-    await page.route('**/api/v1/conversations/stream', (route) => {
+    await page.route('**/api/v1/conversations/stream**', (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,
@@ -523,7 +523,7 @@ test.describe('Ask user question — journeys', () => {
       });
     });
     await page.goto('/chat/');
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
     await send(page, 'ask me five questions');
     await expect(cardQuestion(page, 'Pick option for question 1?')).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText(/Step 1 of 5/i)).toBeVisible();
@@ -537,7 +537,7 @@ test.describe('Ask user question — journeys', () => {
     }
 
     let sent = '';
-    await page.route(`**/api/v1/conversations/${id}/messages/stream`, (route) => {
+    await page.route(`**/api/v1/conversations/${id}/messages/stream**`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       sent = route.request().postData() ?? '';
       return route.fulfill({
@@ -557,7 +557,7 @@ test.describe('Ask user question — journeys', () => {
     const id = 'conv-ask-stop-resume';
     await mockBaseline(page);
     await mockConversationGet(page, storedConversation(id, []));
-    await page.route('**/api/v1/conversations/stream', (route) => {
+    await page.route('**/api/v1/conversations/stream**', (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,
@@ -566,7 +566,7 @@ test.describe('Ask user question — journeys', () => {
       });
     });
     await page.goto('/chat/');
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
     await send(page, 'plan the launch');
     await expect(cardQuestion(page, 'Which region?')).toBeVisible({ timeout: 20_000 });
 
@@ -657,7 +657,7 @@ test.describe('Ask user question — journeys', () => {
     let body = '';
     await mockBaseline(page);
     await mockConversationGet(page, storedConversation(id, []));
-    await page.route('**/api/v1/conversations/stream', (route) => {
+    await page.route('**/api/v1/conversations/stream**', (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,
@@ -666,10 +666,10 @@ test.describe('Ask user question — journeys', () => {
       });
     });
     await page.goto('/chat/');
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
     await send(page, 'compare revenue');
     await expect(cardQuestion(page, 'Which metric?')).toBeVisible({ timeout: 20_000 });
-    await page.route(`**/api/v1/conversations/${id}/messages/stream`, (route) => {
+    await page.route(`**/api/v1/conversations/${id}/messages/stream**`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       body = route.request().postData() ?? '';
       return route.fulfill({
@@ -700,7 +700,7 @@ test.describe('Ask user question — stop a first turn that only asked', () => {
     await mockBaseline(page);
     await mockConversationGet(page, storedConversation(id, []));
     await page.goto('/chat/');
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
 
     let cancelBody: { runId?: string } | null = null;
     await page.route(`**/api/v1/conversations/${id}/cancel`, (route) => {
@@ -724,7 +724,7 @@ test.describe('Ask user question — stop a first turn that only asked', () => {
     await expect(stop).not.toBeVisible({ timeout: 8_000 });
     await expect(submitBtn(page)).toHaveCount(1);
 
-    await page.route(`**/api/v1/conversations/${id}/messages/stream`, (route) => {
+    await page.route(`**/api/v1/conversations/${id}/messages/stream**`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       const query = String(route.request().postDataJSON().query ?? '');
       return route.fulfill({
@@ -748,7 +748,7 @@ test.describe('Ask user question — stop a first turn that only asked', () => {
     await expect(page.getByText('Hi! How can I help you today?')).toHaveCount(1);
     // Main #4763: the card was the stopped turn's whole output and shows its own state, so neither turn says
     // Stopped.
-    await expect(page.getByTestId('chat-stopped-marker')).toHaveCount(0);
+    await expect(page.getByTestId('chat-stopped-card')).toHaveCount(0);
   });
 
   test('Stop while the card is on screen leaves the card interactive', async ({ page }) => {
@@ -764,8 +764,8 @@ test.describe('Ask user question — stop a first turn that only asked', () => {
       }),
     );
     await page.goto('/chat/');
-    await page.waitForSelector('textarea', { timeout: 15_000 });
-    await page.route('**/api/v1/conversations/stream', (route) => {
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
+    await page.route('**/api/v1/conversations/stream**', (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,

@@ -18,8 +18,14 @@ from app.services.cache import invalidation_hooks as hooks
 from app.services.messaging.kafka.handlers import entity as entity_events
 from app.services.permissions.cache import ViewerScopeCache
 from tests.edition_overlay import extended
+from tests.support.edition_defaults import (
+    graph_provider_dirs_extra,
+    permission_edge_delete_exemptions_extra,
+)
 
 APP = Path(__file__).resolve().parents[4] / "app"
+# The graph providers hold the edge writers themselves; the guard is about the code outside them.
+PROVIDER_DIRS = ("services/graph_db/", *graph_provider_dirs_extra())
 BUMPS = {"notify_principals_changed", "notify_connector_permissions_changed", "notify_connector_sync_completed",
          "notify_kb_records_changed"}
 # The processor's own helpers that call `notify_connector_permissions_changed` (checked by the test of `_access_changed`),
@@ -140,7 +146,9 @@ COMPOUND_DELETES = {"delete_connector_instance", "delete_user_group_by_id", "rem
                     "remove_unlinked_user_access_to_connector",
                     "remove_kb_permission", "delete_team_member_edges", "delete_all_team_permissions", "delete_kb_hub_app",
                     "reap_stale_external_app_relations"}
-# `delete_nodes_and_edges` is flagged when it removes nodes that hold or carry access.
+# `delete_nodes_and_edges` and `delete_node_if_match` (which also removes every edge of the node) are flagged when
+# they remove nodes that hold or carry access.
+NODE_DELETES = ("delete_nodes_and_edges", "delete_node_if_match")
 ACCESS_NODE_COLLECTIONS = ("GROUPS", "ROLES", "RECORD_GROUPS", "APPS", "TEAMS")
 SYNC = "connector writer: its sync end (`notify_connector_sync_completed`) or the permission hook (`_access_changed`) bumps"
 STORE = "pass-through wrapper of the data store: its callers are listed or bump"
@@ -150,6 +158,7 @@ AGENT = "agent and skill edges, not records: no viewer scope reads them"
 NO_BUMP = {
     "agents/agent_loop/skills/graph_store.py::_sync_relation_edges": AGENT,
     "agents/agent_loop/skills/graph_store.py::detach_from_agents": AGENT,
+    "modules/agents/service/agent_service.py::update": "agent sharing edges, not records: no viewer scope reads them",
     "connectors/core/base/data_processor/data_source_entities_processor.py::_drop_shared_groups": SYNC,
     "connectors/core/registry/connector_registry.py::discard_connector_instance":
         "takes back an instance its own create just wrote: it holds no permission edge yet and the create never bumped",
@@ -166,9 +175,10 @@ NO_BUMP = {
     "connectors/core/base/data_store/graph_data_store.py::delete_inherit_permissions_relation_record": STORE,
     "agents/agent_loop/skills/graph_store.py::delete_skill": AGENT,
     "agents/agent_loop/skills/graph_store.py::erase_session_learned_skills": AGENT,
+    # A skill candidate (a learned skill not yet saved), deleted with its edges: no viewer scope reads it.
+    "agents/agent_loop/skills/graph_store.py::remove_candidate": AGENT,
     "agents/agent_loop/skills/graph_store.py::erase_skill_author": AGENT,
     # The harness's versioned agents (update_agent writes through the draft).
-    "api/routes/agent.py::_write_draft": "agent sharing edges, not records: no viewer scope reads them",
     "harness/knowledge/directory.py::_erase": (
         "publication edges of a container being deleted or an org being erased; no viewer scope reads publications "
         "(retrieval reads them on every search)"
@@ -195,6 +205,7 @@ NO_BUMP = {
         "one-off startup repair of a connector's user edges; a scope cached before it expires with its entry TTL",
     "modules/transformers/edge_reconciler.py::reconcile": "record enrichment edges (topics, entities), not permissions",
     "modules/transformers/graphdb.py::_reconcile_edges": "record enrichment edges (topics, entities), not permissions",
+    **permission_edge_delete_exemptions_extra(),
 }
 
 
@@ -209,10 +220,10 @@ def _flagged_delete_functions() -> dict[str, bool]:
     flagged: dict[str, bool] = {}
     for path in APP.rglob("*.py"):
         rel = str(path.relative_to(APP))
-        if _in_a_provider(rel):
+        if _in_a_provider(rel) or rel.startswith(PROVIDER_DIRS):
             continue
         source = path.read_text(encoding="utf-8-sig")
-        if not any(name in source for name in (*DELETE_CALLS, *COMPOUND_DELETES, "delete_nodes_and_edges")):
+        if not any(name in source for name in (*DELETE_CALLS, *COMPOUND_DELETES, *NODE_DELETES)):
             continue
         for fn in _enclosing_functions(ast.parse(source)):
             for call in (n for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)):
@@ -222,7 +233,7 @@ def _flagged_delete_functions() -> dict[str, bool]:
                 elif call.func.attr in COMPOUND_DELETES:
                     receiver = ast.unparse(call.func.value)
                     hit = any(w in receiver for w in ("graph", "store", "provider"))     # not a service in front of it
-                elif call.func.attr == "delete_nodes_and_edges":
+                elif call.func.attr in NODE_DELETES:
                     hit = any(f"CollectionNames.{c}." in text for c in ACCESS_NODE_COLLECTIONS) or "CollectionNames." not in text
                 else:
                     continue
@@ -251,7 +262,11 @@ def _flagged_create_functions() -> dict[str, bool]:
     flagged: dict[str, bool] = {}
     for path in APP.rglob("*.py"):
         rel = str(path.relative_to(APP))
-        if _in_a_provider(rel) or not any(name in (source := path.read_text(encoding="utf-8-sig")) for name in CREATE_CALLS):
+        if (
+            _in_a_provider(rel)
+            or rel.startswith(PROVIDER_DIRS)
+            or not any(name in (source := path.read_text(encoding="utf-8-sig")) for name in CREATE_CALLS)
+        ):
             continue
         for fn in _enclosing_functions(ast.parse(source)):
             for call in (n for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)):
@@ -267,10 +282,10 @@ HELPER = "helper: every route or method that calls it bumps (checked by the guar
 CREATE_NO_BUMP = {
     "agents/agent_loop/skills/graph_store.py::_create_owner_permission_edge": AGENT,
     "api/routes/agent.py::clone_agent_template": AGENT,
-    "api/routes/agent.py::_create_agent": AGENT,
-    "api/routes/agent.py::_write_draft": AGENT,
     "api/routes/agent.py::create_agent_template": AGENT,
-    "api/routes/agent.py::write_agent": AGENT,
+    "modules/agents/service/agent_service.py::_create_once": AGENT,
+    "modules/agents/service/agent_service.py::update": AGENT,
+    "modules/agents/service/agent_service.py::write_agent": AGENT,
     "services/chat_attachments/uploads.py::write_attachment_graph": NEW_RECORD,
     "api/routes/entity.py::write_team": HELPER,
     "api/routes/entity.py::write_update": HELPER,

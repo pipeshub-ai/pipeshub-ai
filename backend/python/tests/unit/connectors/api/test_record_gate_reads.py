@@ -134,19 +134,30 @@ class TestTheRecordRead:
             answer = await gate(_Graph({"records": {"id": RECORD_ID, "connectorId": "jira-1"}}))
         assert not isinstance(answer, HTTPException), answer
 
-    @pytest.mark.parametrize("gate", GATES.values(), ids=GATES.keys())
+    @pytest.mark.parametrize(
+        "gate", [g for name, g in GATES.items() if name != "record_content"], ids=[n for n in GATES if n != "record_content"],
+    )
     async def test_a_record_gone_after_the_check_keeps_its_answer(self, gate: Any) -> None:  # noqa: ANN401
         """Deleted between the access check and this read: absence, not an outage."""
         with _hidden_demo():
             answer = await gate(_Graph({"records": None}))
         assert not isinstance(answer, HTTPException), answer
 
+    async def test_the_content_route_reads_a_gone_record_as_missing_not_an_outage(self) -> None:
+        """The content route reads the record before its access check (a chat's file is the edition's to grant)."""
+        with _hidden_demo():
+            answer = await _content(_Graph({"records": None}))
+        assert isinstance(answer, HTTPException) and (answer.status_code, answer.detail) == (404, "Record not found")
+
 
 class TestTheAccessCheckThatCouldNotBeMade:
     """``accessible_node_ids`` raises when the graph could not answer: the same 503 as a failed read, not a 500."""
 
     @pytest.mark.parametrize("route", [
-        lambda: router_mod.get_record_content(RECORD_ID, _request(), graph_provider=_Graph({})),
+        # A record to check: the content route reads it before its access check.
+        lambda: router_mod.get_record_content(
+            RECORD_ID, _request(), graph_provider=_Graph({"records": {"id": RECORD_ID, "connectorId": "jira-1"}}),
+        ),
         lambda: records_mod._check_access(_request(), _Graph({}), RECORD_ID),
     ], ids=["record_content", "query_record_read"])
     async def test_is_503(self, route: Any) -> None:  # noqa: ANN401

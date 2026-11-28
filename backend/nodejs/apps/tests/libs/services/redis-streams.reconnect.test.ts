@@ -129,6 +129,48 @@ describe('Redis Streams reconnect after disconnect', () => {
     expect(clients[1].quit.callCount).to.equal(1);
   });
 
+  it('publishes made side by side as it starts share one connect, and none of them fails', async () => {
+    class P extends svc.BaseRedisStreamsProducerConnection {}
+    const producer = new (P as any)(config, logger);
+    // Mirrors ioredis: a connect while one is under way is refused, and the client is ready only once it is done.
+    let finish!: () => void;
+    clients[0].status = 'wait';
+    clients[0].connect = sinon.stub().callsFake(() => {
+      if (clients[0].status === 'connecting') return Promise.reject(new Error('Redis is already connecting/connected'));
+      clients[0].status = 'connecting';
+      return new Promise<void>((resolve) => {
+        finish = () => {
+          clients[0].status = 'ready';
+          resolve();
+        };
+      });
+    });
+
+    // The first chat emails after a restart: three publishes before the producer has connected.
+    const sent = [1, 2, 3].map((n) => producer.publish('mail-events', { key: 'k', value: { n } }));
+    await new Promise((resolve) => setImmediate(resolve));
+    finish();
+    const settled = await Promise.allSettled(sent);
+
+    expect(settled.map((s) => s.status)).to.deep.equal(['fulfilled', 'fulfilled', 'fulfilled']);
+    expect(clients[0].connect.callCount, 'one connect').to.equal(1);
+    expect(clients[0].xadd.callCount).to.equal(3);
+  });
+
+  it('a connect that fails fails every caller waiting on it, and the next one tries again', async () => {
+    class P extends svc.BaseRedisStreamsProducerConnection {}
+    const producer = new (P as any)(config, logger);
+    clients[0].connect = sinon.stub().onFirstCall().rejects(new Error('ECONNREFUSED')).resolves();
+
+    const first = await Promise.allSettled([producer.connect(), producer.connect()]);
+    expect(first.map((s) => s.status)).to.deep.equal(['rejected', 'rejected']);
+    expect(clients[0].connect.callCount).to.equal(1);
+
+    await producer.connect();
+    expect(clients[0].connect.callCount).to.equal(2);
+    expect(producer.isConnected()).to.be.true;
+  });
+
   it('replaces both consumer clients and acks on the new ackRedis', async () => {
     class C extends svc.BaseRedisStreamsConsumerConnection {}
     const consumer = new (C as any)(config, logger);

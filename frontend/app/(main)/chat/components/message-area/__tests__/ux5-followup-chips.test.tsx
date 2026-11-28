@@ -35,7 +35,7 @@ vi.mock('@assistant-ui/react', () => ({
 }));
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn() }) }));
 vi.mock('@/chat/streaming', () => streaming);
-vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false, useIsBelowDesktop: () => false }));
 vi.mock('@/lib/hooks/use-chat-speech-recognition', () => ({
   useChatSpeechRecognition: () => ({
     isListening: false,
@@ -211,6 +211,18 @@ describe('FU-6: suggested next steps', () => {
     const chips = screen.getByTestId('followup-chips');
     expect(latest!.compareDocumentPosition(chips) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(latest!.parentElement!.contains(chips)).toBe(true);
+  });
+
+  it('a chip is never wider than its row, so a long suggestion wraps instead of running off a phone', async () => {
+    openConversation();
+    renderChat();
+    const group = await screen.findByRole('group', { name: 'Suggested next steps' });
+    for (const chip of within(group).getAllByRole('button')) {
+      expect(chip.style.maxWidth).toBe('100%');
+      expect(chip.style.minWidth).toBe('0');
+      expect(chip.style.whiteSpace).toBe('normal');
+      expect(chip.style.overflowWrap).toBe('anywhere');
+    }
   });
 
   it('a click fills the composer and focuses it; nothing is sent', async () => {

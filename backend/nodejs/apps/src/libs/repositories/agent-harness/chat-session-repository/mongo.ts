@@ -14,6 +14,7 @@ import {
 import { EMPTY_LEDGER } from '../../../../modules/agent-harness/domain/session-import';
 import { createInTransaction } from '../transaction-writes/mongo';
 import { accountedOf } from '../history-source/mongo';
+import { readByOthers } from '../../../../modules/enterprise_search/utils/earlier-turns';
 import type { TurnRole } from '../../../../modules/agent-harness/domain/session-roles';
 
 const hasValidIds = (scope: SessionExecutionScope): boolean =>
@@ -163,13 +164,14 @@ export class HarnessChatSessionRepository implements ChatSessionRepository<Tx> {
       { returnDocument: 'after', session: tx },
     )
       .select(
-        '+sessionType +harnessVersion +nextSeq +harnessLedger userId isShared sharedWith',
+        '+sessionType +harnessVersion +nextSeq +harnessLedger userId isShared sharedWith projectVisibility rev',
       )
       .lean();
     if (bound === null) return null;
     return {
       ownerId: String(bound.userId),
       shared: bound.isShared === true && (bound.sharedWith ?? []).length > 0,
+      readByOthers: readByOthers(bound),
       accounted: accountedOf(bound),
     };
   }

@@ -56,6 +56,9 @@ jobs:
           base: base-openapi.yaml
           revision: ${{ env.SPEC }}
           fail-on: ERR
+          # Intended changes the check lets through, each on its own line with its reason: the
+          # additive answerHidden.reason values, which clients must accept when they don't know one.
+          err-ignore: .github/oasdiff-err-ignore.txt
 
       - name: Set up Python
         if: ${{ !cancelled() }}

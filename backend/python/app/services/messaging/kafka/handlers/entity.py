@@ -81,6 +81,8 @@ _PARKED_WHILE_OFF = {
 # Events that change who a person is or which apps they reach, and with it what they may read. Each moves the
 # viewer-scope version (tests/unit/services/permissions/test_permission_writers_bump.py keeps this list complete).
 PRINCIPAL_EVENTS = frozenset({"userAdded", "userUpdated", "userDeleted", "appEnabled", "appDisabled", "orgDeleted"})
+# The events of those that name one person: that person's own epoch moves too.
+_USER_EVENTS = frozenset({"userAdded", "userUpdated", "userDeleted"})
 
 
 # Each one that misses means another toggle committed meanwhile; this many in a row is someone
@@ -159,7 +161,11 @@ class EntityEventService(BaseEventService):
         finally:
             if event_type in PRINCIPAL_EVENTS:
                 # Success or not: a handler that failed half way may have changed edges. Nothing here widens access.
-                await notify_principals_changed(payload.get("orgId") if isinstance(payload, dict) else None)
+                fields = payload if isinstance(payload, dict) else {}
+                person = fields.get("userId") if event_type in _USER_EVENTS else None
+                await notify_principals_changed(
+                    fields.get("orgId"), user_ids=[person] if isinstance(person, str) and person else [],
+                )
 
     async def _dispatch(self, event_type: str, payload: dict) -> bool:
         try:

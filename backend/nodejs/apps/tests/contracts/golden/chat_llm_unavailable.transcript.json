@@ -1,5 +1,8 @@
 {
   "conversation": {
+    "modelInfo": {
+      "chatMode": "internal_search"
+    },
     "sessionType": "chat",
     "nextSeq": 2,
     "userId": "oid-1",
@@ -11,9 +14,7 @@
     "isArchived": false,
     "lastActivityAt": "<clock>",
     "status": "Failed",
-    "modelInfo": {
-      "chatMode": "internal_search"
-    },
+    "rev": 2,
     "_id": "oid-3",
     "sharedWith": [],
     "conversationErrors": [
@@ -22,22 +23,18 @@
         "errorType": "llm_initialization_failed",
         "timestamp": "<timestamp>",
         "metadata": {},
+        "requestedBy": "oid-1",
         "_id": "oid-4"
       }
     ],
     "createdAt": "<timestamp>",
     "updatedAt": "<timestamp>",
-    "__v": 1,
-    "failReason": "No AI model is set up for this workspace yet. An admin can add one in Workspace → AI Models, then you can send your message again."
+    "__v": 0,
+    "failReason": "No AI model is set up for this workspace yet. An admin can add one in Workspace → AI Models, then you can send your message again.",
+    "failedRunBy": "oid-1"
   },
   "messages": [
     {
-      "sessionId": "oid-3",
-      "orgId": "oid-2",
-      "seq": 1,
-      "messageType": "user_query",
-      "content": "What is the refund policy?",
-      "contentFormat": "MARKDOWN",
       "modelInfo": {
         "chatMode": "internal_search"
       },
@@ -48,6 +45,14 @@
         "records": [],
         "recordsExact": []
       },
+      "sessionId": "oid-3",
+      "orgId": "oid-2",
+      "seq": 1,
+      "changeRev": 1,
+      "authorUserId": "oid-1",
+      "messageType": "user_query",
+      "content": "What is the refund policy?",
+      "contentFormat": "MARKDOWN",
       "parts": [],
       "_id": "oid-5",
       "createdAt": "<timestamp>",
@@ -61,12 +66,6 @@
       "reasoning": []
     },
     {
-      "sessionId": "oid-3",
-      "orgId": "oid-2",
-      "seq": 2,
-      "messageType": "error",
-      "content": "No AI model is set up for this workspace yet. An admin can add one in Workspace → AI Models, then you can send your message again.",
-      "contentFormat": "MARKDOWN",
       "modelInfo": {
         "chatMode": "quick"
       },
@@ -77,8 +76,18 @@
         "records": [],
         "recordsExact": []
       },
+      "sessionId": "oid-3",
+      "orgId": "oid-2",
+      "seq": 2,
+      "changeRev": 2,
+      "requestedBy": "oid-1",
+      "inReplyTo": "oid-5",
+      "messageType": "error",
+      "content": "No AI model is set up for this workspace yet. An admin can add one in Workspace → AI Models, then you can send your message again.",
+      "contentFormat": "MARKDOWN",
       "parts": [],
-      "_id": "oid-6",
+      "labelVer": "oid-6",
+      "_id": "oid-7",
       "createdAt": "<timestamp>",
       "updatedAt": "<timestamp>",
       "citations": [],

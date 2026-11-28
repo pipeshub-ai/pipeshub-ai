@@ -18,6 +18,7 @@ from app.edition_config import (
     authMiddleware,
     connector_router,
     ensure_org_context,
+    entity_extension_router,
     knowledge_hub_service_factory,
     oauth_apps_router,
     sharing_router,
@@ -976,6 +977,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from app.services.permissions.wiring import register_viewer_scope_version
 
     await register_viewer_scope_version(app_container.config_service(), logger)
+    from app.services.permissions.wiring import register_permission_epochs
+
+    await register_permission_epochs(app_container.config_service(), logger)
     from app.services.permissions.wiring import register_scope_generation
 
     await register_scope_generation(app_container.config_service(), logger)
@@ -1769,6 +1773,8 @@ async def vector_db_memory_check(request: Request) -> JSONResponse:
 
 # Include routes - more specific routes first
 app.include_router(entity_router)
+if entity_extension_router is not None:
+    app.include_router(entity_extension_router)
 app.include_router(toolsets_router)
 app.include_router(mcp_servers_router)
 app.include_router(api_toolsets_router)

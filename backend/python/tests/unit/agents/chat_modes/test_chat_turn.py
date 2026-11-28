@@ -49,6 +49,7 @@ from app.agents.chat_modes.setup import (
 )
 from app.config.constants.arangodb import Connectors
 from app.utils.chat_helpers import CitationRefMapper
+from app.utils.conversation_tasks import _conversation_tasks, register_task
 from app.utils.logger import log_record_fields
 from tests.support.bound_org import bind_test_org
 from tests.unit.agents.chat_modes.test_internal_search_prompt import (
@@ -468,7 +469,7 @@ class TestRunChatStream:
             agent = _stream_agent(MagicMock(success=True, error=None, output="42"))
             return agent, MagicMock(constraints=[]), MagicMock(constraints=[]), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False, agent_needs_input=None):
             await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
             return {"answer": agent_output}
 
@@ -521,6 +522,60 @@ class TestRunChatStream:
 
         assert "conv-bridge-err" not in ct._conversation_tasks
         assert pending.cancelled()
+
+    async def test_a_run_that_stopped_on_a_question_card_is_waiting_not_empty(self) -> None:
+        """The chat route's card turn stored "I wasn't able to generate a response": the run had
+        asked and was waiting, so that is a failure which never happened. The real finalizer runs."""
+        result = MagicMock(success=True, error=None, output="", cancelled=False, needs_input="Waiting for user answers")
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, Any, Any, list[Any]]:
+            return _stream_agent(result), MagicMock(constraints=[]), MagicMock(constraints=[]), []
+
+        sql_patch, slack_patch = _patch_connectors()
+        keep_question = AsyncMock()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.parked_turn.keep_question", new=keep_question),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**self._base_kwargs(policy=AGENT_POLICY))]
+
+        complete = next(e for e in events if e.startswith("event: complete\n"))
+        data = json.loads(complete.split("data: ", 1)[1].strip())
+        assert data["answer"] == ""
+        assert data["status"] == "waiting_input"
+        keep_question.assert_awaited_once()
+
+    async def test_a_run_with_nothing_to_say_and_no_card_still_says_so(self) -> None:
+        """The fallback stays for what it is for: a run that ended with no answer and asked nothing."""
+        result = MagicMock(success=True, error=None, output="", cancelled=False, needs_input=None)
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, Any, Any, list[Any]]:
+            return _stream_agent(result), MagicMock(constraints=[]), MagicMock(constraints=[]), []
+
+        sql_patch, slack_patch = _patch_connectors()
+        keep_question = AsyncMock()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.parked_turn.keep_question", new=keep_question),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**self._base_kwargs(policy=AGENT_POLICY))]
+
+        complete = next(e for e in events if e.startswith("event: complete\n"))
+        assert "able to generate a response" in json.loads(complete.split("data: ", 1)[1].strip())["answer"]
+        keep_question.assert_not_awaited()
+
     async def test_sql_and_slack_flags_come_from_one_connector_query(self) -> None:
         """Both flags are derived from a single `get_user_connector_instances`
         call — they used to be two identical queries."""
@@ -534,7 +589,7 @@ class TestRunChatStream:
             agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
             return agent, MagicMock(constraints=[]), MagicMock(constraints=[]), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False, agent_needs_input=None):
             await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
             return {"answer": agent_output}
 
@@ -591,7 +646,7 @@ class TestRunChatStream:
             agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
             return agent, MagicMock(constraints=[]), MagicMock(constraints=[]), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False, agent_needs_input=None):
             await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
             return {"answer": agent_output}
 
@@ -629,7 +684,7 @@ class TestRunChatStream:
             agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
             return agent, MagicMock(constraints=[]), MagicMock(constraints=[]), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False, agent_needs_input=None):
             await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
             return {"answer": agent_output}
 
@@ -665,7 +720,7 @@ class TestRunChatStream:
             agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
             return agent, MagicMock(constraints=[]), MagicMock(constraints=[]), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False, agent_needs_input=None):
             await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
             return {"answer": agent_output}
 
@@ -723,7 +778,7 @@ class TestRunChatStream:
         async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, Any, Any, list[Any]]:
             return _stream_agent(MagicMock(success=True, error=None, output="ok")), MagicMock(), MagicMock(constraints=[]), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False) -> dict[str, Any]:
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False, agent_needs_input=None) -> dict[str, Any]:
             await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
             return {"answer": agent_output}
 
@@ -752,7 +807,7 @@ class TestRunChatStream:
         async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, Any, Any, list[Any]]:
             return _stream_agent(MagicMock(success=True, error=None, output="ok")), MagicMock(), MagicMock(constraints=[]), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False) -> dict[str, Any]:
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False, agent_needs_input=None) -> dict[str, Any]:
             await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
             return {"answer": agent_output}
 
@@ -797,7 +852,7 @@ class TestRunChatStream:
             agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
             return agent, MagicMock(), goal, []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False, agent_needs_input=None):
             await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
             return {"answer": agent_output}
 
@@ -870,7 +925,7 @@ class TestRunChatStream:
             agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
             return agent, MagicMock(), MagicMock(constraints=[]), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False) -> dict[str, Any]:
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False, agent_needs_input=None) -> dict[str, Any]:
             await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
             return {"answer": agent_output}
 
@@ -919,7 +974,7 @@ class TestRunChatStream:
             agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
             return agent, MagicMock(), goal, []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False) -> dict[str, Any]:
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False, agent_needs_input=None) -> dict[str, Any]:
             await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
             return {"answer": agent_output}
 
@@ -1193,7 +1248,7 @@ class TestRunChatStream:
             agent = _stream_agent(MagicMock(success=True, error=None, output="done"))
             return agent, MagicMock(), goal_obj, []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False, agent_needs_input=None):
             await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
 
         sql_patch, slack_patch = _patch_connectors()
@@ -1257,7 +1312,7 @@ class TestRunChatStream:
             agent = _stream_agent(MagicMock(success=True, error=None, output="done"))
             return agent, MagicMock(), goal_obj, []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False, agent_needs_input=None):
             await event_sink.write({"event": "complete", "data": {"answer": "done"}})
 
         sql_patch, slack_patch = _patch_connectors()
@@ -1322,7 +1377,7 @@ class TestRunChatStream:
             agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
             return agent, MagicMock(), goal, []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False, agent_needs_input=None):
             await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
             return {"answer": agent_output}
 
@@ -1371,6 +1426,40 @@ class TestRunChatStream:
         payload = json.loads(events[0].split("data: ", 1)[1].strip())
         assert "transport exploded" not in payload["message"]
 
+    async def test_background_tasks_belong_to_the_run_and_are_cancelled_when_left(self) -> None:
+        started: list[tuple[asyncio.Task, list[Any]]] = []
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, Any, Any, list[Any]]:
+            task = asyncio.create_task(asyncio.sleep(10))
+            register_task(context.conversation_id, task)
+            started.append((task, list(_conversation_tasks)))
+            agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
+            return agent, MagicMock(), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, **kwargs) -> dict[str, str]:
+            return {"answer": "stopped"}
+
+        kwargs = self._base_kwargs()
+        kwargs["query_info"] = {**kwargs["query_info"], "runId": "run-1"}
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello", "conversation_id": "conv-1"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+        ):
+            [chunk async for chunk in run_chat_stream(**kwargs)]
+
+        ((task, keys),) = started
+        assert ("conv-1", "run-1") in keys
+        (outcome,) = await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=5)
+        assert isinstance(outcome, asyncio.CancelledError)
+        assert ("conv-1", "run-1") not in _conversation_tasks
+
     async def test_sandbox_manager_destroyed_on_completion(self) -> None:
         sandbox_manager = MagicMock()
         sandbox_manager.destroy_all = AsyncMock()
@@ -1380,7 +1469,7 @@ class TestRunChatStream:
             agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
             return agent, MagicMock(), MagicMock(constraints=[]), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False, agent_needs_input=None):
             await event_sink.write({"event": "complete", "data": {"answer": "ok"}})
             return {"answer": "ok"}
 
@@ -1410,7 +1499,7 @@ class TestRunChatStream:
             context.sandbox_manager = sandbox_manager
             return _stream_agent(MagicMock(success=True, error=None, output="ok")), MagicMock(), MagicMock(constraints=[]), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False) -> dict[str, Any]:
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False, agent_needs_input=None) -> dict[str, Any]:
             await event_sink.write({"event": "complete", "data": {"answer": "ok"}})
             return {"answer": "ok"}
 

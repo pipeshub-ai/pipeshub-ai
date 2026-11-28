@@ -40,8 +40,18 @@ export function splitPinned(conversations: Conversation[]): {
   return { pinned, rest };
 }
 
-/** Pinned chats first, then the rest. Returns the same array when none is pinned. */
-export function orderPinnedFirst(conversations: Conversation[]): Conversation[] {
+/**
+ * Pinned chats first, then the rest in their order. `unpinnedId`, a chat just unpinned, goes right after the last of
+ * the rest that was active more recently, rather than staying on top; a chat moved up on use keeps its place above.
+ * Returns the same array when nothing moves.
+ */
+export function orderPinnedFirst(conversations: Conversation[], unpinnedId?: string): Conversation[] {
   const { pinned, rest } = splitPinned(conversations);
-  return pinned.length === 0 ? conversations : [...pinned, ...rest];
+  const index = unpinnedId === undefined ? -1 : rest.findIndex((conversation) => conversation.id === unpinnedId);
+  if (index < 0) return pinned.length === 0 ? conversations : [...pinned, ...rest];
+  const [row] = rest.splice(index, 1);
+  const activity = getConversationLastActivityMs(row);
+  const at = rest.reduce((last, conversation, i) => (getConversationLastActivityMs(conversation) >= activity ? i + 1 : last), 0);
+  rest.splice(at, 0, row);
+  return [...pinned, ...rest];
 }

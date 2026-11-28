@@ -1,6 +1,7 @@
 export { SidebarBase } from './sidebar-base';
 export { SidebarBackHeader } from './sidebar-back-header';
 export { SecondaryPanel } from './secondary-panel';
+export { KbdChip } from './kbd-chip';
 export type { SidebarBaseProps, SecondaryPanelProps } from './types';
 export {
   SIDEBAR_WIDTH,
@@ -9,8 +10,8 @@ export {
   CONTENT_PADDING,
   ELEMENT_HEIGHT,
   CHAT_ITEM_HEIGHT,
-  HEADER_ELEMENT_SIZE,
   MOBILE_HAMBURGER_GUTTER_PX,
+  HEADER_ELEMENT_SIZE,
   SECTION_HEADER_PADDING,
   SECTION_PADDING_TOP,
   SECTION_PADDING_BOTTOM,

@@ -17,11 +17,12 @@ import type { StreamChatRequest, ConversationMessage, MessagePart } from '../typ
 
 installMemoryStorage();
 
-vi.mock('@/config', async () => {
+vi.mock('@/config', async (importOriginal) => {
   const auth = await vi.importActual<typeof import('@/lib/store/auth-store')>('@/lib/store/auth-store');
   const rules = await vi.importActual<typeof import('@/app/(main)/chat/approval-ask-rules')>('@/app/(main)/chat/approval-ask-rules');
   const runErrors = await vi.importActual<typeof import('@/app/(main)/chat/run-error-extras')>('@/app/(main)/chat/run-error-extras');
-  return { useAuthStore: auth.useAuthStore, approvalAskRules: rules.approvalAskRules, runErrorExtras: runErrors.runErrorExtras, logoutAndRedirect: vi.fn() };
+  const { chatExtension, chatSlots } = await importOriginal<typeof import('@/config')>();
+  return { useAuthStore: auth.useAuthStore, approvalAskRules: rules.approvalAskRules, runErrorExtras: runErrors.runErrorExtras, logoutAndRedirect: vi.fn(), chatExtension, chatSlots };
 });
 
 const { useAuthStore } = await import('@/config');
@@ -31,8 +32,10 @@ const { fakeApi } = await import('@/lib/api/__tests__/fake-api');
 const { CHAT_STREAM_ERROR_MESSAGES, busyStreamMessage } = await import('@/lib/api/stream-errors');
 const { getThreadMessagePlainText, loadHistoricalMessages } = await import('../runtime');
 const { apiClient } = await import('@/lib/api');
+const { ErrorType } = await import('@/lib/api/api-error');
 const { useToastStore } = await import('@/lib/store/toast-store');
 const { clearSessionCache } = await import('@/lib/api/session-cache');
+const { chatExtension } = await import('@/config');
 
 const fetchMock = vi.fn<typeof fetch>();
 const initialState = useChatStore.getState();
@@ -374,7 +377,7 @@ describe('a new conversation, start to finish', () => {
     await streamMessageForSlot(slotId, Q, request({ filters: { apps: ['', 'app-1'], kb: [] } }));
 
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe('/api/v1/conversations/stream');
+    expect(url).toBe('/api/v1/conversations/stream?frame=turn');
     const body = JSON.parse(String(init?.body));
     expect(body).toMatchObject({ query: 'What was Q3 revenue?', protocol: 'agui', filters: { apps: ['app-1'], kb: [] } });
     expect(body.runId).toMatch(/^[0-9a-f-]{36}$/);
@@ -407,6 +410,54 @@ describe('a new conversation, start to finish', () => {
     slot(slotId).abortController?.abort();
     await run;
   });
+
+  it('keeps thinking when connected, rather than showing the server\'s technical message or a second wording', async () => {
+    const slotId = newSlot();
+    respondWith({
+      chunks: [frame('CUSTOM', { name: 'conversation_created', value: { conversationId: 'conv-real', message: 'SSE connection established' } })],
+      hang: true,
+    });
+    const run = streamMessageForSlot(slotId, Q, request());
+
+    await vi.waitFor(() => expect(slot(slotId).currentStatusMessage?.message).toBe('Thinking…'));
+
+    slot(slotId).abortController?.abort();
+    await run;
+  });
+});
+
+describe('text that turns out to be narration', () => {
+  it('leaves the answer and enters the trail in one update, never missing from both or shown in both', async () => {
+    // Every flush is due at once: the callbacks of one event must still reach the store together.
+    let clock = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => (clock += 50));
+    const slotId = newSlot();
+    const seen: { text: string; settled: boolean }[] = [];
+    const stop = useChatStore.subscribe((state) => {
+      const s = state.slots[slotId];
+      if (!s?.isStreaming) return;
+      const settled = (s.streamingParts ?? []).some((p) => p.type === 'text' && p.settled && p.content?.includes('handbook'));
+      seen.push({ text: s.streamingContent, settled });
+    });
+    respondWith({
+      chunks: [
+        frame('TEXT_MESSAGE_START', { messageId: 'm1' }) + frame('TEXT_MESSAGE_CONTENT', { delta: "I'll search the handbook." }),
+        frame('TOOL_CALL_START', { toolCallId: 't1', toolCallName: 'search' }),
+      ],
+      hang: true,
+    });
+    const run = streamMessageForSlot(slotId, Q, request());
+    await vi.waitFor(() => expect(seen.some((s) => s.settled)).toBe(true));
+    stop();
+
+    const from = seen.findIndex((s) => s.text.includes('handbook'));
+    expect(from).toBeGreaterThanOrEqual(0);
+    for (const s of seen.slice(from)) {
+      expect(s.text.includes('handbook') !== s.settled).toBe(true);
+    }
+    slot(slotId).abortController?.abort();
+    await run;
+  });
 });
 
 describe('an existing conversation', () => {
@@ -422,7 +473,7 @@ describe('an existing conversation', () => {
 
     await streamMessageForSlot(slotId, Q, request({ conversationId: 'conv-old' }));
 
-    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/conversations/conv-old/messages/stream');
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/conversations/conv-old/messages/stream?frame=turn');
     expect(useChatStore.getState().conversations.map((c) => c.id)).toEqual(['conv-old', 'conv-other']);
     expect(slot(slotId).isStreaming).toBe(false);
   });
@@ -1120,7 +1171,7 @@ describe('asking the user a question mid-run', () => {
     ]);
   });
 
-  it('reopens the card when the resume ends on another question', async () => {
+  it('opens the question the resume ends on as a card of its own', async () => {
     const first = {
       name: 'ask_user_question',
       questions: [{
@@ -1210,10 +1261,8 @@ describe('asking the user a question mid-run', () => {
 
     const pending = slot(slotId).pendingAskUserQuestion;
     expect(pending?.status).toBe('pending');
-    expect(pending?.payload.questions.map((q) => q.uuid)).toEqual(['q-proceed', 'q-topic']);
-    expect(pending?.answers).toEqual({
-      'q-proceed': { questionUuid: 'q-proceed', selectedOptionIds: ['kb'], userInputs: {} },
-    });
+    expect(pending?.payload.questions.map((q) => q.uuid)).toEqual(['q-topic']);
+    expect(pending?.answers).toEqual({});
 
     // Answer the question that resume asked, and have that second resume come
     // back with nothing. The text the first resume left on the card must not
@@ -1476,6 +1525,48 @@ describe('answering an approval card', () => {
     expect(JSON.parse(String(fetchMock.mock.calls.at(-1)?.[1]?.body)).toolApproval).toEqual({ approvalId: 'ap-1', decision: 'allow' });
   });
 
+  it("never writes over another turn's reply when this tab no longer has the card's row", async () => {
+    const slotId = await stoppedOnTheCard();
+    const other = [
+      { id: 'q2', role: 'user' as const, content: [{ type: 'text' as const, text: 'Something else' }] },
+      { id: 'a9', role: 'assistant' as const, content: [{ type: 'text' as const, text: 'Another answer.' }] },
+    ];
+    useChatStore.getState().updateSlot(slotId, { messages: [slot(slotId).messages[0], ...other] });
+    respondWith([frame('TEXT_MESSAGE_START'), frame('TEXT_MESSAGE_CONTENT', { delta: 'Filed JIRA-7.' }), frame('RUN_FINISHED', { result: { conversation: finishedConversation('Filed JIRA-7.') } })]);
+    const streaming = streamMessageForSlot(slotId, 'Tool approval: allow', answer('allow'), { reuseRowId: 'gone' });
+    // A row of its own, under no bubble: the answer to a card is none.
+    expect(texts(slotId).slice(0, 3)).toEqual([['user', Q], ['user', 'Something else'], ['assistant', 'Another answer.']]);
+    expect(slot(slotId).messages).toHaveLength(4);
+    expect(slot(slotId).messages[3].role).toBe('assistant');
+    await streaming;
+  });
+
+  it("carries on its own reply when someone else's turn came after it", async () => {
+    const slotId = await stoppedOnTheCard();
+    const other = [
+      { id: 'q2', role: 'user' as const, content: [{ type: 'text' as const, text: 'Something else' }] },
+      { id: 'a9', role: 'assistant' as const, content: [{ type: 'text' as const, text: 'Another answer.' }] },
+    ];
+    useChatStore.getState().updateSlot(slotId, { messages: [...slot(slotId).messages, ...other] });
+    respondWith([
+      frame('TEXT_MESSAGE_START'),
+      frame('TEXT_MESSAGE_CONTENT', { delta: 'Filed JIRA-7.' }),
+      frame('RUN_FINISHED', {
+        result: {
+          conversation: {
+            ...finishedConversation('Filed JIRA-7.'),
+            messages: [...parked(), storedMessage({ _id: 'ans', messageType: 'user_query', content: 'Tool approval: allow' }), storedMessage({ _id: 'a2', messageType: 'bot_response', content: 'Filed JIRA-7.' })],
+          },
+        },
+      }),
+    ]);
+    const streaming = streamMessageForSlot(slotId, 'Tool approval: allow', answer('allow'), { reuseRowId: 'a1' });
+    expect(texts(slotId)).toEqual([['user', Q], ['assistant', WAITING], ['user', 'Something else'], ['assistant', 'Another answer.']]);
+    expect(slot(slotId).streamingQuestion).toBe(Q);
+    await streaming;
+    expect(texts(slotId)[1]).toEqual(['assistant', 'Filed JIRA-7.']);
+  });
+
   it('leaves the card as it was and says so when the answer fails to send', async () => {
     const slotId = await stoppedOnTheCard();
     const before = slot(slotId).messages;
@@ -1492,6 +1583,48 @@ describe('answering an approval card', () => {
 });
 
 describe('regenerating an answer', () => {
+  it('keeps the trail drawn while the saved answer loads, so it folds in place instead of being drawn again', async () => {
+    // Every flush is due at once, as when the last read comes a moment after the one before it.
+    let clock = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => (clock += 50));
+    const slotId = newSlot('conv-1');
+    useChatStore.getState().updateSlot(slotId, {
+      messages: [
+        { id: 'q1', role: 'user', content: [{ type: 'text', text: 'Q' }] },
+        { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'old answer' }] },
+      ],
+    });
+    // The last text and the run's end arrive in one read, as they often do over the network.
+    respondWith([
+      frame('TEXT_MESSAGE_START', { messageId: 'm1' }) + frame('TEXT_MESSAGE_CONTENT', { delta: 'I will search.' }),
+      frame('TEXT_MESSAGE_CONTENT', { delta: ' New answer.' }) + frame('RUN_FINISHED', { result: {} }),
+    ]);
+    let loaded!: (value: unknown) => void;
+    vi.spyOn(apiClient, 'get').mockReturnValueOnce(new Promise((resolve) => { loaded = resolve; }) as never);
+    const emptiedWhileLive: number[] = [];
+    let hadParts = false;
+    const stop = useChatStore.subscribe((state) => {
+      const s = state.slots[slotId];
+      if (!s?.isStreaming) return;
+      if ((s.streamingParts ?? []).length > 0) hadParts = true;
+      else if (hadParts) emptiedWhileLive.push(s.streamingContent.length);
+    });
+
+    const run = streamRegenerateForSlot(slotId, 'a1', { modelKey: 'm1', modelName: 'gpt-5', modelFriendlyName: 'GPT-5' });
+    await vi.waitFor(() => expect(loaded).toBeTypeOf('function'));
+    // The reload is still on its way: the run is on screen with its trail.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(slot(slotId).isStreaming).toBe(true);
+    expect(hadParts).toBe(true);
+    expect(emptiedWhileLive).toEqual([]);
+
+    loaded({ data: { conversation: { ...finishedConversation('New answer.'), id: 'conv-1' } } });
+    await run;
+    await vi.waitFor(() => expect(slot(slotId).isStreaming).toBe(false));
+    stop();
+    expect(emptiedWhileLive).toEqual([]);
+  });
+
   it('reloads the conversation when the new answer is saved', async () => {
     const slotId = newSlot('conv-1');
     useChatStore.getState().updateSlot(slotId, {
@@ -1507,7 +1640,7 @@ describe('regenerating an answer', () => {
 
     await streamRegenerateForSlot(slotId, 'a1', { modelKey: 'm1', modelName: 'gpt-5', modelFriendlyName: 'GPT-5' });
 
-    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/conversations/conv-1/message/a1/regenerate');
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/conversations/conv-1/message/a1/regenerate?frame=turn');
     expect(get.mock.calls[0][0]).toBe('/api/v1/conversations/conv-1/');
     const s = slot(slotId);
     expect(s.isStreaming).toBe(false);
@@ -1642,22 +1775,32 @@ describe('regenerating an answer', () => {
       expect(degradedRows(slotId)).toEqual(['a1']);
     });
 
-    it('an edited question whose stream drops mid-way (the server may still finish it) keeps the old answer\'s note', async () => {
+    it('an edited question whose stream drops mid-way keeps the old answer\'s note while the server runs it, and after it has nothing of it', async () => {
+      vi.useFakeTimers();
       const slotId = degradedSlot();
       failingBody();
-      await streamRegenerateForSlot(slotId, 'a1', regenOptions, undefined, { query: 'Q2' });
+      const get = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: { conversation: { ...finishedConversation('old answer'), id: 'conv-1', status: 'Inprogress' } } });
+      const run = streamRegenerateForSlot(slotId, 'a1', regenOptions, undefined, { query: 'Q2' });
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(slot(slotId)).toMatchObject({ isStreaming: true, regenerateMessageId: 'a1' });
+      expect(degradedRows(slotId)).toEqual(['a1']);
+      get.mockRejectedValue({ type: ErrorType.NOT_FOUND, message: 'Not found', statusCode: 404 });
+      await vi.advanceTimersByTimeAsync(3_000);
+      await run;
+      vi.useRealTimers();
       expect(texts(slotId)[1]).toEqual(['assistant', 'old answer']);
       expect(degradedRows(slotId)).toEqual(['a1']);
-      expect(slot(slotId).remoteRunInProgress).toBe(true);
+      expect(slot(slotId).isStreaming).toBe(false);
     });
 
-    it('an edited question whose request fails outright (the server may still run it) keeps the old answer\'s note', async () => {
+    it('an edited question whose request fails outright, and of which the server has nothing, keeps the old answer\'s note', async () => {
       const slotId = degradedSlot();
       fetchMock.mockRejectedValueOnce(new Error('network down'));
+      vi.spyOn(apiClient, 'get').mockRejectedValue({ type: ErrorType.NOT_FOUND, message: 'Not found', statusCode: 404 });
       await streamRegenerateForSlot(slotId, 'a1', regenOptions, undefined, { query: 'Q2' });
       expect(texts(slotId)[1]).toEqual(['assistant', 'old answer']);
       expect(degradedRows(slotId)).toEqual(['a1']);
-      expect(slot(slotId).remoteRunInProgress).toBe(true);
+      expect(slot(slotId).isStreaming).toBe(false);
     });
 
     it('an answered question card regenerated and refused keeps the answer\'s note', async () => {
@@ -1670,6 +1813,7 @@ describe('regenerating an answer', () => {
     it('an answered question card whose regenerate stream drops keeps the answer\'s note (the card goes, the note stays)', async () => {
       const slotId = answeredCardSlot();
       failingBody();
+      vi.spyOn(apiClient, 'get').mockRejectedValue({ type: ErrorType.NOT_FOUND, message: 'Not found', statusCode: 404 });
       await streamRegenerateForSlot(slotId, 'a1', regenOptions);
       expect(degradedRows(slotId)).toEqual(['a1']);
     });
@@ -2008,7 +2152,7 @@ describe('answering, skipping and ignoring a card in a live chat', () => {
     await run;
   });
 
-  it('marks the answers that went with a submit as sent when the agent asks more', async () => {
+  it('asks only the new question when the agent asks more, none of it sent yet', async () => {
     const slotId = await ask(card(region));
     const sent = pick('q-region', ['q-region-o0']);
     submit(slotId, sent);
@@ -2020,8 +2164,9 @@ describe('answering, skipping and ignoring a card in a live chat', () => {
     const run = streamMessageForSlot(slotId, query, request({ query }), { resumeAskUserQuestion: true });
     await vi.waitFor(() => expect(slot(slotId).pendingAskUserQuestion?.status).toBe('pending'));
 
-    expect(slot(slotId).pendingAskUserQuestion?.payload.questions).toHaveLength(2);
-    expect(slot(slotId).pendingAskUserQuestion?.sentAnswers).toEqual(sent);
+    expect(slot(slotId).pendingAskUserQuestion?.payload.questions.map((q) => q.uuid)).toEqual(['q-format']);
+    expect(slot(slotId).pendingAskUserQuestion?.answers).toEqual({});
+    expect(slot(slotId).pendingAskUserQuestion?.sentAnswers).toBeUndefined();
 
     slot(slotId).abortController?.abort();
     await run;
@@ -2338,15 +2483,19 @@ describe('a long run of questions, loaded one page at a time', () => {
     expect(slot(slotId).pendingAskUserQuestion).toEqual(loadHistoricalMessages(rows).unansweredAskUserQuestion);
   });
 
+  const rowAnswers = (id: string) =>
+    ((cardRows(id)[0]?.metadata?.custom as { persistedAskUserQuestionAnswers?: Record<string, { selectedOptionIds: string[] }> })
+      ?.persistedAskUserQuestionAnswers ?? {});
+
   it('keeps the answers of the older questions after each page', async () => {
     const rows = history(COUNT - 1);
     const slotId = openAtFirstPage(rows);
     serve(rows, 2, 3);
 
     await loadOlderMessagesForSlot(slotId);
-    const afterSecond = Object.keys(slot(slotId).pendingAskUserQuestion?.answers ?? {});
+    const afterSecond = Object.keys(rowAnswers(slotId));
     await loadOlderMessagesForSlot(slotId);
-    const afterThird = Object.keys(slot(slotId).pendingAskUserQuestion?.answers ?? {});
+    const afterThird = Object.keys(rowAnswers(slotId));
 
     expect(afterSecond.length).toBeGreaterThan(6);
     expect(afterThird).toEqual(all.slice(0, -1).map((i) => `q${i}`));
@@ -2374,7 +2523,7 @@ describe('a long run of questions, loaded one page at a time', () => {
     await loadOlderMessagesForSlot(slotId);
     await loadOlderMessagesForSlot(slotId);
 
-    const answers = slot(slotId).pendingAskUserQuestion?.answers ?? {};
+    const answers = rowAnswers(slotId);
     expect(answers.q4.selectedOptionIds).toEqual(['q4-a']);
     expect(answers.q8.selectedOptionIds).toEqual(['q8-a']);
     expect(Object.values(answers).every((a) => a.selectedOptionIds.length === 1)).toBe(true);
@@ -2491,7 +2640,8 @@ describe('an answer that finishes while another chat is open', () => {
     await streamMessageForSlot(slotId, Q, request());
 
     expect(toasts().map((t) => ({ variant: t.variant, title: t.title, description: t.description, href: t.action?.href }))).toEqual([
-      { variant: 'info', title: 'Answer ready', description: 'Quarterly revenue', href: '/chat/?conversationId=conv-real' },
+      // It opens the chat at the answer that finished.
+      { variant: 'info', title: 'Answer ready', description: 'Quarterly revenue', href: '/chat/?conversationId=conv-real&messageId=a1' },
     ]);
     expect(unread()).toEqual(['conv-real']);
   });
@@ -2631,5 +2781,131 @@ describe('an answer that finishes while another chat is open', () => {
     expect(slot(slotId).isStreaming).toBe(false);
     expect(toasts()).toEqual([]);
     expect(unread()).toEqual([]);
+  });
+});
+describe('a slot shown beside the active one', () => {
+  /** A body the test feeds frame by frame, then closes. */
+  function openBody() {
+    const encoder = new TextEncoder();
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    fetchMock.mockResolvedValueOnce(new Response(new ReadableStream<Uint8Array>({ start: (c) => { controller = c; } })));
+    return {
+      push: (...frames: string[]) => frames.forEach((f) => controller.enqueue(encoder.encode(f))),
+      close: () => controller.close(),
+    };
+  }
+
+  /** Streams into a slot that is not the active one; its second chunk comes 20 ms after the first. */
+  async function streamBesideActive(onScreen: boolean) {
+    let now = 1_000_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    vi.spyOn(chatExtension.slot, 'isOnScreen').mockImplementation((s) => onScreen && s.convId === 'conv-side');
+    newSlot('conv-active');
+    const side = useChatStore.getState().createSlot('conv-side');
+    const body = openBody();
+    const run = streamMessageForSlot(side, Q, request({ conversationId: 'conv-side' }));
+    body.push(frame('TEXT_MESSAGE_START'), frame('TEXT_MESSAGE_CONTENT', { delta: 'Revenue ' }));
+    await vi.waitFor(() => expect(slot(side).streamingContent).toBe('Revenue '));
+    now += 20;
+    body.push(frame('TEXT_MESSAGE_CONTENT', { delta: 'was $4.2M.' }));
+    return { side, finish: () => (body.close(), run) };
+  }
+
+  it('streams at the active slot\'s rate', async () => {
+    const { side, finish } = await streamBesideActive(true);
+
+    await vi.waitFor(() => expect(slot(side).streamingContent).toBe('Revenue was $4.2M.'), { timeout: 150 });
+    await finish();
+  });
+
+  it('a background slot keeps its slower rate', async () => {
+    const { side, finish } = await streamBesideActive(false);
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(slot(side).streamingContent).toBe('Revenue ');
+    await finish();
+  });
+});
+
+describe('a turn that asks twice, live, as one box', () => {
+  const card = (uuid: string, question: string, userIntent: string) => ({
+    name: 'ask_user_question',
+    userIntent,
+    questions: [{ uuid, question, multiSelect: false, options: [{ id: `${uuid}-a`, label: 'Platform', isUserInput: false }, { id: `${uuid}-b`, label: 'Mobile', isUserInput: false }] }],
+  });
+  const team = card('q-team', 'Which team are you on?', 'Release steps differ by team.');
+  const release = card('q-release', 'Which release do you mean?', 'Platform ships two releases.');
+  const askPart = (id: string) => ({ type: 'tool_call', toolCallId: id, toolName: 'internaltools__ask_user_question', status: 'completed' });
+  const searchPart = (id: string) => ({ type: 'tool_call', toolCallId: id, toolName: 'knowledgegraph__search', status: 'completed' });
+  const said = (id: string, content: string) => storedMessage({ _id: id, messageType: 'user_query', content });
+  const saved = (id: string, payload: object) =>
+    storedMessage({ _id: id, messageType: 'tool_call', tools: [{ toolName: 'ask_user_question', toolResult: payload }] } as Partial<ConversationMessage>);
+  const replied = (id: string, parts: object[], content = '') =>
+    storedMessage({ _id: id, messageType: 'bot_response', content, parts } as Partial<ConversationMessage>);
+  const picked = 'User selections:\n1. "Which team are you on?" → Platform';
+  const run1 = [said('u1', Q), saved('t1', team), replied('b1', [{ type: 'text', content: 'Checking your team first.' }, searchPart('s1'), askPart('ask-1')])];
+  const run2 = [said('sel', picked), saved('t2', release), replied('b2', [searchPart('s2'), askPart('ask-2')])];
+  const asksOn = (parts: MessagePart[] | undefined) =>
+    (parts ?? []).filter((p) => p.toolName?.includes('ask_user_question'));
+
+  async function askFirst(): Promise<string> {
+    const slotId = newSlot();
+    respondWith([
+      frame('TOOL_CALL_START', { toolCallId: 's1', toolCallName: 'knowledgegraph__search' }),
+      frame('TOOL_CALL_RESULT', { toolCallId: 's1', content: 'found', status: 'completed' }),
+      frame('TOOL_CALL_START', { toolCallId: 'ask-1', toolCallName: 'internaltools__ask_user_question' }),
+      frame('TOOL_CALL_RESULT', { toolCallId: 'ask-1', content: JSON.stringify(team), status: 'completed' }),
+      frame('CUSTOM', { name: 'ask_user_question', value: { toolData: team } }),
+      frame('RUN_FINISHED', { result: { conversation: { ...finishedConversation(''), messages: run1 } } }),
+    ]);
+    await streamMessageForSlot(slotId, Q, request());
+    useChatStore.getState().updateSlot(slotId, {
+      pendingAskUserQuestion: {
+        ...slot(slotId).pendingAskUserQuestion!,
+        answers: { 'q-team': { questionUuid: 'q-team', selectedOptionIds: ['q-team-a'], userInputs: {} } },
+        status: 'submitted',
+      },
+    });
+    return slotId;
+  }
+
+  it('draws the answered card in the box as soon as the run carries on', async () => {
+    const slotId = await askFirst();
+    respondWith({ chunks: [frame('TOOL_CALL_START', { toolCallId: 's2', toolCallName: 'knowledgegraph__search' })], hang: true });
+    const run = streamMessageForSlot(slotId, picked, request({ query: picked }), { resumeAskUserQuestion: true });
+    await vi.waitFor(() => expect(slot(slotId).streamingParts.map((p) => p.toolCallId)).toEqual([undefined, 's1', 'ask-1', 's2']));
+
+    // The first run's narration stays in the box while the next run streams.
+    expect(slot(slotId).streamingParts[0]).toMatchObject({ content: 'Checking your team first.', settled: true });
+    const [answered] = asksOn(slot(slotId).streamingParts);
+    expect(answered.question?.payload.userIntent).toBe('Release steps differ by team.');
+    expect(answered.question?.answers?.['q-team'].selectedOptionIds).toEqual(['q-team-a']);
+
+    slot(slotId).abortController?.abort();
+    await run;
+  });
+
+  it('opens the next card on its own question, and the saved turn reads as a reload does', async () => {
+    const slotId = await askFirst();
+    respondWith([
+      frame('TOOL_CALL_START', { toolCallId: 's2', toolCallName: 'knowledgegraph__search' }),
+      frame('TOOL_CALL_RESULT', { toolCallId: 's2', content: 'found', status: 'completed' }),
+      frame('TOOL_CALL_START', { toolCallId: 'ask-2', toolCallName: 'internaltools__ask_user_question' }),
+      frame('TOOL_CALL_RESULT', { toolCallId: 'ask-2', content: JSON.stringify(release), status: 'completed' }),
+      frame('CUSTOM', { name: 'ask_user_question', value: { toolData: release } }),
+      frame('RUN_FINISHED', { result: { conversation: { ...finishedConversation(''), messages: [...run1, ...run2] } } }),
+    ]);
+    await streamMessageForSlot(slotId, picked, request({ query: picked }), { resumeAskUserQuestion: true });
+
+    const pending = slot(slotId).pendingAskUserQuestion;
+    expect(pending?.status).toBe('pending');
+    expect(pending?.payload.questions.map((q) => q.uuid)).toEqual(['q-release']);
+    expect(pending?.answers).toEqual({});
+
+    const live = slot(slotId).messages[1].metadata?.custom?.persistedParts as MessagePart[];
+    const reloaded = loadHistoricalMessages([...run1, ...run2]).messages[1].metadata?.custom?.persistedParts as MessagePart[];
+    expect(live.map((p) => p.toolCallId)).toEqual([undefined, 's1', 'ask-1', 's2', 'ask-2']);
+    expect(asksOn(live).map((p) => p.question?.answers)).toEqual(asksOn(reloaded).map((p) => p.question?.answers));
+    expect(asksOn(live).map((p) => p.question?.payload.userIntent)).toEqual(['Release steps differ by team.', undefined]);
   });
 });

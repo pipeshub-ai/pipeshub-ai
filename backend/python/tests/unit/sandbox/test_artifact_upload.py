@@ -868,3 +868,31 @@ class TestSaveQueryResultCsv:
 
         assert "/api/v1/document/" not in repr(result)
         assert "downloadUrl" not in result["artifacts"][0]
+
+
+class TestRunIdStamping:
+    @pytest.mark.asyncio
+    async def test_upload_artifacts_to_blob_passes_run_id_to_the_record(self) -> None:
+        # The local executor's own folder, as run_code writes its files there.
+        sandbox_root = ensure_private_dir(root_of(LOCAL))
+        os.makedirs(sandbox_root, exist_ok=True)
+        path = os.path.join(sandbox_root, "t_runid.png")
+        try:
+            with open(path, "wb") as f:
+                f.write(b"x")
+            art = ArtifactOutput(file_name="r.png", file_path=path, mime_type="image/png", size_bytes=1)
+            blob_store = AsyncMock()
+            blob_store.save_conversation_file_to_storage = AsyncMock(return_value={"documentId": "doc-1"})
+
+            with patch(
+                "app.sandbox.artifact_upload.create_artifact_record", AsyncMock(return_value="rec-1"),
+            ) as create:
+                await upload_artifacts_to_blob(
+                    [art], blob_store=blob_store, org_id="o", conversation_id="c",
+                    user_id="u", graph_provider=AsyncMock(), run_id="run-9",
+                )
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
+
+        assert create.await_args.kwargs["run_id"] == "run-9"

@@ -36,6 +36,13 @@ const HUE_LOW_STEP = new RegExp(`var\\(--(${HUES})-a?(9|10)\\)`, 'g');
 /** A neutral scale's step 1 to 8, solid or alpha. */
 const FAINT_STEP = /var\(--(gray|slate|olive|neutral|sage|mauve|sand)-a?[1-8]\)/g;
 
+/**
+ * A neutral step declared as another neutral scale's same step (`--gray-9: var(--olive-9)`, `--neutral-9:
+ * var(--gray-9)`): the theme gray's aliases, not a use. The check reads both names, so a use of the alias is found
+ * where it is named.
+ */
+const ALIAS = /^\s*--(?:gray|slate|olive|neutral|sage|mauve|sand)-(a?\d+):\s*var\(--(?:gray|slate|olive|neutral|sage|mauve|sand)-\1\);\s*$/;
+
 /** The property or name a value is assigned to: `color:`, `iconColor=`, `'--x':`, `QUEUED:`, `const X =`. */
 const ASSIGNED = /(--[\w-]+|[A-Za-z_$][\w$-]*)['"]?\s*(?::(?!:)|=(?![=>]))/g;
 
@@ -63,7 +70,7 @@ const EXEMPT: readonly Exempt[] = [
   { file: 'app/globals.css', line: '--agent-flow-edge: var(--gray-9)', why: 'line, fill or focus ring: no text' },
   {
     file: 'app/globals.css',
-    line: 'background-color: var(--slate-10);',
+    line: 'background-color: var(--gray-10);',
     near: '::-webkit-scrollbar-thumb:hover',
     why: 'line, fill or focus ring: no text',
   },
@@ -74,8 +81,8 @@ const EXEMPT: readonly Exempt[] = [
     near: ".rt-SwitchRoot.rt-variant-surface[data-state='unchecked']",
     why: 'line, fill or focus ring: no text',
   },
-  { file: 'app/globals.css', line: '--text-field-focus-color: var(--olive-9)', why: 'line, fill or focus ring: no text' },
-  { file: 'app/globals.css', line: 'color-mix(in srgb, var(--olive-9) 18%, transparent)', why: 'line, fill or focus ring: no text' },
+  { file: 'app/globals.css', line: '--text-field-focus-color: var(--gray-9)', why: 'line, fill or focus ring: no text' },
+  { file: 'app/globals.css', line: 'color-mix(in srgb, var(--gray-9) 18%, transparent)', why: 'line, fill or focus ring: no text' },
   { file: 'app/components/upload-progress-tracker.tsx', line: "borderTopColor: 'var(--slate-10)'", why: 'line, fill or focus ring: no text' },
   { file: 'app/(main)/workspace/general/data-collection.tsx', line: "backgroundColor: 'var(--slate-9)'", why: 'line, fill or focus ring: no text' },
   {
@@ -94,7 +101,6 @@ const EXEMPT: readonly Exempt[] = [
     line: "style={blocked === null ? undefined : { color: 'var(--slate-10)' }}",
     why: 'disabled control',
   },
-  { file: 'app/(main)/chat/components/chat-input.tsx', line: "isDisabled ? 'var(--slate-9)'", why: 'disabled control' },
   {
     file: 'app/(main)/chat/components/message-area/sandbox-result-rows.tsx',
     line: "color: choice.available ? undefined : 'var(--gray-10)'",
@@ -145,24 +151,12 @@ const EXEMPT: readonly Exempt[] = [
   },
   { file: 'app/(main)/knowledge-base/components/dialogs/move-folder-sidebar.tsx', line: "if (isDisabled) return 'var(--slate-8)'", why: 'disabled control' },
   { file: 'app/(main)/knowledge-base/components/dialogs/move-folder-sidebar.tsx', line: "color={isDisabled ? 'var(--slate-8)'", why: 'disabled control' },
-  {
-    file: 'app/(main)/chat/components/message-area/response-tabs/response-tabs.tsx',
-    line: "? 'var(--slate-8)'",
-    near: ': isDisabled',
-    why: 'disabled control',
-  },
   { file: 'app/(main)/chat/components/chat-panel/plus-menu-button.tsx', line: "color={disabled ? 'var(--slate-5)'", why: 'disabled control' },
   {
     file: 'app/(main)/workspace/connectors/components/configure-tab/import-date-section.tsx',
     line: "color: importAllTime ? 'var(--gray-8)'",
     why: 'disabled control',
   },
-  {
-    file: 'app/(main)/chat/components/mention-composer-field.tsx',
-    line: "color: readOnly ? (typeof style?.color === 'string' ? style.color : 'var(--slate-a8)')",
-    why: 'disabled control',
-  },
-  { file: 'app/(main)/chat/components/chat-input.tsx', line: "isRegenerateMode ? 'var(--slate-a8)'", why: 'disabled control' },
   { file: 'app/(main)/chat/components/chat-input.tsx', line: "isRegenerateMode ? 'var(--slate-5)'", why: 'disabled control' },
   { file: 'app/(public)/forms/otp-sign-in-flow.tsx', line: "color: canSendOtp ? 'var(--accent-11)' : 'var(--gray-8)'", why: 'disabled control' },
 ];
@@ -220,6 +214,7 @@ function paintsFill(lines: readonly string[], index: number, at: number): boolea
 function lowStepUses(file: string, source: string, exempt: readonly Exempt[] = EXEMPT): Use[] {
   const lines = source.split('\n');
   return lines.flatMap((text, index) => {
+    if (ALIAS.test(text)) return [];
     const found: Rule[] = [
       ...[...text.matchAll(LOW_STEP)].map((): Rule => 'neutral-9-10'),
       ...[...text.matchAll(HUE_LOW_STEP)].filter((m) => !paintsFill(lines, index, m.index ?? 0)).map((): Rule => 'hue-9-10'),
@@ -290,6 +285,17 @@ describe('text colours across the classic UI', () => {
     ]);
   });
 
+  it('TEXTSTEP-2c: an alias of a neutral step is not a use; a step pointed lower, a role on a low step, and a use of the alias are', () => {
+    const probe = [
+      `  --gray-9: var(--olive-9);`,
+      `  --neutral-a10: var(--gray-a10);`,
+      `  --gray-11: var(--olive-9);`,
+      `  --text-quiet: var(--gray-a10);`,
+      `.x { color: var(--neutral-9); }`,
+    ].join('\n');
+    expect(lowStepUses('probe.css', probe).map((use) => use.line)).toEqual([3, 4, 5]);
+  });
+
   it('TEXTSTEP-3: every exemption still names a use, so none outlives the code it was written for', () => {
     const used = new Set(USES.map((use) => use.exempt).filter((at): at is number => at !== null));
     expect(EXEMPT.filter((_, at) => !used.has(at))).toEqual([]);
@@ -318,8 +324,11 @@ describe('text colours across the classic UI', () => {
         .map((name) => `${file}  ${name}`),
     );
     expect([...new Set(undefinedNames)]).toEqual([]);
+    // Each neutral step the UI names has a colour in both appearances: a value of its own in each, or, where --neutral-*
+    // is the theme gray's alias, the Radix step it follows (olive here), which Radix gives a light and a dark value.
     for (const step of ['1', '3', '9', '11', '12', 'a3', 'a5', 'a8', 'a10', 'a11', 'a12']) {
-      expect([...GLOBALS.matchAll(new RegExp(`--neutral-${step}: #[0-9a-f]{6,8};`, 'g'))].length, `--neutral-${step}`).toBe(2);
+      const own = [...GLOBALS.matchAll(new RegExp(`--neutral-${step}: #[0-9a-f]{6,8};`, 'g'))].length;
+      expect(own === 2 || (own === 0 && aliasOf(`neutral-${step}`) !== null), `--neutral-${step}`).toBe(true);
     }
   });
 
@@ -454,6 +463,21 @@ function oklch(v: Rgb): [number, number, number] {
 
 /** Radix's sRGB declarations of a token: light first, dark second. */
 const radix = (name: string) => [...RADIX.matchAll(new RegExp(`--${name}: (#[0-9a-f]{6,8});`, 'g'))].map((m) => m[1]);
+
+/**
+ * The Radix step a token follows through globals.css's aliases of the same step (`--neutral-3: var(--gray-3)`, then
+ * `--gray-3: var(--olive-3)`); null when it is no such alias, or ends on a step Radix gives no light and dark value.
+ */
+function aliasOf(name: string): string | null {
+  const step = name.slice(name.lastIndexOf('-') + 1);
+  let at = name;
+  for (let hops = 0; hops < 4; hops += 1) {
+    const next = GLOBALS.match(new RegExp(`--${at}:\\s*var\\(--([a-z]+-${step})\\);`))?.[1];
+    if (next === undefined) break;
+    at = next;
+  }
+  return at !== name && radix(at).length === 2 ? at : null;
+}
 
 /** The declarations of the block whose selector is `selector`. */
 function block(css: string, selector: string): string {

@@ -28,6 +28,15 @@ describe('filtersFromAppliedFilters', () => {
     });
   });
 
+  it('leaves out the sources the question named with @: they scoped that question only', () => {
+    const named = { ...node('eng', 'Engineering Handbook', 'app', 'KB'), mentioned: true };
+    const file = { ...node('file-2', 'runbook.md', 'record', 'KB'), mentioned: true };
+    const applied: AppliedFilters = { apps: [named, node('jira-1', 'Jira', 'app', 'Jira')], kb: [], records: [file] };
+    expect(filtersFromAppliedFilters(applied)).toEqual({ apps: ['jira-1'], kb: [], recordGroups: [], records: [] });
+    restoreAppliedFilters({ apps: [named], kb: [] }, false);
+    expect(useChatStore.getState().settings.filters.apps).toEqual([]);
+  });
+
   it('keeps a collection that was sent under apps', () => {
     expect(filtersFromAppliedFilters({ apps: [node('alpha', 'GS-Alpha', 'app', 'KB')], kb: [] }).apps).toEqual([
       'alpha',

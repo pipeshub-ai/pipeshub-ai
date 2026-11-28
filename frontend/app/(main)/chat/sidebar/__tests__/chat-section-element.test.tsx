@@ -1,20 +1,30 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, cleanup, fireEvent, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
+import { Theme } from '@radix-ui/themes';
 import '@/lib/__tests__/test-i18n';
 import { installMemoryStorage } from '@/lib/api/__tests__/sse-response';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
+import { CHAT_ITEM_HEIGHT } from '@/app/components/sidebar/constants';
 
 installMemoryStorage();
 
 const router = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn(), prefetch: vi.fn() }));
+const urlReads = vi.hoisted(() => ({ n: 0 }));
 vi.mock('next/navigation', () => ({
   useRouter: () => router,
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => {
+    urlReads.n += 1;
+    return new URLSearchParams();
+  },
   usePathname: () => '/chat/',
 }));
-vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
-vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
+// Only the pin draws, so its colour, fill and turn can be read.
+vi.mock('@/app/components/ui/MaterialIcon', () => ({
+  MaterialIcon: ({ name, color, variant }: { name: string; color?: string; variant?: string }) =>
+    name === 'keep' ? <i data-icon={name} data-color={color} data-variant={variant} /> : null,
+}));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false, useIsBelowDesktop: () => false }));
 
 const { useChatStore } = await import('@/chat/store');
 const { ChatSectionElement, GeneratingTitleItem } = await import('../chat-section-element');
@@ -28,7 +38,8 @@ function renderRow(isActive = false) {
   return renderInTheme(<ChatSectionElement conversation={conversation} isActive={isActive} onClick={vi.fn()} />);
 }
 
-const dot = () => screen.queryByText('New answer');
+// The row's dot for a new answer, named by its words.
+const dot = () => screen.queryByRole('img', { name: 'New answer' });
 
 beforeEach(() => {
   installBrowserShims();
@@ -38,6 +49,24 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('a chat row in the sidebar', () => {
+  it('does not follow the page URL, so a chat getting its id does not draw every row again', () => {
+    urlReads.n = 0;
+    renderRow();
+    expect(urlReads.n).toBe(0);
+  });
+
+  it('is not drawn again when another chat gets its title', () => {
+    let commits = 0;
+    renderInTheme(
+      <React.Profiler id="row" onRender={() => { commits += 1; }}>
+        <ChatSectionElement conversation={conversation} isActive={false} onClick={vi.fn()} />
+      </React.Profiler>,
+    );
+    const before = commits;
+    act(() => useChatStore.setState({ newlyResolvedIds: new Set(['conv-other']) }));
+    expect(commits).toBe(before);
+  });
+
   it('shows no dot for a chat with nothing new', () => {
     renderRow();
 
@@ -108,6 +137,77 @@ describe('a chat row in the sidebar', () => {
     renderRow();
 
     expect(dot()).toBeNull();
+    expect(screen.getByRole('img', { name: 'Working in the background' })).toBeTruthy();
+  });
+
+  it('marks a running chat with a pulsing dot, not a spinner: "Working" on the open chat, "Working in the background" elsewhere', () => {
+    const slotId = useChatStore.getState().createSlot('conv-1');
+    useChatStore.getState().updateSlot(slotId, { isStreaming: true });
+
+    const { rerender } = renderRow(false);
+    const running = screen.getByRole('img', { name: 'Working in the background' });
+    expect(running.className).toBe('sidebar-activity-dot');
+    expect(running.hasAttribute('data-live')).toBe(true);
+    expect(screen.queryByRole('status')).toBeNull();
+
+    rerender(<ChatSectionElement conversation={conversation} isActive onClick={vi.fn()} />);
+    expect(screen.getByRole('img', { name: 'Working' })).toBeTruthy();
+  });
+});
+
+describe('a pinned chat row', () => {
+  const pinned = { id: 'conv-3', title: 'Roadmap', isOwner: true, isPinned: true } as never;
+  const mark = () => document.querySelector('[data-pinned-mark]');
+  const row = (conv: unknown, agentId?: string) => (
+    <Theme>
+      <ChatSectionElement conversation={conv as never} isActive={false} onClick={vi.fn()} agentId={agentId} />
+    </Theme>
+  );
+
+  it('wears the pin right after its title, hidden from screen readers, and its name says pinned', () => {
+    render(row(pinned));
+
+    // Browsers, and this one, put a space before a visually hidden word: read aloud, it is "Roadmap, pinned".
+    expect(screen.getByRole('link', { name: /^Roadmap ?, pinned$/ })).toBeTruthy();
+    expect(mark()?.getAttribute('aria-hidden')).toBe('true');
+    expect(screen.getByText('Roadmap').nextElementSibling).toBe(mark());
+  });
+
+  it('the pin is the brand green, filled and tilted, not the grey of secondary text', () => {
+    render(row(pinned));
+
+    const icon = mark()!.querySelector('[data-icon="keep"]')!;
+    expect(icon.getAttribute('data-color')).toBe('var(--accent-a11)');
+    expect(icon.getAttribute('data-variant')).toBe('filled');
+    expect((mark() as HTMLElement).style.transform).toBe('rotate(45deg)');
+  });
+
+  it('an unpinned row has no pin, and Pin or Unpin shows or drops it at once', () => {
+    const { rerender } = render(row({ ...(pinned as object), isPinned: false }));
+    expect(mark()).toBeNull();
+    expect(screen.getByRole('link', { name: 'Roadmap' })).toBeTruthy();
+
+    rerender(row(pinned));
+    expect(mark()).not.toBeNull();
+
+    rerender(row({ ...(pinned as object), isPinned: undefined }));
+    expect(mark()).toBeNull();
+  });
+
+  it('an agent chat, which has no pin, never wears it', () => {
+    render(row(pinned, 'agent-7'));
+
+    expect(mark()).toBeNull();
+  });
+
+  it('keeps the pin right after the title while the chat answers, before the running dot', () => {
+    const slotId = useChatStore.getState().createSlot('conv-3');
+    useChatStore.getState().updateSlot(slotId, { isStreaming: true });
+    render(row(pinned));
+
+    const running = screen.getByRole('img', { name: 'Working in the background' });
+    expect(screen.getByText('Roadmap').nextElementSibling).toBe(mark());
+    expect(mark()!.compareDocumentPosition(running) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
 
@@ -120,7 +220,9 @@ describe('D10: the row this tab streams shows Needs you over its spinner (CJFIX-
     useChatStore.getState().updateSlot(slotId, { isStreaming: true });
     useChatStore.setState((s) => ({ pendingConversations: { ...s.pendingConversations, [slotId]: { slotId, title: 'File a ticket', isGenerating: true, createdAt: 1 } as never } }));
     renderInTheme(<GeneratingTitleItem slotId={slotId} />);
-    expect(mark()).toBe('working');
+    // Working is the row's pulsing dot, named by its words.
+    expect(screen.getByRole('img', { name: 'Working in the background' })).toBeTruthy();
+    expect(mark()).toBeNull();
 
     act(() => useChatStore.getState().updateSlot(slotId, { pendingApprovals: [ask] }));
 
@@ -159,49 +261,20 @@ describe('where a chat row opens', () => {
   });
 });
 
-describe('who shared a chat, and whether it is an agent chat', () => {
+describe('a chat someone shared', () => {
   const sharedBy = { userId: 'u-1', name: 'Pranjal' };
 
-  it('says "Shared by" for a plain chat someone shared', () => {
-    renderInTheme(
-      <ChatSectionElement conversation={{ id: 'c1', title: 'Plain', isOwner: false, sharedBy } as never} isActive={false} onClick={vi.fn()} />,
-    );
-    expect(screen.getByText('Shared by Pranjal')).toBeTruthy();
-  });
+  // As the design draws it: the title, and nothing under it.
+  it.each([
+    ['a plain chat', { id: 'c1', title: 'Roadmap', isOwner: false, sharedBy }, undefined],
+    ['an agent chat, in the global list', { id: 'c2', title: 'Roadmap', isOwner: false, sharedBy, agentKey: 'agent-7' }, undefined],
+    ['an agent chat, in that agent’s own sidebar', { id: 'c3', title: 'Roadmap', isOwner: false, sharedBy, agentKey: 'agent-7' }, 'agent-7'],
+  ])('%s is one line, its title, with no "Shared by" under it', (_, conv, agentId) => {
+    renderInTheme(<ChatSectionElement conversation={conv as never} isActive={false} onClick={vi.fn()} agentId={agentId} />);
 
-  it('marks an agent chat someone shared with the agent symbol, in the global list', () => {
-    renderInTheme(
-      <ChatSectionElement conversation={{ id: 'c2', title: 'Roadmap', isOwner: false, sharedBy, agentKey: 'agent-7' } as never} isActive={false} onClick={vi.fn()} />,
-    );
-    const symbol = screen.getByRole('img', { name: 'Agent chat' });
-    const name = screen.getByText('Shared by Pranjal');
-    // The sharer's name comes first and the symbol after it, not the other way round.
-    expect(name.contains(symbol)).toBe(true);
-    expect(name.firstChild?.textContent).toBe('Shared by Pranjal');
-    expect(name.lastElementChild).toBe(symbol);
-  });
-
-  it('names the symbol "Agent chat" in a tooltip on hover', async () => {
-    renderInTheme(
-      <ChatSectionElement conversation={{ id: 'c2', title: 'Roadmap', isOwner: false, sharedBy, agentKey: 'agent-7' } as never} isActive={false} onClick={vi.fn()} />,
-    );
-    fireEvent.pointerMove(screen.getByRole('img', { name: 'Agent chat' }));
-    expect((await screen.findAllByText('Agent chat')).length).toBeGreaterThan(0);
-  });
-
-  it('shows no agent symbol on a plain shared chat', () => {
-    renderInTheme(
-      <ChatSectionElement conversation={{ id: 'c1', title: 'Plain', isOwner: false, sharedBy } as never} isActive={false} onClick={vi.fn()} />,
-    );
-    expect(screen.queryByRole('img', { name: 'Agent chat' })).toBeNull();
-  });
-
-  it('shows no agent symbol inside that agent’s own sidebar, where every chat is an agent chat', () => {
-    renderInTheme(
-      <ChatSectionElement conversation={{ id: 'c3', title: 'Roadmap', isOwner: false, sharedBy, agentKey: 'agent-7' } as never} isActive={false} onClick={vi.fn()} agentId="agent-7" />,
-    );
-    expect(screen.getByText('Shared by Pranjal')).toBeTruthy();
-    expect(screen.queryByRole('img', { name: 'Agent chat' })).toBeNull();
+    const link = screen.getByRole('link', { name: 'Roadmap' });
+    expect(screen.queryByText(/Shared by/)).toBeNull();
+    expect(link.style.height).toBe(`${CHAT_ITEM_HEIGHT}px`);
   });
 });
 
@@ -219,19 +292,22 @@ describe('a chat row’s run mark from the server (classic jobs D10)', () => {
     expect(mark()?.textContent).toBe('Needs you');
   });
 
-  it('shows the working spinner for a run this tab never streamed', () => {
+  // Working and finished are the row's own dots (a pulsing one, and the new-answer one), named by their words.
+  const finished = () => screen.queryByRole('img', { name: 'Finished since you last looked' });
+
+  it('shows the working mark for a run this tab never streamed', () => {
     rowWith(state({ runState: 'working', activeRun: { runId: 'r1', status: 'running' } }));
-    expect(mark()?.getAttribute('data-dot')).toBe('working');
-    expect(mark()?.textContent).toBe('Working');
+    expect(screen.getByRole('img', { name: 'Working in the background' })).toBeTruthy();
+    expect(mark()).toBeNull();
   });
 
   it('shows the finished dot for a run that ended unseen, and none on the chat open now', () => {
     rowWith(state({ finishedUnseen: true }));
-    expect(mark()?.getAttribute('data-dot')).toBe('finished');
-    expect(mark()?.textContent).toBe('Finished since you last looked');
+    expect(finished()).not.toBeNull();
     cleanup();
     rowWith(state({ finishedUnseen: true }), true);
-    expect(mark()).toBeNull();
+    expect(finished()).toBeNull();
+    expect(screen.queryByTestId('unread-dot')).toBeNull();
   });
 
   it('keeps needs you on the open chat, since it still waits there', () => {
@@ -242,8 +318,8 @@ describe('a chat row’s run mark from the server (classic jobs D10)', () => {
   it('merges the server’s unseen with this tab’s new answer into one mark', () => {
     useChatStore.getState().markConversationUnread('conv-9');
     rowWith(state({ finishedUnseen: true }));
-    expect(screen.getAllByTestId('chat-dot')).toHaveLength(1);
-    expect(mark()?.textContent).toBe('Finished since you last looked');
+    expect(screen.getAllByTestId('unread-dot')).toHaveLength(1);
+    expect(finished()).not.toBeNull();
   });
 
   it('shows nothing for a quiet chat', () => {

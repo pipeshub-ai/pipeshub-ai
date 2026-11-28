@@ -21,6 +21,14 @@ if TYPE_CHECKING:
 # administrator may move it, and which pool of lanes an org belongs in. An
 # edition can replace any of them: pin a connector to a lane of its own, weight
 # lanes, allow admin moves, or keep a group of orgs on lanes of their own.
+# Who an agent run acts as (see app.modules.agents.caller_policy).
+from app.modules.agents.caller_policy import default_agent_caller_policy
+
+# Chat and agent-loop hooks (see app.modules.agents.chat_extension).
+from app.modules.agents.chat_extension import default_chat_extension
+
+# SQL table and query-result hooks (see app.modules.agents.sql_extension).
+from app.modules.agents.sql_extension import default_sql_extension
 from app.services.messaging.lanes.assignment_policy import (
     admin_lane_move_allowed as admin_lane_move_allowed,
 )
@@ -30,6 +38,15 @@ from app.services.messaging.lanes.assignment_policy import (
 from app.services.messaging.lanes.assignment_policy import (
     lane_pool_for_org as lane_pool_for_org,
 )
+
+chat_extension = default_chat_extension
+sql_extension = default_sql_extension
+agent_caller_policy = default_agent_caller_policy
+
+
+def sa_forces_org_sharing() -> bool:
+    """Service-account agents are always shared with the whole org."""
+    return True
 
 # The edition's services, each imported when first read: a process that asks this module only for its harness hooks
 # (the sandbox broker's image check) loaded the Neo4j driver, pandas and the connectors' token services with them,
@@ -129,6 +146,28 @@ async def pre_sync_hook(app_container, logger) -> None:
     pass
 
 
+def skill_store(graph_provider: "IGraphDBProvider", org_id: str, user_id: str, **options: object) -> "GraphSkillStore":
+    """The agent skill store a request or the builtin seeder opens. OSS: the graph store, whose builtins
+    are builtin-sourced skills and whose other skills are their creator's."""
+    from app.agents.agent_loop.skills.graph_store import GraphSkillStore
+
+    return GraphSkillStore(graph_provider, org_id, user_id, **options)
+
+
+def skill_visible_to(doc: "Mapping[str, Any]", viewer: str | None, account_id: str | None = None) -> bool:
+    """Who may see a skill, the rule of the store `skill_store` opens."""
+    from app.agents.agent_loop.skills.graph_store import skill_visible_to as rule
+
+    return rule(doc, viewer, account_id)
+
+
+async def skills_shown_with_an_agent(
+    skills: list[dict[str, Any]], org_id: str, user_key: str, graph_provider: "IGraphDBProvider",
+) -> list[dict[str, Any]]:
+    """The skill entries an agent shows the caller. OSS: every entry as stored."""
+    return skills
+
+
 def get_data_entities_processor_cls():
     """Return the DataSourceEntitiesProcessor class for this edition."""
     from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -146,8 +185,10 @@ if TYPE_CHECKING:
 
     from app.agent_loop_lib.hooks.registry import HookRegistry
     from app.agents.agent_loop.context import AgentContext
+    from app.agents.agent_loop.skills.graph_store import GraphSkillStore
     from app.agents.registry.toolset_registry import ToolsetRegistry
     from app.config.configuration_service import ConfigurationService
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
     from app.services.messaging.consumer_concurrency import AdmissionBacklog
     from app.services.messaging.scheduling.interface import IndexingFairness
     from app.services.model_identity.forwarders.registry import ForwarderRegistry

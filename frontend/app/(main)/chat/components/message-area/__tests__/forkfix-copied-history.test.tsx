@@ -27,7 +27,7 @@ vi.mock('@/chat/streaming', () => ({
   streamRegenerateForSlot: vi.fn(),
   loadOlderMessagesForSlot: vi.fn(async () => {}),
 }));
-vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false, useIsBelowDesktop: () => false }));
 vi.mock('@/app/components/ui/lottie-loader', () => ({ LottieLoader: () => <div role="status">Loading</div> }));
 vi.mock('@/chat/components/message-area/response-tabs/citations', async () => {
   const utils = await vi.importActual<typeof import('@/chat/components/message-area/response-tabs/citations/utils')>(

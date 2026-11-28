@@ -84,7 +84,7 @@ async function mockChat(page: Page) {
           })
         : route.fallback(),
   );
-  await page.route('**/api/v1/conversations/stream', (route) =>
+  await page.route('**/api/v1/conversations/stream**', (route) =>
     route.request().method() === 'POST'
       ? route.fulfill({
           status: 200,
@@ -113,7 +113,7 @@ test.describe('Chat — remote images in answers (P0.11)', () => {
     await mockChat(page);
 
     await page.goto('/chat/');
-    const textarea = page.locator('textarea').last();
+    const textarea = page.getByTestId('chat-composer').last();
     await textarea.waitFor({ timeout: 15_000 });
     await textarea.fill(QUESTION);
     await textarea.press('Enter');

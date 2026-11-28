@@ -7,6 +7,7 @@ import { Logger } from '../../../../src/libs/services/logger.service'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
 import { assertNoCanary, VECTOR_EXAMPLES, VECTOR_MASK } from '../../agent-harness/support/canary-scan'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
+import { behindGuard, guardedProject, realGuards } from '../helpers/guarded-chat'
 
 /**
  * SEC4-N3 on the conversation GET, the one shared view of a conversation's
@@ -55,6 +56,7 @@ function setup() {
   sinon.stub(Logger.getInstance(), 'warn')
   const projectId = oid()
   ;(ProjectService.getAccessibleProjectIds as sinon.SinonStub).resolves([projectId])
+  guardedProject({ _id: projectId, orgId: ORG, userId: OWNER }, [RECIPIENT])
   const shared = { isShared: true, sharedWith: [{ userId: RECIPIENT, accessLevel: 'read' }], harnessVersion: 'durable-v1' }
   const sessions = {
     chat: store.addSession({ orgId: ORG, userId: OWNER, initiator: OWNER, title: 'Chat', sessionType: 'chat', ...shared }),
@@ -93,12 +95,13 @@ async function read(handler: JsonHandler, req: never): Promise<{ body: string; m
 const cases = [
   {
     name: 'chat',
-    handler: () => controller.getConversationById(appConfig, {}) as JsonHandler,
+    // As the route serves it: the conversation guard first, then the handler (its users are the route's directory).
+    handler: () => behindGuard(realGuards(), 'read', controller.getConversationById(appConfig, undefined, {})) as JsonHandler,
     params: (s: ReturnType<typeof setup>) => ({ conversationId: String(s.sessions.chat._id) }),
   },
   {
     name: 'agent',
-    handler: () => controller.getAgentConversationById(appConfig, {}) as JsonHandler,
+    handler: () => behindGuard(realGuards(), 'read', controller.getAgentConversationById(appConfig, {}), 'agent') as JsonHandler,
     params: (s: ReturnType<typeof setup>) => ({ conversationId: String(s.sessions.agent._id), agentKey: AGENT_KEY }),
   },
 ]

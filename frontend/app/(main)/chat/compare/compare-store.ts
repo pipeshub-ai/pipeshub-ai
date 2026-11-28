@@ -1,8 +1,17 @@
 'use client';
 
 import { create } from 'zustand';
-import type { ModelOverride } from '../types';
+import type { ChatSlot, ModelOverride } from '../types';
 import { MAX_COMPARE_MODELS, type CompareTurn } from './types';
+
+/**
+ * Compare copies a chat into a branch of the asker's own and, when a branch is chosen, rewrites the chat from the
+ * compared question on: never for a chat others read, shared with anyone or open to its project. The server refuses
+ * it there too. Only an owner is told whom a chat is shared with; anyone else is reading a chat shared with them.
+ */
+export function chatOpenToOthers(slot: Pick<ChatSlot, 'isOwner' | 'sharedWith' | 'projectVisibility'> | undefined): boolean {
+  return slot?.isOwner === false || (slot?.sharedWith?.length ?? 0) > 0 || slot?.projectVisibility === 'project';
+}
 
 /**
  * Compare state lives beside the chat store, not in it: a chat that never

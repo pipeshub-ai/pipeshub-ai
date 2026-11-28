@@ -101,9 +101,8 @@ export function DestructiveTypedConfirmationDialog({
                 margin: 0,
               }
             : {}),
-          border: '1px solid var(--olive-a3)',
-          boxShadow:
-            '0 16px 36px -20px rgba(0, 6, 46, 0.2), 0 16px 64px rgba(0, 0, 85, 0.02), 0 12px 60px rgba(0, 0, 0, 0.15)',
+          border: '1px solid var(--border-subtle)',
+          boxShadow: 'var(--shadow-6)',
           ...(sheet ? {} : { overflow: 'hidden' }),
         }}
         onClick={(e) => e.stopPropagation()}
@@ -120,7 +119,7 @@ export function DestructiveTypedConfirmationDialog({
           >
             <Flex align="center" gap="2">
               {headingIcon && <MaterialIcon name={headingIcon} size={22} color="var(--red-11)" />}
-              <Text size="5" weight="bold" style={{ color: 'var(--slate-12)' }}>
+              <Text size="5" weight="bold" style={{ color: 'var(--text-primary)' }}>
                 {heading}
               </Text>
             </Flex>
@@ -134,7 +133,7 @@ export function DestructiveTypedConfirmationDialog({
             gap="2"
             style={{ padding: '0 var(--space-5)' }}
           >
-            <Text as="label" htmlFor={`${hintId}-input`} size="2" style={{ color: 'var(--slate-11)' }}>
+            <Text as="label" htmlFor={`${hintId}-input`} size="2" style={{ color: 'var(--text-secondary)' }}>
               {confirmInputLabel}
             </Text>
             <TextField.Root

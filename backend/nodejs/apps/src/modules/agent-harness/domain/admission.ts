@@ -16,6 +16,7 @@ import type { ExecutorKind, RunVia } from './run-spec';
 import { SESSION_ROLES_FEATURE, type RunAudience } from './session-audience';
 import {
   admissionRequirements,
+  ANSWERS_ONLY_HISTORY_FEATURE,
   MODEL_FALLBACK_FEATURE,
   pinsSystemAssistant,
 } from './worker-compat';
@@ -484,4 +485,20 @@ export function rootRunRequirements(
         features: [...requires.features, MODEL_FALLBACK_FEATURE].sort(),
       }
     : requires;
+}
+
+/**
+ * `requires` of a run admitted in a chat others read as the turn starts: its model gets the earlier answers' text only
+ * (`answers_only_history`). Decided per run, not a session feature: a turn after the chat stops being read by others
+ * is given its earlier turns whole again.
+ */
+export function withAnswersOnlyHistory(
+  requires: HarnessRun['requires'],
+  readByOthers: boolean,
+): HarnessRun['requires'] {
+  if (requires === undefined || !readByOthers) return requires;
+  return {
+    ...requires,
+    features: [...requires.features, ANSWERS_ONLY_HISTORY_FEATURE].sort(),
+  };
 }

@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useFormFieldControl } from '../../components/form-field';
 
 interface GroupNameInputProps {
   value: string;
@@ -15,9 +16,14 @@ export function GroupNameInput({
   ariaLabel,
   onChange,
 }: GroupNameInputProps) {
+  // Inside a FormField the control carries its error line and invalid state.
+  const control = useFormFieldControl();
+  const invalid = control['aria-invalid'] === true;
+  const idleBorder = invalid ? '1px solid var(--red-a8)' : '1px solid var(--slate-a5)';
   return (
     <input
       type="text"
+      {...control}
       aria-label={ariaLabel}
       value={value}
       onChange={(e) => {
@@ -29,7 +35,7 @@ export function GroupNameInput({
         height: 44, // the touch-target minimum; also ~12px around the 20px line
         padding: '0 12px',
         backgroundColor: 'var(--color-surface)',
-        border: '1px solid var(--slate-a5)',
+        border: idleBorder,
         borderRadius: 'var(--radius-2)',
         fontSize: 14,
         lineHeight: '20px',
@@ -46,7 +52,7 @@ export function GroupNameInput({
         }
       }}
       onBlur={(e) => {
-        e.currentTarget.style.border = '1px solid var(--slate-a5)';
+        e.currentTarget.style.border = idleBorder;
         e.currentTarget.style.padding = '0 12px';
       }}
     />

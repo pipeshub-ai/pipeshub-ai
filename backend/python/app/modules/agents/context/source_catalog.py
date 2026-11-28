@@ -23,6 +23,7 @@ from app.modules.agents.capability_summary import (
     classify_knowledge_sources,
     format_connector_filter_lines,
 )
+from app.modules.agents.context.named_sources import NamedSources, named_sources_in
 from app.modules.agents.context.retrieval_routing import build_routing_guidance
 
 
@@ -60,6 +61,25 @@ DEMO_ONLY_SOURCE_NOTE = (
 # Whether anything besides the demo has an indexed record; set per request when
 # the demo is a source (see demo_data.chat.note_org_real_data), else absent.
 ORG_HAS_REAL_DATA_KEY = "org_has_real_data"
+
+
+def _unnamed_entry(retrieval: str, *, listed: bool, picked: bool) -> str:
+    """The one line for the sources the run searches but no prompt names (`named_sources`)."""
+    if picked and not listed:
+        return (
+            "- **The sources picked for this question** — searched with the access of the person asking, and not "
+            f"listed by name because other people read this answer. Call `{retrieval}` without `source_ids` to search them."
+        )
+    if listed:
+        return (
+            "- **More of what the person asking can read** — searched too, and not listed by name because "
+            f"other people read this answer. Call `{retrieval}` without `source_ids` to include it."
+        )
+    return (
+        "- **Everything the person asking can read** — every collection and connected app they can open, "
+        "searched with their access. Other people read this answer, so these sources are not listed by "
+        f"name: call `{retrieval}` without `source_ids` to search them all; there is no need to list them first."
+    )
 
 
 class SourceKind(StrEnum):
@@ -112,21 +132,28 @@ class SourceCatalog:
     ids_actionable: bool  # False on the chat route — see Finding H
     # ORG_HAS_REAL_DATA_KEY; None when unknown.
     org_real_data: bool | None = None
+    #: The run also searches sources this catalog does not list (`NamedSources.unnamed`).
+    unnamed: bool = False
+    #: Those are sources the request picked (`NamedSources.picked`).
+    picked: bool = False
 
     # ---------------------------------------------------------------------------
     # Factory
     # ---------------------------------------------------------------------------
 
     @classmethod
-    def from_state(cls, state: dict[str, Any]) -> "SourceCatalog":
-        """Build a catalog from a `ChatState` / `tool_state` dict.
+    def from_state(cls, state: dict[str, Any], *, named: NamedSources | None = None) -> "SourceCatalog":
+        """Build a catalog from a `ChatState` / `tool_state` dict, listing only
+        the sources the turn's model calls may name (`named`, else the ones the
+        turn's context stored in the state).
 
         Two input shapes are supported:
-          1. `agent_knowledge` is non-empty → agent route; IDs actionable.
-          2. `agent_knowledge` is empty but `available_connectors` is set →
+          1. named `agent_knowledge` → agent route; IDs actionable.
+          2. no named knowledge, but named `available_connectors` →
              chat route; IDs withheld (ids_actionable=False).
         """
-        agent_knowledge: list = state.get("agent_knowledge") or []
+        named = named if named is not None else named_sources_in(state)
+        agent_knowledge = [dict(k) for k in named.knowledge]
         connector_configs: dict = state.get("connector_configs") or {}
 
         if agent_knowledge:
@@ -153,10 +180,12 @@ class SourceCatalog:
                 sources=tuple(sources),
                 ids_actionable=True,
                 org_real_data=state.get(ORG_HAS_REAL_DATA_KEY),
+                unnamed=named.unnamed,
+                picked=named.picked,
             )
 
         # Chat route fallback: available_connectors gives type names only
-        available_connectors: list = state.get("available_connectors") or []
+        available_connectors = named.connectors
         sources_chat: list[KnowledgeSource] = []
         seen_types: set[str] = set()
         for c in available_connectors:
@@ -173,6 +202,8 @@ class SourceCatalog:
             sources=tuple(sources_chat),
             ids_actionable=False,
             org_real_data=state.get(ORG_HAS_REAL_DATA_KEY),
+            unnamed=named.unnamed,
+            picked=named.picked,
         )
 
     # ---------------------------------------------------------------------------
@@ -180,7 +211,7 @@ class SourceCatalog:
     # ---------------------------------------------------------------------------
 
     def is_empty(self) -> bool:
-        return not self.sources
+        return not self.sources and not self.unnamed
 
     def duplicate_apps(self) -> tuple[str, ...]:
         """App type keys that appear more than once (same-type duplicate connectors)."""
@@ -195,8 +226,11 @@ class SourceCatalog:
 
         These are the services that should be queried via their live API alone —
         retrieval has no snapshot for them. Derives the list dynamically rather
-        than hardcoding "Slack, Outlook, Gmail, Calendar".
+        than hardcoding "Slack, Outlook, Gmail, Calendar". None when the run
+        searches sources it does not list: which of them are indexed is unknown.
         """
+        if self.unnamed:
+            return ()
         indexed_apps = frozenset(
             s.app.lower() for s in self.sources
             if s.kind == SourceKind.APP and s.app
@@ -413,6 +447,9 @@ class SourceCatalog:
                     line += " — " + "; ".join(s.scope_lines)
 
             lines.append(line)
+
+        if self.unnamed:
+            lines.append(_unnamed_entry(retrieval, listed=bool(self.sources), picked=self.picked))
 
         if self.has_demo():
             lines.append("")

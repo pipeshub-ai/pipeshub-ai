@@ -26,6 +26,7 @@ import {
 import { MAX_COMPARE_MODELS } from '../utils/chat-compare-feature';
 import { envFlag } from '../../../libs/utils/env-flags';
 import {
+  assertOnlyOwnersRowsFrom,
   copyBranchTurnArtifacts,
   createCompareBranch,
   messagesUpTo,
@@ -206,6 +207,19 @@ const loadParent = async (
   return found;
 };
 
+/**
+ * Compare copies the chat's rows into a branch of the caller's own and, when the branch is chosen, rewrites the
+ * chat from the compared question on. Neither is for a chat others can read: refused while it is shared with
+ * anyone or open to its project.
+ */
+const assertNotShared = (c: ChatSessionDto): void => {
+  if ((c.sharedWith?.length ?? 0) > 0 || c.projectVisibility === 'project') {
+    throw new BadRequestError(
+      'Compare models is not available in shared chats',
+    );
+  }
+};
+
 const reserve = async (
   id: string,
   actor: SessionActor,
@@ -239,6 +253,7 @@ export const createCompareBranchHandler =
       const actor = actorOf(req);
       const { userMessageId } = req.body as { userMessageId: string };
       const parent = await loadParent(req);
+      assertNotShared(parent);
       const question = await repo().findMessage(
         parent._id,
         parent.orgId,
@@ -331,6 +346,7 @@ export const chooseCompare =
         res.status(200).json({ ok: true });
         return;
       }
+      assertNotShared(parent);
 
       const branches = await repo().listBranches(
         parent.orgId,
@@ -364,6 +380,8 @@ export const chooseCompare =
       if (total - keep < 2) {
         throw new ConflictError('The other answer has no response to keep yet');
       }
+      // Before anything is copied; checked again where the rows are replaced.
+      await assertOnlyOwnersRowsFrom(parent, keep);
 
       // Filed under the branch, which is deleted below: copy them under the parent first.
       const moved = artifacts

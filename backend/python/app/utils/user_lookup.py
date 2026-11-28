@@ -46,6 +46,14 @@ def caller_node_ensurer() -> Callable[[str, str], Awaitable[bool]] | None:
     return _ensurer.get("caller_node")
 
 
+def user_lookup_scope(org_id: str | None) -> dict[str, str]:
+    """Keyword arguments a caller that knows the asking organisation adds to a user lookup
+    (``get_caller_user``, ``get_user_by_user_id``). The default adds none: a user id names one user.
+
+    Callers use the one ``app.edition_config`` exports, which an edition may replace."""
+    return {}
+
+
 async def get_caller_user(
     graph_provider: IGraphDBProvider, user_id: str | None, *, raise_on_error: bool = False, org_id: str | None = None
 ) -> dict[str, Any] | None:
@@ -169,6 +177,15 @@ async def await_or_503[T](op: Awaitable[T]) -> T:
     except Exception as e:
         raise_if_unavailable(e)
         raise
+
+
+async def read_or_503[T](read: Awaitable[T]) -> T:
+    """The answer of a graph read none of the helpers above makes (an access check that also weighs chat content,
+    say), with a failed read a 503 as theirs is."""
+    try:
+        return await read
+    except Exception as e:
+        raise _database_unreachable(e) from e
 
 
 def _database_unreachable(cause: BaseException) -> HTTPException:

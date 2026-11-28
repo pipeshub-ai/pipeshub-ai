@@ -1,68 +1,54 @@
 'use client';
 
-import React, { useState } from 'react';
-import { Flex, Text } from '@radix-ui/themes';
-import { ChatStarIcon } from '@/app/components/ui/chat-star-icon';
+import React from 'react';
+import { Card, Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { KbdChip } from '@/app/components/sidebar/kbd-chip';
 import { getModifierSymbol } from '@/lib/utils/platform';
 import { useCanHover } from '@/lib/hooks/use-can-hover';
 import { TOUCH_TARGET_PX } from '@/app/components/ui/responsive';
+import { CMDK_ROW_CLASS, cmdkRowStyle } from './row-styles';
 
 interface CommandPaletteProps {
   onClick: () => void;
 }
 
 /**
- * Command Palette row — the "New Chat" action entry inside the search view.
- * Shows the keyboard shortcut ⌘+Shift+K where a keyboard is likely (hover-capable input).
- * Extensible: additional command palette actions can be added here later.
+ * Command Palette row: the "New chat" action inside the search dialog.
+ * Shows the shortcut the chat page binds (⌘ + Shift + K, Ctrl on Windows and
+ * Linux) where a keyboard is likely, that is on a hover-capable pointer.
  */
 export function CommandPalette({ onClick }: CommandPaletteProps) {
   const { t } = useTranslation();
-  const [isHovered, setIsHovered] = useState(false);
   const canHover = useCanHover();
   const modKey = getModifierSymbol();
 
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      style={{
-        appearance: 'none',
-        font: 'inherit',
-        color: 'inherit',
-        border: 'none',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        minHeight: canHover ? undefined : TOUCH_TARGET_PX,
-        padding: '10px var(--space-4)',
-        margin: 'var(--space-2) var(--space-3)',
-        borderRadius: 'var(--radius-1)',
-        cursor: 'pointer',
-        backgroundColor: isHovered ? 'var(--slate-a3)' : 'transparent',
-        transition: 'background-color 120ms ease',
-      }}
-    >
-      <Flex as="span" align="center" gap="2">
-        <ChatStarIcon
-          size={16}
-          color="var(--slate-11)"
-        />
-        <Text size="2" weight="medium" style={{ color: 'var(--slate-11)' }}>
-          {t('chat.newChat')}
-        </Text>
-      </Flex>
-      {canHover && (
-        <Text
-          size="1"
-          style={{ border: '1px solid var(--slate-3)', borderRadius: 'var(--radius-2)', backgroundColor: 'var(--slate-1)', padding: '0 var(--space-1)' }}
-        >
-          {modKey} + {t('common.shiftKey')} + K
-        </Text>
-      )}
-    </button>
+    <Card asChild variant="ghost">
+      <button
+        type="button"
+        className={CMDK_ROW_CLASS}
+        onClick={onClick}
+        aria-keyshortcuts={modKey === '⌘' ? 'Meta+Shift+K' : 'Control+Shift+K'}
+        style={{
+          ...cmdkRowStyle,
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 'var(--space-2)',
+          padding: 'var(--space-2) var(--space-1)',
+          minHeight: canHover ? cmdkRowStyle.minHeight : TOUCH_TARGET_PX,
+        }}
+      >
+        <Flex as="span" align="center" gap="2" style={{ minWidth: 0 }}>
+          <MaterialIcon name="assistant" size={16} color="var(--accent-a11)" />
+          <Text size="2" weight="medium" style={{ color: 'var(--text-secondary)' }}>
+            {t('chat.newChat')}
+          </Text>
+        </Flex>
+        {canHover && <KbdChip keys={[modKey, t('common.shiftKey'), 'K']} />}
+      </button>
+    </Card>
   );
 }

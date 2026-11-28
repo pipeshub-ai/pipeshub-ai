@@ -2,7 +2,7 @@
 
 import { usePathname } from 'next/navigation';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 
 /**
  * Whether the desktop nav sidebar is collapsed out of view. Workspace settings always keep their
@@ -10,8 +10,9 @@ import { useIsMobile } from '@/lib/hooks/use-is-mobile';
  * menu left only the expand button.
  */
 export function useNavHidden(): boolean {
-  const isMobile = useIsMobile();
+  // In the drawer layout the sidebar is a drawer, never collapsed in place.
+  const isDrawerLayout = useIsBelowDesktop();
   const isNavCollapsed = useSidebarWidthStore((s) => s.isNavCollapsed);
   const pathname = usePathname() ?? '';
-  return !isMobile && isNavCollapsed && !pathname.startsWith('/workspace');
+  return !isDrawerLayout && isNavCollapsed && !pathname.startsWith('/workspace');
 }

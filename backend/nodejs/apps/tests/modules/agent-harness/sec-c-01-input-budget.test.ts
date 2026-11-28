@@ -41,6 +41,9 @@ import {
   createAgentConversationalRouter,
   createConversationalRouter,
 } from '../../../src/modules/enterprise_search/routes/es.routes';
+import { CONVERSATION_TYPES } from '../../../src/modules/enterprise_search/services/conversation/conversation.types';
+import { realGuards } from '../enterprise_search/helpers/guarded-chat';
+import { turnDeps } from '../enterprise_search/helpers/turn-deps';
 import { createMockLogger } from '../../helpers/mock-logger';
 import sinon from 'sinon';
 import { readFileSync } from 'node:fs';
@@ -125,6 +128,9 @@ const realAuthContainer = (): Container => {
   } as never);
   container.bind(AGENT_HARNESS_SESSION_RUN_SERVICE).toConstantValue({});
   container.bind(AGENT_HARNESS_RUN_ADMISSION_SERVICE).toConstantValue({});
+  // The conversation routes' guards and the turn handlers' dependencies, bound as the chat container binds them.
+  container.bind(CONVERSATION_TYPES.ConversationGuards).toConstantValue(realGuards());
+  container.bind(CONVERSATION_TYPES.ConversationTurnDeps).toConstantValue(turnDeps());
   return container;
 };
 

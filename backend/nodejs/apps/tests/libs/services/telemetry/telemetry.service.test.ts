@@ -11,6 +11,8 @@ import { configPaths } from '../../../../src/modules/configuration_manager/paths
 import { recordEvent, eventBuffer } from '../../../../src/libs/services/telemetry/event-buffer';
 import { metricsBackend } from '../../../../src/libs/services/telemetry/metrics-backend';
 import { StoreType } from '../../../../src/libs/keyValueStore/constants/KeyValueStoreType';
+import { setCollectionConsent } from '../../../../src/libs/services/telemetry/flag';
+import { COLLECTION_NEEDS_CONSENT, METRICS_CONSENT_DEFAULT } from '../../../../src/edition';
 
 const VALID_URL = 'http://localhost:3031/collect-metrics';
 
@@ -68,6 +70,8 @@ describe('TelemetryService', () => {
     (TelemetryService as any).instance = undefined;
     eventBuffer.drain();
     sandbox.restore();
+    // The stored configs above switch consent off; the rest of the suite collects.
+    setCollectionConsent(true);
   });
 
   describe('singleton behaviour', () => {
@@ -161,7 +165,8 @@ describe('TelemetryService', () => {
       );
       expect((svc as any).apiKey).to.have.length.greaterThan(0);
       expect((svc as any).pushIntervalMs).to.equal(300000);
-      expect((svc as any).enableMetricCollection).to.be.true;
+      // An empty store starts with the consent default.
+      expect((svc as any).enableMetricCollection).to.equal(METRICS_CONSENT_DEFAULT);
     });
 
     it('should seed the 5-minute default when the interval is missing from the stored config', async () => {
@@ -266,11 +271,13 @@ describe('TelemetryService', () => {
     });
   });
 
+  // Where recording waits for consent, the stored config above switches it off: each test switches it on again.
   describe('flush', () => {
     it('should do nothing when the server URL is invalid', async () => {
       const postStub = sandbox.stub(axios, 'post').resolves({ data: {} });
       const svc = new TelemetryService(mockKvStore() as any);
       await flushAsync();
+      setCollectionConsent(true);
 
       (svc as any).metricsServerUrl = '';
       recordEvent('opt_out');
@@ -283,13 +290,14 @@ describe('TelemetryService', () => {
       const postStub = sandbox.stub(axios, 'post').resolves({ data: {} });
       const svc = new TelemetryService(mockKvStore() as any);
       await flushAsync();
+      setCollectionConsent(true);
 
       recordEvent('consent_changed', { enabled: false });
       await svc.flush();
 
       const eventsCall = postStub
         .getCalls()
-        .find((c) => String(c.args[0]).includes('collect-events'));
+        .find((c) => c.args[0].includes('collect-events'));
       expect(eventsCall, 'expected a POST to collect-events').to.exist;
       const payload = eventsCall!.args[1] as any;
       expect(payload.instanceId).to.equal('install-1234');
@@ -301,12 +309,13 @@ describe('TelemetryService', () => {
       const postStub = sandbox.stub(axios, 'post').resolves({ data: {} });
       const svc = new TelemetryService(mockKvStore() as any);
       await flushAsync();
+      setCollectionConsent(true);
 
       await svc.flush();
 
       const eventsCall = postStub
         .getCalls()
-        .find((c) => String(c.args[0]).includes('collect-events'));
+        .find((c) => c.args[0].includes('collect-events'));
       expect(eventsCall).to.be.undefined;
     });
 
@@ -314,16 +323,144 @@ describe('TelemetryService', () => {
       sandbox.stub(axios, 'post').rejects(new Error('ECONNREFUSED'));
       const svc = new TelemetryService(mockKvStore() as any);
       await flushAsync();
+      setCollectionConsent(true);
 
       recordEvent('login');
       await svc.flush(); // must not throw
     });
   });
 
+  describe('discardCollected', () => {
+    it('sends nothing and empties the metric and event buffers', async () => {
+      const postStub = sandbox.stub(axios, 'post').resolves({ data: {} });
+      const svc = new TelemetryService(mockKvStore() as any);
+      await flushAsync();
+      // An admin has switched collection on since the service read its config.
+      setCollectionConsent(true);
+      recordEvent('consent_changed', { enabled: false });
+      const resetStub = sandbox.stub(metricsBackend, 'reset');
+
+      svc.discardCollected();
+
+      expect(postStub.called, 'nothing may be sent on opt-out').to.be.false;
+      expect(resetStub.calledOnce).to.be.true;
+      expect(eventBuffer.size()).to.equal(0);
+    });
+
+    it('aborts sends that are under way', async () => {
+      const svc = new TelemetryService(mockKvStore() as any);
+      await flushAsync();
+      const controller = new AbortController();
+      (svc as any).inFlight.add(controller);
+
+      svc.discardCollected();
+
+      expect(controller.signal.aborted).to.be.true;
+      expect((svc as any).inFlight.size).to.equal(0);
+    });
+  });
+
+  describe('consent withdrawal', () => {
+    it('keeps an opt-out when an older reload finishes after it', async () => {
+      const kv = mockKvStore();
+      const svc = new TelemetryService(kv as any);
+      await flushAsync();
+      sandbox.stub(svc as any, 'startOrStopMetricCollection').resolves();
+
+      let finishOlder!: (raw: string) => void;
+      kv.get.onCall(1).returns(new Promise<string>((resolve) => (finishOlder = resolve)));
+      kv.get.onCall(2).resolves(storedConfig({ enableMetricCollection: 'false' }));
+
+      const older = (svc as any).initializeMetricsCollection();
+      await (svc as any).initializeMetricsCollection();
+      finishOlder(storedConfig({ enableMetricCollection: 'true' }));
+      await older;
+
+      expect((svc as any).enableMetricCollection).to.be.false;
+    });
+
+    it('starts no push loop when consent is withdrawn during the start delay', async () => {
+      const svc = new TelemetryService(mockKvStore() as any);
+      await flushAsync();
+
+      (svc as any).enableMetricCollection = true;
+      const starting = (svc as any).startOrStopMetricCollection();
+      (svc as any).enableMetricCollection = false;
+      await (svc as any).startOrStopMetricCollection();
+      await starting;
+
+      expect((svc as any).pushInterval).to.be.null;
+    });
+
+    // Only where recording waits for consent: elsewhere a withdrawn consent stops the push and leaves what was gathered.
+    (COLLECTION_NEEDS_CONSENT ? it : it.skip)('aborts a shipment still in flight when consent is withdrawn', async () => {
+      const kv = mockKvStore(storedConfig({ enableMetricCollection: 'true' }));
+      const svc = new TelemetryService(kv as any);
+      await flushAsync();
+      sandbox.stub(svc as any, 'startOrStopMetricCollection').resolves();
+      let signal: AbortSignal | undefined;
+      sandbox.stub(axios, 'post').callsFake((_url, _body, config) => {
+        signal = config?.signal as AbortSignal;
+        return new Promise((_resolve, reject) =>
+          signal!.addEventListener('abort', () => reject(new axios.CanceledError())),
+        );
+      });
+      recordEvent('gathered_before_opt_out');
+      const shipping = (svc as any).shipEventsToServer();
+      await flushAsync();
+
+      kv.get.resolves(storedConfig({ enableMetricCollection: 'false' }));
+      await (svc as any).initializeMetricsCollection();
+
+      expect(signal?.aborted).to.be.true;
+      await shipping; // settles without throwing
+    });
+  });
+
+  describe('a reload, by whether recording waits for consent', () => {
+    const GAUGE = /^pipeshub_metric_collection_enabled\{/m;
+
+    (COLLECTION_NEEDS_CONSENT ? it : it.skip)('where it does, a reload with collection on writes the one gauge series, and one with it off drops what was gathered', async () => {
+      const kv = mockKvStore();
+      const svc = new TelemetryService(kv as any);
+      await flushAsync();
+      sandbox.stub(svc as any, 'startOrStopMetricCollection').resolves();
+      metricsBackend.reset();
+
+      kv.get.resolves(storedConfig({ enableMetricCollection: 'true' }));
+      await (svc as any).initializeMetricsCollection();
+      expect(await metricsBackend.serialize()).to.match(
+        /^pipeshub_metric_collection_enabled\{service="node_api",org="unknown"\} 1$/m,
+      );
+
+      recordEvent('gathered_before');
+      kv.get.resolves(storedConfig({ enableMetricCollection: 'false' }));
+      await (svc as any).initializeMetricsCollection();
+      expect(eventBuffer.size()).to.equal(0);
+    });
+
+    (COLLECTION_NEEDS_CONSENT ? it.skip : it)('where it does not, a reload writes no gauge and keeps what was gathered', async () => {
+      const kv = mockKvStore();
+      const svc = new TelemetryService(kv as any);
+      await flushAsync();
+      sandbox.stub(svc as any, 'startOrStopMetricCollection').resolves();
+      metricsBackend.reset();
+
+      kv.get.resolves(storedConfig({ enableMetricCollection: 'true' }));
+      await (svc as any).initializeMetricsCollection();
+      expect(await metricsBackend.serialize()).to.not.match(GAUGE);
+
+      recordEvent('gathered_before');
+      kv.get.resolves(storedConfig({ enableMetricCollection: 'false' }));
+      await (svc as any).initializeMetricsCollection();
+      expect(eventBuffer.size()).to.equal(1);
+      expect(await metricsBackend.serialize()).to.not.match(GAUGE);
+    });
+  });
+
   describe('pushMetricsToServer', () => {
     it('should reset the metric registry when the collector responds 413', async () => {
       sandbox.stub(metricsBackend, 'serialize').resolves('x{a="b"} 1\n');
-      const resetStub = sandbox.stub(metricsBackend, 'reset');
       const err = Object.assign(new Error('Request failed with status code 413'), {
         isAxiosError: true,
         response: { status: 413 },
@@ -331,6 +468,10 @@ describe('TelemetryService', () => {
       sandbox.stub(axios, 'post').rejects(err);
       const svc = new TelemetryService(mockKvStore() as any);
       await flushAsync();
+      // The admin has switched collection on since the service read its config; a push needs it.
+      setCollectionConsent(true);
+      // Starting with consent off discards held metrics; only the push's own reset counts here.
+      const resetStub = sandbox.stub(metricsBackend, 'reset');
 
       await (svc as any).pushMetricsToServer();
 
@@ -339,7 +480,6 @@ describe('TelemetryService', () => {
 
     it('should not reset the registry on other collector errors', async () => {
       sandbox.stub(metricsBackend, 'serialize').resolves('x{a="b"} 1\n');
-      const resetStub = sandbox.stub(metricsBackend, 'reset');
       const err = Object.assign(new Error('Request failed with status code 500'), {
         isAxiosError: true,
         response: { status: 500 },
@@ -347,6 +487,10 @@ describe('TelemetryService', () => {
       sandbox.stub(axios, 'post').rejects(err);
       const svc = new TelemetryService(mockKvStore() as any);
       await flushAsync();
+      // The admin has switched collection on since the service read its config; a push needs it.
+      setCollectionConsent(true);
+      // Starting with consent off discards held metrics; only the push's own reset counts here.
+      const resetStub = sandbox.stub(metricsBackend, 'reset');
 
       await (svc as any).pushMetricsToServer();
 
@@ -403,6 +547,7 @@ describe('TelemetryService', () => {
       await flushAsync();
       expect((svc as any).pushInterval).to.be.null;
 
+      setCollectionConsent(true);
       (svc as any).enableMetricCollection = true;
       await (svc as any).startOrStopMetricCollection();
       expect((svc as any).pushInterval).to.not.be.null;

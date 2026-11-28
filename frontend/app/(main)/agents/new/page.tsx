@@ -20,7 +20,7 @@ export default function NewAgentPage() {
       // Fade the whole page out together (dialog + background),
       // then navigate once the animation finishes.
       setIsLeaving(true);
-      setTimeout(() => router.push('/chat'), 200);
+      setTimeout(() => router.push('/agents/'), 200);
     } else {
       setDialogOpen(open);
     }

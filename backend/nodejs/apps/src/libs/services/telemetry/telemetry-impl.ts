@@ -14,10 +14,17 @@ export {
   normalizeOrgId,
   signupSource,
 } from './identity';
-export { isTelemetryEnabled, telemetryOffMessage } from './flag';
+export {
+  isCollecting,
+  isTelemetryEnabled,
+  setCollectionConsent,
+  telemetryOffMessage,
+} from './flag';
 export { metricsBackend } from './metrics-backend';
 export { recordServiceActivity } from './modules/activity-metrics';
 export { setMetricCollectionEnabled } from './modules/collection-metrics';
+export { setMongoMissingIndexes } from './modules/mongo-index-metrics';
+export { recordRateLimitStoreFallback } from './modules/rate-limit-store-metrics';
 export {
   recordAuthAttempt,
   refusalOutcome,

@@ -268,11 +268,8 @@ export function agentStrategyToApiSegment(
 }
 
 /**
- * Segments accepted by agent stream/regenerate HTTP bodies (`chatMode` field).
- * Only the current canonical segments — outgoing requests always go through
- * {@link agentStrategyToApiSegment}, which never produces the legacy
- * `verification` wire value; restoring THAT from persisted history is
- * `apply-conversation-model-info.ts`'s job, not this outgoing-request path.
+ * `chatMode` on every `/api/v1/agents/...` stream and regenerate: those routes take quick mode only, and refuse
+ * anything else with a 400. A constant, so neither a strategy nor a chat's older mode can lose a send that way.
  */
 const AGENT_HTTP_CHAT_MODES: readonly AgentStrategyApiSegment[] = [
   "auto",
@@ -1383,6 +1380,8 @@ export interface SSEConnectedEvent {
    * If the backend later async-refines titles, `complete` still refreshes list/title state.
    */
   title?: string;
+  /** The run's id as the server knows it (same value as the `X-Run-Id` header), when it sends one. */
+  runId?: string;
 }
 
 /** Backend status phases (planning / tools / generation); keep open-ended for forward compatibility */
@@ -1528,6 +1527,11 @@ export interface CodeTaskHandoff {
   /** The engine kind; absent from a server that did not name it. */
   engine?: string;
 }
+/** A step's status in a run's transcript. */
+export type ToolCallPartStatus = 'running' | 'completed' | 'failed' | 'blocked' | 'awaiting_approval';
+
+/** How someone else's approval card stands once it no longer waits, on the stub the server gives in its place (`stub`). */
+export type ApprovalStubStatus = 'approved' | 'not_run' | 'denied' | 'expired';
 
 export interface MessagePart {
   /** `user_input`: a message the user sent while the run worked, where the run took it. */
@@ -1590,8 +1594,8 @@ export interface MessagePart {
   args?: string;
   /** Human-readable summary of `args`, computed server-side. Falls back to `args` when absent. */
   argsSummary?: string;
-  /** `approval` parts: `pending`, `approved`, `denied`, `closed` or `expired`. */
-  status?: "running" | "completed" | "failed" | "blocked" | "awaiting_approval" | ApprovalPartStatus;
+  /** `approval` parts: `pending`, `approved`, `denied`, `closed` or `expired`; a stub of someone else's card: `approved`, `not_run`, `denied` or `expired`. */
+  status?: ToolCallPartStatus | ApprovalStubStatus | ApprovalPartStatus;
   resultPreview?: string;
   /** A failed call's `ToolErrorCode` (ERR-UX): the card words it; the detail never reaches the part. */
   errorCode?: string;
@@ -1609,6 +1613,14 @@ export interface MessagePart {
   approved?: boolean;
   /** How a call that waited for approval was settled (Python `tool_approvals.Outcome.answer`). */
   approvalAnswer?: 'allowed' | 'declined' | 'expired';
+  /** Why an allowed call didn't run, which its card says (Python `tool_approvals.Outcome.reason`). */
+  approvalReason?: 'access_lost';
+  /**
+   * Set by the server's reader view on someone else's approval card, which reaches everyone but its asker as this
+   * stub of the call: no arguments or result, an `approval` with only what the line about the card names, and a
+   * `status` saying how the card stands. Drawn as that line (`findToolApproval`, `findApprovalStub`), never as a step.
+   */
+  stub?: boolean;
   /** On the `mcp_sign_in` part: the reply's sign-in card. Not activity, so never in the timeline. */
   servers?: McpSignInServer[];
   /** On the final `text` part: the limit that cut the run's work short (BUDGETEND). */
@@ -1623,6 +1635,11 @@ export interface MessagePart {
   notFound?: unknown;
   /** On the final `text` part (R32REPO-FU-1): what the run tried and could not do; read by `couldNotDoOf`. */
   limits?: unknown;
+  /**
+   * Set by this client, never by the server, on the ask_user_question call that showed a card, once the card is
+   * answered or replied to in the chat (`payload.repliedInChat`): the card and its answers, drawn as that call's row.
+   */
+  question?: { payload: AskUserQuestionPayload; answers?: Record<string, AskUserQuestionAnswer> };
   runId?: string;
   roleName?: string;
   parts?: MessagePart[];
@@ -1712,6 +1729,8 @@ export interface ConversationMessage {
   updatedAt: string;
   feedback: Record<string, unknown>[];
   appliedFilters?: AppliedFilters;
+  /** Where in `content` the server wrote the word for a source the reader can't open: the screen draws it as one. */
+  withheldSources?: number[];
   /** File attachments uploaded with this user query (PDF / JPEG / PNG). */
   attachments?: AttachmentRef[];
   /** `user_query` sent as a /command (SLASH1): what was typed; `content` is the text that was sent. */
@@ -1727,9 +1746,15 @@ export interface ConversationMessage {
   foreignTurn?: boolean;
   /** Copied from another conversation by a fork: its saved steps show, but it names none of that conversation's runs. */
   copied?: boolean;
-  /** The durable run that wrote this answer, when the server records it; always a run of this conversation. */
+  /**
+   * The run that wrote this row: the durable run, when the server records it (always a run of this conversation).
+   * A question still without an answer carries the id a cancel has to name.
+   */
   runId?: string;
-  /** An error answer's code (`messageType: 'error'`): shown in the reader's words (QA17-O2). */
+  /**
+   * An error answer's code (`messageType: 'error'`): shown in the reader's words (QA17-O2). On a refusal, for its
+   * asker only.
+   */
   errorCode?: string;
   /** With errorCode `mcp_tool_withdrawn`: the labels of the servers the words name (WP-84). */
   errorServers?: string[];
@@ -1745,8 +1770,18 @@ export interface ConversationMessage {
   notFound?: unknown;
   /** R32REPO-FU-1: what the run tried and could not do; read by `couldNotDoOf`. */
   limits?: unknown;
-  /** The server withheld this answer: it used a record the reader can no longer access, or access could not be confirmed. */
-  answerHidden?: { redacted: true; reason: 'no_longer_accessible' | 'access_check_unavailable' };
+  /**
+   * The server withheld this answer: it used a record the reader can no longer access, or access could not be confirmed.
+   * In a shared chat, someone else's answer says one class of reason: what the reader can't open (`no_access`), its
+   * asker's own access (`personal`), an agent the reader can't use (`agent`), a deleted source (`deleted`), or its
+   * asker's stop before anything recorded what it used (`stopped`).
+   */
+  answerHidden?: {
+    redacted: true;
+    reason: 'no_longer_accessible' | 'access_check_unavailable' | 'no_access' | 'personal' | 'agent' | 'deleted' | 'stopped';
+  };
+  /** Tools the person asking had not connected; the answer went on without them. Parsed before use. */
+  unavailableTools?: unknown;
 }
 
 /**
@@ -1775,6 +1810,8 @@ export interface ConversationCompleteData {
   __v: number;
   projectId?: string;
   projectVisibility?: 'private' | 'project';
+  /** `'turn'`: `messages` holds only this turn's rows, to merge by id into the rows already loaded. */
+  frame?: 'turn';
 }
 
 export interface SSECompleteEvent {
@@ -1925,6 +1962,13 @@ export interface ToolApprovalDetails {
   /** Null when the arguments were too large to send; `argumentsPreview` holds their start. */
   arguments?: Record<string, unknown> | null;
   argumentsPreview?: string;
+  /**
+   * The call would send what this run read, and not everyone can open all of it: the card shows the whole call and
+   * where it goes, and no answer to it becomes a rule.
+   */
+  restricted?: boolean;
+  /** On a restricted card: each host the call names, as it is reached and as it reads. */
+  hosts?: Array<{ host: string; unicode: string }>;
 }
 
 /**
@@ -1932,9 +1976,8 @@ export interface ToolApprovalDetails {
  *
  * `isScopedAgent` distinguishes the two very different consumers of Agent
  * `QueryMode`: a conversation scoped to a specific custom Agent (`agentId`
- * set) still needs the `agent:<strategy>` wire value — its endpoint
- * (`agent.py`) unwraps that via {@link streamChatModeToAgentApiChatMode} to
- * drive `PipesHubAgentFactory`'s loop selection. The *main* chat's Agent
+ * set) gets the `agent:<strategy>` value here, which its routes are sent as
+ * that strategy ({@link streamChatModeToAgentApiChatMode}). The *main* chat's Agent
  * mode (no `agentId` — "Universal Agent Mode") has no such strategy
  * concept server-side (`chat_modes/policy.py`'s `AGENT_POLICY` decides
  * internal-search vs web-search vs both from the query itself), so it must
@@ -1993,8 +2036,22 @@ export interface AvailableLlmModel {
  */
 export type ActiveMessageAction =
   | null
-  | { type: 'regenerate'; messageId: string; appliedFilters?: AppliedFilters }
-  | { type: 'editQuery'; messageId: string; text: string; appliedFilters?: AppliedFilters; attachments?: AttachmentRef[] };
+  | {
+      type: 'regenerate';
+      messageId: string;
+      appliedFilters?: AppliedFilters;
+      /** The answer's slot, when it is not the active one. */
+      slotId?: string;
+    }
+  | {
+      type: 'editQuery';
+      messageId: string;
+      text: string;
+      appliedFilters?: AppliedFilters;
+      attachments?: AttachmentRef[];
+      /** The answer's slot, when it is not the active one (an agent thread's, or a private one's). */
+      slotId?: string;
+    };
 
 // ── Multi-Chat Slot Types ──
 
@@ -2006,6 +2063,15 @@ export interface DurableAgentRunHandle {
   agentId?: string;
   sessionId: string;
   runId: string;
+}
+
+/** Loads of a chat's history that failed in a row: the next one is tried by itself (`useLoadRetry`). */
+export interface FailedLoad {
+  count: number;
+  /** Epoch ms of the last one. */
+  at: number;
+  /** The next one is under way. `isInitialized` stays as it is, so what is drawn stays drawn. */
+  trying?: boolean;
 }
 
 /**
@@ -2046,11 +2112,20 @@ export interface ChatSlot {
   refreshGeneration: number;
   /** True after first successful message load — drives tracker selection. */
   hasLoaded: boolean;
+  /** Set while loading its history fails; a load that succeeds clears it. */
+  failedLoad?: FailedLoad | null;
   /**
    * The loaded conversation was still `Inprogress` on the server — a run that kept going after this
    * tab's connection dropped (refresh, closed tab). Drives `startRemoteRunPoll`.
    */
   remoteRunInProgress: boolean;
+  /**
+   * The run to cancel while `remoteRunInProgress` holds for a run this person started: the id on the question the
+   * server has not answered yet. `null` when it is not theirs to stop or the chat is followed another way.
+   */
+  remoteRunId: string | null;
+  /** Stop was pressed for the remote run: one cancel went out, and the button waits for the server's answer. */
+  remoteStopRequested: boolean;
 
   /** Messages in assistant-ui ThreadMessageLike[] format. */
   messages: ThreadMessageLike[];
@@ -2184,16 +2259,39 @@ export interface ChatSlot {
   isShared?: boolean;
   /** From GET conversation detail `durable`: the session runs on the durable harness (LC2FIX), whatever its latest answer. */
   durable?: boolean;
+  /** From GET conversation detail `access.accessLevel`: `write` for someone it was shared with for editing. */
+  accessLevel?: string;
   /**
    * Who the conversation is shared with: from the loaded detail, or from the
    * last share/unshare answer. `null` when not known.
    */
   sharedWith: SharedWithEntry[] | null;
+  /** Whether the conversation is open to its project's members, from the loaded detail; absent when not known. */
+  projectVisibility?: 'private' | 'project' | null;
   /**
    * Last known API `modelInfo` for this thread (from list/detail/SSE), used
    * to restore model + mode in the input when the user returns to this tab.
    */
   conversationModelInfo?: ModelInfo;
+  /** Questions waiting their turn, first in first out (`utils/queued-send.ts`); absent or empty when nothing waits. */
+  queue?: QueuedSend[];
+  /** Text to give back to the composer (an edited queued question, a refused send); the composer takes it and clears it. */
+  composerRestore?: string | null;
+  /** The composer holds text: a queued question is edited only into an empty box. */
+  composerHasText?: boolean;
+}
+
+/** A question waiting its turn in a chat's queue while the chat is busy. */
+export interface QueuedSend {
+  query: string;
+  attachments?: AttachmentRef[];
+  /** The question's id in the queue; it goes out as the message's client id where the request has one. */
+  clientMessageId: string;
+  queuedAt: number;
+  /** The server refused it when its turn came: the queue waits here until it is retried, edited or removed. */
+  failed?: string;
+  /** Sources the question names with `@`: they scope it when it goes. */
+  mentionIds?: string[];
 }
 
 // ── Search types ──────────────────────────────────────────────────────

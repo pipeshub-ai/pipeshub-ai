@@ -8,24 +8,23 @@ import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import rehypeSanitize from 'rehype-sanitize';
 import type { Schema } from 'hast-util-sanitize';
-import { UNTRUSTED_HTML_SCHEMA, rehypeSafeInlineStyle } from '@/lib/markdown/untrusted-html';
+import { rehypeSafeInlineStyle } from '@/lib/markdown/untrusted-html';
 import { SafeMarkdownImage } from '@/app/components/ui/safe-markdown-image';
-import { markdownUrlTransform } from '@/lib/utils/image-url-policy';
+import { ANSWER_HTML_SCHEMA, markdownUrlTransform } from '@/lib/utils/image-url-policy';
 import type { PreviewCitation } from '../types';
 import { useTextHighlighter } from '../use-text-highlighter';
 
-// A previewed file is untrusted content like an agent answer; README-style
-// anchors may also choose their target. Images may also be data: and blob: URLs
-// (SafeMarkdownImage decides which ones load).
-const sanitizeSchema: Schema = {
-  ...UNTRUSTED_HTML_SCHEMA,
-  protocols: {
-    ...UNTRUSTED_HTML_SCHEMA.protocols,
-    src: [...(UNTRUSTED_HTML_SCHEMA.protocols?.src ?? []), 'data', 'blob'],
-  },
+/**
+ * A previewed file is untrusted content like an agent answer, so it starts from the same base: pipeline
+ * classes only, filtered inline styles, and only `<img src>` and `<a href>` carrying a URL (data: and blob:
+ * images included; SafeMarkdownImage decides which ones load). README-style anchors may also choose their
+ * target; align, id, width and height come with the base.
+ */
+export const MARKDOWN_PREVIEW_SANITIZE_SCHEMA: Schema = {
+  ...ANSWER_HTML_SCHEMA,
   attributes: {
-    ...UNTRUSTED_HTML_SCHEMA.attributes,
-    a: [...(UNTRUSTED_HTML_SCHEMA.attributes?.['a'] ?? []), 'target', 'rel'],
+    ...ANSWER_HTML_SCHEMA.attributes,
+    a: [...(ANSWER_HTML_SCHEMA.attributes?.['a'] ?? []), 'target', 'rel'],
   },
 };
 
@@ -241,7 +240,7 @@ export function MarkdownRenderer({ fileUrl, fileName: _fileName, citations, acti
       >
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
-          rehypePlugins={[rehypeRaw, [rehypeSanitize, sanitizeSchema], rehypeSafeInlineStyle]}
+          rehypePlugins={[rehypeRaw, [rehypeSanitize, MARKDOWN_PREVIEW_SANITIZE_SCHEMA], rehypeSafeInlineStyle]}
           urlTransform={markdownUrlTransform}
           components={{
             h1: ({ node: _node, ...props }) => (

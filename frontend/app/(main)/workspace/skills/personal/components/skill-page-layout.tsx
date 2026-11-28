@@ -13,7 +13,7 @@ import type { SkillsPageAction } from './skills-page-extras';
 import { SkillCard } from './skill-card';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { pagePaddingX } from '@/app/components/ui/responsive';
-import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
+import { PAGE_PADDING_TOP, usePagePaddingTop } from '@/app/(main)/workspace/components/settings-page-container';
 import { HeaderOverflowMenu } from '@/app/(main)/workspace/components/header-overflow-menu';
 import { WorkspaceDocsButton } from '@/app/(main)/workspace/components/workspace-docs-button';
 
@@ -55,6 +55,7 @@ export function SkillPageLayout({
   onToggleAvailability,
 }: SkillPageLayoutProps) {
   const isMobile = useIsMobile();
+  const pagePaddingTop = usePagePaddingTop(PAGE_PADDING_TOP);
   const { t } = useTranslation();
   const [query, setQuery] = useState('');
 
@@ -76,7 +77,7 @@ export function SkillPageLayout({
       style={{
         width: '100%',
         height: '100%',
-        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP,
+        paddingTop: pagePaddingTop,
         paddingBottom: 64,
         paddingInline: pagePaddingX(100),
         overflowY: 'auto',

@@ -324,6 +324,11 @@ class Tool(ABC):
     def result_schema(self) -> dict[str, Any] | None:
         return None
 
+    @property
+    def silent(self) -> bool:
+        """True: a call emits no call or result event, so it shows in no step, live or saved."""
+        return False
+
     @abstractmethod
     async def execute(self, **kwargs: Any) -> ToolOutput:
         """Perform the tool's action. Called with validated, defaulted kwargs."""

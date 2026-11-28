@@ -11,6 +11,8 @@ import {
   InternalServerError,
   ServiceUnavailableError,
 } from '../../../../src/libs/errors/http.errors'
+import { AIRequestRefusedError, refusalFrom, useAdminRefusals } from '../../../../src/modules/enterprise_search/utils/ai-stream'
+import { NOT_ALLOWED_TEXT, notAllowed, testAdminRefusals } from '../helpers/admin-refusals'
 
 describe('enterprise_search/utils/chat-error-messages', () => {
   describe('userFacingChatError', () => {
@@ -35,6 +37,18 @@ describe('enterprise_search/utils/chat-error-messages', () => {
     it('keeps a deliberate 4xx message, which already speaks to the user', () => {
       const msg = 'No AI model is set up for this workspace yet.'
       expect(userFacingChatError(new BadRequestError(msg))).to.equal(msg)
+    })
+
+    it("keeps the words of a refusal only an admin can lift, and a malformed request's general text", () => {
+      useAdminRefusals(testAdminRefusals)
+      try {
+        expect(userFacingChatError(refusalFrom(403, notAllowed))).to.equal(NOT_ALLOWED_TEXT)
+      } finally {
+        useAdminRefusals(undefined)
+      }
+      expect(userFacingChatError(new AIRequestRefusedError('REQUEST_VERSION_UNSUPPORTED'))).to.equal(
+        CHAT_ERROR_MESSAGES.failed,
+      )
     })
 
     it('never passes raw error text through for anything else', () => {

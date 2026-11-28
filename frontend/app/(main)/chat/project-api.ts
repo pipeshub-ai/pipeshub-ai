@@ -1,5 +1,6 @@
 import { apiClient } from '@/lib/api';
-import { revalidateSwrKey, revalidateSwrNamespace, SWR_NS, writeSwrKey } from '@/lib/api/swr-cache';
+import { useChatStore } from './store';
+import { revalidateSwrKey, SWR_NS, writeSwrKey } from '@/lib/api/swr-cache';
 import type {
   CreateProjectInput,
   ListProjectsParams,
@@ -64,8 +65,9 @@ export interface ProjectConversationsResult {
 }
 
 export const ProjectApi = {
-  async list(params: ListProjectsParams = {}): Promise<ProjectsListResult> {
+  async list(params: ListProjectsParams = {}, options: { suppressErrorToast?: boolean } = {}): Promise<ProjectsListResult> {
     const { data } = await apiClient.get<ProjectsListResult>(PROJECTS_BASE_URL, {
+      ...(options.suppressErrorToast ? { suppressErrorToast: true } : {}),
       params: {
         page: params.page ?? 1,
         limit: params.limit ?? 20,
@@ -108,8 +110,8 @@ export const ProjectApi = {
 
   async remove(projectId: string): Promise<void> {
     await apiClient.delete(`${PROJECTS_BASE_URL}/${encodeURIComponent(projectId)}`);
-    // The server unlinks the project's chats, so they move into Recents.
-    revalidateSwrNamespace(SWR_NS.conversationLists);
+    // The server unlinks the project's chats, so they move into Recents (the rail's own load and the cached lists).
+    useChatStore.getState().bumpConversationsVersion();
     forgetProject(projectId);
   },
 

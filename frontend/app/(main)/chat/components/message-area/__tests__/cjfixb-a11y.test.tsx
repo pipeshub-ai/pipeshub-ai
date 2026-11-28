@@ -5,7 +5,7 @@
  */
 import React from 'react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
 import { i18n } from '@/lib/i18n';
 import { ApprovalCard } from '../approval-card';
@@ -72,31 +72,38 @@ describe('QA-CLASSIC-FU-1: the answer’s tabs', () => {
     expect(screen.getByRole('tablist', { name: 'Answer views' })).toBeTruthy();
     const tabs = screen.getAllByRole('tab');
     expect(tabs.map((t) => t.getAttribute('aria-selected'))).toEqual(['true', 'false', 'false']);
-    expect(tabs.map((t) => t.tabIndex)).toEqual([0, -1, -1]);
+    // One tab stop: the list (a roving-focus tab list), which hands the focus to the selected tab.
+    const list = screen.getByRole('tablist', { name: 'Answer views' });
+    expect([list, ...tabs].filter((el) => el.tabIndex === 0)).toEqual([list]);
+    list.focus();
+    expect(document.activeElement).toBe(tabs[0]);
     expect(tabs[0].getAttribute('aria-controls')).toBe('a1-panel');
-    expect(tabs[2].getAttribute('aria-disabled')).toBe('true');
+    // A tab with nothing is disabled: read as unavailable, and passed over by the arrow keys.
+    expect((tabs[2] as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('arrow keys, Home and End move between the tabs that have something, and select them', () => {
+  it('arrow keys, Home and End move between the tabs that have something, and select them', async () => {
     render(h(Theme, null, h(Tabs)));
     const answer = screen.getByRole('tab', { name: 'Answer' });
-    answer.focus();
-    fireEvent.keyDown(answer, { key: 'ArrowRight' });
     const sources = screen.getByRole('tab', { name: /^Sources/ });
-    expect(sources.getAttribute('aria-selected')).toBe('true');
+    const selected = (tab: HTMLElement) => waitFor(() => expect(tab.getAttribute('aria-selected')).toBe('true'));
+    answer.focus();
+    // The tab list moves the focus just after the key, and a tab is selected as it takes the focus.
+    fireEvent.keyDown(answer, { key: 'ArrowRight' });
+    await selected(sources);
     expect(document.activeElement).toBe(sources);
-    // Citation has none, so it is skipped: right from Sources wraps to Answer.
+    // Citations has none, so it is skipped: right from Sources wraps to Answer.
     fireEvent.keyDown(sources, { key: 'ArrowRight' });
-    expect(screen.getByRole('tab', { name: 'Answer' }).getAttribute('aria-selected')).toBe('true');
-    fireEvent.keyDown(screen.getByRole('tab', { name: 'Answer' }), { key: 'End' });
-    expect(screen.getByRole('tab', { name: /^Sources/ }).getAttribute('aria-selected')).toBe('true');
-    fireEvent.keyDown(screen.getByRole('tab', { name: /^Sources/ }), { key: 'Home' });
-    expect(screen.getByRole('tab', { name: 'Answer' }).getAttribute('aria-selected')).toBe('true');
+    await selected(answer);
+    fireEvent.keyDown(answer, { key: 'End' });
+    await selected(sources);
+    fireEvent.keyDown(sources, { key: 'Home' });
+    await selected(answer);
   });
 
   it('a click on a tab with nothing does not select it', () => {
     render(h(Theme, null, h(Tabs)));
-    fireEvent.click(screen.getByRole('tab', { name: 'Citation' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Citations' }));
     expect(screen.getByRole('tab', { name: 'Answer' }).getAttribute('aria-selected')).toBe('true');
   });
 });

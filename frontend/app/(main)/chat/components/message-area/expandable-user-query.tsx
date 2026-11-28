@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { Box, Flex, Heading, Text, Button, IconButton, Tooltip } from '@radix-ui/themes';
+import { Box, Button, Flex, Heading, Text, IconButton, VisuallyHidden } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { selectSkillsEnabled, useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
@@ -18,13 +18,13 @@ import {
 } from '@/chat/commands';
 import { ownerLabel, sharedByText } from '@/chat/components/chat-panel/slash-command-menu';
 import { useCanHover } from '@/lib/hooks/use-can-hover';
-import { MentionIcon } from '@/chat/components/mention-icon';
-import { locateMentionNames, mentionLabel, type MentionNode } from '@/chat/utils/node-mentions';
+import { locateMentionNames, mentionLabel, withheldSourceSpans, withWithheldSpans, type MentionNode } from '@/chat/utils/node-mentions';
 import { CHAT_LINK_STYLE, cutOutsideUrl, findUrls, shortLinkLabel } from '@/chat/utils/link-label';
 import { parseQuotedSelection, readableQuotedSelection } from '@/chat/utils/quoted-selection';
-
-export const QUESTION_CHAR_LIMIT = 250;
-export const EXPANDED_MAX_HEIGHT_PX = 360;
+import { chatExtension, chatSlots } from '@/config';
+import { questionDisplay } from './question-display';
+import { InlinePasteChip } from './sent-paste-chip';
+import { SourceChip, WithheldSourceChip } from '../source-chip';
 
 export interface ExpandableUserQueryProps {
   question: string;
@@ -34,53 +34,66 @@ export interface ExpandableUserQueryProps {
   onEdit?: () => void;
   /** The /command the question was sent as (SLASH1): drawn as its chip, with what was sent. */
   command?: SentCommand;
-  /** Nodes the question was scoped to; where the text names one, it shows as a chip. */
+  /**
+   * Sources the question named with `@`: each is drawn as its chip in the heading, as the composer drew it. The
+   * applied-filter pill under the question stays: it is the filter, the chip the mention.
+   */
   mentions?: readonly MentionNode[];
+  /** Where in `question` the server wrote the word for a source the reader can't open (the row's `withheldSources`). */
+  withheldSources?: readonly number[];
+  /** Under a byline: 20 px, 18 px when `compact`. Without it the window width decides. */
+  headline?: { compact: boolean };
 }
 
-function MentionChip({ node }: { node: MentionNode }) {
-  const text = mentionLabel(node);
-  // The icon is glued to the first word, so a line never breaks between them.
-  const firstBreak = text.search(/\s/);
-  const head = firstBreak < 0 ? text : text.slice(0, firstBreak);
-  const rest = firstBreak < 0 ? '' : text.slice(firstBreak);
-  const chip = (
-    <span
-      style={{
-        background: 'var(--accent-a3)',
-        color: 'var(--accent-a11)',
-        boxShadow: 'inset 0 0 0 1px var(--accent-a6)',
-        borderRadius: 6,
-        padding: '0 6px',
-        margin: '0 2px',
-        boxDecorationBreak: 'clone',
-        WebkitBoxDecorationBreak: 'clone',
-      }}
-    >
-      <span style={{ whiteSpace: 'nowrap' }}>
-        <span style={{ display: 'inline-flex', verticalAlign: '-0.12em', marginRight: 5, lineHeight: 0 }} aria-hidden>
-          <MentionIcon
-            nodeType={node.nodeType}
-            connector={node.connector}
-            extension={node.extension}
-            mimeType={node.mimeType}
-            name={node.name}
-            size={15}
-          />
-        </span>
-        {head}
-      </span>
-      {rest}
-    </span>
-  );
-  return text === node.name ? chip : <Tooltip content={node.name}>{chip}</Tooltip>;
+const NO_MENTIONS: readonly MentionNode[] = [];
+
+/** Clips a long question for its heading without cutting a URL in half (the URL is kept whole), then as the extension clips. */
+const clipHeading = (text: string, limit: number) => chatExtension.question.truncate(text, cutOutsideUrl(text, limit));
+
+/** The question's tracking at each of its two sizes. */
+const HEADLINE_TRACKING = { '4': '-0.04px', '5': '-0.08px' } as const;
+
+/**
+ * Points Radix's per-size tracking variables at the question's own values, so the tracking follows whichever
+ * size the responsive `size` prop resolves to at the current width.
+ */
+const HEADLINE_TRACKING_VARS = Object.fromEntries(
+  Object.entries(HEADLINE_TRACKING).map(([size, value]) => [`--letter-spacing-${size}`, value])
+) as React.CSSProperties;
+
+/** The heading with each named source as its chip; the text between goes through `withLinks`. */
+function withSources(
+  text: string,
+  mentions: readonly MentionNode[],
+  withheld: ReadonlyArray<{ start: number; end: number }>,
+): React.ReactNode[] {
+  const spans = withWithheldSpans(mentions.length > 0 ? locateMentionNames(text, mentions) : [], withheld);
+  if (spans.length === 0) return withLinks(text, 't0');
+  const out: React.ReactNode[] = [];
+  let cursor = 0;
+  for (const span of spans) {
+    if (span.start > cursor) out.push(...withLinks(text.slice(cursor, span.start), `t${cursor}`));
+    out.push(
+      span.node ? (
+        <SourceChip key={`s${span.start}`} source={span.node} label={mentionLabel(span.node)} />
+      ) : (
+        <WithheldSourceChip key={`w${span.start}`} />
+      )
+    );
+    cursor = span.end;
+  }
+  if (cursor < text.length) out.push(...withLinks(text.slice(cursor), `t${cursor}`));
+  return out;
 }
 
+// URLs become short links; the text around them is drawn by the chat extension's `QueryText`.
 function withLinks(text: string, keyPrefix: string): React.ReactNode[] {
   const out: React.ReactNode[] = [];
   let cursor = 0;
   for (const { start, end, url } of findUrls(text)) {
-    if (start > cursor) out.push(text.slice(cursor, start));
+    if (start > cursor) {
+      out.push(<chatSlots.QueryText key={`${keyPrefix}-${cursor}`} text={text.slice(cursor, start)} />);
+    }
     out.push(
       <a
         key={`${keyPrefix}-${start}`}
@@ -95,22 +108,9 @@ function withLinks(text: string, keyPrefix: string): React.ReactNode[] {
     );
     cursor = end;
   }
-  if (cursor < text.length) out.push(text.slice(cursor));
-  return out;
-}
-
-function withMentions(text: string, mentions: readonly MentionNode[]): React.ReactNode {
-  const spans = locateMentionNames(text, mentions);
-  const out: React.ReactNode[] = [];
-  let cursor = 0;
-  for (const span of spans) {
-    if (span.start > cursor) out.push(...withLinks(text.slice(cursor, span.start), `t${cursor}`));
-    out.push(
-      <MentionChip key={`${span.node.id}-${span.start}`} node={span.node} />
-    );
-    cursor = span.end;
+  if (cursor < text.length) {
+    out.push(<chatSlots.QueryText key={`${keyPrefix}-${cursor}`} text={text.slice(cursor)} />);
   }
-  if (cursor < text.length) out.push(...withLinks(text.slice(cursor), `t${cursor}`));
   return out;
 }
 
@@ -119,7 +119,7 @@ function ActionIconButton({
   icon,
   visible,
   onClick,
-  color = 'var(--slate-11)',
+  color = 'var(--text-secondary)',
 }: {
   ariaLabel: string;
   icon: string;
@@ -132,13 +132,14 @@ function ActionIconButton({
       variant="ghost"
       color="gray"
       size="1"
+      className="touch-hit"
       onClick={onClick}
       aria-label={ariaLabel}
       style={{
         cursor: 'pointer',
         flexShrink: 0,
         opacity: visible ? 1 : 0,
-        transition: 'opacity 0.15s ease',
+        transition: 'opacity var(--motion-micro) var(--motion-ease)',
         pointerEvents: visible ? 'auto' : 'none',
       }}
     >
@@ -147,40 +148,10 @@ function ActionIconButton({
   );
 }
 
-function ToggleButton({
-  expanded,
-  onToggle,
-}: {
-  expanded: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <Button
-      color="gray"
-      size="2"
-      onClick={onToggle}
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: '2px',
-        cursor: 'pointer',
-        color: 'var(--slate-11)',
-        background: 'none',
-        padding: 0,
-        fontFamily: 'inherit',
-        height: 'auto',
-      }}
-    >
-      {expanded ? 'Show less' : 'Show more'}
-      <MaterialIcon
-        name={expanded ? 'keyboard_arrow_up' : 'keyboard_arrow_down'}
-        size={ICON_SIZES.PRIMARY}
-      />
-    </Button>
-  );
-}
-
 const SKILLS_PAGE = '/workspace/skills/personal';
+
+/** How tall "What was sent" grows before it scrolls. */
+const SENT_TEXT_MAX_HEIGHT_PX = 360;
 
 /** "Save as command" (SLASH1 S3): the skills editor, opened on a new personal command holding this text. */
 function SaveAsCommandButton({ text, visible }: { text: string; visible: boolean }) {
@@ -206,20 +177,30 @@ function SaveAsCommandButton({ text, visible }: { text: string; visible: boolean
   );
 }
 
-function QueryActions({
+export function QueryActions({
   question,
   showEdit,
   onEdit,
   visible,
   saveAsCommand = false,
+  reserveEdit = false,
 }: {
   question: string;
   showEdit: boolean;
   onEdit?: () => void;
   visible: boolean;
   saveAsCommand?: boolean;
+  /**
+   * Edit is offered once the answer is done: while it runs its place is kept, unseen and out of reach, so the
+   * question's last line does not re-wrap (and push the answer down) the moment Edit appears.
+   */
+  reserveEdit?: boolean;
 }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
+  // The two 28 px buttons sit apart with a pointer, and on touch, where each tap area grows to 44 px,
+  // spread until those areas meet; neither pair overlaps.
+  const canHover = useCanHover();
 
   useEffect(() => {
     if (!copied) return;
@@ -228,31 +209,42 @@ function QueryActions({
   }, [copied]);
 
   const handleCopy = useCallback(() => {
-    void navigator.clipboard.writeText(readableQuotedSelection(question)).then(() => {
+    void navigator.clipboard.writeText(readableQuotedSelection(chatExtension.question.toPlainText(question))).then(() => {
       setCopied(true);
     }).catch(() => {});
   }, [question]);
 
-  if (!question.trim() && !showEdit) return null;
+  const holdEditPlace = reserveEdit && !(showEdit && onEdit);
+  if (!question.trim() && !showEdit && !holdEditPlace) return null;
 
   return (
-    <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
+    <Flex align="center" gap={canHover ? '2' : '5'} style={{ flexShrink: 0 }}>
       {question.trim() ? (
         <ActionIconButton
-          ariaLabel={copied ? 'Copied' : 'Copy'}
+          ariaLabel={copied ? t('chat.question.copied') : t('chat.copy')}
           icon={copied ? 'check' : 'content_copy'}
           visible={visible}
           onClick={handleCopy}
-          color={copied ? 'var(--accent-11)' : 'var(--slate-11)'}
+          // Inside a gray Radix control, so the brand green is named directly.
+          color={copied ? 'var(--emerald-11)' : 'var(--text-secondary)'}
         />
       ) : null}
       {showEdit && onEdit ? (
         <ActionIconButton
-          ariaLabel="Edit"
+          ariaLabel={t('chat.question.edit')}
           icon="edit"
           visible={visible}
           onClick={onEdit}
         />
+      ) : holdEditPlace ? (
+        <span
+          data-testid="user-query-edit-placeholder"
+          aria-hidden
+          inert
+          style={{ display: 'inline-flex', flexShrink: 0, visibility: 'hidden' }}
+        >
+          <ActionIconButton ariaLabel={t('chat.question.edit')} icon="edit" visible={false} onClick={() => {}} />
+        </span>
       ) : null}
       {saveAsCommand && question.trim() ? <SaveAsCommandButton text={question} visible={visible} /> : null}
     </Flex>
@@ -348,7 +340,7 @@ function CommandQuery({ command }: { command: SentCommand }) {
                 padding: 'var(--space-3)',
               }}
             >
-              <Text size="2" as="p" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: EXPANDED_MAX_HEIGHT_PX, overflowY: 'auto' }}>
+              <Text size="2" as="p" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: SENT_TEXT_MAX_HEIGHT_PX, overflowY: 'auto' }}>
                 {command.expanded}
               </Text>
               <Text size="1" color="gray" as="p" style={{ marginTop: 'var(--space-2)' }} data-testid="user-command-provenance">
@@ -364,6 +356,12 @@ function CommandQuery({ command }: { command: SentCommand }) {
   );
 }
 
+/**
+ * The question at the top of a turn: a 20 px `<h1>` (18 px on a narrow screen) whatever its length, with Copy
+ * and Edit beside it (outside the heading, so its name is the question alone).
+ * Long or fenced material is lifted out of the heading into "pasted" chips
+ * under it; what was sent is unchanged.
+ */
 export function ExpandableUserQuery({
   question,
   isMobile = false,
@@ -371,32 +369,48 @@ export function ExpandableUserQuery({
   isStreaming = false,
   onEdit,
   command,
-  mentions = [],
+  headline,
+  mentions = NO_MENTIONS,
+  withheldSources,
 }: ExpandableUserQueryProps) {
-  const [expanded, setExpanded] = useState(false);
   const [hovered, setHovered] = useState(false);
   const catalog = useCommandCatalog((s) => s.commands);
   const skillsEnabled = useFeatureFlagsStore(selectSkillsEnabled);
+  const [focusWithin, setFocusWithin] = useState(false);
   const canHover = useCanHover();
+  // A question sent in this session settles in; one loaded with the chat is simply there.
+  const [arrivesNow] = useState(isStreaming);
 
-  useEffect(() => setExpanded(false), [question]);
+  // A follow-up that quotes an answer is stored with the excerpt first: the excerpt shows as a quote card above it.
+  const quoted = parseQuotedSelection(question);
+  const display = questionDisplay(chatSlots.useQuestionHeading(quoted.question), clipHeading);
 
   // While the turn streams the server's record is not back yet: the chip comes from the menu's list.
   const sentCommand = command ?? (isStreaming ? liveSentCommand(question, catalog) : null);
   if (sentCommand) return <CommandQuery command={sentCommand} />;
-
-  const quoted = parseQuotedSelection(question);
-  const displayQuestion = quoted.question;
-  const isLong = Boolean(displayQuestion.trim()) && displayQuestion.length > QUESTION_CHAR_LIMIT;
+  // The question is the turn's anchor, so it keeps one size: a long one folds into a chip instead of shrinking.
+  const size = headline ? (headline.compact ? '4' : '5') : ({ initial: '4', md: '5' } as const);
   const showEdit = Boolean(!isStreaming && messageId && onEdit);
-  const toggle = () => setExpanded((prev) => !prev);
+  const actionsVisible = hovered || focusWithin || isMobile || !canHover;
+
+  const actions = (
+    <span data-testid="user-query-inline-actions" style={{ display: 'inline-flex', verticalAlign: 'middle' }}>
+      <QueryActions
+        question={question}
+        showEdit={showEdit}
+        onEdit={onEdit}
+        visible={actionsVisible}
+        reserveEdit={Boolean(isStreaming && onEdit)}
+        saveAsCommand={skillsEnabled && !isStreaming}
+      />
+    </span>
+  );
 
   const quoteCard = quoted.excerpt ? (
     <Box
       data-testid="user-query-quote"
       style={{
-        marginTop: 'var(--space-3)',
-        marginBottom: displayQuestion.trim() ? 'var(--space-2)' : 0,
+        marginBottom: quoted.question.trim() ? 'var(--space-2)' : 0,
         padding: 'var(--space-2) var(--space-3)',
         borderRadius: 'var(--radius-2)',
         backgroundColor: 'var(--olive-3)',
@@ -412,100 +426,69 @@ export function ExpandableUserQuery({
     </Box>
   ) : null;
 
-  if (!isLong || !expanded) {
-    const displayed =
-      isLong && !expanded
-        ? displayQuestion.slice(0, cutOutsideUrl(displayQuestion, QUESTION_CHAR_LIMIT)).trimEnd() + '…'
-        : displayQuestion;
-
-    return (
-      <Box
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-      >
-        {quoteCard}
-        <Heading
-          size="5"
-          weight="medium"
-          data-testid="user-query-heading"
-          style={{
-            color: 'var(--slate-12)',
-            lineHeight: 1.3,
-            paddingTop: quoted.excerpt ? 0 : 'var(--space-3)',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-          }}
-        >
-          {displayed ? withMentions(displayed, mentions) : null}
-          <span
-            data-testid="user-query-inline-actions"
-            style={{ marginLeft: 'var(--space-2)', verticalAlign: 'middle', display: 'inline-flex' }}
-          >
-            <QueryActions
-              question={question}
-              showEdit={showEdit}
-              onEdit={onEdit}
-              visible={hovered || isMobile || !canHover}
-              saveAsCommand={skillsEnabled && !isStreaming}
-            />
-          </span>
-        </Heading>
-        {isLong ? (
-          <Box style={{ marginTop: 'var(--space-2)' }}>
-            <ToggleButton expanded={false} onToggle={toggle} />
-          </Box>
-        ) : null}
-      </Box>
-    );
-  }
-
-  return (
-    <Box style={{ paddingTop: quoted.excerpt ? 0 : 'var(--space-3)' }}>
-      {quoteCard}
-      <Box
-        data-testid="user-query-bubble"
+  const heading = (
+    <Text size={size} weight="medium" asChild>
+      <h1
+        data-testid="user-query-heading"
         style={{
-          backgroundColor: 'var(--slate-3)',
-          border: '1px solid var(--slate-a4)',
-          borderRadius: 'var(--radius-3)',
-          overflow: 'hidden',
+          display: 'inline',
+          margin: 0,
+          ...HEADLINE_TRACKING_VARS,
+          color: 'var(--text-primary)',
         }}
       >
-        <Text
-          data-testid="user-query-text"
-          size="2"
-          style={{
-            display: 'block',
-            color: 'var(--slate-12)',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-            lineHeight: 1.55,
-            padding: 'var(--space-3)',
-            maxHeight: `${EXPANDED_MAX_HEIGHT_PX}px`,
-            overflowY: 'auto',
-          }}
-        >
-          {withMentions(displayQuestion, mentions)}
+        {withSources(display.heading, mentions, withheldSourceSpans(display.heading, question, withheldSources))}
+      </h1>
+    </Text>
+  );
+
+  return (
+    <Box
+      className={arrivesNow ? 'conversation-fade-in' : undefined}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocus={() => setFocusWithin(true)}
+      onBlur={(event: React.FocusEvent<HTMLElement>) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusWithin(false);
+      }}
+    >
+      {quoteCard}
+      {display.headingHidden ? (
+        <VisuallyHidden asChild>
+          <h1 data-testid="user-query-heading">{display.heading}</h1>
+        </VisuallyHidden>
+      ) : (
+        // The line box around the heading carries its size, so the actions sit on its last line.
+        <Text size={size} weight="medium" asChild>
+          <div
+            style={{
+              margin: 0,
+              ...HEADLINE_TRACKING_VARS,
+              color: 'var(--text-primary)',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+            }}
+          >
+            {heading}
+            <span aria-hidden style={{ display: 'inline-block', width: 'var(--space-2)' }} />
+            {actions}
+          </div>
         </Text>
+      )}
+      {display.pastes.length > 0 && (
         <Flex
-          data-testid="user-query-actions"
+          data-testid="user-query-pastes"
           align="center"
-          justify="between"
-          style={{
-            padding: 'var(--space-2) var(--space-3)',
-            borderTop: '1px solid var(--slate-a4)',
-            backgroundColor: 'var(--slate-2)',
-          }}
+          gap="2"
+          wrap="wrap"
+          style={{ marginTop: display.headingHidden ? 0 : 'var(--space-3)' }}
         >
-          <ToggleButton expanded onToggle={toggle} />
-          <QueryActions
-            question={question}
-            showEdit={showEdit}
-            onEdit={onEdit}
-            visible
-          />
+          {display.pastes.map((paste, index) => (
+            <InlinePasteChip key={`${paste.kind}-${index}`} kind={paste.kind} text={paste.text} />
+          ))}
+          {display.headingHidden && actions}
         </Flex>
-      </Box>
+      )}
     </Box>
   );
 }

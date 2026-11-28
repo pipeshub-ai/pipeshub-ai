@@ -17,6 +17,7 @@ import { AdminRoleMigration } from './migrations/admin_role.migration';
 import { DocumentOrgIdBackfillMigration } from './migrations/document_orgid_backfill.migration';
 import { ChatSessionsMigration } from './migrations/chat_sessions.migration';
 import { UserGroupNameIndexMigration } from './migrations/user_group_name_index.migration';
+import { SupersededChatIndexesMigration } from './migrations/superseded_chat_indexes.migration';
 import { getOrgRepository } from '../../../libs/repositories/org';
 import { SignInMethodsRemovalMigration } from './migrations/sign_in_methods_removal.migration';
 import { DelegationLogRetentionMigration } from './migrations/delegation_log_retention.migration';
@@ -25,6 +26,34 @@ import { WebSearchDuckDuckGoDefaultMigration } from './migrations/web_search_duc
 import { InstanceAppOwnerMigration } from './migrations/instance_app_owner.migration';
 
 const DEFAULT_CHAT_SESSIONS_MIGRATION_BATCH_SIZE = 10;
+
+/**
+ * A migration of conversation data that runs right after the chat sessions migration. It logs its
+ * own outcome and never throws, so the boot continues.
+ */
+export type ConversationMigration = (
+  logger: Logger,
+  keyValueStoreService: KeyValueStoreService,
+) => Promise<void>;
+
+const conversationMigrations: ConversationMigration[] = [];
+
+/** Adds migrations to run after the chat sessions migration, once each. Returns a function that removes them again. */
+export function useConversationMigrations(
+  ...migrations: ConversationMigration[]
+): () => void {
+  for (const migration of migrations) {
+    if (!conversationMigrations.includes(migration)) {
+      conversationMigrations.push(migration);
+    }
+  }
+  return () => {
+    for (const migration of migrations) {
+      const at = conversationMigrations.indexOf(migration);
+      if (at >= 0) conversationMigrations.splice(at, 1);
+    }
+  };
+}
 
 export interface MigrationDependencies {
   scheduler: CrawlingSchedulerService;
@@ -67,9 +96,13 @@ export class MigrationService {
     await this.connectorSyncScheduleMigration(deps.scheduler, deps.appConfig);
     await this.chatKbFiltersMigration();
     await this.chatSessionsMigration();
+    for (const migrate of conversationMigrations) {
+      await migrate(this.logger, this.keyValueStoreService);
+    }
     await this.adminRoleMigration();
     await this.userGroupNameIndexMigration();
     await this.delegationLogRetentionMigration();
+    await this.supersededChatIndexesMigration();
     await this.documentOrgIdMigration();
     this.logger.info('✅ Migration completed');
   }
@@ -199,6 +232,13 @@ export class MigrationService {
     // Changing the retention constant does not move an index that already
     // exists; this does. run() logs its own outcome and never throws.
     await new DelegationLogRetentionMigration(this.logger).run();
+  }
+
+  async supersededChatIndexesMigration(): Promise<void> {
+    // The chat indexes earlier schemas declared on MongoDB; PostgreSQL's come from its own migrations.
+    if (docStore() === 'postgres') return;
+    // run() logs its own outcome and never throws.
+    await new SupersededChatIndexesMigration(this.logger).run();
   }
 
   async chatKbFiltersMigration(): Promise<void> {

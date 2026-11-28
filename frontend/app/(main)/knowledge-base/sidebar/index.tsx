@@ -7,7 +7,7 @@ import { SidebarBase, SidebarBackHeader, SecondaryPanel } from '@/app/components
 import { SidebarHeaderActions } from '@/app/(main)/chat/sidebar/header';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { buildConnectorsUrl } from '@/app/(main)/workspace/connectors/utils/build-connectors-url';
 import { useKnowledgeBaseStore } from '../store';
@@ -100,7 +100,7 @@ function KBSidebarFromStore() {
   const router = useRouter();
   const store = useKnowledgeBaseStore();
   const pageViewMode = store.currentViewMode || 'collections';
-  const isMobile = useIsMobile();
+  const isMobile = useIsBelowDesktop();
   const isMobileOpen = useMobileSidebarStore((s) => s.isOpen);
   const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
 
@@ -164,7 +164,7 @@ function KBSidebarContent({
   const router = useRouter();
   const { t } = useTranslation();
   const isAdmin = useUserStore(selectIsAdmin);
-  const isMobile = useIsMobile();
+  const isMobile = useIsBelowDesktop();
   const isMobileOpen = useMobileSidebarStore((s) => s.isOpen);
   const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
   const {

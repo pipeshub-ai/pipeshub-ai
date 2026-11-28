@@ -13,6 +13,7 @@ import { ChatSessionMessage } from '../../../src/modules/enterprise_search/schem
 import { appendMessages, formatPreviousConversations, updateMessageById } from '../../../src/modules/enterprise_search/utils/utils';
 import { IMessage } from '../../../src/modules/enterprise_search/types/conversation.interfaces';
 import * as controller from '../../../src/modules/enterprise_search/controller/es_controller';
+import { behindGuard, realGuards } from '../enterprise_search/helpers/guarded-chat';
 import { ProjectService } from '../../../src/modules/projects/services/project.service';
 import { Logger } from '../../../src/libs/services/logger.service';
 import { HarnessRun, RunTransition } from '../../../src/modules/agent-harness/domain/execution';
@@ -406,7 +407,12 @@ describe('P1b T3 session import and rollback on a MongoDB replica set', function
         },
       };
       const next = sinon.stub();
-      await controller.getConversationById({ aiBackend: 'http://ai.test' } as never)(owner(h, sessionId), res as never, next as never);
+      // As the route mounts it: the read guard grants the chat, then the handler reads it.
+      await behindGuard(realGuards(), 'read', controller.getConversationById({ aiBackend: 'http://ai.test' } as never))(
+        owner(h, sessionId),
+        res as never,
+        next as never,
+      );
       expect(next.called, String(next.firstCall?.args[0])).to.equal(false);
       return (
         body as {

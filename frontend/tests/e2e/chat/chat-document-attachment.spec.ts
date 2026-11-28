@@ -70,7 +70,8 @@ async function openAttachFiles(page: import('@playwright/test').Page) {
   const plusButton = page.getByRole('button', { name: 'Attach files and capabilities' });
   await expect(plusButton).toBeVisible({ timeout: 5_000 });
   await plusButton.click();
-  const attachItem = page.getByText('Attach files', { exact: true });
+  // By role and name: the item's words share one element with its icon's glyph.
+  const attachItem = page.getByRole('menuitem', { name: 'Attach files' });
   await expect(attachItem).toBeVisible({ timeout: 5_000 });
   await attachItem.click();
 }
@@ -79,7 +80,7 @@ test.describe('Chat — document attachments (DOCX / XLSX / CSV)', () => {
   test.beforeEach(async ({ page }) => {
     await mockBaselineApis(page);
     await page.goto('/chat/');
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
   });
 
   test('DOCX attachment is accepted by the file picker and shows a chip after upload', async ({ page }) => {
@@ -142,6 +143,6 @@ test.describe('Chat — document attachments (DOCX / XLSX / CSV)', () => {
       buffer: Buffer.from('a,b\n1,2\n'),
     });
 
-    await expect(page.locator('textarea').last()).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByTestId('chat-composer').last()).toBeVisible({ timeout: 10_000 });
   });
 });

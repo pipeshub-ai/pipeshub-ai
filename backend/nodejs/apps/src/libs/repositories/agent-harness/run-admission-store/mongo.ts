@@ -34,6 +34,7 @@ import {
   assertPinCurrent,
   rootRunDocument,
   rootRunRequirements,
+  withAnswersOnlyHistory,
   sessionJournalFeatures,
   durableSessionTitle,
 } from '../../../../modules/agent-harness/domain/admission';
@@ -78,6 +79,10 @@ import {
   RunAudience,
   runAudience,
 } from '../../../../modules/agent-harness/domain/session-audience';
+import {
+  answersOnlyTurns,
+  givesEarlierResults,
+} from '../../../../modules/enterprise_search/utils/earlier-turns';
 import {
   LabelledTurn,
   MAX_VISIBLE_RUNS,
@@ -299,10 +304,11 @@ export class MongoRunAdmissionStore
         let previousConversations: Array<Record<string, unknown>> = [];
         let imported: ImportPlan | null = null;
         let binding: SessionBinding | null = null;
-        // The session's counter and ledger as this transaction leaves them: the turn's write needs no read of it.
+        // The session's counters and ledger as this transaction leaves them: the turn's write needs no read of it.
         let accounted: AccountedConversation = {
           lastSeq: 0,
           ledger: EMPTY_LEDGER,
+          rev: 0,
         };
         const sessionScope = {
           orgId: command.orgId,
@@ -474,6 +480,10 @@ export class MongoRunAdmissionStore
               audience.ownerRef,
             );
           }
+          // In a chat others read, the earlier answers' text only; the worker gives the journal's turns the same way.
+          if ((binding as SessionBinding).readByOthers) {
+            previousConversations = answersOnlyTurns(previousConversations);
+          }
           // A v1 run has no journal to import into (v1 is failed on claim).
           if (command.harnessMajor === 2) {
             // Whether a run was ever admitted here, not whether the stream has
@@ -481,7 +491,11 @@ export class MongoRunAdmissionStore
             const planned = planSessionImport(history, sessionCounter !== null);
             imported = planned.plan;
             // Saved with the user's turn, in its one write of the session.
-            accounted = { lastSeq: history.lastSeq, ledger: planned.ledger };
+            accounted = {
+              ...accounted,
+              lastSeq: history.lastSeq,
+              ledger: planned.ledger,
+            };
           }
         }
 
@@ -525,6 +539,10 @@ export class MongoRunAdmissionStore
           }),
           activeSessionKey: activeSessionKey(command.orgId, sessionId),
           ...(audience !== null ? { sessionRole: audience.sessionRole } : {}),
+          // Given what earlier turns' tools returned (a chat nobody else reads): its answer is marked so.
+          ...(givesEarlierResults(previousConversations)
+            ? { earlierResults: true as const }
+            : {}),
         };
         const history = await this.historyContent.store(
           run,
@@ -534,13 +552,20 @@ export class MongoRunAdmissionStore
         if (history === null && run.input) {
           run.input.previousConversations = previousConversations;
         }
-        const memory = memoryPin(command.memory, audience !== null);
-        const requires = rootRunRequirements(
-          run,
-          command,
-          sessionCounter?.journalFeatures ?? [],
-          audience,
-          memory,
+        // A chat others read is shared for memory as for its history: the actor's personal memories stay out.
+        const memory = memoryPin(
+          command.memory,
+          audience !== null || binding?.readByOthers === true,
+        );
+        const requires = withAnswersOnlyHistory(
+          rootRunRequirements(
+            run,
+            command,
+            sessionCounter?.journalFeatures ?? [],
+            audience,
+            memory,
+          ),
+          binding?.readByOthers === true,
         );
         if (requires !== undefined) run.requires = requires;
         if (command.resolved !== undefined) {

@@ -4,6 +4,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Avatar, IconButton, DropdownMenu } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { IconMenuItem } from '@/app/components/ui/icon-menu-item';
 
 export interface AvatarUploadWidgetProps {
   /** URL of the current image (null = no image) */
@@ -67,18 +68,12 @@ export function AvatarUploadWidget({
             </IconButton>
           </DropdownMenu.Trigger>
           <DropdownMenu.Content align="end" sideOffset={4}>
-            <DropdownMenu.Item onClick={onEditClick}>
-              <Flex align="center" gap="2">
-                <MaterialIcon name="upload" size={14} color="var(--gray-11)" />
-                {t('action.upload')}
-              </Flex>
-            </DropdownMenu.Item>
-            <DropdownMenu.Item color="red" onClick={onDeleteClick}>
-              <Flex align="center" gap="2">
-                <MaterialIcon name="delete" size={14} color="var(--red-11)" />
-                {t('action.remove')}
-              </Flex>
-            </DropdownMenu.Item>
+            <IconMenuItem icon="upload" onClick={onEditClick}>
+              {t('action.upload')}
+            </IconMenuItem>
+            <IconMenuItem icon="delete" color="red" onClick={onDeleteClick}>
+              {t('action.remove')}
+            </IconMenuItem>
           </DropdownMenu.Content>
         </DropdownMenu.Root>
       ) : (

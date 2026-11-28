@@ -227,6 +227,11 @@ def _origin(url: str) -> tuple[str, str, Optional[int]]:
     return scheme, (parts.hostname or "").lower(), parts.port or {"http": 80, "https": 443}.get(scheme)
 
 
+def uses_shared_credential(instance: ApiToolsetInstance) -> bool:
+    """Whether its calls sign in with the one credential an admin stored for everyone."""
+    return instance.use_shared_credential and instance.auth_scheme.type is not AuthType.NONE
+
+
 def credential_owner(instance: ApiToolsetInstance, user_id: str) -> str:
     return SHARED_CREDENTIAL_OWNER if instance.use_shared_credential else user_id
 

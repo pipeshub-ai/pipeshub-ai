@@ -12,6 +12,7 @@ import { useRunTimeline } from '../../hooks/use-run-timeline';
 import { useChatStore } from '../../store';
 import { useActivityPanelStore } from '../activity-panel/activity-panel-store';
 import { useActivityRun } from '../activity-panel/use-activity-run';
+import { useAnswerSlotId } from './answer-slot-scope';
 
 function fillComposer(text: string): void {
   useCommandStore.getState().dispatch(FILL_COMPOSER_COMMAND, { text });
@@ -27,7 +28,18 @@ function Chip({ icon, label, describedBy, onClick }: { icon: string; label: stri
       onClick={onClick}
       aria-describedby={describedBy}
       data-testid="followup-chip"
-      style={{ height: 'auto', minHeight: 32, padding: 'var(--space-1) var(--space-3)', whiteSpace: 'normal', textAlign: 'left', cursor: 'pointer' }}
+      // Never wider than its row (a phone's included): a long suggestion wraps, breaking a word too long for a line.
+      style={{
+        height: 'auto',
+        minHeight: 32,
+        maxWidth: '100%',
+        minWidth: 0,
+        padding: 'var(--space-1) var(--space-3)',
+        whiteSpace: 'normal',
+        overflowWrap: 'anywhere',
+        textAlign: 'left',
+        cursor: 'pointer',
+      }}
     >
       <span aria-hidden="true" style={{ display: 'inline-flex' }}>
         <MaterialIcon name={icon} size={16} color="var(--gray-11)" />
@@ -47,10 +59,11 @@ export function FollowupChips() {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
   const hintId = useId();
-  const isStreaming = useChatStore((s) => (s.activeSlotId ? (s.slots[s.activeSlotId]?.isStreaming ?? false) : false));
+  const slotId = useAnswerSlotId();
+  const isStreaming = useChatStore((s) => (slotId ? (s.slots[slotId]?.isStreaming ?? false) : false));
   const run = useActivityRun();
   const justFinished = useChatStore((s) => {
-    const followed = s.activeSlotId ? s.slots[s.activeSlotId]?.lastDurableRun : null;
+    const followed = slotId ? s.slots[slotId]?.lastDurableRun : null;
     return Boolean(run && followed && followed.runId === run.runId);
   });
   const openSection = useActivityPanelStore((s) => s.openSection);

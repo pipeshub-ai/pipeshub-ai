@@ -48,6 +48,7 @@ export function ShareSearchInput({
   onEmailSubmit,
 }: ShareSearchInputProps) {
   const { t } = useTranslation();
+  const searchLabel = t(supportsTeams ? 'shareSidebar.searchPlaceholderTeams' : 'shareSidebar.searchPlaceholderUsers');
   const inputRef = useRef<HTMLInputElement>(null);
   const hasRoleSelection = selections.some((s) => s.type === 'user' || (teamsHaveRoles && s.type === 'team'));
 
@@ -109,15 +110,26 @@ export function ShareSearchInput({
             >
               {selection.email || selection.name}
             </Text>
-            <Box
-              style={{ cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+            <button
+              type="button"
+              className="focus-ring-inset"
+              aria-label={t('shareSidebar.removeSelection', { name: selection.email || selection.name })}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                padding: 0,
+                border: 'none',
+                borderRadius: 'var(--radius-1)',
+                background: 'none',
+                cursor: 'pointer',
+              }}
               onClick={(e) => {
                 e.stopPropagation();
                 onRemoveSelection(selection.id);
               }}
             >
               <MaterialIcon name="close" size={14} color={selection.isInvalid ? 'var(--red-11)' : 'var(--accent-11)'} />
-            </Box>
+            </button>
           </Flex>
         ))}
 
@@ -137,11 +149,9 @@ export function ShareSearchInput({
               onSearchChange('');
             }
           }}
-          placeholder={
-            selections.length === 0
-              ? t(supportsTeams ? 'shareSidebar.searchPlaceholderTeams' : 'shareSidebar.searchPlaceholderUsers')
-              : ''
-          }
+          // Its name is the placeholder's words, kept when the placeholder goes after the first pick.
+          aria-label={searchLabel}
+          placeholder={selections.length === 0 ? searchLabel : ''}
           style={{
             border: 'none',
             outline: 'none',

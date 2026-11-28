@@ -5,7 +5,7 @@ import { Types } from 'mongoose'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
-import { ForbiddenError, NotFoundError, InternalServerError } from '../../../../src/libs/errors/http.errors'
+import { ConflictError, ForbiddenError, NotFoundError, InternalServerError } from '../../../../src/libs/errors/http.errors'
 import {
   buildForkTitle,
   forkTitleFor,
@@ -19,10 +19,13 @@ import {
   resolveForks,
   expirePendingApprovals,
   FORK_COPY_BATCH_SIZE,
+  replaceTurnWithBranch,
 } from '../../../../src/modules/enterprise_search/utils/fork-conversation'
-import { InMemoryChatStore, oid } from '../controller/chat-test-harness'
+import { fakeReplicaSetSession, InMemoryChatStore, oid } from '../controller/chat-test-harness'
+import { labelContentHash, labelStateOf } from '../../../../src/modules/enterprise_search/services/conversation/privacy/label'
+import { configureVisibility, rememberAnswerClosures, resetVisibility, visibleRows, type ReaderRow } from '../../../../src/modules/enterprise_search/services/conversation/privacy/visibility'
+import { memoryClosureStore, type Row } from '../services/conversation/privacy/closure-world'
 import type { ChatSessionDto } from '../../../../src/libs/repositories/conversation/types'
-import { MongoTx } from '../../../../src/libs/repositories/mongo'
 
 describe('fork-conversation helpers', () => {
   it('buildForkTitle prefixes the original title', () => {
@@ -98,7 +101,7 @@ describe('copySessionUpToMessage', () => {
 
     expect(result.messageCount).to.equal(2)
     expect(result.conversation.title).to.equal('Fork of Quarterly numbers')
-    expect(result.conversation.userId).to.equal(String(owner))
+    expect(String(result.conversation.userId)).to.equal(String(owner))
     expect(result.conversation.isShared).to.equal(false)
     expect(store.messagesOf(source._id)).to.have.length(sourceMessageCount)
     expect(store.session(source._id)?.title).to.equal('Quarterly numbers')
@@ -108,7 +111,203 @@ describe('copySessionUpToMessage', () => {
       'What were Q3 sales?',
       'Q3 sales were 4M.',
     ])
-    expect(forked.every((m) => String(m.sessionId) === result.conversation._id)).to.equal(true)
+    expect(forked.every((m) => String(m.sessionId) === String(result.conversation._id))).to.equal(true)
+  })
+
+  it('leaves behind another person’s answer from before labels that the forker reads through the view the chat had then', async () => {
+    // That view is for the chat it was shared in; a fork takes no copy of it.
+    const store = new InMemoryChatStore()
+    store.install()
+    const orgId = oid()
+    const owner = oid()
+    const reader = oid()
+    const source = store.addSession({ orgId, userId: owner, initiator: owner, title: 'Room', sessionType: 'chat', isShared: true, sharedWith: [{ userId: reader, accessLevel: 'read' }] })
+    store.addMessage(source, { messageType: 'user_query', content: 'What does the board say?', authorUserId: owner })
+    const theirs = store.addMessage(source, { messageType: 'bot_response', content: 'The board says 42.', requestedBy: owner })
+
+    const result = await copySessionUpToMessage(source, String(theirs._id), String(reader), String(orgId), { sessionType: 'chat' })
+
+    const forked = store.messagesOf(result.conversation._id).map((m) => m.content)
+    expect(forked).to.deep.equal(['What does the board say?'])
+  })
+
+  it("a copied answer keeps its label, bound to the copy's own version and text", async () => {
+    const store = new InMemoryChatStore()
+    store.install()
+    const orgId = oid()
+    const owner = oid()
+    const source = store.addSession({ orgId, userId: owner, initiator: owner, title: 'Q', sessionType: 'chat' })
+    store.addMessage(source, { messageType: 'user_query', content: 'What does R say?' })
+    const direct = { records: ['rec-R'], vrids: [], nodes: [], saVrids: [], personal: [], agents: [], chat: [], projects: [], marks: [] }
+    const content = 'R says revenue grew.'
+    const parts = [{ type: 'text', content }]
+    const ver = String(oid())
+    const label = { v: 5, ver, contentHash: labelContentHash(content, parts), direct, parents: [], complete: true, tagset: 1, pub: false }
+    const at = store.addMessage(source, { messageType: 'bot_response', content, parts, labelVer: ver, provenance: label, consent: { by: owner, ver, scope: 'everyone' } } as never)
+
+    const result = await copySessionUpToMessage(source, String(at._id), String(owner), String(orgId), { sessionType: 'chat' })
+
+    const copy = store.messagesOf(result.conversation._id)[1] as unknown as Record<string, any>
+    expect(copy.labelVer).to.be.a('string').and.not.equal(ver)
+    expect(copy.provenance).to.deep.include({ ver: copy.labelVer, direct })
+    expect(labelStateOf(copy as never)).to.equal('ok')
+    expect(copy).to.not.have.property('consent')
+  })
+
+  describe("what reached the forker's own answer through the room's share stays behind", () => {
+    afterEach(() => resetVisibility())
+
+    it('the forker\'s answer built on an answer shared with the room is not copied: in the fork no share of the room reaches it', async () => {
+      // Bob opens no record, so Dana's answer reaches him only through her share with the room.
+      configureVisibility({
+        labelRule: async () => true,
+        readable: async (_who, ids) => ({ readable: new Set<string>(), asked: new Set(ids), deleted: new Set<string>(), failed: false, validUntil: Date.now() + 30_000 }),
+      })
+      const store = new InMemoryChatStore()
+      store.install()
+      const orgId = oid()
+      const dana = oid()
+      const bob = oid()
+      const source = store.addSession({ orgId, userId: dana, initiator: dana, title: 'Room', sessionType: 'chat', isShared: true })
+      const direct = (records: string[]) => ({ records, vrids: [], nodes: [], saVrids: [], personal: [], agents: [], chat: [], projects: [], marks: [] })
+      const labelled = (content: string, labelDirect: Record<string, unknown>, parents: unknown[]) => {
+        const ver = String(oid())
+        const parts = [{ type: 'text', content }]
+        return { content, parts, labelVer: ver, provenance: { v: 5, ver, contentHash: labelContentHash(content, parts), direct: labelDirect, parents, complete: true, tagset: 1, pub: false } }
+      }
+      store.addMessage(source, { messageType: 'user_query', content: 'What does R say?', authorUserId: dana })
+      const danas = labelled('R says revenue grew.', direct(['rec-R']), [])
+      const shared = store.addMessage(source, { messageType: 'bot_response', requestedBy: dana, ...danas, consent: { by: dana, ver: danas.labelVer, scope: 'everyone' } } as never)
+      store.addMessage(source, { messageType: 'user_query', content: 'Summarise that for the team.', authorUserId: bob })
+      const bobs = store.addMessage(source, {
+        messageType: 'bot_response',
+        requestedBy: bob,
+        ...labelled('Revenue grew.', direct([]), [{ id: String(shared._id), ver: danas.labelVer, mode: 'text' }]),
+      } as never)
+
+      const result = await copySessionUpToMessage(source, String(bobs._id), String(bob), String(orgId), { sessionType: 'chat' })
+
+      const copied = store.messagesOf(result.conversation._id)
+      expect(copied.map((m) => m.messageType)).to.deep.equal(['user_query', 'user_query'])
+      expect(result.messageCount).to.equal(2)
+    })
+
+    it('decided by the closures the row writer kept: a new process forks from them and leaves the same answers behind', async () => {
+      const rows = new Map<string, Row>()
+      const kept = memoryClosureStore(rows)
+      // Bob opens no record, so Dana's answer reaches him only through her share with the room.
+      const deps = {
+        labelRule: async () => true,
+        readable: async (_who: unknown, ids: readonly string[]) => ({ readable: new Set<string>(), asked: new Set(ids), deleted: new Set<string>(), failed: false, validUntil: Date.now() + 30_000 }),
+        closures: kept,
+      }
+      configureVisibility(deps)
+      const store = new InMemoryChatStore()
+      store.install()
+      const orgId = oid()
+      const dana = oid()
+      const bob = oid()
+      const source = store.addSession({ orgId, userId: dana, initiator: dana, title: 'Room', sessionType: 'chat', isShared: true })
+      const direct = (records: string[]) => ({ records, vrids: [], nodes: [], saVrids: [], personal: [], agents: [], chat: [], projects: [], marks: [] })
+      const labelled = (content: string, labelDirect: Record<string, unknown>, parents: unknown[]) => {
+        const ver = String(oid())
+        const parts = [{ type: 'text', content }]
+        return { content, parts, labelVer: ver, provenance: { v: 5, ver, contentHash: labelContentHash(content, parts), direct: labelDirect, parents, complete: true, tagset: 1, pub: false } }
+      }
+      store.addMessage(source, { messageType: 'user_query', content: 'What does R say?', authorUserId: dana })
+      const danas = labelled('R says revenue grew.', direct(['rec-R']), [])
+      const shared = store.addMessage(source, { messageType: 'bot_response', requestedBy: dana, ...danas, consent: { by: dana, ver: danas.labelVer, scope: 'everyone' } } as never)
+      store.addMessage(source, { messageType: 'user_query', content: 'Summarise that for the team.', authorUserId: bob })
+      const bobs = store.addMessage(source, {
+        messageType: 'bot_response',
+        requestedBy: bob,
+        ...labelled('Revenue grew.', direct([]), [{ id: String(shared._id), ver: danas.labelVer, mode: 'text' }]),
+      } as never)
+      for (const m of store.messagesOf(source._id)) rows.set(String(m._id), m as unknown as Row)
+      // As the row writer keeps them: Bob's closure holds Dana's answer as a share to check.
+      await rememberAnswerClosures(String(orgId), [shared, bobs] as unknown as ReaderRow[])
+      expect(kept.counts.kept).to.equal(2)
+      resetVisibility()
+      configureVisibility(deps)
+      const gets = kept.counts.gets
+
+      const result = await copySessionUpToMessage(source, String(bobs._id), String(bob), String(orgId), { sessionType: 'chat' })
+
+      expect(store.messagesOf(result.conversation._id).map((m) => m.messageType)).to.deep.equal(['user_query', 'user_query'])
+      expect(kept.counts.gets, 'the fork read the kept closures').to.be.greaterThan(gets)
+      expect(kept.counts.kept, 'and made none again').to.equal(2)
+    })
+  })
+
+  describe('an answer about a file uploaded to the chat is copied only if the fork can show it to the forker', () => {
+    afterEach(() => resetVisibility())
+
+    // Bob's answer read the file he uploaded to the room, so its label names the room. In a fork the room is
+    // another chat: the fork shows the answer only to someone who may read the room.
+    const world = (mayRead: (userId: string, chatId: string) => boolean | undefined) => {
+      const asked: string[] = []
+      configureVisibility({
+        labelRule: async () => true,
+        readable: async (_who, ids) => ({ readable: new Set<string>(ids), asked: new Set(ids), deleted: new Set<string>(), failed: false, validUntil: Date.now() + 30_000 }),
+        canReadConversation: async (who, chatId) => {
+          asked.push(`${who.userId}:${chatId}`)
+          return mayRead(who.userId, chatId)
+        },
+      })
+      const store = new InMemoryChatStore()
+      store.install()
+      const orgId = oid()
+      const dana = oid()
+      const bob = oid()
+      const room = store.addSession({ orgId, userId: dana, initiator: dana, title: 'Room', sessionType: 'chat', isShared: true, sharedWith: [{ userId: bob, accessLevel: 'write' }] })
+      store.addMessage(room, { messageType: 'user_query', content: 'What does my file say?', authorUserId: bob })
+      const content = 'The file says the launch is in May.'
+      const parts = [{ type: 'text', content }]
+      const ver = String(oid())
+      const direct = { records: [], vrids: [], nodes: [], saVrids: [], personal: [], agents: [], chat: [{ conversationId: String(room._id), recordId: 'rec-upload' }], projects: [], marks: [] }
+      const answer = store.addMessage(room, {
+        messageType: 'bot_response',
+        requestedBy: bob,
+        content,
+        parts,
+        labelVer: ver,
+        provenance: { v: 5, ver, contentHash: labelContentHash(content, parts), direct, parents: [], complete: true, tagset: 1, pub: false },
+      } as never)
+      const fork = async () => {
+        const result = await copySessionUpToMessage(room, String(answer._id), String(dana), String(orgId), { sessionType: 'chat' })
+        const rows = store.messagesOf(result.conversation._id) as unknown as ReaderRow[]
+        const verdicts = await visibleRows({ userId: String(dana), orgId: String(orgId), member: true }, store.session(result.conversation._id) as never, rows, { member: true })
+        return { rows, shown: rows.map((r) => verdicts.get(String(r._id))?.verdict) }
+      }
+      return { fork, asked, dana: String(dana), room: String(room._id) }
+    }
+
+    it('is copied, and shown in the fork, when the forker may read the chat the file was uploaded to', async () => {
+      const w = world((userId, chatId) => userId === w.dana && chatId === w.room)
+
+      const { rows, shown } = await w.fork()
+
+      expect(rows.map((r) => r.messageType)).to.deep.equal(['user_query', 'bot_response'])
+      expect(shown).to.deep.equal(['visible', 'visible'])
+      expect(w.asked, 'the fork asked as the fork reads it').to.include(`${w.dana}:${w.room}`)
+    })
+
+    it('stays behind when whether the forker may read that chat cannot be said: the fork would only hide it', async () => {
+      const w = world(() => undefined)
+
+      const { rows, shown } = await w.fork()
+
+      expect(rows.map((r) => r.messageType)).to.deep.equal(['user_query'])
+      expect(shown).to.deep.equal(['visible'])
+    })
+
+    it('stays behind when the forker may not read that chat', async () => {
+      const w = world(() => false)
+
+      const { rows } = await w.fork()
+
+      expect(rows.map((r) => r.messageType)).to.deep.equal(['user_query'])
+    })
   })
 
   it('rejects a message that does not belong to the source session', async () => {
@@ -179,8 +378,11 @@ describe('copySessionUpToMessage', () => {
     store.install()
     const { source, rows, owner, orgId } = seed(store, FORK_COPY_BATCH_SIZE + 5)
     ;(ChatSessionMessage.insertMany as unknown as sinon.SinonStub).onSecondCall().rejects(new InternalServerError('disk full'))
-    const deleteMessages = sinon.stub(ChatSessionMessage, 'deleteMany').resolves({} as never)
-    const deleteSession = sinon.stub(ChatSession, 'deleteOne').resolves({} as never)
+    // The harness already stubs these writes; read its stubs rather than wrapping them again.
+    const deleteMessages = ChatSessionMessage.deleteMany as unknown as sinon.SinonStub
+    const deleteSession = ChatSession.deleteOne as unknown as sinon.SinonStub
+    deleteMessages.resetHistory()
+    deleteSession.resetHistory()
 
     try {
       await copySessionUpToMessage(source, String(rows[rows.length - 1]!._id), String(owner), String(orgId), {
@@ -202,8 +404,11 @@ describe('copySessionUpToMessage', () => {
     store.install()
     const { source, rows, owner, orgId } = seed(store, 3)
     ;(ChatSessionMessage.insertMany as unknown as sinon.SinonStub).onFirstCall().rejects(new Error('boom'))
-    const deleteMessages = sinon.stub(ChatSessionMessage, 'deleteMany').resolves({} as never)
-    const deleteSession = sinon.stub(ChatSession, 'deleteOne').resolves({} as never)
+    // The harness already stubs these writes; read its stubs rather than wrapping them again.
+    const deleteMessages = ChatSessionMessage.deleteMany as unknown as sinon.SinonStub
+    const deleteSession = ChatSession.deleteOne as unknown as sinon.SinonStub
+    deleteMessages.resetHistory()
+    deleteSession.resetHistory()
 
     try {
       await copySessionUpToMessage(
@@ -212,7 +417,7 @@ describe('copySessionUpToMessage', () => {
         String(owner),
         String(orgId),
         { sessionType: 'chat' },
-        new MongoTx({} as never),
+        fakeReplicaSetSession() as never,
       )
       expect.fail('expected the copy to fail')
     } catch (error) {
@@ -229,7 +434,7 @@ describe('copySessionUpToMessage', () => {
     const { source, rows, owner, orgId } = seed(store, 2, { projectId })
     const target = String(rows[1]!._id)
 
-    const kept = await copySessionUpToMessage(source, target, String(owner), String(orgId), { sessionType: 'chat', projectId })
+    const kept = await copySessionUpToMessage(source, target, String(owner), String(orgId), { sessionType: 'chat', projectId: String(projectId) })
     expect(String(kept.conversation.projectId)).to.equal(String(projectId))
     expect(kept.conversation.projectVisibility).to.equal('private')
 
@@ -367,7 +572,7 @@ describe('copySessionUpToMessage with artifacts', () => {
     const artifacts = await copyArtifactsForFork(
       source,
       String(forkPoint._id),
-      new Types.ObjectId().toHexString(),
+      new Types.ObjectId(),
       copyArtifacts as never,
     )
     return copySessionUpToMessage(
@@ -390,7 +595,7 @@ describe('copySessionUpToMessage with artifacts', () => {
     const result = await fork(seeded, copyArtifacts)
 
     expect(copyArtifacts.calledOnce).to.equal(true)
-    expect(copyArtifacts.firstCall.args[0]).to.equal(result.conversation._id)
+    expect(copyArtifacts.firstCall.args[0]).to.equal(String(result.conversation._id))
     expect(copyArtifacts.firstCall.args[1]).to.deep.equal([{ artifactId: 'old', upToVersion: 2 }])
 
     const rows = store.messagesOf(result.conversation._id) as any[]
@@ -489,7 +694,7 @@ describe('copySessionUpToMessage with artifacts', () => {
       return { copies: [copied], failed: [] }
     })
 
-    const artifacts = await copyArtifactsForFork(seeded.source, String(seeded.forkPoint._id), forkId, copyArtifacts as never)
+    const artifacts = await copyArtifactsForFork(seeded.source, String(seeded.forkPoint._id), new Types.ObjectId(forkId), copyArtifacts as never)
     const result = await copySessionUpToMessage(
       seeded.source,
       String(seeded.forkPoint._id),
@@ -502,7 +707,7 @@ describe('copySessionUpToMessage with artifacts', () => {
 
     expect(sessionsWhenCopying).to.equal(sessionsBefore)
     expect(copyArtifacts.firstCall.args[0]).to.equal(forkId)
-    expect(result.conversation._id).to.equal(forkId)
+    expect(String(result.conversation._id)).to.equal(forkId)
   })
 
   it('answers 404, and copies nothing, when the fork point is not a message of the chat', async () => {
@@ -512,7 +717,7 @@ describe('copySessionUpToMessage with artifacts', () => {
     const copyArtifacts = sinon.stub()
 
     try {
-      await copyArtifactsForFork(seeded.source, String(new Types.ObjectId()), new Types.ObjectId().toHexString(), copyArtifacts as never)
+      await copyArtifactsForFork(seeded.source, String(new Types.ObjectId()), new Types.ObjectId(), copyArtifacts as never)
       expect.fail('expected a 404')
     } catch (error) {
       expect(error).to.be.instanceOf(NotFoundError)
@@ -561,7 +766,7 @@ describe('fork origin', () => {
       title: 'Quarterly numbers',
     } as ChatSessionDto
     const { conversation } = await copySessionUpToMessage(
-      dto,
+      dto as never,
       String(mid._id),
       String(owner),
       String(orgId),
@@ -579,7 +784,8 @@ describe('fork origin', () => {
     const { store, owner, source, mid, fork } = await seedFork()
     const copyOfMid = store.messagesOf(fork._id)[1]!
 
-    const origin = await resolveForkOrigin(fork, String(owner))
+    // The store hands back the fork as a document, whose ids are ObjectIds; the route reads it as its plain view.
+    const origin = await resolveForkOrigin(fork as never, String(owner))
 
     expect(origin).to.deep.equal({
       conversationId: source._id,
@@ -593,9 +799,9 @@ describe('fork origin', () => {
     const { owner, source, mid, fork } = await seedFork()
     const asMap = { ...fork, metadata: new Map(Object.entries(metaOf(fork))) }
     const asObject = { ...fork, metadata: metaOf(fork) }
-    expect((await resolveForkOrigin(asObject, String(owner)))?.conversationId).to.equal(source._id)
-    expect((await resolveForkOrigin(asMap, String(owner)))?.conversationId).to.equal(source._id)
-    expect((await resolveForkOrigin(asMap, String(owner)))?.messageId).to.equal(String(mid._id))
+    expect((await resolveForkOrigin(asObject as never, String(owner)))?.conversationId).to.equal(source._id)
+    expect((await resolveForkOrigin(asMap as never, String(owner)))?.conversationId).to.equal(source._id)
+    expect((await resolveForkOrigin(asMap as never, String(owner)))?.messageId).to.equal(String(mid._id))
   })
 
   it('has no origin for a chat that is not a fork', async () => {
@@ -606,31 +812,32 @@ describe('fork origin', () => {
   it('has no origin when the notes do not name a message', async () => {
     const { owner, fork } = await seedFork()
     const broken = { ...fork, metadata: { forkedFromConversationId: 'x' } }
-    expect(await resolveForkOrigin(broken, String(owner))).to.equal(undefined)
+    expect(await resolveForkOrigin(broken as never, String(owner))).to.equal(undefined)
   })
 
   it('withholds the title from a viewer who does not own the original', async () => {
     const { source, fork } = await seedFork()
-    const origin = await resolveForkOrigin(fork, String(oid()))
+    const origin = await resolveForkOrigin(fork as never, String(oid()))
     expect(origin).to.include({ conversationId: source._id, title: null })
   })
 
   it('withholds the title once the original is archived', async () => {
     const { owner, fork } = await seedFork({ archive: true })
-    expect((await resolveForkOrigin(fork, String(owner)))?.title).to.equal(null)
+    expect((await resolveForkOrigin(fork as never, String(owner)))?.title).to.equal(null)
   })
 
   it('still answers, without the title, when the original no longer exists', async () => {
     const { store, owner, source, fork } = await seedFork()
     store.sessions.splice(store.sessions.findIndex((x) => String(x._id) === source._id), 1)
-    expect((await resolveForkOrigin(fork, String(owner)))?.title).to.equal(null)
+    expect((await resolveForkOrigin(fork as never, String(owner)))?.title).to.equal(null)
   })
 
   it('leaves out the position for a fork made before the count was recorded', async () => {
     const { owner, fork } = await seedFork()
     const meta = { ...metaOf(fork) }
     delete meta.forkedMessageCount
-    const origin = await resolveForkOrigin({ ...fork, metadata: meta }, String(owner))
+    // The plain view the conversation read passes.
+    const origin = await resolveForkOrigin({ _id: String(fork._id), orgId: String(fork.orgId), agentKey: fork.agentKey, metadata: meta }, String(owner))
     expect(origin).to.not.have.property('atMessageId')
     expect(origin?.title).to.equal('Quarterly numbers')
   })
@@ -638,7 +845,7 @@ describe('fork origin', () => {
   it('does not fail the caller when the lookup breaks', async () => {
     const { owner, fork } = await seedFork()
     const repo = { findOwned: sinon.stub().rejects(new Error('db down')) }
-    expect(await resolveForkOrigin(fork, String(owner), repo as never)).to.equal(undefined)
+    expect(await resolveForkOrigin(fork as never, String(owner), repo as never)).to.equal(undefined)
   })
 })
 
@@ -723,5 +930,48 @@ describe('fork titles', () => {
   it('still names the fork when the list cannot be read', async () => {
     const repo = { listForksOf: sinon.stub().rejects(new Error('db down')) } as never
     expect(await forkTitleFor(source, 'u1', 'o1', repo)).to.equal('Fork of Refund policy')
+  })
+})
+
+describe('replaceTurnWithBranch', () => {
+  const OWNER = 'aaaaaaaaaaaaaaaaaaaaaaaa'
+  const OTHER = 'bbbbbbbbbbbbbbbbbbbbbbbb'
+  const target = { _id: 'cccccccccccccccccccccccc', orgId: 'dddddddddddddddddddddddd', userId: OWNER } as ChatSessionDto
+  const branch = { _id: 'eeeeeeeeeeeeeeeeeeeeeeee', orgId: target.orgId, userId: OWNER } as ChatSessionDto
+  const fakeRepo = (parentRows: Array<Record<string, unknown>>) => {
+    const repo = {
+      listMessages: sinon.stub().callsFake(async (id: string) => (id === target._id ? parentRows.map((dto) => ({ dto })) : [])),
+      deleteMessages: sinon.stub().resolves(),
+      appendMessages: sinon.stub().resolves([]),
+    }
+    return repo
+  }
+
+  it("refuses, and deletes nothing, when a row it would replace is someone else's", async () => {
+    for (const theirs of [
+      { _id: 'q1', messageType: 'user_query', content: 'Bob asks', authorUserId: OTHER },
+      { _id: 'a1', messageType: 'bot_response', content: 'For Bob', requestedBy: OTHER },
+      { _id: 'n1', messageType: 'note', content: 'Bob notes', authorUserId: OTHER },
+    ]) {
+      const repo = fakeRepo([{ _id: 'q0', messageType: 'user_query', content: 'Mine', authorUserId: OWNER }, theirs])
+      const out = await replaceTurnWithBranch(target, branch, 2, undefined, repo as never).then(
+        () => undefined,
+        (e: unknown) => e,
+      )
+      expect(out, theirs.messageType).to.be.instanceOf(ConflictError)
+      expect(repo.deleteMessages.called, theirs.messageType).to.equal(false)
+    }
+  })
+
+  it("replaces rows that are all the owner's, rows from before authors were stored included", async () => {
+    const repo = fakeRepo([
+      { _id: 'q0', messageType: 'user_query', content: 'Mine', authorUserId: OWNER },
+      { _id: 'a0', messageType: 'bot_response', content: 'For me', requestedBy: OWNER },
+      { _id: 'q-legacy', messageType: 'user_query', content: 'Old' },
+      { _id: 'a-legacy', messageType: 'bot_response', content: 'Old answer' },
+    ])
+    await replaceTurnWithBranch(target, branch, 2, undefined, repo as never)
+    expect(repo.deleteMessages.calledOnce).to.equal(true)
+    expect(repo.deleteMessages.firstCall.args[0]).to.deep.equal(['q0', 'a0', 'q-legacy', 'a-legacy'])
   })
 })

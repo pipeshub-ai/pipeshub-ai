@@ -171,6 +171,26 @@ describe('Compare toggle availability', () => {
     expect(available(ctx)).toBe(false);
   });
 
+  it.each([
+    ['shared with anyone', { isOwner: true, sharedWith: [{ userId: 'u2', accessLevel: 'read' }] }],
+    ['shared with the viewer, who does not own it', { isOwner: false, sharedWith: null }],
+    ['open to its project', { isOwner: true, sharedWith: [], projectVisibility: 'project' }],
+  ])('is not offered in a chat %s: others read it', (_name, slot) => {
+    setup();
+    const id = useChatStore.getState().createSlot('conv-shared');
+    useChatStore.getState().updateSlot(id, slot as never);
+    useChatStore.setState({ activeSlotId: id });
+    expect(available()).toBe(false);
+  });
+
+  it("is offered in the viewer's own chat that nobody else reads", () => {
+    setup();
+    const id = useChatStore.getState().createSlot('conv-mine');
+    useChatStore.getState().updateSlot(id, { isOwner: true, sharedWith: [], projectVisibility: 'private' });
+    useChatStore.setState({ activeSlotId: id });
+    expect(available()).toBe(true);
+  });
+
   it('switching Compare on seeds the current model plus another, and is shown with the toggle', () => {
     setup();
     renderInTheme(<CompareToggle models={[llm(A), llm(B), llm(C)]} selectedModel={B} />);

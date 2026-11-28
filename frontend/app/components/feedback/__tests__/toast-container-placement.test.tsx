@@ -5,7 +5,10 @@ import { cleanup, render } from '@testing-library/react';
 const isMobile = vi.hoisted(() => ({ value: false }));
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => isMobile.value }));
 vi.mock('@/app/components/theme-provider', () => ({ useThemeAppearance: () => ({ appearance: 'light' }) }));
-vi.mock('../toast', () => ({ Toast: ({ toast }: { toast: { title: string } }) => <span>{toast.title}</span> }));
+vi.mock('../toast', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  Toast: ({ toast }: { toast: { title: string } }) => <span>{toast.title}</span>,
+}));
 
 import { ToastContainer } from '../toast-container';
 import { useToastStore } from '@/lib/store/toast-store';

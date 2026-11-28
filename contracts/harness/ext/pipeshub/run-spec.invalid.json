@@ -830,5 +830,24 @@
         "image": "python:3.12"
       }
     }
+  },
+  {
+    "description": "earlier turns in a way no worker gives them",
+    "instance": {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [
+        "/workspace"
+      ],
+      "via": "pat",
+      "history": {
+        "earlierTurns": "all"
+      }
+    }
   }
 ]

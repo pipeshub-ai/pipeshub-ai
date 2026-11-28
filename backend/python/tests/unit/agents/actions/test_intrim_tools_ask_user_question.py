@@ -197,3 +197,28 @@ async def test_a_non_string_question_is_not_shown_as_its_repr(value: object) -> 
 
     assert isinstance(result, ToolOutput)
     assert result.success is False
+
+
+class TestWhatAGuardNamedInAQuestion:
+    """The limit on a question is for the model's words, not for the values a guard added to it."""
+
+    NAMED = " (" + ", ".join(f"https://wiki.example/pages/{n}/{'x' * 120}" for n in range(3)) + ")"
+
+    async def _ask(self, question: str, **fields: object) -> object:
+        return await InternalTools().ask_user_question("You asked to open them.", [
+            {"question": question, "options": [{"label": "Yes"}, {"label": "No"}], **fields},  # type: ignore[list-item]
+        ])
+
+    async def test_is_shown_whole_however_long(self) -> None:
+        card = json.loads(await self._ask(f"May I open them?{self.NAMED}", named=self.NAMED))  # type: ignore[arg-type]
+        assert card["questions"][0]["question"] == f"May I open them?{self.NAMED}"
+        assert "named" not in card["questions"][0]
+
+    async def test_leaves_the_models_own_words_their_limit(self) -> None:
+        refused = await self._ask(f"{'x' * 301}{self.NAMED}", named=self.NAMED)
+        assert "at most 300 characters" in refused.error  # type: ignore[attr-defined]
+
+    @pytest.mark.parametrize("named", [None, 7, ["x"], ""])
+    async def test_anything_but_text_is_nothing(self, named: object) -> None:
+        refused = await self._ask(f"May I open them?{self.NAMED}", named=named)
+        assert "at most 300 characters" in refused.error  # type: ignore[attr-defined]

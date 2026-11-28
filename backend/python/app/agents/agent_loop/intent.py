@@ -190,7 +190,7 @@ def _parse_clarify_block(text: str) -> list["AskUserQuestionItemInput"] | None:
         return None
 
 
-def _build_intent_prompt(include_routing: bool, capability_block: str, sql_verify_override: str, n_knowledge: int) -> str:
+def _build_intent_prompt(include_routing: bool, capability_block: str, sql_verify_override: str, n_knowledge: int | None) -> str:
     if not include_routing:
         return _INTENT_INSTRUCTIONS + _CLARIFY_INSTRUCTIONS
     return (
@@ -396,6 +396,8 @@ async def parse_intent_and_route(
                     ContextBudget.for_model(model_name or None, context_window=context_window).effective_max_tokens,
                     count_text_tokens(user_query),
                 )),
+                conversation_id=query_info.get("conversationId"),
+                acl_version=query_info.get("aclVersion"),
             )
             if attachment_blocks:
                 human_content = [

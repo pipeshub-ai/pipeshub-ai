@@ -6,6 +6,7 @@ import { expect } from 'chai';
 import type {
   NewNotification,
   NotificationRepository,
+  NotificationRow,
 } from '../../../src/libs/repositories/notification';
 
 export interface NotificationFixture {
@@ -53,6 +54,82 @@ export function describeNotificationContract(fx: NotificationFixture): void {
     expect(row).to.include({ orgId: org, assignedTo: user, status: 'unread' });
     expect(row.payload).to.deep.equal({ y: 2 });
     expect(JSON.parse(JSON.stringify(row)).assignedTo).to.equal(user);
+  });
+
+  it('insertNew stores a batch and skips each row whose recipient already has its dedupeKey', async () => {
+    const org = fx.newId();
+    const [a, b] = [fx.newId(), fx.newId()];
+    const batch = [mk(org, a, { dedupeKey: 'k1' }), mk(org, b, { dedupeKey: 'k1' }), mk(org, a)];
+    const first = await repo.insertNew(batch);
+    expect(first.inserted.map((r) => r.assignedTo)).to.deep.equal([a, b, a]);
+    expect(first.inserted[0]?.dedupeKey).to.equal('k1');
+    expect(first.inserted[0]?._id).to.match(HEX);
+    expect(first).to.include({ duplicates: 0 });
+    expect(first.refused).to.deep.equal([]);
+    const again = await repo.insertNew(batch);
+    expect(again.inserted.map((r) => [r.assignedTo, r.dedupeKey])).to.deep.equal([[a, undefined]]);
+    expect(again).to.include({ duplicates: 2 });
+    expect((await repo.counts({ orgId: org, userId: a })).unread).to.equal(3);
+    expect((await repo.counts({ orgId: org, userId: b })).unread).to.equal(1);
+  });
+
+  it('insertNew stores a key named twice in one call once', async () => {
+    const org = fx.newId();
+    const me = fx.newId();
+    const out = await repo.insertNew([mk(org, me, { dedupeKey: 'k2', title: 'first' }), mk(org, me, { dedupeKey: 'k2' })]);
+    expect(out.inserted.map((r) => r.title)).to.deep.equal(['first']);
+    expect(out.duplicates).to.equal(1);
+  });
+
+  it('insertNew of the same key at once stores it once', async () => {
+    const org = fx.newId();
+    const me = fx.newId();
+    const runs = await Promise.all(Array.from({ length: 4 }, () => repo.insertNew([mk(org, me, { dedupeKey: 'k3' })])));
+    expect(runs.reduce((n, r) => n + r.inserted.length, 0)).to.equal(1);
+    expect(runs.reduce((n, r) => n + r.duplicates, 0)).to.equal(3);
+  });
+
+  it('a deleted notification still holds its key; deleteByIds frees it', async () => {
+    const org = fx.newId();
+    const me = fx.newId();
+    const scope = { orgId: org, userId: me };
+    const [row] = (await repo.insertNew([mk(org, me, { dedupeKey: 'k4' })])).inserted as [NotificationRow];
+    await repo.softDelete(scope, row._id);
+    expect(await repo.insertNew([mk(org, me, { dedupeKey: 'k4' })])).to.include({ duplicates: 1 });
+    expect(await repo.deleteByIds(org, [row._id])).to.equal(1);
+    expect((await repo.insertNew([mk(org, me, { dedupeKey: 'k4' })])).inserted).to.have.length(1);
+  });
+
+  it('insertNew with no rows stores nothing', async () => {
+    expect(await repo.insertNew([])).to.deep.equal({ inserted: [], duplicates: 0, refused: [] });
+  });
+
+  it('deleteByIds removes only the org\'s rows with those ids and reports how many', async () => {
+    const org = fx.newId();
+    const me = fx.newId();
+    const [x, y] = (await repo.insertMany([mk(org, me), mk(org, me)])) as [NotificationRow, NotificationRow];
+    const other = fx.newId();
+    const [z] = (await repo.insertMany([mk(other, me)])) as [NotificationRow];
+    expect(await repo.deleteByIds(org, [x._id, z._id])).to.equal(1);
+    expect((await repo.list({ orgId: org, userId: me }, { status: null, limit: 10 })).map((r) => r._id)).to.deep.equal([y._id]);
+    expect((await repo.counts({ orgId: other, userId: me })).unread).to.equal(1);
+    expect(await repo.deleteByIds(org, [x._id])).to.equal(0);
+    expect(await repo.deleteByIds(org, [])).to.equal(0);
+  });
+
+  it('insertNew counts a row that names an _id the org already has, or one an earlier row of the call names, as delivered before', async () => {
+    const org = fx.newId();
+    const me = fx.newId();
+    const [id, fresh] = [fx.newId(), fx.newId()];
+    await repo.insertMany([mk(org, me, { _id: id, title: 'first' })]);
+    const out = await repo.insertNew([
+      mk(org, me, { _id: id, title: 'again' }),
+      mk(org, me, { _id: fresh, title: 'new' }),
+      mk(org, me, { _id: fresh, title: 'twice' }),
+    ]);
+    expect(out.inserted.map((r) => [r._id, r.title])).to.deep.equal([[fresh, 'new']]);
+    expect(out.duplicates).to.equal(2);
+    expect((await repo.counts({ orgId: org, userId: me })).unread).to.equal(2);
   });
 
   it('list is newest first, only the user\'s, in the org, and never archived or deleted ones by default', async () => {
@@ -314,6 +391,19 @@ export function describeNotificationContract(fx: NotificationFixture): void {
       expect((await repo.list(scope, { status: null, limit: 10 })).map((r) => r._id)).to.have.members([plain._id, later._id]);
       expect(await repo.counts(scope)).to.deep.equal({ unread: 1, read: 1, archived: 0 });
       expect(await repo.markAllRead(scope)).to.equal(1);
+    });
+
+    it('insertNew stores a scheduled row hidden until its time, and the row holds its key while it waits', async () => {
+      const org = fx.newId();
+      const me = fx.newId();
+      const scope = { orgId: org, userId: me };
+      const first = await repo.insertNew([mk(org, me, { dedupeKey: 'k5', visibleAt: ahead(HOLD_MS) })]);
+      expect(first.inserted).to.have.length(1);
+      expect(first.inserted[0]?.visibleAt).to.be.instanceOf(Date);
+      expect(await repo.list(scope, { status: null, limit: 10 })).to.deep.equal([]);
+      expect(await repo.insertNew([mk(org, me, { dedupeKey: 'k5' })])).to.include({ duplicates: 1 });
+      await sleep(HOLD_MS + 150);
+      expect((await repo.list(scope, { status: null, limit: 10 })).map((r) => r.dedupeKey)).to.deep.equal(['k5']);
     });
 
     it('a row that is not yet visible is not found by id: setStatus, unarchive and softDelete answer null, and change nothing', async () => {

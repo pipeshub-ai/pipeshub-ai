@@ -18,6 +18,7 @@ import {
   buildUserQueryMessage,
   classifiedFailureChange,
   getMessages,
+  MAX_CONVERSATION_ERRORS,
   REGENERATE_TAIL_MESSAGES,
   RunFailureFields,
 } from '../../../../modules/enterprise_search/utils/utils';
@@ -42,6 +43,7 @@ import {
   RunTranscript,
   UserTurn,
 } from '../../../../modules/agent-harness/ports/conversation-writer';
+import { ANSWER_ROW_TYPES, isAnswerRow } from './answer-rows';
 
 type FailureTranscript = Extract<RunTranscript, { kind: 'failure' }>;
 
@@ -109,7 +111,7 @@ export class HarnessConversationWriter implements ConversationWriter<Tx> {
       _id: answerId,
       sessionId: ref.sessionId,
       orgId: ref.orgId,
-      messageType: 'bot_response',
+      messageType: { $in: [...ANSWER_ROW_TYPES] },
     }).session(tx);
     return found !== null;
   }
@@ -126,12 +128,13 @@ export class HarnessConversationWriter implements ConversationWriter<Tx> {
       { orgId: ref.orgId, limit: REGENERATE_TAIL_MESSAGES, sort: -1 },
       new MongoTx(tx),
     )) as Array<IMessage & { _id: Types.ObjectId; seq: number }>;
-    const answerAt = tail.findIndex((m) => m.messageType === 'bot_response');
+    const answerAt = tail.findIndex((m) => isAnswerRow(m.messageType));
     if (answerAt < 0 || String(tail[answerAt]?._id) !== answerId) return null;
     const question = tail
       .slice(answerAt + 1)
       .find((m) => m.messageType === 'user_query');
     if (question === undefined) return null;
+    // row-writer-exempt: the harness's own rows: a durable turn asked again drops its old ones, and the session's ledger, not a row stamp, accounts for them
     await ChatSessionMessage.deleteMany(
       {
         sessionId: ref.sessionId,
@@ -179,7 +182,7 @@ export class HarnessConversationWriter implements ConversationWriter<Tx> {
             runFailureFields(run.runId, transcript),
           ),
         ],
-        failed(transcript.message, transcript.code),
+        failed(run, transcript.message, transcript.code),
       );
     }
     // The legacy stream persisted each question card before the answer.
@@ -258,19 +261,23 @@ export class HarnessConversationWriter implements ConversationWriter<Tx> {
           ? { senderId: new Types.ObjectId(run.actorId) }
           : {}),
         ...(label !== undefined ? { label } : {}),
+        // Its run was given what earlier turns' tools returned: shown to its asker alone.
+        ...(run.earlierResults === true ? { earlierResults: true } : {}),
       });
     }
     const change = classifiedFailureChange(data);
+    const failure =
+      change.status === CONVERSATION_STATUS.FAILED
+        ? runFailedOn(run, change.failReason, change.appendError)
+        : {};
     const appended = await this.append(run, tx, [...questions, answer], {
       $set: {
         ...modelFields(modelInfo),
         lastActivityAt: Date.now(),
         status: change.status,
-        ...(change.failReason !== undefined
-          ? { failReason: change.failReason }
-          : {}),
+        ...failure.$set,
       },
-      ...errorPush(change.appendError),
+      ...(failure.$push !== undefined ? { $push: failure.$push } : {}),
     });
     if (appended && citations.length > 0) {
       // Alone (MongoDB before 8), each is saved as the legacy save saved it.
@@ -348,25 +355,55 @@ const modelFields = (model?: IAIModel): Record<string, unknown> =>
     }),
   );
 
-/** A failure's entry pushed onto the session's `conversationErrors`, stamped as the legacy save stamped it. */
-const errorPush = (error: NewSessionError | undefined): SessionWrite =>
-  error !== undefined
-    ? {
-        $push: {
-          conversationErrors: { $each: [{ ...error, timestamp: new Date() }] },
-        },
-      }
-    : {};
+/**
+ * A run's failure on its session, as the legacy writer records a turn's (`persistFailedTurn`): who asked the run, so
+ * `Failed` is said to them alone; and, only for the owner's own run, its reason and its `conversationErrors` entry,
+ * which names who asked it and is kept with the session's newest. Why a run failed can quote what it read, so a
+ * collaborator's reason stays on its error message, whose reader check decides who sees it.
+ */
+const runFailedOn = (
+  run: HarnessRun,
+  reason: string | null | undefined,
+  error: NewSessionError | undefined,
+): SessionWrite => {
+  const asker = new Types.ObjectId(run.actorId);
+  if (run.sessionRole === 'collaborator') {
+    return { $set: { failedRunBy: asker } };
+  }
+  return {
+    $set: {
+      failedRunBy: asker,
+      ...(typeof reason === 'string' ? { failReason: reason } : {}),
+    },
+    ...(error !== undefined
+      ? {
+          $push: {
+            conversationErrors: {
+              $each: [{ ...error, timestamp: new Date(), requestedBy: asker }],
+              $slice: -MAX_CONVERSATION_ERRORS,
+            },
+          },
+        }
+      : {}),
+  };
+};
 
 /** What marking a conversation failed sets on it (markConversationFailed). */
-const failed = (reason: string, code: string): SessionWrite => ({
-  $set: {
-    status: CONVERSATION_STATUS.FAILED,
-    failReason: reason,
-    lastActivityAt: Date.now(),
-  },
-  ...errorPush(buildSessionError(reason, code)),
-});
+const failed = (
+  run: HarnessRun,
+  reason: string,
+  code: string,
+): SessionWrite => {
+  const failure = runFailedOn(run, reason, buildSessionError(reason, code));
+  return {
+    $set: {
+      status: CONVERSATION_STATUS.FAILED,
+      lastActivityAt: Date.now(),
+      ...failure.$set,
+    },
+    ...(failure.$push !== undefined ? { $push: failure.$push } : {}),
+  };
+};
 
 const citationDto = (citation: InstanceType<typeof Citation>): CitationDto => ({
   _id: String(citation._id),

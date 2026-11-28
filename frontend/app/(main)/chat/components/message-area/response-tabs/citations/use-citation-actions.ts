@@ -2,6 +2,7 @@
 
 import { useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
+import { useTranslation } from 'react-i18next';
 import { useChatStore } from '@/chat/store';
 import { KnowledgeBaseApi } from '@/knowledge-base/api';
 import type { CitationData, CitationCallbacks, CitationOrigin, CitationMaps } from './types';
@@ -16,6 +17,7 @@ import { loadRecordPreview } from '@/chat/record-preview';
  */
 export function useCitationActions(): CitationCallbacks {
   const router = useRouter();
+  const { t } = useTranslation();
   const setPreviewFile = useChatStore((s) => s.setPreviewFile);
   const setPreviewMode = useChatStore((s) => s.setPreviewMode);
 
@@ -114,7 +116,7 @@ export function useCitationActions(): CitationCallbacks {
         { setPreviewFile, setPreviewMode },
       );
     },
-    [setPreviewFile, setPreviewMode],
+    [setPreviewFile, setPreviewMode, t],
   );
 
   return useMemo(

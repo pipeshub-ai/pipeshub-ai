@@ -288,7 +288,8 @@ export const ROUTES: AuditRoute[] = [
     path: '/chat/',
     action: async (page) => {
       await openNavIfMobile(page);
-      await icon(page, 'keyboard_arrow_up').last().click({ timeout: ACTION_TIMEOUT });
+      // The footer's menu button, by its name: the glyph beside the workspace's name is not a stable handle.
+      await page.getByRole('button', { name: /workspace and account menu/i }).click({ timeout: ACTION_TIMEOUT });
       await page.getByText('Appearance').first().click({ timeout: ACTION_TIMEOUT });
     },
   },
@@ -355,8 +356,12 @@ export const ROUTES: AuditRoute[] = [
     path: CHAT_CONVERSATION,
     setup: mockChat,
     action: async (page) => {
-      await page.getByText('Citation', { exact: true }).last().click({ timeout: ACTION_TIMEOUT });
-      await page.getByRole('button', { name: 'Preview', exact: true }).first().click({ timeout: ACTION_TIMEOUT });
+      // From 1024 px an answer's citations are in the column beside the chat; below that, in the answer's own tabs.
+      const wide = (page.viewportSize()?.width ?? 0) >= 1024;
+      const citations = wide ? page.getByRole('complementary', { name: 'About this answer' }) : page;
+      if (wide) await page.getByRole('button', { name: 'Context', exact: true }).click({ timeout: ACTION_TIMEOUT });
+      await citations.getByRole('tab', { name: /^Citations/ }).last().click({ timeout: ACTION_TIMEOUT });
+      await citations.getByRole('button', { name: 'Preview', exact: true }).first().click({ timeout: ACTION_TIMEOUT });
     },
   },
 
@@ -441,7 +446,8 @@ export const ROUTES: AuditRoute[] = [
     path: '/chat/',
     action: async (page) => {
       await openNavIfMobile(page);
-      await icon(page, 'keyboard_arrow_up').last().click({ timeout: ACTION_TIMEOUT });
+      // The footer's menu button, by its name: the glyph beside the workspace's name is not a stable handle.
+      await page.getByRole('button', { name: /workspace and account menu/i }).click({ timeout: ACTION_TIMEOUT });
       await page.getByText('Language').first().click({ timeout: ACTION_TIMEOUT });
     },
   },

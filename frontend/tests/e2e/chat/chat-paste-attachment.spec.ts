@@ -9,6 +9,7 @@
  */
 
 import { test, expect } from '../fixtures/base.fixture';
+import { expectComposerText } from '../helpers/composer.helper';
 
 // ---------------------------------------------------------------------------
 // Mock data
@@ -84,7 +85,7 @@ async function mockBaselineApis(page: import('@playwright/test').Page) {
 
 /**
  * Dispatches a synthetic `paste` ClipboardEvent carrying `text` as
- * `text/plain`, targeted at the last textarea on the page.
+ * `text/plain`, targeted at the chat box (the last one on the page).
  *
  * A script-constructed ClipboardEvent is untrusted, so the browser runs no
  * default paste. That makes this fine for the cases where the app calls
@@ -98,11 +99,12 @@ async function pasteText(page: import('@playwright/test').Page, text: string): P
   return page.evaluate((pastedText) => {
     const dt = new DataTransfer();
     dt.setData('text/plain', pastedText);
-    const textarea = document.querySelectorAll('textarea')[document.querySelectorAll('textarea').length - 1];
+    const boxes = document.querySelectorAll('[data-testid="chat-composer"]');
+    const box = boxes[boxes.length - 1];
     const event = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
     // dispatchEvent returns false once a handler called preventDefault, which is
     // how the app signals "I took this paste" vs "let the browser insert it".
-    return !textarea.dispatchEvent(event);
+    return !box.dispatchEvent(event);
   }, text);
 }
 
@@ -113,7 +115,7 @@ async function pasteText(page: import('@playwright/test').Page, text: string): P
  * permissions on the context (granted in `beforeEach`).
  */
 async function realPaste(page: import('@playwright/test').Page, text: string) {
-  await page.locator('textarea').last().click();
+  await page.getByTestId('chat-composer').last().click();
   await page.evaluate((pastedText) => navigator.clipboard.writeText(pastedText), text);
   await page.keyboard.press('ControlOrMeta+V');
 }
@@ -127,8 +129,8 @@ test.describe('Chat — paste-to-attachment', () => {
     await context.grantPermissions(['clipboard-read', 'clipboard-write']);
     await mockBaselineApis(page);
     await page.goto('/chat/');
-    await page.waitForSelector('textarea', { timeout: 15_000 });
-    await page.locator('textarea').last().click();
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
+    await page.getByTestId('chat-composer').last().click();
   });
 
   test('a large paste is converted into a "Pasted text" chip, not inserted inline', async ({ page }) => {
@@ -136,13 +138,13 @@ test.describe('Chat — paste-to-attachment', () => {
 
     await expect(page.getByText('Pasted text').first()).toBeVisible({ timeout: 10_000 });
     // The textarea itself must stay empty — the text went to the chip, not inline.
-    await expect(page.locator('textarea').last()).toHaveValue('');
+    await expectComposerText(page.getByTestId('chat-composer').last(), '');
   });
 
   test('a short paste is inserted inline, not converted to a chip', async ({ page }) => {
     await realPaste(page, SMALL_TEXT);
 
-    await expect(page.locator('textarea').last()).toHaveValue(SMALL_TEXT);
+    await expectComposerText(page.getByTestId('chat-composer').last(), SMALL_TEXT);
     await expect(page.getByText('Pasted text')).toHaveCount(0);
   });
 
@@ -156,7 +158,9 @@ test.describe('Chat — paste-to-attachment', () => {
     const intercepted = await pasteText(page, LARGE_TEXT);
     await page.keyboard.up('Shift');
 
-    expect(intercepted).toBe(false);
+    // A textarea hands a paste it does not convert back to the browser, which never inserts an untrusted one. The
+    // rich editor takes every paste and inserts the text itself, so there the text must be in the box.
+    if (intercepted) await expectComposerText(page.getByTestId('chat-composer').last(), /Line 1:[\s\S]*Line 30:/);
     await expect(page.getByText('Pasted text')).toHaveCount(0);
   });
 
@@ -175,13 +179,14 @@ test.describe('Chat — paste-to-attachment', () => {
     await pasteText(page, LARGE_TEXT);
     await expect(page.getByText('Pasted text').first()).toBeVisible({ timeout: 10_000 });
 
-    // Wait for the mocked upload to resolve — the action only renders once uploaded.
-    const showInTextField = page.getByRole('button', { name: /show in text field/i });
-    await expect(showInTextField.first()).toBeVisible({ timeout: 10_000 });
-    await showInTextField.first().click();
+    // The action is in the chip's preview; it is enabled once the preview has read the pasted text.
+    await page.getByText('Pasted text').first().click();
+    const showInTextField = page.getByRole('dialog').getByRole('button', { name: /show in text field/i });
+    await expect(showInTextField).toBeEnabled({ timeout: 10_000 });
+    await showInTextField.click();
 
     await expect(page.getByText('Pasted text')).toHaveCount(0);
-    await expect(page.locator('textarea').last()).toHaveValue(new RegExp('Line 1:'));
+    await expectComposerText(page.getByTestId('chat-composer').last(), new RegExp('Line 1:'));
   });
 
   test('removing the chip deletes the attachment', async ({ page }) => {

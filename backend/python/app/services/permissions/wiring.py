@@ -37,6 +37,20 @@ async def register_viewer_scope_version(
     return cache
 
 
+async def register_permission_epochs(config_service: ConfigurationService, logger: logging.Logger) -> None:
+    """Register the permission epochs with the invalidation hooks, so that permission writes made by this process move
+    them. Whatever the filter mode: the chat API keys saved answer checks on them. Never raises: without a store the
+    writes move nothing, and a saved check lasts at most until it expires."""
+    from app.services.cache.invalidation_hooks import init_permission_epochs
+
+    from .epochs import create_epoch_counters
+
+    try:
+        init_permission_epochs(await create_epoch_counters(config_service))
+    except Exception as exc:
+        logger.warning("permission epochs not registered: %s", type(exc).__name__)
+
+
 async def register_scope_generation(config_service: ConfigurationService, logger: logging.Logger) -> None:
     """Move the scope generation when the scope fields were switched on after being off (see `generation`). With the fields off and
     never enabled this reads one config key and writes nothing."""

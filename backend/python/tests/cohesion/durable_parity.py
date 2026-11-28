@@ -113,6 +113,9 @@ INVENTORY: tuple[Capability, ...] = (
     # durable run's questions follow the same rules as today's.
     _hook("ask_user_question_gate"),
     _hook("ask_in_text_recovery"),
+    # A run that may name only some sources writes the others in a tool's result as "another source", before any
+    # other middleware sees it. Registered in build_hooks, so on both loops.
+    _hook("unnamed_sources", "build_hooks (PipesHubAgentFactory._build_hooks), for a run that may name only some sources"),
     _hook("tool_preloading", "build_hooks: register_tool_preloading"),
     _hook("skill_preloading", "build_hooks: register_skill_preloading"),
     _hook("period_summary_hint", "PipesHubTurnShaper._open: period_summary_section (main #4296)"),
@@ -201,6 +204,32 @@ INVENTORY: tuple[Capability, ...] = (
     Capability(
         "install_phase_gate", "registration", "different",
         reason="deep mode's phase rules are decided by DeepDelegation (K-L)",
+    ),
+    # The chat extension's hooks. The ones build_hooks installs run on both loops; with the default extension they
+    # install nothing.
+    Capability(
+        "install_label_hooks", "registration", "ported",
+        "build_hooks (PipesHubAgentFactory._build_hooks): each call is tagged for the label ledger bound to the run "
+        "(the default ledger records nothing)",
+    ),
+    Capability(
+        "install_tool_result_hooks", "registration", "ported",
+        "build_hooks (PipesHubAgentFactory._build_hooks): the edition's POST_TOOL_USE hooks after the built-in ones",
+    ),
+    Capability(
+        "install_egress_hooks", "registration", "ported",
+        "build_hooks (PipesHubAgentFactory._build_hooks), given the run's query: the edition's hooks ahead of the "
+        "approval gate",
+    ),
+    Capability(
+        "install_run_hooks", "registration", "not_ported",
+        reason="the edition's hooks that depend on the request (ChatExtension.install_run_hooks): today's factory "
+        "installs them once the goal and a question card's answers are known; the durable path installs none",
+    ),
+    Capability(
+        "register_not_connected_tools", "registration", "not_ported",
+        reason="today's factory offers a stub for each attached toolset or MCP server the person has not connected, "
+        "so the answer can offer to connect it; a durable run's tools are its pinned grant, which holds no stubs",
     ),
     Capability(
         "register_planning_tools", "registration", "not_ported",

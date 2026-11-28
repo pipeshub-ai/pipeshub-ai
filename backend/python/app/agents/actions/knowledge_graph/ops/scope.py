@@ -550,7 +550,11 @@ async def list_selected_nodes(
     bound_filters = {key: filters[key] for key in ALLOWED_FILTER_KEYS if key in filters}
     _, bounds = await resolve_request_scopes(graph_provider, user_key, org_id, bound_filters)
     lines: list[str] = []
-    for named in await readable_named_nodes(graph_provider, user_key, org_id, selected, bounds):
+    named_nodes = await readable_named_nodes(graph_provider, user_key, org_id, selected, bounds)
+    from app.modules.agents.privacy.ledger import note_shown
+
+    note_shown(nodes=[named.id for named in named_nodes if named.id])
+    for named in named_nodes:
         kind = _SELECTED_KINDS.get(named.key) or named.node_type
         alone = " (this item only, nothing under it)" if named.key == "recordsExact" else ""
         lines.append(f"- {named.name} [{kind}] id={named.id}{alone}")

@@ -395,6 +395,8 @@ describe('mail and notification logging', function () {
     it('a store failure: one ERROR with the type, the size and the error', async () => {
       sinon.stub(notificationRepo, 'getNotificationRepository').returns({
         insertMany: async () => { throw new Error('notification insert failed'); },
+        // This build's consumer stores through insertNew (a row its recipient already has is not stored twice).
+        insertNew: async () => { throw new Error('notification insert failed'); },
       } as any);
       await deliver(failureEvent);
       const [line] = atLeastInfo();
@@ -408,6 +410,7 @@ describe('mail and notification logging', function () {
     it('a refused event (the producer’s fault) is WARNING', async () => {
       sinon.stub(notificationRepo, 'getNotificationRepository').returns({
         insertMany: async () => { throw new ValidationError('Notification event refused', []); },
+        insertNew: async () => { throw new ValidationError('Notification event refused', []); },
       } as any);
       await deliver(failureEvent);
       expect(atLeastInfo().map(level)).to.deep.equal(['warn']);
@@ -436,7 +439,7 @@ describe('mail and notification logging', function () {
     });
 
     it('a line about a recipient keeps the recipient as target_user_id inside another user’s request', () => {
-      const service = new NotificationService({} as any);
+      const service = new NotificationService({} as any, undefined as any);
       runWithRequestContext({ rootId: requestId, userId: '64b0000000000000000000b9' } as any, () => {
         service.sendToUser(ADMIN_ID, 'newNotification', {});
       });

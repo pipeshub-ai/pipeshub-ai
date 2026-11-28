@@ -89,6 +89,20 @@ describe('SpeechController', () => {
       expect(body.detail).to.include('check the speech settings')
     })
 
+    it("should keep the words of a refusal the service sends as a structured detail", async () => {
+      sinon.stub(axios, 'get').resolves({
+        status: 403,
+        data: { detail: { code: 'REQUEST_NOT_ALLOWED', message: 'This request is not allowed right now. Ask your admin.' } },
+      })
+      const res = makeRes()
+      const next = sinon.stub()
+
+      await getSpeechCapabilities(appConfig)(makeReq(), res, next)
+
+      expect(res.status.calledWith(403)).to.be.true
+      expect(res.json.firstCall.args[0].detail).to.equal('This request is not allowed right now. Ask your admin.')
+    })
+
     it('should keep a resolved 4xx message and its status', async () => {
       sinon.stub(axios, 'get').resolves({
         status: 409,

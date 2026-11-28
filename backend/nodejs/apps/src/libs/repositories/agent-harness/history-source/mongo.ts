@@ -12,6 +12,8 @@ import { transactionWrites } from '../transaction-writes/mongo';
 import {
   getMessages,
   historyTurns,
+  sealedHistoryTurns,
+  storedForm,
 } from '../../../../modules/enterprise_search/utils/utils';
 import { MongoTx } from '../../mongo';
 import type { NewMessage } from '../../conversation/types';
@@ -32,13 +34,14 @@ import {
 
 /**
  * A message as history: its `previousConversations` entries as they travel
- * (JSON), so the ledger digests what a model is sent.
+ * (JSON), each sealed with its row and version as the legacy stream seals it,
+ * so the ledger digests what a model is sent.
  */
 export const asHistory = (
   message: IMessage & { seq: number },
 ): HistoryMessage => ({
   seq: message.seq,
-  turns: JSON.parse(JSON.stringify(historyTurns(message))) as Array<
+  turns: JSON.parse(JSON.stringify(sealedHistoryTurns(message))) as Array<
     Record<string, unknown>
   >,
   provenance: messageProvenance(message),
@@ -80,6 +83,8 @@ export const historyLabel = (messages: IMessage[]): TurnLabel =>
 interface LedgerRow {
   nextSeq?: number;
   harnessLedger?: HistoryLedger | null;
+  /** The session's change counter; a session no write has stamped yet has none. */
+  rev?: number;
 }
 
 const ledgerRow = async (
@@ -97,10 +102,11 @@ const plainLedger = (ledger: HistoryLedger): HistoryLedger => ({
   ...(ledger.diverged === true ? { diverged: true } : {}),
 });
 
-/** What the harness accounts for in a session row read with `+nextSeq +harnessLedger`. */
+/** What the harness accounts for in a session row read with `+nextSeq +harnessLedger` and its `rev`. */
 export const accountedOf = (row: LedgerRow | null): AccountedConversation => ({
   lastSeq: row?.nextSeq ?? 0,
   ledger: row?.harnessLedger ? plainLedger(row.harnessLedger) : null,
+  rev: row?.rev ?? 0,
 });
 
 export class HarnessHistorySource implements HistorySource<Tx> {
@@ -117,7 +123,11 @@ export class HarnessHistorySource implements HistorySource<Tx> {
       { orgId: ref.orgId, withLabels: true },
       new MongoTx(tx),
     )) as Array<IMessage & { seq: number }>;
-    return { messages: messages.map(asHistory), ...known };
+    return {
+      messages: messages.map(asHistory),
+      lastSeq: known.lastSeq,
+      ledger: known.ledger,
+    };
   }
 }
 
@@ -154,8 +164,12 @@ export const accountedLedger = (
  * inserts the messages and the session's update go with them (PERF-E2,
  * PERF-E3). The messages' `seq` follow the session's counter, read in this
  * transaction: a concurrent writer of the session conflicts on its update.
+ * They are stored as the legacy row writer stores them (`storedForm`: no
+ * signed URL, an answer sealed with a fresh `labelVer`), each with a change
+ * stamp from the session's `rev`, which the same write moves past them.
  * `known`: the session as the transaction already wrote it (its creation or
- * its bind), so it is not read again. Null when no session matches `filter`.
+ * its bind), so it is not read again; without its `rev` the session is read.
+ * Null when no session matches `filter`.
  */
 export async function appendAccounted(
   filter: QueryFilter<IChatSessionDocument>,
@@ -166,12 +180,13 @@ export async function appendAccounted(
 ): Promise<IChatSessionMessageDocument[] | null> {
   const tx = asMongoSession(txHandle);
   const before =
-    known !== undefined
+    known !== undefined && known.accounted.rev !== undefined
       ? {
           _id: new Types.ObjectId(known.ref.sessionId),
           orgId: new Types.ObjectId(known.ref.orgId),
           nextSeq: known.accounted.lastSeq,
           harnessLedger: known.accounted.ledger,
+          rev: known.accounted.rev,
         }
       : ((await ChatSession.findOne(filter)
           .select('+nextSeq +harnessLedger')
@@ -180,13 +195,15 @@ export async function appendAccounted(
           (LedgerRow & { _id: Types.ObjectId; orgId: Types.ObjectId }) | null);
   if (before === null) return null;
   const nextSeq = before.nextSeq ?? 0;
+  const rev = before.rev ?? 0;
   const stored = messages.map(
     (message, index) =>
       new ChatSessionMessage({
-        ...message,
+        ...storedForm(message as IMessage),
         sessionId: before._id,
         orgId: before.orgId,
         seq: nextSeq + index + 1,
+        changeRev: rev + index + 1,
       }) as IChatSessionMessageDocument,
   );
   const ledger = before.harnessLedger
@@ -212,11 +229,9 @@ export async function appendAccounted(
     ...write.$set,
     ...(ledger !== null ? { harnessLedger: ledger } : {}),
   };
-  const $inc = {
-    ...(stored.length > 0 ? { nextSeq: stored.length } : {}),
-    // A pushed array moves the version, as the legacy writer's `save()` moved it.
-    ...(write.$push !== undefined ? { __v: 1 } : {}),
-  };
+  // The stamps the rows took, as the legacy row writer takes them with their `seq`.
+  const $inc =
+    stored.length > 0 ? { nextSeq: stored.length, rev: stored.length } : {};
   const update = {
     ...(Object.keys($inc).length > 0 ? { $inc } : {}),
     ...(Object.keys($set).length > 0 ? { $set } : {}),

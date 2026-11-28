@@ -27,11 +27,12 @@ from pydantic import ValidationError
 from app.agents.agent_loop.cancellation.in_process import (
     InProcessRunCancellationRegistry,
 )
-from app.agents.agent_loop.cancellation.registry import CancelOutcome, RunOwner
+from app.agents.agent_loop.cancellation.policy import CancelRequester
 from app.utils.logging_fields import log_once
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.context import CancellationToken
+    from app.agents.agent_loop.cancellation.registry import CancelOutcome, RunOwner
     from app.config.key_value_store import KeyValueStore
 
 __all__ = ["KVBackedRunCancellationRegistry"]
@@ -64,7 +65,7 @@ class KVBackedRunCancellationRegistry:
         await self._local.register(run_id, token, owner)
         self._watchers[run_id] = asyncio.create_task(self._watch(run_id, token))
 
-    async def cancel(self, run_id: str, requester: RunOwner) -> CancelOutcome:
+    async def cancel(self, run_id: str, requester: CancelRequester) -> CancelOutcome:
         outcome = await self._local.cancel(run_id, requester)
         if outcome != "not_found":
             # This worker owns the run — "cancelled"/"forbidden" are both
@@ -119,7 +120,7 @@ class KVBackedRunCancellationRegistry:
                 if not raw:
                     continue
                 try:
-                    requester = RunOwner.model_validate_json(raw)
+                    requester = CancelRequester.model_validate_json(raw)
                 except (ValidationError, ValueError):
                     self._log.warning(
                         "KVBackedRunCancellationRegistry: malformed cancel payload for run_id=%s",

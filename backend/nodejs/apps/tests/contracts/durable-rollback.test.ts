@@ -10,6 +10,7 @@ import { appConfig } from '../modules/enterprise_search/controller/streaming-flo
 import { AIServiceCommand } from '../../src/libs/commands/ai_service/ai.service.command'
 import { CHAT_SCENARIOS, DURABLE_SCENARIOS, STEERED_SCENARIOS } from './support/durable'
 import { PersistedRun, persistedRun } from './support/surfaces'
+import { behindGuard, realGuards } from '../modules/enterprise_search/helpers/guarded-chat'
 
 /**
  * P1b T3 (MG-3, MG-3a): with the harness flag off, legacy reads a durable
@@ -47,7 +48,10 @@ async function legacyGet(persisted: PersistedRun): Promise<{ status: unknown; me
     } as never)
   })
   const agent = run.agentKey !== undefined
-  const handler = agent ? controller.getAgentConversationById(appConfig) : controller.getConversationById(appConfig)
+  // As the route serves the GET: the conversation guard first, then the handler.
+  const handler = agent
+    ? behindGuard(realGuards(), 'read', controller.getAgentConversationById(appConfig), 'agent')
+    : behindGuard(realGuards(), 'read', controller.getConversationById(appConfig))
   const res = new FakeSSEResponse()
   const next = sinon.stub()
   await handler(

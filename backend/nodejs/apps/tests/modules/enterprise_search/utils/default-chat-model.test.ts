@@ -9,6 +9,8 @@ import {
 } from '../../../../src/modules/enterprise_search/utils/default-chat-model'
 import { extractModelInfo } from '../../../../src/modules/enterprise_search/utils/utils'
 import { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service'
+import { FAIL_FAST_CACHE_TIMEOUT_MS } from '../../../../src/libs/services/cache/fail-fast-cache'
+import { settlesAt } from '../../../helpers/settles-at'
 
 const llm = (overrides: Record<string, unknown>) => ({
   provider: 'azureOpenAI',
@@ -94,6 +96,14 @@ describe('enterprise_search/utils/default-chat-model', () => {
       sinon.stub(configUtil, 'readStoredAiModelsConfig').rejects(new Error('kv down'))
 
       const body = await run({ query: 'hi' })
+
+      expect(body).to.deep.equal({ query: 'hi' })
+    })
+
+    it('lets the chat through within 250 ms when the settings store hangs (Redis paused)', async () => {
+      sinon.stub(configUtil, 'readStoredAiModelsConfig').returns(new Promise(() => undefined))
+
+      const body = await settlesAt(FAIL_FAST_CACHE_TIMEOUT_MS, () => run({ query: 'hi' }))
 
       expect(body).to.deep.equal({ query: 'hi' })
     })

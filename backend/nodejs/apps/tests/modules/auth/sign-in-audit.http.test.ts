@@ -131,6 +131,13 @@ describe('the check that a log does not quote a token segment', () => {
 
 describe('auth audit lines (HTTP)', function () {
   this.timeout(20000);
+
+  // Sign out tells the person's live sockets through the notification module, which the app loads at boot. Loaded once
+  // here, so its first compile (seconds under ts-node) is not paid inside a request's 5 s limit.
+  before(async function () {
+    this.timeout(120000);
+    await import('../../../src/modules/notification/container/notification.container');
+  });
   useCommunitySignInLists();
 
   let server: Server;

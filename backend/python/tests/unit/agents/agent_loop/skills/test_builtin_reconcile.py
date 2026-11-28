@@ -85,7 +85,7 @@ def _graph_with_orgs(*orgs: dict[str, object]) -> FakeGraphProvider:
 
 
 def _context(graph: object, org: str = "org-1") -> SimpleNamespace:
-    return SimpleNamespace(graph_provider=graph, org_id=org, user_id="u", user_info={}, agent_skills=None, retrieval_service=MagicMock())
+    return SimpleNamespace(graph_provider=graph, org_id=org, user_id="u", user_key="key-u", user_info={}, agent_skills=None, retrieval_service=MagicMock())
 
 
 async def test_request_path_never_awaits_the_seeder(packs_root_v1: str) -> None:
@@ -161,7 +161,11 @@ async def test_a_pack_the_seeder_could_not_write_is_retried(packs_root_v1: str) 
     """`BuiltinSkillSeeder.sync` logs a failed pack and returns; that must not
     mark the org reconciled, or no later request would ever seed the pack."""
     graph = FakeGraphProvider()
-    real_create = GraphSkillStore.create_skill
+    from app.edition_services import skill_store
+
+    # The store class the seeder writes with, whichever this build opens.
+    store_class = type(skill_store(graph, "org-1", SEED_IDENTITY))
+    real_create = store_class.create_skill
     failures = {"pack-a": 1}
 
     async def _create(self: GraphSkillStore, name: str, *args: object, **kwargs: object) -> object:
@@ -172,7 +176,7 @@ async def test_a_pack_the_seeder_could_not_write_is_retried(packs_root_v1: str) 
 
     seeder = _counting_seeder(packs_root_v1)
     with patch.object(mf, "get_builtin_seeder", return_value=seeder), \
-         patch.object(GraphSkillStore, "create_skill", _create):
+         patch.object(store_class, "create_skill", _create):
         await mf.reconcile_builtin_skills(graph, "org-1")
         assert await _builtin_names(graph, "org-1") == {"pack-b"}
         await mf.reconcile_builtin_skills(graph, "org-1")

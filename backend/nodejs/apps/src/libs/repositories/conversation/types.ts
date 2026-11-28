@@ -141,6 +141,8 @@ export interface MessageDto {
   tools?: IToolCallItem[];
   reasoning?: IReasoningTurn[];
   parts?: IMessagePart[];
+  /** The version of the stored content (an answer or error row); its label is never returned. */
+  labelVer?: string;
   createdAt?: Date;
   updatedAt?: Date;
   /** The agent harness's fields (WP109-FU-2); `label` only when read `withLabels`. */
@@ -157,12 +159,156 @@ export interface MessageDto {
   notFound?: IMessage['notFound'];
   limits?: IMessage['limits'];
   command?: IMessage['command'];
+  earlierResults?: IMessage['earlierResults'];
   label?: IMessage['label'];
+}
+
+/** The first question or note of a session, removed or not: what a title made from the session's first message came from. */
+export interface OpeningMessageDto {
+  content: string;
+  appliedFilters?: IAppliedFilters;
+}
+
+/**
+ * A message with what the reader check reads of it, its label and archive included. Read by the reader
+ * check only; nothing built from it is returned to a client.
+ */
+export interface MessageLabelRow {
+  _id: string;
+  sessionId: string;
+  orgId: string;
+  /** Its place in its chat: where its turn is read from when an answer from before labels is checked. */
+  seq?: number;
+  messageType: string;
+  content: string;
+  parts?: unknown[];
+  labelVer?: string;
+  provenance?: unknown;
+  labelHistory?: unknown[];
+  requestedBy?: string;
+  authorUserId?: string;
+  runId?: string;
+  respondingAgentKey?: string;
+  sharedFrom?: unknown;
+  /** A shared copy taken out of its chat: what it was made from, and the copy that took its place. */
+  removedFrom?: unknown;
+  again?: unknown;
+  consent?: unknown;
+  consentTo?: unknown;
+  createdAt?: Date;
+  removedAt?: Date;
+  /** A question that answers a card: the card it was bound to when it was sent. A store that binds none leaves it out. */
+  answersCard?: string;
+}
+
+/**
+ * The reader check's closure of one answer version, as stored (`StoredClosure` in `privacy/closure.ts`): keyed
+ * `rowId@ver`, of one org, never returned to a client. Every field is named: a store that left one out would keep
+ * closures no read can take.
+ */
+export interface AnswerClosureDoc {
+  _id: string;
+  orgId: string;
+  sessionId?: string;
+  rowId: string;
+  ver: string;
+  rev: number;
+  self: unknown;
+  add: unknown;
+  chain: unknown;
+  folded: unknown;
+  size: number;
+  spans: unknown;
+  pub: unknown;
+  shares: unknown;
+  digest: string;
+  at: Date;
+}
+
+/** A message that carries a share, on its current version (`consent`) or an archived one (`labelHistory[].consent`). */
+export interface ShareMarkRow {
+  _id: string;
+  sessionId: string;
+  labelVer?: string;
+  consent?: unknown;
+  labelHistory?: Array<{ ver?: unknown; consent?: unknown }>;
 }
 
 /** A message as the store returns it. */
 export interface MessageRow {
   dto: MessageDto;
+}
+
+/** An answer (or failed answer) row of one chat, as the answer-share writes address it. */
+export interface AnswerRowRef {
+  orgId: string;
+  sessionId: string;
+  messageId: string;
+}
+
+/** A member's ask to see one version of an answer. */
+export interface ShareRequestDto {
+  by: string;
+  at: Date;
+  /** The answer's `labelVer` asked about. */
+  ver: string;
+  state: 'open' | 'shared' | 'dismissed' | 'void';
+  /** The asking member's membership when they asked: a removal and re-add voids the ask. */
+  memberSince?: string;
+}
+
+/** How an ask is closed in place: answered by a share is `setAnswerConsent`'s. `void`: its sender is no longer that member. */
+export type ClosedShareRequestState = 'dismissed' | 'void';
+
+/** The asker's consent to show one version of an answer to more people than can open what it used. */
+export interface AnswerConsentDto {
+  by: string;
+  at: Date;
+  ver: string;
+  scope: 'everyone' | 'people';
+  how?: 'earlier';
+  /** Agents the share stays with (`AnswerConsent.agents`). */
+  agents?: string[];
+  /** The earlier shares it counts on (`AnswerConsent.on`). */
+  on?: Array<{ row: string; ver: string }>;
+}
+
+/** One person a share with people covers, in the membership they had when it was made. */
+export interface AnswerConsentEntryDto {
+  userId: string;
+  memberSince: string;
+}
+
+export interface NewAnswerShare {
+  /** The answer's version as read; absent for a row from before labels. */
+  labelVer: string | undefined;
+  /** The share as read (null: none): written only over that one. */
+  expected: AnswerConsentDto | null;
+  consent: AnswerConsentDto;
+  /**
+   * A share with people names them; a share with everyone stores no one. Those named beside `covers` are kept from the
+   * share as read: it is written only while each of them is still named there.
+   */
+  consentTo?: AnswerConsentEntryDto[];
+  /** Whose open asks for `consent.ver` this share answers. */
+  covers: 'everyone' | readonly string[];
+}
+
+/** A share changed for some people alone, while it is still the one read. */
+export interface AnswerConsentChange {
+  /** The answer's version as read; absent for a row from before labels. */
+  labelVer: string | undefined;
+  /** The share as read: changed only while it is still that one. */
+  expected: AnswerConsentDto;
+  /** Stop: a share with people names them no more, one with everyone leaves them out. Else one with everyone covers them again. */
+  stop: boolean;
+  people: readonly string[];
+}
+
+/** A share that was ended, with whom it covered. */
+export interface EndedAnswerShare {
+  consent: AnswerConsentDto;
+  consentTo: AnswerConsentEntryDto[];
 }
 
 export interface NewMessage extends Omit<IMessage, 'citations'> {
@@ -490,9 +636,16 @@ export interface ConversationRepository {
     agentLimit: number;
     chatsPerAgent: number;
   }): Promise<{ groups: AgentArchiveGroup[]; totalAgents: number }>;
-  /** Ids of the sessions with a message whose text matches. */
+  /**
+   * Ids of `userId`'s own sessions with a message of theirs whose text matches:
+   * their questions and answers, never tool output. A chat shared with them or
+   * visible through a project matches by title alone (`listSessions` with
+   * `search`): a message there can be an answer hidden from them, and a match on
+   * its text would tell whether it holds the words searched for.
+   */
   findIdsByContent(
     orgId: string,
+    userId: string,
     escapedSearch: string,
     limit?: number,
   ): Promise<ContentMatches>;
@@ -561,6 +714,18 @@ export interface ConversationRepository {
     tx?: Tx,
   ): Promise<ChatSessionDto | null>;
   setTitle(id: string, title: string, tx?: Tx): Promise<ChatSessionDto | null>;
+  /**
+   * Sets the title only while it is still `expected`, so a rename made meanwhile is never overwritten, and moves the
+   * session's change marker where the store keeps one. Not an edit of the chat: `updatedAt` stays. False when the
+   * title changed or the session is gone.
+   */
+  replaceTitle(
+    sessionId: string,
+    orgId: string,
+    expected: string,
+    title: string,
+    tx?: Tx,
+  ): Promise<boolean>;
   /** Replaces the member list. `clearShareLink` also clears the link when nobody is left. */
   setSharing(
     scope: SessionScope,
@@ -670,6 +835,50 @@ export interface ConversationRepository {
     feedback: unknown,
     tx?: Tx,
   ): Promise<MessageDto | null>;
+  /**
+   * Messages of the org by id, in any of its chats and removed ones included, with their labels: for the
+   * reader check only. Ids that are not messages of the org are left out.
+   */
+  listMessageLabels(
+    orgId: string,
+    messageIds: string[],
+  ): Promise<Map<string, MessageLabelRow>>;
+  /**
+   * The answers and errors of these chats of the org that one of `runIds` wrote, by the run of their current version
+   * (`runId`) or of an archived one (`labelHistory[].runId`), read as `listMessageLabels` reads them; removed ones
+   * included. For the reader check only: a file a run read takes the label of the version its writing run wrote. A
+   * store that keeps no runs on a message finds none, so such a file hides what was built on it.
+   */
+  listMessagesOfRuns(
+    orgId: string,
+    sessionIds: string[],
+    runIds: string[],
+  ): Promise<MessageLabelRow[]>;
+  /**
+   * The stored closures of answer versions of the org, by key (`rowId@ver`); a key with none is left out. For the reader
+   * check only. A store that keeps no closures finds none, and the reader check makes them on every read.
+   */
+  listAnswerClosures(
+    orgId: string,
+    keys: string[],
+  ): Promise<Map<string, AnswerClosureDoc>>;
+  /** Stores closures of answer versions of the org, each replacing any stored under its key. */
+  saveAnswerClosures(
+    orgId: string,
+    closures: AnswerClosureDoc[],
+  ): Promise<void>;
+  /**
+   * The messages of these chats of the org that carry a share, on their current version or an archived one, with
+   * nothing else of them: what the reader check reads to notice a share made after a closure. A store that keeps no
+   * shares on a message (it reads them as absent everywhere) finds none.
+   */
+  listShareMarks(orgId: string, sessionIds: string[]): Promise<ShareMarkRow[]>;
+  /** The session's first question or note, removed or not; null when it has none. */
+  findOpeningMessage(
+    sessionId: string,
+    orgId: string,
+    tx?: Tx,
+  ): Promise<OpeningMessageDto | null>;
   /** One message of a session. */
   findMessage(
     sessionId: string,
@@ -677,7 +886,10 @@ export interface ConversationRepository {
     messageId: string,
     tx?: Tx,
   ): Promise<MessageDto | null>;
-  /** Oldest first unless `order` is 'desc'. Never returns messages for more than one session. */
+  /**
+   * Oldest first unless `order` is 'desc'. Never returns messages for more than one session. With `maxSeq`, only the
+   * messages up to that place in the chat (the turn a message closes, read newest first).
+   */
   listMessages(
     sessionId: string,
     q: {
@@ -690,6 +902,7 @@ export interface ConversationRepository {
       withLabels?: boolean;
       /** Only messages after this seq (a keyset page); with `skip` it counts from there. */
       afterSeq?: number;
+      maxSeq?: number;
     },
     tx?: Tx,
   ): Promise<MessageRow[]>;
@@ -709,6 +922,73 @@ export interface ConversationRepository {
   listAttachmentsAndCitedRecords(
     sessionId: string,
   ): Promise<AttachmentsAndCitedRecords[]>;
+
+  // ---- answer shares: one atomic write each, guarded by what must still hold, so concurrent asks never refuse each
+  // other or the asker's own share, dismiss or stop; each gives the row a fresh change stamp
+  /**
+   * Adds a member's ask while the answer is still at `labelVer`: one waiting ask per person per version. A dismissed,
+   * answered or void ask of theirs leaves them free to ask again. The write holds the rule: no ask of theirs for the
+   * version may be open, and if they asked before, the answer's share must still be `share`, the one the caller read
+   * and found does not cover them (none, or one that no longer does: the reader check's `consentCovers` decides that,
+   * so this store does not). False when the answer moved on, the row is gone or the rule no longer holds: asks
+   * arriving together, a double click included, add one.
+   */
+  addShareRequest(
+    row: AnswerRowRef,
+    labelVer: string | undefined,
+    request: ShareRequestDto,
+    share: AnswerConsentDto | null,
+    tx?: Tx,
+  ): Promise<boolean>;
+  /**
+   * Closes the open asks for version `ver` (only those of `by`, when given, and only those made in another membership
+   * than `notSince`, when that is) where they are. Whose asks it closed; none when no such ask was open, and then
+   * nothing is written.
+   */
+  closeShareRequests(
+    row: AnswerRowRef,
+    asks: {
+      ver: string;
+      state: ClosedShareRequestState;
+      by?: readonly string[];
+      /** A membership (`ShareRequestDto.memberSince`), or null for one no row dates: an ask with no membership stays. */
+      notSince?: string | null;
+    },
+    tx?: Tx,
+  ): Promise<string[]>;
+  /**
+   * Shares the answer while it is still at `labelVer` and its share is still `expected`, and answers the open asks it
+   * covers where they are. Whose asks it answered; null when the answer or its share changed since they were read.
+   */
+  setAnswerConsent(
+    row: AnswerRowRef,
+    share: NewAnswerShare,
+    tx?: Tx,
+  ): Promise<string[] | null>;
+  /** Stops the answer's share for some people alone, or covers them again (`AnswerConsentChange`); false when it changed since. */
+  changeAnswerConsent(
+    row: AnswerRowRef,
+    change: AnswerConsentChange,
+    tx?: Tx,
+  ): Promise<boolean>;
+  /**
+   * Ends the answer's share, whatever version it was for (only one `onlyBy` made, when given): the share it ended,
+   * with whom it covered; null when there was none.
+   */
+  clearAnswerConsent(
+    row: AnswerRowRef,
+    onlyBy?: string,
+    tx?: Tx,
+  ): Promise<EndedAnswerShare | null>;
+  /**
+   * Ends the shares of the answer's earlier versions, which its archived labels keep (only one `onlyBy` made, or of
+   * version `ver`, when given): those it ended.
+   */
+  clearArchivedConsents(
+    row: AnswerRowRef,
+    only?: { by?: string; ver?: string },
+    tx?: Tx,
+  ): Promise<AnswerConsentDto[]>;
 
   // ---- citations
   createCitations(cs: NewCitation[], tx?: Tx): Promise<CitationDto[]>;

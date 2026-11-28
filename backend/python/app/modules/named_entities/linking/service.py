@@ -16,6 +16,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from app.modules.agents.privacy.ledger import note_shown
 from app.modules.named_entities.domain.kinds import EntityKind
 from app.modules.named_entities.linking.candidates import (
     SETTLED_SOURCES,
@@ -165,6 +166,11 @@ class EntityLinker:
 
         decided: dict[int, list[int]] | None = {}
         if to_check:
+            # The verifier sees each candidate's name as readable records spell it.
+            note_shown(records=[
+                str(row["_key"]) for _, _, offered, _, _ in to_check for c in offered for row in c.records
+                if row.get("_key")
+            ])
             items = [
                 VerifyItem(
                     mention=mention.name,

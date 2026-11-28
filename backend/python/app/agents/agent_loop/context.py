@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
+from app.modules.agents.chat_extension import get_chat_extension
 from harness_core.effects.flow import (
     FlowRule,  # noqa: TC001 - pydantic resolves the field type at runtime
 )
@@ -34,6 +35,18 @@ from harness_core.tool_identity import (
 
 if TYPE_CHECKING:
     from app.services.artifact_registry.models import Actor
+
+
+def _user_key_of(user_info: Any) -> str:  # noqa: ANN401
+    """The graph user key the route read with the user's details: `_key` from the agent route, `userKey`
+    from the chat route. Empty when neither was read."""
+    if not isinstance(user_info, dict):
+        return ""
+    for field in ("_key", "userKey"):
+        key = user_info.get(field)
+        if isinstance(key, str) and key:
+            return key
+    return ""
 
 
 def _tool_approval_answer(raw: Any) -> Any:  # noqa: ANN401
@@ -65,6 +78,12 @@ class AgentContext(BaseModel):
     # both need the same catalog in one turn.
     _source_catalog: Any = PrivateAttr(default=None)
     _credentials: ToolCredentials | None = PrivateAttr(default=None)
+    # Whether others read this run's answer (`ChatExtension.read_by_others`), asked once per run.
+    _read_by_others: bool | None = PrivateAttr(default=None)
+    # The sources this turn's model calls may name; the prompts and the answer's label read this one value.
+    _named_sources: Any = PrivateAttr(default=None)
+    # The chat's files this turn's model calls are told about (`told_files.ToldFiles`).
+    _told_files: Any = PrivateAttr(default=None)
     # One ledger per request so `retrieval_context` frames carry only what
     # is new since the last tool call, not the whole accumulated set.
     _retrieval_ledger: Any = PrivateAttr(default=None)
@@ -72,10 +91,17 @@ class AgentContext(BaseModel):
     _usage_ledger: Any = PrivateAttr(default=None)
     _run_usage_claimed: bool = PrivateAttr(default=False)
 
+    # Who is driving this run. `assistant` is the default chat assistant (and Universal
+    # Agent Mode). Defaults to the most restricted value.
+    invocation: Literal["assistant", "saved_agent", "sub_agent"] = "saved_agent"
+
     # Identity
     org_id: str
     user_id: str
     user_email: str
+    # The asker's graph user key, which a skill's `createdBy` holds. `user_id` is the account id the
+    # request was signed with: another kind of id, so the two are never compared with each other.
+    user_key: str = ""
     # Who owns the artifacts the run makes; see `chat_state.ChatState`.
     artifact_owner_user_id: str = ""
     user_info: dict[str, Any] = Field(default_factory=dict)
@@ -190,6 +216,9 @@ class AgentContext(BaseModel):
     # (see `prompt_builder.py`), distinct from `instructions` (agent-specific)
     # and `custom_instructions` (org-level) — never touches agent identity.
     project_instructions: str | None = None
+    # The project those instructions came from (`ChatQuery.projectId`): the
+    # answer's label names it, so only people who can open it read the answer.
+    project_id: str | None = None
     # A project chat: every tool loaded is one enabled on the project (Node
     # narrows `tools` to them), which `tool_approvals.decide` relies on.
     project_tools_selected: bool = False
@@ -219,6 +248,9 @@ class AgentContext(BaseModel):
 
     # Conversation history (for multi-turn seeding)
     previous_conversations: list[dict[str, Any]] = Field(default_factory=list)
+    # Per-request values an edition's chat hooks read (see `chat_extension`);
+    # empty unless the edition sets some.
+    extensions: dict[str, Any] = Field(default_factory=dict)
 
     # Populated by `PipesHubToolLoader.load()`: toolset registry name ->
     # `"not_authenticated"` (configured, `ToolsetAuthError`/auth-flavored
@@ -247,7 +279,7 @@ class AgentContext(BaseModel):
     durable_web_app: bool = False
 
     # `{"instanceId", "name", "instructions"}` for each loaded MCP server whose `initialize`
-    # result carried instructions, for the capability summary.
+    # result carried instructions, for the capability summary. Empty in a run others read (`read_by_others`).
     mcp_server_instructions: list[dict[str, Any]] = Field(default_factory=list)
 
     # Group names (as registered on the per-request `ToolRegistry`, i.e.
@@ -302,6 +334,11 @@ class AgentContext(BaseModel):
     # frames it builds directly (STATE_SNAPSHOT, RUN_FINISHED, RUN_ERROR,
     # CUSTOM). `None` until then; irrelevant for `LegacyFormatter`.
     run_id: str | None = None
+
+    # The chat's `aclVersion` from the Node AI payload (None for callers that
+    # send none). Keys the chat-content access cache; preview/download paths
+    # never have one and are never served from a cache.
+    acl_version: int | None = None
 
     # Stop Generation (Phase 3a): the `CancellationToken` this request's
     # `RunCancellationRegistry` entry was registered with — `None` for
@@ -464,6 +501,10 @@ class AgentContext(BaseModel):
             "org_id": self.org_id,
             "user_id": self.user_id,
             "artifact_owner_user_id": self.artifact_owner_user_id,
+            "run_id": self.run_id,
+            "acl_version": self.acl_version,
+            "conversation_id": self.conversation_id,
+            "is_service_account": self.is_service_account,
         })
 
     @property
@@ -489,6 +530,7 @@ class AgentContext(BaseModel):
         configured_context_window: int | None = None,
         is_reasoning_model: bool = False, run_id: str | None = None,
         cancellation_token: Any = None,
+        invocation: Literal["assistant", "saved_agent", "sub_agent"] = "saved_agent",
     ) -> "AgentContext":
         """Builds an `AgentContext` from an already-built `ChatState` dict
         (Phase 8, `stream_bridge.py`) rather than re-deriving every field a
@@ -508,6 +550,7 @@ class AgentContext(BaseModel):
             user_id=state.get("user_id", ""),
             artifact_owner_user_id=state.get("artifact_owner_user_id") or state.get("user_id", ""),
             user_email=state.get("user_email", ""),
+            user_key=_user_key_of(state.get("user_info")),
             user_info=state.get("user_info") or {},
             org_info=state.get("org_info") or {},
             is_service_account=bool(state.get("is_service_account", False)),
@@ -552,6 +595,7 @@ class AgentContext(BaseModel):
             instructions=state.get("instructions"),
             custom_instructions=state.get("custom_instructions"),
             project_instructions=state.get("project_instructions"),
+            project_id=state.get("project_id"),
             project_tools_selected=bool(state.get("project_tools_selected", False)),
             timezone=state.get("timezone"),
             current_time=state.get("current_time"),
@@ -571,6 +615,7 @@ class AgentContext(BaseModel):
             previous_conversations=state.get("previous_conversations") or [],
             virtual_filesystem=state.get("virtual_filesystem"),
             workspace_manifest=state.get("workspace_manifest"),
+            extensions=get_chat_extension().context_extensions(state),
             event_sink=event_sink,
             protocol=protocol,
             llm_provider=llm_provider,
@@ -578,13 +623,31 @@ class AgentContext(BaseModel):
             configured_context_window=configured_context_window,
             is_reasoning_model=is_reasoning_model,
             run_id=run_id,
+            acl_version=state.get("acl_version"),
             cancellation_token=cancellation_token,
+            invocation=invocation,
             tool_state=state,
         )
 
     def model_post_init(self, __context: Any) -> None:  # noqa: ANN401
         for key, value in self._seed_tool_state().items():
             self.tool_state.setdefault(key, value)
+        from app.modules.agents.context.own_tools import keep_own_tools_out
+
+        # Before anything loads a tool or builds a prompt from these lists.
+        keep_own_tools_out(self)
+        # Now, so tools that print source names find them in `tool_state` (`nameable_source_ids`).
+        _ = self.named_sources
+        # Now, so the artifacts tools find which files they may list in `tool_state` (`told_files_in`).
+        _ = self.told_files
+
+    @property
+    def read_by_others(self) -> bool:
+        """Whether people besides the person asking read this run's answer (`ChatExtension.read_by_others`),
+        asked once per run. Such a run offers nothing of the person's own: see `named_sources` and `own_tools`."""
+        if self._read_by_others is None:
+            self._read_by_others = bool(get_chat_extension().read_by_others(self))
+        return self._read_by_others
 
     def tool_credentials(self) -> ToolCredentials:
         """This request's ``ToolCredentials``: connector records resolved by handle at the
@@ -642,12 +705,40 @@ class AgentContext(BaseModel):
 
         return request_refs(self.tool_state)
 
+    @property
+    def named_sources(self) -> Any:  # noqa: ANN401
+        """The knowledge sources this turn's model calls may name (`named_sources.NamedSources`), worked
+        out once, on first use."""
+        if self._named_sources is None:
+            from app.modules.agents.context.named_sources import (
+                NAMED_SOURCES_KEY,
+                named_sources_for,
+            )
+
+            self._named_sources = named_sources_for(self)
+            self.tool_state[NAMED_SOURCES_KEY] = self._named_sources
+        return self._named_sources
+
+    @property
+    def told_files(self) -> Any:  # noqa: ANN401
+        """The chat's files this turn's model calls are told about (`told_files.ToldFiles`), worked out once, on
+        first use."""
+        if self._told_files is None:
+            from app.modules.agents.context.told_files import (
+                TOLD_FILES_KEY,
+                told_files_for,
+            )
+
+            self._told_files = told_files_for(self)
+            self.tool_state[TOLD_FILES_KEY] = self._told_files
+        return self._told_files
+
     def get_source_catalog(self) -> Any:
         """Return the per-request `SourceCatalog`, building it once on first use."""
         if self._source_catalog is None:
             from app.modules.agents.context.source_catalog import SourceCatalog
 
-            self._source_catalog = SourceCatalog.from_state(self.tool_state)
+            self._source_catalog = SourceCatalog.from_state(self.tool_state, named=self.named_sources)
         return self._source_catalog
 
     def _seed_tool_state(self) -> dict[str, Any]:
@@ -688,6 +779,7 @@ class AgentContext(BaseModel):
             "config_service": self.config_service,
             "blob_store": self.blob_store,
             "org_id": self.org_id,
+            "invocation": self.invocation,
             "user_id": self.user_id,
             "artifact_owner_user_id": self.artifact_owner_user_id or self.user_id,
             "user_email": self.user_email,
@@ -734,6 +826,7 @@ class AgentContext(BaseModel):
             "current_time": self.current_time,
             "locale": self.locale,
             "previous_conversations": self.previous_conversations,
+            **get_chat_extension().tool_state_fields(self.extensions),
             "final_results": [],
             "virtual_record_id_to_result": {},
             # Written by the knowledge tools that surface Record IDs without a

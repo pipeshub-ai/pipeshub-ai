@@ -40,6 +40,7 @@ _SHARE_ROLES = {"OWNER", "ORGANIZER"}
 USERS: dict[str, dict[str, Any]] = {
     "alice": {"userId": "u-alice", "orgId": "org-1", "email": "alice@acme.test"},
     "bob": {"userId": "u-bob", "orgId": "org-1", "email": "bob@acme.test"},
+    "carol": {"userId": "u-carol", "orgId": "org-1", "email": "carol@acme.test"},
     "mallory": {"userId": "u-mallory", "orgId": "org-2", "email": "mallory@evil.test"},
 }
 
@@ -472,6 +473,14 @@ class InMemoryGraph:
         return [
             {f: d.get(f) for f in return_fields} if return_fields else copy.deepcopy(d) for d in docs
         ]
+
+    async def update_node(self, key: str, collection: str, updates: dict, transaction: str | None = None) -> bool:
+        self._enter("update_node", key, collection, updates)
+        current = self.nodes.get(collection, {}).get(key)
+        if current is None:
+            return False
+        current.update(copy.deepcopy(updates))
+        return True
 
     async def batch_create_edges(self, edges: list[dict], collection: str, transaction: str | None = None) -> bool:
         self._enter("batch_create_edges", edges, collection)

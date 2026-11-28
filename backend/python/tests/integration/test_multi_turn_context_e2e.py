@@ -48,9 +48,16 @@ if TYPE_CHECKING:
 
 _A = "How do I set up automated appointment reminders by SMS and email, and can patients confirm or cancel?"
 _A_ANSWER = "Enable them under Practice Settings > Reminders; patients reply C to confirm or X to cancel."
-_B = "I have access to more than one practice. How do I pick which practice to log into and set a default?"
-_ANSWER = "Pick the practice in the picker after login, and set Profile > Preferences > Default practice."
 _FETCHES = 12
+# B names the manual pages it asks about, and the run fetches exactly those: a build may refuse to fetch a URL the
+# sender did not type once the run has read what not everyone can open (these runs have no label, so they count as
+# such), and these tests are about the window, not about that.
+_MANUAL_PAGES = tuple(f"https://manuals.example.com/admin/{i}" for i in range(_FETCHES))
+_B = (
+    "I have access to more than one practice. How do I pick which practice to log into and set a default? "
+    "The admin manual covers it: " + " ".join(_MANUAL_PAGES)
+)
+_ANSWER = "Pick the practice in the picker after login, and set Profile > Preferences > Default practice."
 _PAGE_CHARS = 60_000
 _WINDOW = 32_000
 # Smaller than the system prompt and tool schemas alone, so no request fits.
@@ -58,7 +65,7 @@ _TINY_WINDOW = 4_000
 _SUMMARY_REQUEST = "Summarize the conversation history below"
 # Loop-written summaries reach the provider as user turns, wrapped as context notes (CE-05, P1).
 _CONTEXT_NOTE = '<context_note source="agent">\n'
-_LOOP_NOTE_PREFIXES = ("[Loop compaction", "[Auto-compacted summary")
+_LOOP_NOTE_PREFIXES = ("[Loop compaction", "[Earlier conversation, summarised")
 # What artifact compaction sends in place of a fetched page.
 _ARTIFACT_REFERENCE = "[artifact:"
 _IMAGE_URL = (
@@ -121,7 +128,7 @@ def _fetch_script() -> list[AIMessage]:
     return [
         AIMessage(content="", tool_calls=[{
             "name": "dynamic__fetch_url",
-            "args": {"url": f"https://manuals.example.com/admin/{i}"},
+            "args": {"url": _MANUAL_PAGES[i]},
             "id": f"fetch-{i}",
         }])
         for i in range(_FETCHES)

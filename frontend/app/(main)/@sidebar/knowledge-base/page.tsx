@@ -18,7 +18,7 @@ import { collectionNameError, folderNameError } from '../../knowledge-base/utils
 import { useTranslation } from 'react-i18next';
 import { useCallback, useMemo, Suspense } from 'react';
 import { toast } from '@/lib/store/toast-store';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import type { NodeType, EnhancedFolderTreeNode } from '../../knowledge-base/types';
 import { useUserPermission, usePermissionDeniedDialog } from '@/config';
@@ -33,7 +33,7 @@ function KnowledgeBaseSidebarSlotContent() {
   const permissionDenied = usePermissionDeniedDialog();
 
   const isAdmin = useUserStore(selectIsAdmin);
-  const isMobile = useIsMobile();
+  const isMobile = useIsBelowDesktop();
   const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
   const closeOnMobile = useCallback(() => {
     if (isMobile) closeMobileSidebar();

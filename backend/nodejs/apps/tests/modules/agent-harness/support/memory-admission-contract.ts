@@ -307,6 +307,19 @@ export function describeMemoryAdmissionContract(
       expect(await pinOf(alicesTurn)).to.deep.equal({ recalled: [aliceHere.memoryId], writeScopes: ['session'] });
     });
 
+    it('a chat open to its project, shared with nobody: its owner\'s personal memories stay out, as in a shared one', async function () {
+      // Who else reads a chat is the conversation's to say: the in-memory stores keep none.
+      if (backend.openToProject === undefined) this.skip();
+      await setPolicy({ mode: 'user', review: 'auto' });
+      const first = await send(alice);
+      await cancel(first.run);
+      await backend.openToProject(orgId, first.sessionId);
+      await seed({ ownerId: alice });
+      const here = await seed({ ownerId: alice, scope: 'session', sessionId: first.sessionId });
+      const next = await send(alice, { sessionId: first.sessionId });
+      expect(await pinOf(next)).to.deep.equal({ recalled: [here.memoryId], writeScopes: ['session'] });
+    });
+
     it('AD-10: a schedule\'s firing is given its actor\'s memories, read with that credential, and proposes none', async () => {
       await setPolicy({ mode: 'agent', review: 'auto' });
       records.grant(`Bearer ${alice}`, 'r1');

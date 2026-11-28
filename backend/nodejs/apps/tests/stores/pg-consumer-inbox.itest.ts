@@ -294,14 +294,15 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           if (cause === 'the store fence refuses the write') {
             await sql('UPDATE platform.store_epoch SET epoch = epoch + 1');
           } else {
+            // The consumer stores a delivery's rows with insertNew, so the slow statement goes there.
             setNotificationRepository({
-              insertMany: async (docs: never[]) => {
+              insertNew: async (docs: never[]) => {
                 if (fail) {
                   const tx = activeUnit()!;
                   await tx.query("/* pipeshub:test.inbox_slow */ SELECT set_config('statement_timeout', '50', true)");
                   await tx.query('/* pipeshub:test.inbox_slow */ SELECT pg_sleep(1)');
                 }
-                return notifications.insertMany(docs);
+                return notifications.insertNew(docs);
               },
             } as never);
           }

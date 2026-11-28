@@ -157,7 +157,9 @@ export interface ConversationStateLookup {
  * service refused some, `attachmentsUnrecorded` (of those, uploads older than
  * the uploader record that the sender holds no OWNER edge to) and
  * `attachmentsMarkedRemoved` (messages of other conversations naming an erased
- * upload) only when non-zero.
+ * upload) only when non-zero. `answerClosures` (the reader check's stored
+ * closures of the chat's answer versions) only when some were removed: a
+ * store that keeps none has none to count.
  */
 export type ConversationErasure = {
   citations: number;
@@ -168,6 +170,7 @@ export type ConversationErasure = {
   attachmentsRefused?: number;
   attachmentsUnrecorded?: number;
   attachmentsMarkedRemoved?: number;
+  answerClosures?: number;
 };
 
 /**

@@ -17,10 +17,15 @@ import { ChatSession } from '../../../../src/modules/enterprise_search/schema/ch
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import EnterpriseSemanticSearch from '../../../../src/modules/enterprise_search/schema/search.schema'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
-import { MongoConversationRepository } from '../../../../src/libs/repositories/conversation/mongo'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
+import { behindGuard, realGuards } from '../helpers/guarded-chat'
+import { SharedArtifactService } from '../../../../src/modules/agent-harness/application/shared-artifacts'
+import { InMemoryArtifactReadAccess } from '../../../../src/modules/agent-harness/adapters/in-memory-artifact-access'
+import { conversationExtensions, useConversationExtensions } from '../../../../src/modules/enterprise_search/services/conversation/conversation-extensions'
+import { chatArchivesScope, withListScope } from '../helpers/list-scope'
+import { VECTOR_EXAMPLES } from '../../agent-harness/support/canary-scan'
 
 /**
  * A shared conversation, archive or saved search shows each viewer only the
@@ -56,6 +61,20 @@ const chain = (value: unknown): any => {
   q.then = (ok: (v: unknown) => unknown, bad?: (e: unknown) => unknown) => Promise.resolve(value).then(ok, bad)
   return q
 }
+
+/** `ChatSessionMessage.find` as a page reads it: each query gets the rows its `skip` and `limit` select. */
+const pageReads = (rows: any[]): sinon.SinonStub =>
+  (ChatSessionMessage.find as sinon.SinonStub).callsFake(() => {
+    let skip = 0
+    let limit: number | undefined
+    const q: any = chain(undefined)
+    q.skip = sinon.stub().callsFake((n: number) => ((skip = n), q))
+    q.limit = sinon.stub().callsFake((n: number) => ((limit = n), q))
+    const value = () => rows.slice(skip, limit === undefined ? undefined : skip + limit).map((m) => ({ ...m }))
+    q.exec = sinon.stub().callsFake(async () => value())
+    q.then = (ok: (v: unknown) => unknown, bad?: (e: unknown) => unknown) => Promise.resolve(value()).then(ok, bad)
+    return q
+  })
 
 const citation = (id: string, recordId: string, content: string) => ({
   _id: id,
@@ -149,6 +168,14 @@ const req = (userId: string, extra: Record<string, unknown> = {}): any => ({
   ...extra,
 })
 
+type Handler = (req: never, res: never, next: never) => Promise<unknown>
+
+// Each handler runs behind the guard its route mounts, which also reads the chat with `ChatSession.findOne`.
+const getChat = () => behindGuard(realGuards(), 'read', getConversationById(appConfig) as Handler, 'chat') as any
+const getAgentChat = () => behindGuard(realGuards(), 'read', getAgentConversationById(appConfig) as Handler, 'agent') as any
+const listArchives = () => withListScope(listAllArchivesConversation(appConfig) as Handler, 'chat', chatArchivesScope) as any
+const searchArchives = () => withListScope(searchArchivedConversations(appConfig) as Handler, 'chat', chatArchivesScope) as any
+
 const res = (): any => {
   const r: any = { status: sinon.stub(), json: sinon.stub() }
   r.status.returns(r)
@@ -173,12 +200,12 @@ const stubAccess = (readable: string[] | null, unmatched: string[] = []) => {
   return asked
 }
 
-const stubConversation = (messages: unknown[]) => {
+const stubConversation = (messages: unknown[], sharedWith: unknown[] = [{ userId: VIEWER }], kind: { agentKey?: string } = {}) => {
   sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
   sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false)
   sinon.stub(Users, 'find').returns(chain([]))
   sinon.stub(ChatSession, 'findOne').returns(
-    chain({ _id: SESSION, title: 't', initiator: OWNER, isShared: true, sharedWith: [{ userId: VIEWER }], status: 'complete' }),
+    chain({ _id: SESSION, orgId: ORG, userId: OWNER, ...kind, title: 't', initiator: OWNER, isShared: true, sharedWith, status: 'complete' }),
   )
   sinon.stub(ChatSession, 'find').returns(chain([]))
   sinon.stub(ChatSessionMessage, 'countDocuments').resolves(messages.length)
@@ -192,10 +219,10 @@ const stubConversation = (messages: unknown[]) => {
 const stubPeerConversation = (messages: unknown[]) =>
   stubConversation(messages.map((m) => ({ ...(m as object), messageType: 'user_query' })))
 
-const fetchConversation = async (userId: string) => {
+const fetchConversation = async (userId: string, handler: () => any = getChat) => {
   const r = res()
   const next = sinon.stub()
-  await getConversationById(appConfig)(req(userId, { params: { conversationId: SESSION } }), r, next)
+  await handler()(req(userId, { params: { conversationId: SESSION } }), r, next)
   sinon.assert.notCalled(next)
   return r.json.firstCall.args[0].conversation.messages[0]
 }
@@ -305,11 +332,11 @@ describe('shared chats: per-viewer citations', () => {
     expect(readable.ids.size).to.equal(0)
   })
 
-  it('access checks are batched at 500 ids per call and ids are checked once', async () => {
+  it('one read asks for its ids in one request, each id once', async () => {
     const asked = stubAccess([])
     const ids = Array.from({ length: 1203 }, (_, i) => `r${i % 1100}`)
     await readableRecordIds(appConfig, { userId: VIEWER, orgId: ORG }, ids)
-    expect(asked.map((a) => a.length)).to.deep.equal([500, 500, 100])
+    expect(asked.map((a) => a.length)).to.deep.equal([1100])
     expect(new Set(asked.flat()).size).to.equal(1100)
   })
 
@@ -325,7 +352,7 @@ describe('shared chats: per-viewer citations', () => {
     const asked = stubAccess([])
     stubPeerConversation([answer()])
     ;(ChatSession.findOne as sinon.SinonStub).returns(
-      chain({ _id: SESSION, title: 't', initiator: new Types.ObjectId(OWNER), isShared: true, sharedWith: [{ userId: VIEWER }], status: 'complete' }),
+      chain({ _id: SESSION, orgId: ORG, userId: new Types.ObjectId(OWNER), title: 't', initiator: new Types.ObjectId(OWNER), isShared: true, sharedWith: [{ userId: VIEWER }], status: 'complete' }),
     )
     const message = await fetchConversation(OWNER)
     expect(message.citations[1].citationData.content).to.equal(SECRET)
@@ -337,13 +364,13 @@ describe('shared chats: per-viewer citations', () => {
     sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
     sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false)
     sinon.stub(Users, 'find').returns(chain([]))
-    sinon.stub(ChatSession, 'findOne').returns(chain({ _id: SESSION, orgId: ORG, title: 't', initiator: OWNER, isShared: true, sharedWith: [], status: 'complete' }))
+    sinon.stub(ChatSession, 'findOne').returns(chain({ _id: SESSION, orgId: ORG, userId: OWNER, agentKey: 'agent-1', title: 't', initiator: OWNER, isShared: true, sharedWith: [{ userId: VIEWER }], status: 'complete' }))
     sinon.stub(ChatSession, 'find').returns(chain([]))
     sinon.stub(ChatSessionMessage, 'countDocuments').resolves(1)
     sinon.stub(ChatSessionMessage, 'find').returns(chain([{ ...richAnswer(), messageType: 'user_query' }]))
     const r = res()
     const next = sinon.stub()
-    await getAgentConversationById(appConfig)(req(VIEWER, { params: { conversationId: SESSION, agentKey: 'agent-1' } }), r, next)
+    await getAgentChat()(req(VIEWER, { params: { conversationId: SESSION, agentKey: 'agent-1' } }), r, next)
 
     sinon.assert.notCalled(next)
     const message = r.json.firstCall.args[0].conversation.messages[0]
@@ -379,7 +406,7 @@ describe('shared chats: per-viewer citations', () => {
     sinon.stub(ChatSession, 'countDocuments').resolves(1)
     sinon.stub(ChatSessionMessage, 'find').returns(chain([{ sessionId: SESSION, ...richAnswer(), messageType: 'user_query', citations: [], attachments: [] }]))
     const r = res()
-    await listAllArchivesConversation(appConfig)(req(VIEWER), r, sinon.stub())
+    await listArchives()(req(VIEWER), r, sinon.stub())
 
     const message = r.json.firstCall.args[0].conversations[0].messages[0]
     // The archive list is redacted by record access only: the harness's artifact check runs on a conversation read.
@@ -410,7 +437,7 @@ describe('shared chats: per-viewer citations', () => {
     )
     const r = res()
     const next = sinon.stub()
-    await listAllArchivesConversation(appConfig)(req(VIEWER), r, next)
+    await listArchives()(req(VIEWER), r, next)
 
     sinon.assert.notCalled(next)
     const [citations] = [r.json.firstCall.args[0].conversations[0].messages[0].citations]
@@ -470,13 +497,17 @@ describe('shared chats: per-viewer citations', () => {
   it('archive search leaves owner-only fields out for a user the chat is shared with', async () => {
     const owned = { _id: SESSION, userId: OWNER, initiator: OWNER, title: 't', isShared: true, sharedWith: [{ userId: VIEWER, accessLevel: 'read' }], failReason: SECRET, compactedSummary: SECRET, conversationErrors: [{ message: SECRET }], source: 'assistant' }
     sinon.stub(ChatSessionMessage, 'aggregate').resolves([])
+    // The caller's own matching answers, which the content search checks for them: none here.
+    sinon.stub(ChatSessionMessage, 'find').returns(chain([]))
+    // The content search first reads the sessions the caller may see.
+    sinon.stub(ChatSession, 'find').returns(chain([{ _id: SESSION }]))
     sinon.stub(ChatSession, 'aggregate').resolves([owned] as never)
     sinon.stub(ChatSession, 'countDocuments').resolves(1)
     sinon.stub(Users, 'find').returns(chain([]))
     const run = async (userId: string) => {
       const r = res()
       const next = sinon.stub()
-      await searchArchivedConversations(appConfig)(req(userId, { query: { search: 't' } }), r, next)
+      await searchArchives()(req(userId, { query: { search: 't' } }), r, next)
       sinon.assert.notCalled(next)
       return r.json.firstCall.args[0].conversations[0]
     }
@@ -492,7 +523,7 @@ describe('shared chats: per-viewer citations', () => {
     sinon.stub(ChatSessionMessage, 'find').returns(chain([]))
     const run = async (userId: string) => {
       const r = res()
-      await listAllArchivesConversation(appConfig)(req(userId), r, sinon.stub())
+      await listArchives()(req(userId), r, sinon.stub())
       return r.json.firstCall.args[0].conversations[0]
     }
     expect(JSON.stringify(await run(VIEWER))).to.not.contain(SECRET)
@@ -574,7 +605,7 @@ const asked = () => ({ messageType: 'user_query', content: QUESTION })
 const fetchAll = async (userId: string) => {
   const r = res()
   const next = sinon.stub()
-  await getConversationById(appConfig)(req(userId, { params: { conversationId: SESSION } }), r, next)
+  await getChat()(req(userId, { params: { conversationId: SESSION } }), r, next)
   sinon.assert.notCalled(next)
   const messages: any[] = r.json.firstCall.args[0].conversation.messages
   return { question: messages.find((m) => m.messageType === 'user_query'), answer: messages.find((m) => m.messageType === 'bot_response') }
@@ -630,7 +661,8 @@ describe('lost access hides the whole answer, for the owner too', () => {
     stubConversation([asked(), richAnswer()])
     const { answer: a } = await fetchAll(VIEWER)
 
-    expect(a.answerHidden).to.deep.equal(lost)
+    // Hidden from them as sources they can't open: only its asker had them, and lost them.
+    expect(a.answerHidden).to.deep.equal(REDACTED)
     expect(JSON.stringify(a)).to.not.contain('The answer')
     expect(JSON.stringify(a)).to.not.contain('And the budget')
     expect(JSON.stringify(a)).to.not.contain('I looked at')
@@ -655,7 +687,7 @@ describe('lost access hides the whole answer, for the owner too', () => {
     sinon.stub(ChatSession, 'countDocuments').resolves(1)
     sinon.stub(ChatSessionMessage, 'find').returns(chain([{ sessionId: SESSION, ...answer(), citations: [{ citationId: citation(CIT_NO, 'rec-no', SECRET) }], attachments: [] }]))
     const r = res()
-    await listAllArchivesConversation(appConfig)(req(OWNER), r, sinon.stub() as any)
+    await listArchives()(req(OWNER), r, sinon.stub())
     const m = r.json.firstCall.args[0].conversations[0].messages[0]
     expect(m.answerHidden).to.deep.equal(lost)
     expect(JSON.stringify(m)).to.not.contain(SECRET)
@@ -666,13 +698,13 @@ describe('lost access hides the whole answer, for the owner too', () => {
     sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
     sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false)
     sinon.stub(Users, 'find').returns(chain([]))
-    sinon.stub(ChatSession, 'findOne').returns(chain({ _id: SESSION, orgId: ORG, title: 't', userId: OWNER, initiator: OWNER, status: 'complete' }))
+    sinon.stub(ChatSession, 'findOne').returns(chain({ _id: SESSION, orgId: ORG, title: 't', userId: OWNER, agentKey: 'agent-1', initiator: OWNER, status: 'complete' }))
     sinon.stub(ChatSession, 'find').returns(chain([]))
     sinon.stub(ChatSessionMessage, 'countDocuments').resolves(1)
     sinon.stub(ChatSessionMessage, 'find').returns(chain([answer()]))
     const r = res()
     const next = sinon.stub()
-    await getAgentConversationById(appConfig)(req(OWNER, { params: { conversationId: SESSION, agentKey: 'agent-1' } }), r, next)
+    await getAgentChat()(req(OWNER, { params: { conversationId: SESSION, agentKey: 'agent-1' } }), r, next)
     sinon.assert.notCalled(next)
     expect(r.json.firstCall.args[0].conversation.messages[0].answerHidden).to.deep.equal(lost)
   })
@@ -687,6 +719,19 @@ describe('lost access hides the whole answer, for the owner too', () => {
     expect(sent[1]!.content).to.equal('')
     const wire = JSON.stringify(sent)
     for (const leaked of [SECRET, 'The answer', TOOL_TEXT, R_NO, 'rec-no', 'att-no']) expect(wire).to.not.contain(leaked)
+  })
+
+  it('each history row carries its row, version and public mark; a row nobody marked public is not', () => {
+    const sent = formatPreviousConversations([
+      { ...asked(), _id: 'q1' },
+      { ...answer(), _id: 'a1', labelVer: 'v1', _pub: true },
+      { ...answer(), _id: 'a2', labelVer: 'v2' },
+    ] as any)
+    expect(sent.map((m: any) => [m._ref, m._ver, m._pub])).to.deep.equal([
+      ['q1', 'legacy', false],
+      ['a1', 'v1', true],
+      ['a2', 'v2', false],
+    ])
   })
 
   it('the history keeps an answer whose records are all readable, as stored', async () => {
@@ -709,7 +754,7 @@ describe('a hidden answer takes its turn with it; web links are not records', ()
   const card = (i: number) => ({ messageType: 'tool_call', content: SECRET, tools: [{ toolName: 'ask_user_question', toolResult: { questions: [{ question: SECRET }] } }], ...at(i) })
   const fetchRows = async (userId: string) => {
     const r = res()
-    await getConversationById(appConfig)(req(userId, { params: { conversationId: SESSION } }), r, sinon.stub() as any)
+    await getChat()(req(userId, { params: { conversationId: SESSION } }), r, sinon.stub())
     return r.json.firstCall.args[0].conversation.messages as any[]
   }
 
@@ -745,12 +790,9 @@ describe('a hidden answer takes its turn with it; web links are not records', ()
     ]
     stubConversation(rows)
     // Two rows a page: the second page holds only the card rows, the answer is on the first.
-    sinon.stub(MongoConversationRepository.prototype, 'listMessages').callsFake(async (_id: string, q: { skip?: number; limit?: number }) => {
-      const skip = q.skip ?? 0
-      return rows.slice(skip, skip + (q.limit ?? rows.length)).map((dto) => ({ dto: { ...dto } })) as any
-    })
+    pageReads(rows)
     const r = res()
-    await getConversationById(appConfig)(req(OWNER, { params: { conversationId: SESSION }, query: { page: '1', limit: '2' } }), r, sinon.stub() as any)
+    await getChat()(req(OWNER, { params: { conversationId: SESSION }, query: { page: '1', limit: '2' } }), r, sinon.stub())
     const page = r.json.firstCall.args[0].conversation.messages as any[]
 
     expect(page.map((m) => m.messageType)).to.deep.equal(['tool_call', 'tool_call'])
@@ -760,12 +802,9 @@ describe('a hidden answer takes its turn with it; web links are not records', ()
 
   const pageOf = async (userId: string, rows: any[], query: Record<string, string>) => {
     stubConversation(rows)
-    sinon.stub(MongoConversationRepository.prototype, 'listMessages').callsFake(async (_id: string, q: { skip?: number; limit?: number }) => {
-      const skip = q.skip ?? 0
-      return rows.slice(skip, skip + (q.limit ?? rows.length)).map((dto) => ({ dto: { ...dto } })) as any
-    })
+    pageReads(rows)
     const r = res()
-    await getConversationById(appConfig)(req(userId, { params: { conversationId: SESSION }, query }), r, sinon.stub() as any)
+    await getChat()(req(userId, { params: { conversationId: SESSION }, query }), r, sinon.stub())
     return r.json.firstCall.args[0].conversation.messages as any[]
   }
 
@@ -836,6 +875,19 @@ describe('a hidden answer takes its turn with it; web links are not records', ()
     ], { page: '1', limit: '2' })
     expect(page[1].answerHidden).to.deep.equal(lost)
     expect(JSON.stringify(page)).to.not.contain(SECRET)
+  })
+
+  it('a removed row is never taken for the question that decides a page', async () => {
+    stubAccess(['rec-ok', 'att-ok'])
+    await pageOf(OWNER, [
+      { messageType: 'user_query', content: QUESTION, ...at(0) },
+      { ...answer(), ...at(1) },
+      { messageType: 'user_query', content: 'User selections: A', ...at(2) },
+      card(3),
+    ], { page: '1', limit: '2' })
+    const reads = (ChatSessionMessage.find as sinon.SinonStub).getCalls()
+    expect(reads.length, 'the page and the rows before it').to.be.at.least(2)
+    for (const call of reads) expect(call.args[0]).to.deep.include({ removedAt: { $exists: false } })
   })
 
   it('a page that ends on a card whose answer is on the next page hides the card', async () => {
@@ -949,7 +1001,7 @@ describe('a hidden answer takes its turn with it; web links are not records', ()
       { messageType: 'tool_call', content: 'kept card', tools: [{ toolName: 'ask_user_question', toolResult: 'kept' }], ...at(5) },
     ])
     const r = res()
-    await getConversationById(appConfig)(req(OWNER, { params: { conversationId: SESSION }, query: { sortBy: 'messageType' } }), r, sinon.stub() as any)
+    await getChat()(req(OWNER, { params: { conversationId: SESSION }, query: { sortBy: 'messageType' } }), r, sinon.stub())
     const rows = r.json.firstCall.args[0].conversation.messages as any[]
 
     // Sorted by type the plain answer comes between the lost answer and its card.
@@ -1182,9 +1234,12 @@ describe("a viewer never sees another person's reasoning or tool steps", () => {
   const unconfirmed = { redacted: true, reason: 'access_check_unavailable' }
   const COLLABORATOR = '999999999999999999999999'
   const HIDDEN = [TOOL_TEXT, 'thinking prose', 'I looked at the pages', 'narration between steps']
+  // Behind the guard the route mounts, as every read of this file runs.
   const fetchRows = async (userId: string) => {
     const r = res()
-    await getConversationById(appConfig)(req(userId, { params: { conversationId: SESSION } }), r, sinon.stub() as any)
+    const next = sinon.stub()
+    await getChat()(req(userId, { params: { conversationId: SESSION } }), r, next)
+    sinon.assert.notCalled(next)
     return r.json.firstCall.args[0].conversation.messages as any[]
   }
 
@@ -1204,7 +1259,7 @@ describe("a viewer never sees another person's reasoning or tool steps", () => {
     for (const leaked of HIDDEN) expect(JSON.stringify(message), leaked).to.not.contain(leaked)
   })
 
-  it("keeps a background job's card, without its steps, and drops any other sub-agent", async () => {
+  it("keeps a background job's card, without its steps or the asker's run ids, and drops any other sub-agent", async () => {
     stubAccess(ALL)
     const job = { type: 'sub_agent', runId: 'job-1', parentRunId: 'turn-1', goal: 'Summarise the pages', status: 'completed', parts: [{ type: 'tool_call', toolName: 'read', resultPreview: TOOL_TEXT }] }
     stubConversation([{ ...richAnswer(), parts: [...richAnswer().parts, job] }])
@@ -1212,20 +1267,21 @@ describe("a viewer never sees another person's reasoning or tool steps", () => {
 
     expect(message.parts).to.deep.equal([
       { type: 'text', content: 'visible answer text', isFinal: true },
-      { ...job, parts: [] },
+      { type: 'sub_agent', goal: 'Summarise the pages', status: 'completed', parts: [] },
     ])
-    for (const leaked of HIDDEN) expect(JSON.stringify(message), leaked).to.not.contain(leaked)
+    for (const leaked of [...HIDDEN, 'job-1', 'turn-1']) expect(JSON.stringify(message), leaked).to.not.contain(leaked)
   })
 
   it("a turn's response to a collaborator reads a message without a sender as the initiator's", async () => {
     stubAccess(ALL)
-    const out: any = await redactConversationFor(appConfig, viewerOf(COLLABORATOR, ORG), { initiator: OWNER, messages: [richAnswer()] })
-    expect(out.messages[0].content).to.equal('The answer [1][2]')
-    expect(out.messages[0].reasoning).to.deep.equal([])
-    expect(out.messages[0].tools).to.deep.equal([])
-    for (const leaked of HIDDEN) expect(JSON.stringify(out.messages[0]), leaked).to.not.contain(leaked)
-    const own: any = await redactConversationFor(appConfig, viewerOf(COLLABORATOR, ORG), { initiator: OWNER, messages: [{ ...richAnswer(), senderId: COLLABORATOR }] })
-    expect(own.messages[0].reasoning).to.have.length(1)
+    // The frame holds each answer's turn from its question: an answer cut from it is hidden as unconfirmed.
+    const out: any = await redactConversationFor(appConfig, viewerOf(COLLABORATOR, ORG), { initiator: OWNER, messages: [asked_(), richAnswer()] })
+    expect(out.messages[1].content).to.equal('The answer [1][2]')
+    expect(out.messages[1].reasoning).to.deep.equal([])
+    expect(out.messages[1].tools).to.deep.equal([])
+    for (const leaked of HIDDEN) expect(JSON.stringify(out.messages[1]), leaked).to.not.contain(leaked)
+    const own: any = await redactConversationFor(appConfig, viewerOf(COLLABORATOR, ORG), { initiator: OWNER, messages: [asked_(), { ...richAnswer(), senderId: COLLABORATOR }] })
+    expect(own.messages[1].reasoning).to.have.length(1)
   })
 
   it('the owner still gets reasoning and tool steps of their own answer', async () => {
@@ -1239,21 +1295,24 @@ describe("a viewer never sees another person's reasoning or tool steps", () => {
 
   it('an agent conversation and the archive list drop them too', async () => {
     stubAccess(ALL)
-    stubConversation([richAnswer()])
+    stubConversation([richAnswer()], [{ userId: VIEWER }], { agentKey: 'agent-1' })
     const r = res()
-    await getAgentConversationById(appConfig)(req(VIEWER, { params: { agentKey: 'agent-1', conversationId: SESSION } }), r, sinon.stub() as any)
+    const next = sinon.stub()
+    await getAgentChat()(req(VIEWER, { params: { agentKey: 'agent-1', conversationId: SESSION } }), r, next)
+    sinon.assert.notCalled(next)
     const wire = JSON.stringify(r.json.firstCall.args[0])
     expect(wire).to.contain('The answer [1][2]')
     for (const leaked of HIDDEN) expect(wire, leaked).to.not.contain(leaked)
     sinon.restore()
 
     stubAccess(ALL)
-    sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
-    sinon.stub(ChatSession, 'find').returns(chain([{ _id: SESSION, title: 't', initiator: OWNER, isShared: true, sharedWith: [{ userId: VIEWER }] }]))
+    // As the route mounts the archive list (its list scope), with the chat as an archive row reads it.
+    sinon.stub(ChatSession, 'find').returns(chain([{ _id: SESSION, title: 't', initiator: OWNER, isShared: true, sharedWith: [{ userId: VIEWER }], updatedAt: new Date(), archivedBy: OWNER }]))
     sinon.stub(ChatSession, 'countDocuments').resolves(1)
-    sinon.stub(ChatSessionMessage, 'find').returns(chain([{ sessionId: SESSION, ...richAnswer() }]))
+    // The answer with its question: an archive judges each answer with its whole turn.
+    sinon.stub(ChatSessionMessage, 'find').returns(chain([{ sessionId: SESSION, ...asked_() }, { sessionId: SESSION, ...richAnswer() }]))
     const list = res()
-    await listAllArchivesConversation(appConfig)(req(VIEWER), list, sinon.stub() as any)
+    await listArchives()(req(VIEWER), list, sinon.stub())
     const listed = JSON.stringify(list.json.firstCall.args[0])
     expect(listed).to.contain('The answer [1][2]')
     for (const leaked of HIDDEN) expect(listed, leaked).to.not.contain(leaked)
@@ -1286,7 +1345,7 @@ describe("a viewer never sees another person's reasoning or tool steps", () => {
       [COLLABORATOR, 'COLLAB-STEP', 'OWNER-STEP'],
     ] as const) {
       stubAccess([])
-      stubConversation(rows)
+      stubConversation(rows, [{ userId: VIEWER }, { userId: COLLABORATOR, accessLevel: 'write' }])
       const wire = JSON.stringify(await fetchRows(reader))
       expect(wire).to.contain('owner answer').and.to.contain('collaborator answer').and.to.contain(kept)
       expect(wire).to.not.contain(dropped)
@@ -1296,9 +1355,12 @@ describe("a viewer never sees another person's reasoning or tool steps", () => {
 
   it('the conversation a turn ends with drops them as a fetch does', async () => {
     stubAccess([])
+    // Each answer with its question, as a frame that holds the turns.
     const final: any = await redactConversationFor(appConfig, viewerOf(OWNER, ORG), {
       messages: [
+        { messageType: 'user_query', content: 'mine' },
         { messageType: 'bot_response', content: 'a', tools: [{ toolResult: 'OWN-STEP' }] },
+        { messageType: 'user_query', content: 'theirs', senderId: COLLABORATOR },
         { messageType: 'bot_response', content: 'b', senderId: COLLABORATOR, tools: [{ toolResult: 'COLLAB-STEP' }] },
       ],
     })
@@ -1310,7 +1372,7 @@ describe("a viewer never sees another person's reasoning or tool steps", () => {
     stubConversation([{ ...answer(), notFound: { subject: SECRET }, limits: { line: SECRET }, runOutcome: { closing: SECRET } }])
     for (const reader of [VIEWER, OWNER]) {
       const message = await fetchConversation(reader)
-      expect(message.answerHidden.reason).to.equal('no_longer_accessible')
+      expect(message.answerHidden.reason).to.equal(reader === OWNER ? 'no_longer_accessible' : 'no_access')
       expect(JSON.stringify(message)).to.not.contain(SECRET)
     }
   })
@@ -1326,10 +1388,17 @@ describe("a viewer never sees another person's reasoning or tool steps", () => {
       { messageType: 'user_query', content: 'question' },
       { messageType: 'bot_response', content: `no sources ${SECRET}` },
     ]
-    for (const get of [getConversationById, getAgentConversationById]) {
-      stubConversation(rows)
+    // Each read behind its route's guard; the plain chat's handler takes the user directory before its checks.
+    const reads = [
+      { kind: {}, handler: () => behindGuard(realGuards(), 'read', getConversationById(appConfig, undefined, { citations }) as Handler, 'chat') as any },
+      { kind: { agentKey: 'agent-1' }, handler: () => behindGuard(realGuards(), 'read', getAgentConversationById(appConfig, { citations }) as Handler, 'agent') as any },
+    ]
+    for (const { kind, handler } of reads) {
+      stubConversation(rows, [{ userId: VIEWER }], kind)
       const r = res()
-      await get(appConfig, { citations })(req(VIEWER, { params: { conversationId: SESSION, agentKey: 'agent-1' } }), r, sinon.stub() as any)
+      const next = sinon.stub()
+      await handler()(req(VIEWER, { params: { conversationId: SESSION, agentKey: 'agent-1' } }), r, next)
+      sinon.assert.notCalled(next)
       const [first, , second] = r.json.firstCall.args[0].conversation.messages
       expect(first.answerHidden).to.deep.equal(unconfirmed)
       expect(second.answerHidden).to.deep.equal(unconfirmed)
@@ -1351,5 +1420,252 @@ describe("a viewer never sees another person's reasoning or tool steps", () => {
     expect(first.answerHidden).to.deep.equal(unconfirmed)
     expect(second.answerHidden).to.deep.equal(unconfirmed)
     expect(JSON.stringify([first, second])).to.not.contain(SECRET)
+  })
+})
+
+/**
+ * Stands in for a views extension that keeps another user's activity from a viewer: of what the per-record view left
+ * of an activity transcript (its answer text and a background job's card), only the answer text. A question keeps
+ * all of it.
+ */
+const withoutActivity = <T extends object>(view: T, row: object): T => {
+  const m = row as { messageType?: string }
+  if (m.messageType === 'user_query') return view
+  const shown = view as Record<string, unknown>
+  if (Array.isArray(shown.parts)) shown.parts = (shown.parts as Array<{ type?: string } | null>).filter((part) => part?.type === 'text')
+  return view
+}
+/** A job that ran for the answer: the per-record view keeps its card, without its steps. */
+const jobCard = () => ({ type: 'sub_agent', runId: 'job-1', parentRunId: 'turn-1', goal: 'Summarise the pages', status: 'completed', parts: [{ type: 'tool_call', toolName: 'read', resultPreview: TOOL_TEXT }] })
+const useViewsWithoutActivity = () => {
+  useConversationExtensions(undefined)
+  useConversationExtensions({ views: { ...conversationExtensions().views, viewOthersRow: withoutActivity } })
+}
+
+describe("the owner reads a collaborator's turn the chat's own turn code wrote as one the harness wrote", () => {
+  afterEach(() => sinon.restore())
+  const COLLABORATOR = '999999999999999999999999'
+  /** A write share's turn as the chat's turn code stores it: who wrote the question and who asked for the answer, no sender. */
+  const collaboratorTurn = (answerOver: Record<string, unknown> = {}) => [
+    { messageType: 'user_query', content: 'theirs', authorUserId: COLLABORATOR },
+    { messageType: 'bot_response', content: 'collaborator answer', requestedBy: COLLABORATOR, ...answerOver },
+  ]
+  const ownerRead = async (citations: unknown) => {
+    const r = res()
+    const next = sinon.stub()
+    await behindGuard(realGuards(), 'read', getConversationById(appConfig, undefined, { citations: citations as never }) as Handler, 'chat')(
+      req(OWNER, { params: { conversationId: SESSION } }) as never,
+      r as never,
+      next as never,
+    )
+    sinon.assert.notCalled(next)
+    return r.json.firstCall.args[0].conversation.messages as any[]
+  }
+
+  it('its citations pass the harness check with the owner\'s access, as a harness turn\'s do: it ran with the collaborator\'s', async () => {
+    // The record check would show it; the harness check, which decides cited records here, refuses it.
+    const citations = { checksRecords: () => true, decide: () => Promise.resolve(CitationAccess.denyRecords()) }
+    const cites = { citations: [{ citationId: citation(CIT_NO, 'rec-no', SECRET) }] }
+    const harnessTurn = [
+      { messageType: 'user_query', content: 'theirs', senderId: COLLABORATOR },
+      { messageType: 'bot_response', content: 'collaborator answer', senderId: COLLABORATOR, ...cites },
+    ]
+    const replies: any[] = []
+    for (const rows of [collaboratorTurn(cites), harnessTurn]) {
+      stubAccess(['rec-ok', 'rec-no'])
+      stubConversation(rows, [{ userId: COLLABORATOR, accessLevel: 'write' }])
+      replies.push((await ownerRead(citations))[1])
+      sinon.restore()
+    }
+
+    const [ours, harness] = replies
+    expect(harness.answerHidden, 'a harness turn').to.deep.equal({ redacted: true, reason: 'access_check_unavailable' })
+    expect(ours.answerHidden).to.deep.equal(harness.answerHidden)
+    expect(JSON.stringify(ours)).to.not.contain(SECRET)
+  })
+
+  it('it leaves through the shared redactor, as every message that is not the reader\'s own', async () => {
+    // One on a single line, so the text can be searched for it as it is.
+    const secret = VECTOR_EXAMPLES.find((example) => /^[\x21-\x7e]+$/.test(example.secret))?.secret as string
+    stubAccess([])
+    const citations = { checksRecords: () => true, decide: () => Promise.resolve(CitationAccess.denyRecords()) }
+    stubConversation(collaboratorTurn({ content: `the key is ${secret}` }), [{ userId: COLLABORATOR, accessLevel: 'write' }])
+    const [, reply] = await ownerRead(citations)
+
+    expect(reply.content).to.contain('the key is')
+    expect(reply.content).to.not.contain(secret)
+  })
+})
+
+describe('what a viewer sees of another user\'s reasoning and tool steps', () => {
+  afterEach(() => {
+    sinon.restore()
+    useConversationExtensions(undefined)
+  })
+  const unconfirmed = { redacted: true, reason: 'access_check_unavailable' }
+  const readableAll = ['rec-ok', 'rec-no', 'att-ok', 'att-no', R_OK, R_NO, 'app-ok-not-checked', 'https://x/ok', SECRET_URL]
+
+  it('by default, what OSS #6619 leaves: an answer whose every source and artifact is readable keeps its text, never its steps', async () => {
+    stubAccess(readableAll)
+    stubConversation([richAnswer()])
+    // Its artifact too is readable: the artifact check admits it, and the step that made it still stays out.
+    const artifacts = new SharedArtifactService(new InMemoryArtifactReadAccess().grant('Bearer t', R_NO))
+    const readingArtifacts = () =>
+      behindGuard(realGuards(), 'read', getConversationById(appConfig, undefined, { artifacts }) as Handler, 'chat') as any
+    const message = await fetchConversation(VIEWER, readingArtifacts)
+
+    expect(message.answerHidden).to.equal(undefined)
+    expect(message.content).to.equal('The answer [1][2]')
+    expect(message.reasoning).to.deep.equal([])
+    expect(message.tools).to.deep.equal([])
+    expect(message.parts).to.deep.equal([{ type: 'text', content: 'visible answer text', isFinal: true }])
+  })
+
+  it('what the views extension leaves of an answer whose every source is readable', async () => {
+    useViewsWithoutActivity()
+    stubAccess(readableAll)
+    stubConversation([{ ...richAnswer(), parts: [...richAnswer().parts, jobCard()] }])
+    const message = await fetchConversation(VIEWER)
+
+    expect(message.answerHidden).to.equal(undefined)
+    expect(message.content).to.equal('The answer [1][2]')
+    expect(message.followUpQuestions).to.have.length(1)
+    expect(message.reasoning).to.deep.equal([])
+    expect(message.tools).to.deep.equal([])
+    // The job's card, which the per-record view keeps, is the extension's to take away.
+    expect(message.parts).to.deep.equal([{ type: 'text', content: 'visible answer text', isFinal: true }])
+    const wire = JSON.stringify(message)
+    for (const leaked of [TOOL_TEXT, 'thinking prose', 'I looked at the pages', 'narration between steps', 'Summarise the pages']) {
+      expect(wire, leaked).to.not.contain(leaked)
+    }
+  })
+
+  it('a views extension that gives back what the per-record view cut is cut again', async () => {
+    // As stored: every step, the text between them, and the not-found names.
+    const givesBack = <T extends object>(view: T, row: object): T => ({ ...view, ...(row as object) }) as T
+    useConversationExtensions(undefined)
+    useConversationExtensions({ views: { ...conversationExtensions().views, viewOthersRow: givesBack } })
+    stubAccess(readableAll)
+    stubConversation([{ ...richAnswer(), notFound: { subject: 'x', hits: 0, near: [TOOL_TEXT] } }])
+    const message = await fetchConversation(VIEWER)
+
+    expect(message.reasoning).to.deep.equal([])
+    expect(message.tools).to.deep.equal([])
+    expect(message.parts).to.deep.equal([{ type: 'text', content: 'visible answer text', isFinal: true }])
+    expect(message.notFound).to.deep.equal({ subject: 'x', hits: 0 })
+    for (const leaked of [TOOL_TEXT, 'thinking prose', 'I looked at the pages', 'narration between steps']) {
+      expect(JSON.stringify(message), leaked).to.not.contain(leaked)
+    }
+  })
+
+  it('the owner\'s own answer is not the views extension\'s: it keeps reasoning and tool steps', async () => {
+    useViewsWithoutActivity()
+    stubAccess(readableAll)
+    stubConversation([richAnswer()])
+    const message = await fetchConversation(OWNER)
+
+    expect(message.reasoning).to.have.length(1)
+    expect(message.tools).to.deep.equal(richAnswer().tools)
+    expect(message.parts).to.deep.equal(richAnswer().parts)
+  })
+
+  it('another user\'s tool row that stays shown goes through the views extension too', async () => {
+    useViewsWithoutActivity()
+    stubAccess([])
+    stubConversation([
+      { messageType: 'user_query', content: 'question' },
+      { messageType: 'bot_response', content: 'Plain answer', citations: [] },
+      { messageType: 'tool_call', content: SECRET, tools: [{ toolName: 'ask_user_question', toolResult: SECRET }] },
+    ])
+    const r = res()
+    await getChat()(req(VIEWER, { params: { conversationId: SESSION } }), r, sinon.stub())
+    const [, reply, row] = r.json.firstCall.args[0].conversation.messages
+
+    expect(reply.content).to.equal('Plain answer')
+    expect(row.answerHidden).to.equal(undefined)
+    expect(row.content).to.equal('')
+    expect(row.tools).to.deep.equal([])
+    expect(JSON.stringify(r.json.firstCall.args[0])).to.not.contain(SECRET)
+  })
+
+  it('a failed access check hides another user\'s answer even when it names no record', async () => {
+    stubAccess(null)
+    stubConversation([
+      { messageType: 'user_query', content: 'question' },
+      { messageType: 'bot_response', content: `unchecked ${SECRET}`, citations: [{ citationId: citation(CIT_NO, 'rec-no', SECRET) }] },
+      { messageType: 'bot_response', content: `no sources ${SECRET}` },
+    ])
+    const r = res()
+    await getChat()(req(VIEWER, { params: { conversationId: SESSION } }), r, sinon.stub())
+    const [question, first, second] = r.json.firstCall.args[0].conversation.messages
+
+    expect(question.content).to.equal('question')
+    expect(first.answerHidden).to.deep.equal(unconfirmed)
+    expect(second.answerHidden).to.deep.equal(unconfirmed)
+    expect(JSON.stringify(r.json.firstCall.args[0])).to.not.contain(SECRET)
+  })
+})
+
+describe('the detail hands the rows the reader check shaped to the detail extension', () => {
+  afterEach(() => {
+    sinon.restore()
+    useConversationExtensions(undefined)
+  })
+
+  const turn = () => [
+    { messageType: 'user_query', content: 'question' },
+    { messageType: 'tool_call', content: SECRET, tools: [{ toolName: 'ask_user_question', toolResult: SECRET }] },
+    { messageType: 'bot_response', content: 'Plain answer', citations: [] },
+  ]
+  /** An extension that records what it is given and marks every row it gives back; views keep others' tool output. */
+  const recording = () => {
+    const seen: Array<{ before: any[]; shown: any[] }> = []
+    useViewsWithoutActivity()
+    useConversationExtensions({
+      views: conversationExtensions().views,
+      details: {
+        decorate: (_req, response) => Promise.resolve(response),
+        afterReaderCheck: (before, shown) => {
+          seen.push({ before: [...before] as any[], shown: [...shown] as any[] })
+          return shown.map((m) => ({ ...(m as object), marked: true }) as typeof m)
+        },
+      },
+    })
+    return seen
+  }
+  const expectHandedOver = (seen: Array<{ before: any[]; shown: any[] }>, rows: any[]) => {
+    expect(seen).to.have.length(1)
+    expect(seen[0]!.before.map((m) => m.messageType)).to.deep.equal(['user_query', 'tool_call', 'bot_response'])
+    // What it is handed is the reader check's view, as the views extension shows it: here without the card's tool output.
+    expect(seen[0]!.shown[1].tools).to.deep.equal([])
+    expect(rows.map((m) => m.marked)).to.deep.equal([true, true, true])
+  }
+
+  it('a chat: the rows it was given and the rows as shown, in order; the response is what it gives back', async () => {
+    const seen = recording()
+    stubAccess([])
+    stubConversation(turn())
+    const r = res()
+    await getChat()(req(VIEWER, { params: { conversationId: SESSION } }), r, sinon.stub())
+
+    expectHandedOver(seen, r.json.firstCall.args[0].conversation.messages)
+  })
+
+  it('an agent conversation the same way', async () => {
+    const seen = recording()
+    stubAccess([])
+    sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
+    sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false)
+    sinon.stub(Users, 'find').returns(chain([]))
+    sinon.stub(ChatSession, 'findOne').returns(chain({ _id: SESSION, orgId: ORG, userId: OWNER, agentKey: 'agent-1', title: 't', initiator: OWNER, isShared: true, sharedWith: [{ userId: VIEWER }], status: 'complete' }))
+    sinon.stub(ChatSession, 'find').returns(chain([]))
+    sinon.stub(ChatSessionMessage, 'countDocuments').resolves(3)
+    sinon.stub(ChatSessionMessage, 'find').returns(chain(turn()))
+    const r = res()
+    const next = sinon.stub()
+    await getAgentChat()(req(VIEWER, { params: { conversationId: SESSION, agentKey: 'agent-1' } }), r, next)
+
+    sinon.assert.notCalled(next)
+    expectHandedOver(seen, r.json.firstCall.args[0].conversation.messages)
   })
 })

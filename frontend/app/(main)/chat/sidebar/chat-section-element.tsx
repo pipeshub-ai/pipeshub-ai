@@ -1,28 +1,31 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, type ReactNode } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { buildChatHref } from '@/chat/build-chat-url';
 import { ChatStarIcon } from '@/app/components/ui/chat-star-icon';
-import { Box, Flex, Tooltip, VisuallyHidden } from '@radix-ui/themes';
+import { Box, Flex, TextField, VisuallyHidden } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useTranslation } from 'react-i18next';
 import { Conversation } from '@/chat/types';
 import { useChatStore, isConversationStreamingInScope } from '@/chat/store';
+import type { MoreChatsRowSnapshot, RailRowsSnapshot } from '@/chat/store';
 import { ChatApi } from '@/chat/api';
+import { holdTitle } from '@/chat/utils/held-titles';
+import { dropQueuedFor } from '@/chat/utils/queued-send';
 import { AgentsApi } from '@/app/(main)/agents/api';
 import { ProjectApi } from '@/chat/project-api';
 import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
 import { ICON_SIZE_DEFAULT, CHAT_ITEM_HEIGHT } from '@/app/components/sidebar';
 import { SidebarItem } from './sidebar-item';
 import { ChatItemMenu } from './chat-item-menu';
-import { DeleteChatDialog, ArchiveChatDialog, MoveToProjectDialog } from './dialogs';
+import { DeleteChatDialog, MoveToProjectDialog } from './dialogs';
 import { Spinner } from '@/app/components/ui/spinner';
-import { toast } from '@/lib/store/toast-store';
+import { toast, useToastStore } from '@/lib/store/toast-store';
 import { exportConversation } from '@/chat/utils/export-conversation';
 import { sidebarDot, type SidebarDot } from '@/lib/harness-jobs/jobs-list';
-import { slotWaitingCount } from '@/chat/interactions';
-import type { ChatSlot } from '@/chat/types';
+import { slotWaitingCount, waitsInScope } from '@/chat/interactions';
+import { chatExtension, chatSlots } from '@/config';
 
 /** Duration must match `typing-reveal` animation duration in globals.css */
 const TYPING_ANIMATION_DURATION_MS = 400;
@@ -48,15 +51,15 @@ function GeneratingTitleLabel({ label }: { label: string }) {
 const DOT_COLOR: Record<'needsYou' | 'finished', string> = { needsYou: 'var(--amber-9)', finished: 'var(--accent-9)' };
 
 /**
- * A chat row's one mark (D10): amber for needs you, the spinner for working, the jade dot for finished and not seen.
- * Its words are always there for a screen reader; colour is never the only sign.
+ * A chat row's one mark (D10): amber for needs you, the pulsing dot for working, the jade dot for finished and not
+ * seen, as the rows draw them. Its words are always there for a screen reader; colour is never the only sign.
  */
 export function ChatDotMark({ dot, label }: { dot: SidebarDot['dot']; label: string }) {
   return (
     <span data-testid="chat-dot" data-dot={dot} style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}>
       <span aria-hidden style={{ display: 'inline-flex', lineHeight: 0 }}>
         {dot === 'working' ? (
-          <Spinner size={12} color="var(--accent-11)" />
+          <span className="sidebar-activity-dot" data-live="" />
         ) : (
           <span style={{ width: 8, height: 8, borderRadius: '50%', background: DOT_COLOR[dot] }} />
         )}
@@ -67,20 +70,87 @@ export function ChatDotMark({ dot, label }: { dot: SidebarDot['dot']; label: str
 }
 
 /** Title text with the row's mark after it: every row, the one this tab streams too (D10). */
-function MarkedTitleLabel({ title, mark }: { title: React.ReactNode; mark: React.ReactNode }) {
+function MarkedTitleLabel({ title, mark }: { title: ReactNode; mark: ReactNode }) {
   return (
     <Flex align="center" gap="2" style={{ minWidth: 0, width: '100%' }}>
-      <span
-        style={{
-          flex: 1,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {title}
-      </span>
+      <RowTitle title={title} />
       {mark}
+    </Flex>
+  );
+}
+
+/**
+ * A pinned chat's mark after its title: the pin, filled, in the brand's green and tilted the way a pin goes into a
+ * board (upright it reads as a location marker), and ", pinned" for the row's name, since the glyph itself is hidden.
+ */
+function PinnedMark() {
+  const { t } = useTranslation();
+  return (
+    <>
+      <span
+        aria-hidden
+        data-pinned-mark=""
+        style={{ display: 'inline-flex', flexShrink: 0, lineHeight: 0, transform: 'rotate(45deg)' }}
+      >
+        <MaterialIcon name="keep" variant="filled" size={ICON_SIZE_DEFAULT} color="var(--accent-a11)" />
+      </span>
+      <VisuallyHidden>{t('chat.pinnedRowSuffix')}</VisuallyHidden>
+    </>
+  );
+}
+
+/** A row's title, filling its line and truncating; a pin sits right after the text and the title gives way first. */
+function RowTitle({ title, pin }: { title: ReactNode; pin?: ReactNode }) {
+  const text = (
+    <span style={{ flex: pin ? undefined : 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      {title}
+    </span>
+  );
+  if (!pin) return text;
+  return (
+    <span style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+      {text}
+      {pin}
+    </span>
+  );
+}
+
+/**
+ * Title text with the pulsing activity dot while an answer is being written; shared between
+ * ChatSectionElement and GeneratingTitleItem. A dot, not a spinner: the row stays quiet.
+ */
+function StreamingTitleLabel({ title, isOpen, pin }: { title: string; isOpen: boolean; pin?: ReactNode }) {
+  const { t } = useTranslation();
+  return (
+    <Flex align="center" gap="2" style={{ minWidth: 0, width: '100%' }}>
+      <RowTitle title={title} pin={pin} />
+      <span
+        className="sidebar-activity-dot"
+        data-live=""
+        role="img"
+        aria-label={isOpen ? t('chat.sidebarRunningOpen') : t('chat.sidebarRunning')}
+      />
+    </Flex>
+  );
+}
+
+/** Title text with a dot for an answer that finished while the chat was out of view. */
+function UnreadTitleLabel({ title, dotLabel, pin }: { title: string; dotLabel: string; pin?: ReactNode }) {
+  return (
+    <Flex align="center" gap="2" style={{ minWidth: 0, width: '100%' }}>
+      <RowTitle title={title} pin={pin} />
+      <span
+        role="img"
+        aria-label={dotLabel}
+        data-testid="unread-dot"
+        style={{
+          flexShrink: 0,
+          width: 8,
+          height: 8,
+          borderRadius: '50%',
+          background: 'var(--accent-9)',
+        }}
+      />
     </Flex>
   );
 }
@@ -90,16 +160,6 @@ export function markWords(t: (key: string) => string, mark: SidebarDot): string 
   if (mark.dot === 'needsYou') return t('sidebar.dot.needsYou');
   if (mark.dot === 'working') return t('sidebar.dot.working');
   return mark.unseen ? t('sidebar.dot.finished') : t('chat.answerReady.unread');
-}
-
-/** A slot of this chat, in this sidebar's scope, holds an ask open on its person (`slotWaitingCount`, D10). */
-function waitsInScope(slots: Record<string, ChatSlot>, conversationId: string, scopeAgentId: string | null): boolean {
-  return Object.values(slots).some(
-    (slot) =>
-      slot.convId === conversationId &&
-      (scopeAgentId === null ? !slot.threadAgentId : slot.threadAgentId === scopeAgentId) &&
-      slotWaitingCount(slot) > 0,
-  );
 }
 
 interface ChatSectionElementProps {
@@ -118,13 +178,14 @@ interface ChatSectionElementProps {
    * `agentId` is set (see `buildChatHref`).
    */
   projectId?: string;
-  /**
-   * Called with the new pin state when the user pins or unpins this row, and
-   * again with the old one if the request fails. For lists that keep their own
-   * copy of the rows (the "More" panel) rather than reading the store.
-   */
-  onPinnedChange?: (pinned: boolean) => void;
 }
+
+/**
+ * The chat open in the page, read when a row's action needs it: a row does not subscribe to the URL, which changes as a
+ * new chat gets its id when its first answer ends, and every row would draw again in that frame.
+ */
+const openConversationId = (): string | null =>
+  typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('conversationId');
 
 /**
  * A single conversation item in the chat sidebar.
@@ -135,28 +196,25 @@ export function ChatSectionElement({
   onClick,
   agentId: sectionAgentId,
   projectId,
-  onPinnedChange,
 }: ChatSectionElementProps) {
   const { t } = useTranslation();
   // A shared agent chat in the global list carries its own agent; the agent sidebar passes it per section.
   const agentId = sectionAgentId ?? conversation.agentKey;
+  const shownTitle = chatExtension.formatConversationTitle(conversation.title) ?? '';
 
   const [isHovered, setIsHovered] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
-  const [renameValue, setRenameValue] = useState(conversation.title);
+  const [renameValue, setRenameValue] = useState(shownTitle);
   const [isSavingRename, setIsSavingRename] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
   const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
   const [isDeleting, setIsDeleting] = useState(false);
-  const [isArchiving, setIsArchiving] = useState(false);
+  const isArchiving = useRef(false);
   const [isTypingTitle, setIsTypingTitle] = useState(false);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const urlConversationId = searchParams?.get('conversationId') ?? null;
 
   const isConversationStreaming = useChatStore((s) =>
     isConversationStreamingInScope(s.slots, conversation.id, agentId ?? null),
@@ -178,22 +236,26 @@ export function ChatSectionElement({
       agentId ?? null,
     );
 
-  const newlyResolvedIds = useChatStore((s) => s.newlyResolvedIds);
+  // Whether this row's chat just got its title: only that, so a chat resolving elsewhere draws no other row again.
+  const justResolved = useChatStore((s) => s.newlyResolvedIds.has(conversation.id));
   const clearNewlyResolvedId = useChatStore((s) => s.clearNewlyResolvedId);
 
   useEffect(() => {
-    if (newlyResolvedIds.has(conversation.id)) {
+    if (justResolved) {
       setIsTypingTitle(true);
       clearNewlyResolvedId(conversation.id);
       const timer = setTimeout(() => setIsTypingTitle(false), TYPING_ANIMATION_DURATION_MS);
       return () => clearTimeout(timer);
     }
-  }, [newlyResolvedIds]);
+  }, [justResolved]);
 
   const removeConversation = useChatStore((s) => s.removeConversation);
   const renameConversation = useChatStore((s) => s.renameConversation);
-  const bumpConversationsVersion = useChatStore((s) => s.bumpConversationsVersion);
   const moveConversationToProject = useChatStore((s) => s.moveConversationToProject);
+  // A project's rail lists its rows itself: after a change to one of them it reloads, the other rails do not.
+  const reloadProjectRail = () => {
+    if (projectId) useChatStore.getState().bumpProjectsVersion();
+  };
   const setConversationPinned = useChatStore((s) => s.setConversationPinned);
   // One request at a time: a second click while the first is in flight would
   // otherwise send the opposite request and the two could land out of order.
@@ -208,14 +270,14 @@ export function ChatSectionElement({
 
   const handleStartRename = () => {
     if (convStreamingBlocksSidebarMutation()) return;
-    setRenameValue(conversation.title);
+    setRenameValue(shownTitle);
     setIsRenaming(true);
   };
 
   const handleRenameBlur = async () => {
     if (!isRenaming || isSavingRename) return;
     if (convStreamingBlocksSidebarMutation()) {
-      setRenameValue(conversation.title);
+      setRenameValue(shownTitle);
       setIsRenaming(false);
       return;
     }
@@ -225,19 +287,28 @@ export function ChatSectionElement({
       return;
     }
     setIsSavingRename(true);
+    // The row takes the new title at once, and keeps it over any list read that may not have it yet; a refusal puts
+    // the old one back.
+    const previousTitle = conversation.title;
+    renameConversation(conversation.id, trimmed);
+    const held = holdTitle(conversation.id, trimmed);
+    setIsRenaming(false);
     try {
       if (agentId) {
         await AgentsApi.renameAgentConversation(agentId, conversation.id, trimmed);
       } else {
         await ChatApi.renameConversation(conversation.id, trimmed);
       }
-      renameConversation(conversation.id, trimmed);
-      bumpConversationsVersion();
+      held.saved();
+      reloadProjectRail();
     } catch {
-      // revert silently
+      held.dropped();
+      // The row goes back to its old title; say so, rather than reverting without a word.
+      renameConversation(conversation.id, previousTitle);
+      setRenameValue(shownTitle);
+      toast.error(t('chat.renameFailedTitle'), { description: t('chat.renameFailedDescription') });
     } finally {
       setIsSavingRename(false);
-      setIsRenaming(false);
     }
   };
 
@@ -254,14 +325,11 @@ export function ChatSectionElement({
     if (isPinRequestInFlight.current) return;
     isPinRequestInFlight.current = true;
     const pinned = conversation.isPinned !== true;
-    setConversationPinned(conversation.id, pinned);
-    onPinnedChange?.(pinned);
+    const undo = setConversationPinned(conversation.id, pinned);
     try {
       await ChatApi.setConversationPinned(conversation.id, pinned);
-      bumpConversationsVersion();
     } catch {
-      setConversationPinned(conversation.id, !pinned);
-      onPinnedChange?.(!pinned);
+      undo();
       toast.error(pinned ? t('chat.pinFailed') : t('chat.unpinFailed'));
     } finally {
       isPinRequestInFlight.current = false;
@@ -273,7 +341,7 @@ export function ChatSectionElement({
       await toast.promise(
         exportConversation({
           conversationId: conversation.id,
-          title: conversation.title,
+          title: shownTitle,
           agentId,
           labels: {
             you: t('common.you'),
@@ -294,6 +362,7 @@ export function ChatSectionElement({
 
   const handleConfirmDelete = async () => {
     if (convStreamingBlocksSidebarMutation()) return;
+    const wasOpen = openConversationId() === conversation.id;
     setIsDeleting(true);
     try {
       if (agentId) {
@@ -301,10 +370,12 @@ export function ChatSectionElement({
       } else {
         await ChatApi.deleteConversation(conversation.id);
       }
+      // What this tab queued there never goes out.
+      dropQueuedFor(conversation.id);
       removeConversation(conversation.id);
-      bumpConversationsVersion();
+      reloadProjectRail();
       setDeleteDialogOpen(false);
-      if (urlConversationId === conversation.id) {
+      if (wasOpen) {
         const store = useChatStore.getState();
         const found = agentId
           ? store.getSlotByConvId(conversation.id, { forAgentId: agentId })
@@ -323,38 +394,81 @@ export function ChatSectionElement({
     }
   };
 
-  const handleConfirmArchive = async () => {
-    if (convStreamingBlocksSidebarMutation()) return;
-    setIsArchiving(true);
+  // Archive is reversible, so it asks nothing first: the row goes, and the toast says where
+  // it went and offers Undo, which restores it through the existing restore call.
+  const handleRestore = async (
+    reopen: boolean,
+    moreChatsPlace: MoreChatsRowSnapshot | null,
+    railPlace: RailRowsSnapshot,
+  ) => {
+    try {
+      if (agentId) {
+        await AgentsApi.restoreAgentConversation(agentId, conversation.id);
+      } else {
+        await ChatApi.restoreConversation(conversation.id);
+      }
+      // Back where it was, in the rail and in an open More chats list: nothing is reloaded.
+      useChatStore.getState().restoreRailRows(railPlace);
+      if (moreChatsPlace) useChatStore.getState().restoreMoreChatsRow(moreChatsPlace);
+      reloadProjectRail();
+      // Undo puts back what Archive took: the chat it closed opens again.
+      if (reopen) router.push(buildChatHref({ agentId, projectId, conversationId: conversation.id }));
+    } catch {
+      // The app's error toast says why; the chat stays archived.
+    }
+  };
+
+  const handleArchive = async () => {
+    if (convStreamingBlocksSidebarMutation() || isArchiving.current) return;
+    isArchiving.current = true;
+    const wasOpen = openConversationId() === conversation.id;
+    // The row goes at once, its places kept for a refusal and for Undo.
+    const moreChatsPlace = useChatStore.getState().snapshotMoreChatsRow(conversation.id);
+    const railPlace = useChatStore.getState().snapshotRailRows(conversation.id);
+    removeConversation(conversation.id, { keepUnread: true });
     try {
       if (agentId) {
         await AgentsApi.archiveAgentConversation(agentId, conversation.id);
       } else {
         await ChatApi.archiveConversation(conversation.id);
       }
-      removeConversation(conversation.id);
-      bumpConversationsVersion();
-      setArchiveDialogOpen(false);
-      if (urlConversationId === conversation.id) {
-        const store = useChatStore.getState();
-        const found = agentId
-          ? store.getSlotByConvId(conversation.id, { forAgentId: agentId })
-          : store.getSlotByConvId(conversation.id, { forAgentId: null });
-        if (found) {
-          store.evictSlot(found.slotId);
-        } else {
-          store.clearActiveSlot();
-        }
-        router.replace(agentId ? buildChatHref({ agentId }) : '/chat/');
-      }
     } catch {
-      // keep dialog open on error
-    } finally {
-      setIsArchiving(false);
+      // The app's error toast says why; the row comes back where it was.
+      useChatStore.getState().restoreRailRows(railPlace);
+      if (moreChatsPlace) useChatStore.getState().restoreMoreChatsRow(moreChatsPlace);
+      isArchiving.current = false;
+      return;
     }
+    dropQueuedFor(conversation.id);
+    // Archived, its "new answer" dot goes, as it did when the row was taken out after the request.
+    useChatStore.getState().markConversationRead(conversation.id);
+    reloadProjectRail();
+    if (wasOpen) {
+      const store = useChatStore.getState();
+      const found = agentId
+        ? store.getSlotByConvId(conversation.id, { forAgentId: agentId })
+        : store.getSlotByConvId(conversation.id, { forAgentId: null });
+      if (found) {
+        store.evictSlot(found.slotId);
+      } else {
+        store.clearActiveSlot();
+      }
+      router.replace(agentId ? buildChatHref({ agentId }) : '/chat/');
+    }
+    isArchiving.current = false;
+    const id = toast.success(t('chat.chatArchived'), {
+      description: t('chat.archivedDescription', { title: shownTitle }),
+      action: {
+        label: t('chat.undo'),
+        onClick: () => {
+          useToastStore.getState().removeToast(id);
+          void handleRestore(wasOpen, moreChatsPlace, railPlace);
+        },
+      },
+    });
   };
 
-  const handleConfirmMoveToProject = async (projectId: string | null) => {
+  const moveToProject = async (projectId: string | null) => {
     if (convStreamingBlocksSidebarMutation()) {
       throw new Error('Cannot move a conversation while it is streaming.');
     }
@@ -362,78 +476,100 @@ export function ChatSectionElement({
       agentKey: agentId,
     });
     moveConversationToProject(conversation.id, projectId);
-    bumpConversationsVersion();
+    const store = useChatStore.getState();
+    // Project rails list their own chats.
+    store.bumpProjectsVersion();
+    // With Projects on, Your chats lists no project chat: the row leaves it for the project, or comes back to it.
+    if (projectsEnabled && !agentId) {
+      if (projectId) store.removeConversation(conversation.id, { keepUnread: true });
+      else store.insertConversationRow({ ...conversation, projectId: undefined }, 'conversations');
+    }
+  };
+
+  const handleConfirmMoveToProject = async (projectId: string | null) => {
+    if (row.interceptProjectChange(projectId)) return;
+    await moveToProject(projectId);
   };
 
   const handleRemoveFromProject = async () => {
     if (convStreamingBlocksSidebarMutation()) return;
+    if (row.interceptProjectChange(null)) return;
     try {
-      await ProjectApi.setConversationProject(conversation.id, null, { agentKey: agentId });
-      moveConversationToProject(conversation.id, null);
-      bumpConversationsVersion();
+      await moveToProject(null);
     } catch {
       // Non-fatal — row simply stays linked; user can retry from the menu.
     }
   };
 
-  const sharedByName = conversation.sharedBy?.name?.trim();
-  const sharedByText =
-    conversation.isOwner === false && sharedByName ? t('chat.sharedBy', { name: sharedByName }) : undefined;
-  // In the global list an agent chat looks like any other shared chat, so the agent symbol follows the sharer's name.
-  const isAgentChatInGlobalList = Boolean(conversation.agentKey) && !sectionAgentId;
-  const sharedBySubtitle =
-    sharedByText && isAgentChatInGlobalList ? (
-      <>
-        {sharedByText}
-        <Tooltip content={t('chat.agentChat')}>
-          <span
-            aria-label={t('chat.agentChat')}
-            role="img"
-            style={{ display: 'inline-flex', verticalAlign: 'middle', marginLeft: 4 }}
-          >
-            <MaterialIcon name="smart_toy" size={13} color="var(--accent-11)" />
-          </span>
-        </Tooltip>
-      </>
-    ) : (
-      sharedByText
-    );
+  // Agent chats have no pin API, and project rows come from a list that does not carry the pin, so only the main
+  // list offers it.
+  const onTogglePin = agentId || projectId ? undefined : () => void handleTogglePin();
+  // Follows the row's own pin state, which Pin and Unpin change at once.
+  const pinMark = onTogglePin && conversation.isPinned === true ? <PinnedMark /> : undefined;
+  const ownerMenu =
+    conversation.isOwner === true ? (
+      <ChatItemMenu
+        title={shownTitle}
+        isParentHovered={isHovered}
+        onOpenChange={setMenuOpen}
+        onRename={handleStartRename}
+        onExport={() => void handleExport()}
+        onTogglePin={onTogglePin}
+        isPinned={conversation.isPinned === true}
+        onArchive={() => void handleArchive()}
+        onDelete={() => setDeleteDialogOpen(true)}
+        showRename={true}
+        showArchive={true}
+        onMoveToProject={projectsEnabled ? () => setMoveDialogOpen(true) : undefined}
+        onRemoveFromProject={
+          projectsEnabled && conversation.projectId ? () => void handleRemoveFromProject() : undefined
+        }
+      />
+    ) : undefined;
+  const row = chatSlots.useChatRow({
+    conversation,
+    agentId,
+    ownerMenu,
+    isHovered,
+    isActive,
+    onMenuOpenChange: setMenuOpen,
+    applyProjectChange: moveToProject,
+    isMutationBlocked: convStreamingBlocksSidebarMutation,
+    onTogglePin,
+  });
 
-
-  // Inline rename mode — render a plain input instead of SidebarItem
+  // Inline rename mode: a Radix text field in the row, in place of the title.
   if (isRenaming) {
     return (
       <Flex
         align="center"
+        data-inline-rename=""
         style={{
           height: CHAT_ITEM_HEIGHT,
-          padding: '0 var(--space-3)',
+          padding: '0 var(--space-2)',
           borderRadius: 'var(--radius-1)',
-          backgroundColor: 'var(--olive-3)',
-          border: '1px solid var(--olive-4)',
+          backgroundColor: 'var(--fill-muted)',
+          border: '1px solid var(--border-default)',
           boxSizing: 'border-box',
         }}
       >
-        <input
+        <TextField.Root
           ref={renameInputRef}
+          size="1"
           value={renameValue}
+          aria-label={t('chat.renameFieldLabel')}
           onChange={(e) => setRenameValue(e.target.value)}
           onBlur={handleRenameBlur}
           onKeyDown={handleRenameKeyDown}
           disabled={isSavingRename}
-          style={{
-            flex: 1,
-            background: 'transparent',
-            border: 'none',
-            outline: 'none',
-            fontSize: 14,
-            fontWeight: 500,
-            lineHeight: 'var(--line-height-2)',
-            color: 'var(--slate-12)',
-            font: 'inherit',
-          }}
-        />
-        {isSavingRename && <Spinner size={12} color="var(--slate-11)" />}
+          style={{ flex: 1, minWidth: 0 }}
+        >
+          {isSavingRename && (
+            <TextField.Slot side="right">
+              <Spinner size={12} color="var(--text-secondary)" />
+            </TextField.Slot>
+          )}
+        </TextField.Root>
       </Flex>
     );
   }
@@ -450,49 +586,41 @@ export function ChatSectionElement({
     <>
       <SidebarItem
         label={
-          isConversationStreaming && !conversation.title ? (
+          isConversationStreaming && !shownTitle ? (
             <GeneratingTitleLabel label={t('chat.generatingTitle')} />
-          ) : mark ? (
+          ) : mark?.dot === 'needsYou' ? (
+            // An ask waiting on the person (D10): the amber mark, whatever else the row is doing.
             <MarkedTitleLabel
-              title={isTypingTitle ? <TypingTitle title={conversation.title} /> : conversation.title}
-              mark={<ChatDotMark dot={mark.dot} label={markWords(t, mark)} />}
+              title={isTypingTitle ? <TypingTitle title={shownTitle} /> : shownTitle}
+              mark={
+                <>
+                  {pinMark}
+                  <ChatDotMark dot={mark.dot} label={markWords(t, mark)} />
+                </>
+              }
             />
+          ) : isConversationStreaming || mark?.dot === 'working' ? (
+            <StreamingTitleLabel title={shownTitle} isOpen={isActive} pin={pinMark} />
+          ) : mark?.dot === 'finished' ? (
+            <UnreadTitleLabel title={shownTitle} dotLabel={markWords(t, mark)} pin={pinMark} />
           ) : isTypingTitle ? (
-            <TypingTitle title={conversation.title} />
+            pinMark ? (
+              <RowTitle title={<TypingTitle title={shownTitle} />} pin={pinMark} />
+            ) : (
+              <TypingTitle title={shownTitle} />
+            )
           ) : (
-            conversation.title
+            shownTitle
           )
         }
+        titleEnd={pinMark}
         isActive={isActive}
         href={conversationHref}
         onClick={onClick}
-        textColor="var(--slate-12)"
-        fontWeight={500}
-        subtitle={sharedBySubtitle}
+        textColor="var(--text-primary)"
         forceHighlight={menuOpen}
         onHoverChange={setIsHovered}
-        rightSlot={
-          conversation.isOwner === true ? (
-            <ChatItemMenu
-              isParentHovered={isHovered}
-              onOpenChange={setMenuOpen}
-              onRename={handleStartRename}
-              onExport={() => void handleExport()}
-              // Agent chats have no pin API, and project rows come from a list that
-              // does not carry the pin, so only the main list offers it.
-              onTogglePin={agentId || projectId ? undefined : () => void handleTogglePin()}
-              isPinned={conversation.isPinned === true}
-              onArchive={() => setArchiveDialogOpen(true)}
-              onDelete={() => setDeleteDialogOpen(true)}
-              showRename={true}
-              showArchive={true}
-              onMoveToProject={projectsEnabled ? () => setMoveDialogOpen(true) : undefined}
-              onRemoveFromProject={
-                projectsEnabled && conversation.projectId ? () => void handleRemoveFromProject() : undefined
-              }
-            />
-          ) : undefined
-        }
+        rightSlot={row.rightSlot}
       />
 
       {/* Delete confirmation dialog */}
@@ -500,16 +628,8 @@ export function ChatSectionElement({
         open={deleteDialogOpen}
         onOpenChange={setDeleteDialogOpen}
         onConfirm={handleConfirmDelete}
-        chatTitle={conversation.title}
+        chatTitle={shownTitle}
         isDeleting={isDeleting}
-      />
-
-      <ArchiveChatDialog
-        open={archiveDialogOpen}
-        onOpenChange={setArchiveDialogOpen}
-        onConfirm={handleConfirmArchive}
-        chatTitle={conversation.title}
-        isArchiving={isArchiving}
       />
 
       <MoveToProjectDialog
@@ -518,6 +638,8 @@ export function ChatSectionElement({
         currentProjectId={conversation.projectId ?? null}
         onConfirm={handleConfirmMoveToProject}
       />
+
+      {row.dialogs}
     </>
   );
 }
@@ -569,9 +691,14 @@ export function GeneratingTitleItem({ slotId }: { slotId: string }) {
         isActive={isActive}
         href={href}
         onClick={handleClick}
-        label={<MarkedTitleLabel title={pendingTitle} mark={dot} />}
-        textColor="var(--slate-12)"
-        fontWeight={500}
+        label={
+          mark.dot === 'needsYou' ? (
+            <MarkedTitleLabel title={pendingTitle} mark={dot} />
+          ) : (
+            <StreamingTitleLabel title={pendingTitle} isOpen={isActive} />
+          )
+        }
+        textColor="var(--text-primary)"
       />
     );
   }
@@ -588,8 +715,7 @@ export function GeneratingTitleItem({ slotId }: { slotId: string }) {
           <GeneratingTitleLabel label={t('chat.generatingTitle')} />
         )
       }
-      textColor="var(--slate-11)"
-      fontWeight={500}
+      textColor="var(--text-secondary)"
     />
   );
 }

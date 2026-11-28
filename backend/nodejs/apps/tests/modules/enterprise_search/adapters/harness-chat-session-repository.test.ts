@@ -43,6 +43,7 @@ describe('HarnessChatSessionRepository', () => {
       sharedWith: [{ userId: 'u2', accessLevel: 'read' }],
       nextSeq: 4,
       harnessLedger: { seq: 4, digest: 'd4', _id: 'junk' },
+      rev: 9,
     });
     const select = sinon.stub().returns({ lean });
     const update = sinon
@@ -65,8 +66,10 @@ describe('HarnessChatSessionRepository', () => {
     ).to.deep.equal({
       ownerId: scope.actorId,
       shared: true,
+      // Shared with someone as the turn starts: its run is given the earlier answers only.
+      readByOthers: true,
       // PERF-E3: what the turn's write needs, so it does not read the session again.
-      accounted: { lastSeq: 4, ledger: { seq: 4, digest: 'd4' } },
+      accounted: { lastSeq: 4, ledger: { seq: 4, digest: 'd4' }, rev: 9 },
     });
 
     const [filter, mutation, options] = update.firstCall.args;
@@ -91,8 +94,29 @@ describe('HarnessChatSessionRepository', () => {
     });
     expect(options).to.deep.equal({ returnDocument: 'after', session: tx });
     expect(
-      select.calledWith('+sessionType +harnessVersion +nextSeq +harnessLedger userId isShared sharedWith'),
+      select.calledWith('+sessionType +harnessVersion +nextSeq +harnessLedger userId isShared sharedWith projectVisibility rev'),
     ).to.equal(true);
+  });
+
+  it('says whether others read the chat as the turn starts: shared now, or open to its project', async () => {
+    const scope = {
+      orgId: '507f1f77bcf86cd799439011',
+      actorId: '507f191e810c19729de860ea',
+      sessionId: '507f1f77bcf86cd799439012',
+    };
+    const bound = async (session: Record<string, unknown>): Promise<boolean | undefined> => {
+      sinon.restore();
+      const lean = sinon.stub().resolves({ userId: scope.actorId, rev: 1, ...session });
+      sinon.stub(ChatSession, 'findOneAndUpdate').returns({ select: sinon.stub().returns({ lean }) } as never);
+      return (await new HarnessChatSessionRepository().bindDurableSession(scope, 1_000, { id: 'tx' } as never))
+        ?.readByOthers;
+    };
+    expect(await bound({ projectId: 'p1', projectVisibility: 'project' })).to.equal(true);
+    expect(await bound({ isShared: true, sharedWith: [{ userId: 'u2', accessLevel: 'read' }] })).to.equal(true);
+    expect(await bound({})).to.equal(false);
+    expect(await bound({ projectId: 'p1', projectVisibility: 'private' })).to.equal(false);
+    // Unshared, its share rows kept: nobody can read it.
+    expect(await bound({ isShared: false, sharedWith: [{ userId: 'u2', accessLevel: 'read' }] })).to.equal(false);
   });
 
   it('CA-5: binds a collaborator only through a write share of a shared session, in the transaction', async () => {
@@ -117,7 +141,7 @@ describe('HarnessChatSessionRepository', () => {
         tx as never,
         'collaborator',
       ),
-    ).to.deep.equal({ ownerId: 'owner-1', shared: true, accounted: { lastSeq: 0, ledger: null } });
+    ).to.deep.equal({ ownerId: 'owner-1', shared: true, readByOthers: true, accounted: { lastSeq: 0, ledger: null, rev: 0 } });
     const [filter, , options] = update.firstCall.args;
     expect(filter).to.not.have.property('userId');
     expect(filter).to.include({ isShared: true, isDeleted: false });

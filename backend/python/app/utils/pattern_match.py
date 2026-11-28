@@ -657,6 +657,7 @@ async def generate_grep_command_via_llm(
     in the Opik trace alongside the rest of the agent loop.
     """
     from app.agent_loop_lib.transport.opik_tracing import build_langchain_opik_callbacks
+    from app.modules.agents.privacy.ledger import CallKind, model_call_scope
     from app.utils.streaming import _apply_structured_output, answer_error_class
 
     messages = [
@@ -678,10 +679,12 @@ async def generate_grep_command_via_llm(
         if attempt > 1 and remaining < _LLM_GREP_MIN_RETRY_SECS:
             break
         try:
-            response = await asyncio.wait_for(
-                structured_llm.ainvoke(messages, config=config),
-                timeout=min(_LLM_GREP_ATTEMPT_TIMEOUT, remaining),
-            )
+            # Given only the tool query and the asker's words.
+            with model_call_scope("grep_generation", CallKind.INSIDE_TOOL):
+                response = await asyncio.wait_for(
+                    structured_llm.ainvoke(messages, config=config),
+                    timeout=min(_LLM_GREP_ATTEMPT_TIMEOUT, remaining),
+                )
         except asyncio.TimeoutError:
             logger_instance.info(
                 "generate_grep_command_via_llm: attempt %d timed out after %.1fs",

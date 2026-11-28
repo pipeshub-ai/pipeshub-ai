@@ -56,7 +56,6 @@ from app.agents.agent_loop.skills.builtin_seeder import (
     BuiltinSkillSeeder,
 )
 from app.agents.agent_loop.skills.graph_store import (
-    GraphSkillStore,
     SharedSkillRights,
     SkillVisibility,
 )
@@ -79,6 +78,7 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.modules.providers.skills.base import SkillProvenance
     from app.agent_loop_lib.transport.registry import TransportRegistry
     from app.agents.agent_loop.context import AgentContext
+    from app.agents.agent_loop.skills.ledger_manager import SkillOrigins
     from app.config.configuration_service import ConfigurationService
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
@@ -94,6 +94,7 @@ __all__ = [
     "build_runtime_skill_manager",
     "build_management_skill_manager",
     "runtime_visibility",
+    "run_user_key",
 ]
 
 logger = logging.getLogger(__name__)
@@ -175,7 +176,9 @@ async def _reconcile(graph_provider: "IGraphDBProvider", org_id: str) -> None:
     seeder = get_builtin_seeder()
     if seeder is None or _is_reconciled(org_id, seeder):
         return
-    seed_store = GraphSkillStore(
+    from app.edition_services import skill_store
+
+    seed_store = skill_store(
         graph_provider, org_id, SEED_IDENTITY, visibility=SkillVisibility.everyone(), allow_builtin_writes=True,
     )
     try:
@@ -275,9 +278,16 @@ async def _build_manager(
     visibility: SkillVisibility,
     rights: SharedSkillRights | None = None,
     provenance: Callable[[], SkillProvenance] | None = None,
+    origins: "SkillOrigins | None" = None,
+    own_skills: bool = True,
+    **store_options: object,
 ) -> SkillManager:
-    store = GraphSkillStore(
+    from app.edition_services import skill_store
+
+    store = skill_store(
         graph_provider, org_id, user_id, visibility=visibility, rights=rights, provenance=provenance,
+        also_visible=visibility.shared, origins=origins, own_skills=own_skills,
+        **store_options,
     )
     index = SemanticSkillIndex(retrieval_service)
     tracker = GraphUsageTracker(graph_provider, org_id, user_id)
@@ -302,16 +312,44 @@ def runtime_visibility(context: "AgentContext") -> SkillVisibility:
     return SkillVisibility.of(skill_viewers(context), shared=context.agent_skills or ())
 
 
+async def run_user_key(context: "AgentContext") -> str | None:
+    """The asker's graph user key, the kind of id a skill's `createdBy` holds: the one the route read
+    with the user's details, else read from the user record (and kept on the context). None when there
+    is no such user or the read failed. `context.user_id` is the account id, never a stand-in for it."""
+    key = getattr(context, "user_key", "") or ""
+    if key:
+        return key
+    from app.edition_config import user_lookup_scope
+    from app.utils.user_lookup import get_caller_user
+
+    try:
+        user = await get_caller_user(
+            context.graph_provider, context.user_id, **user_lookup_scope(context.org_id or None),
+        )
+    except Exception as e:
+        log_event(logger, "skills.user_key_failed", level=logging.WARNING, error_class=type(e).__name__)
+        return None
+    key = user.get("_key") if isinstance(user, dict) else None
+    if not isinstance(key, str) or not key:
+        return None
+    context.user_key = key
+    return key
+
+
 async def build_runtime_skill_manager(
     context: "AgentContext", transport_registry: "TransportRegistry",
     *, provenance: "Callable[[], SkillProvenance] | None" = None,
+    origins: "SkillOrigins | None" = None, own_skills: bool = True,
 ) -> SkillManager | None:
     """Full profile for the agent loop. `None` when this request has no
     graph provider wired — the store hard-depends on `IGraphDBProvider`,
     so skills are unavailable rather than silently degraded to some other
     backend. Callers must check for `None` and skip the rest of the
-    skills wiring. `provenance`: the run every write is stamped with (a
-    durable run's label and conversation, FOLLOWUPS1-1)."""
+    skills wiring. `provenance`: the run every
+    write is stamped with (a durable run's label and conversation,
+    FOLLOWUPS1-1). `origins` is told where each skill the store reads came
+    from, for the answer's label. `own_skills=False` leaves the person's own
+    skills out of a run whose answer others read."""
     if context.graph_provider is None:
         if log_once("agent_wiring.skills_no_graph_provider"):
             log_event(logger, "skills.unavailable", level=logging.WARNING, reason="no_graph_provider")
@@ -324,6 +362,8 @@ async def build_runtime_skill_manager(
         extractor_transport=transport_registry,
         visibility=runtime_visibility(context),
         provenance=provenance,
+        origins=origins,
+        own_skills=own_skills,
     )
     schedule_builtin_skill_reconcile(context.graph_provider, context.org_id)
     return manager
@@ -337,13 +377,17 @@ async def build_management_skill_manager(
     *,
     visibility: SkillVisibility | None = None,
     rights: SharedSkillRights | None = None,
+    **store_options: object,
 ) -> SkillManager:
     """Management profile for the REST API: creator-scoped reads (see
     `SkillVisibility`; the routes widen them to the caller's team and org
     commands), no learning-loop extractor, no
     builtin-pack seeding side effect. Never returns `None` — routes call
     this only once `graph_provider` is already known to exist (same
-    `get_services()` guard every other agent route uses)."""
+    `get_services()` guard every other agent route uses).
+
+    `store_options` are what the edition's store takes beyond these
+    (`app.edition_services.skill_store`)."""
     config = skills_manager_config()
     return await _build_manager(
         graph_provider, org_id, user_id, config,
@@ -351,4 +395,5 @@ async def build_management_skill_manager(
         extractor_transport=None,
         visibility=visibility or SkillVisibility.of([user_id]),
         rights=rights,
+        **store_options,
     )

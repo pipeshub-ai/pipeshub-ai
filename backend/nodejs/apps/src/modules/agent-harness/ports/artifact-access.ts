@@ -4,6 +4,8 @@ export interface ArtifactReadQuery {
   /** The viewer's own bearer credential; the authority resolves whose access is checked from it. */
   authorization: string;
   artifactIds: readonly string[];
+  /** How long the check may take, at most, in one try; the authority's own budget when not given. */
+  timeoutMs?: number;
 }
 
 /**

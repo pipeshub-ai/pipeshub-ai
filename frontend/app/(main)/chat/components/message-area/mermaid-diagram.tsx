@@ -3,10 +3,13 @@
 import React, { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { Box, Dialog, Flex, IconButton, Spinner, Text, VisuallyHidden } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
+import DOMPurify from 'dompurify';
+import type { MermaidConfig } from 'mermaid';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { toast } from '@/lib/store/toast-store';
+import { neutralizeMermaidSource } from '@/lib/utils/mermaid-source-policy';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -85,19 +88,79 @@ function useDarkMode(): boolean {
  */
 let mermaidInitPromise: Promise<void> | null = null;
 
+/**
+ * mermaid draws label HTML into the live page while it lays a diagram out, and at `strict` it keeps
+ * `<img>`, `<picture>` and inline styles, which load at once. Labels keep formatting tags only, and a
+ * diagram's own directive or front matter can change neither that nor the CSS mermaid writes.
+ */
+export const MERMAID_CONFIG: MermaidConfig = {
+  startOnLoad: false,
+  theme: 'default',
+  securityLevel: 'strict',
+  fontFamily: 'inherit',
+  dompurifyConfig: {
+    ALLOWED_TAGS: ['b', 'i', 'u', 'em', 'strong', 'br', 'p', 'span', 'div', 'sub', 'sup', 'small', 's', 'del', 'ins', 'mark', 'code'],
+    ALLOWED_ATTR: ['class'],
+  },
+  secure: [
+    'secure', 'securityLevel', 'startOnLoad', 'maxTextSize', 'suppressErrorRendering', 'maxEdges',
+    'dompurifyConfig', 'themeCSS', 'fontFamily', 'altFontFamily',
+  ],
+};
+
 function ensureInit(): Promise<void> {
   if (mermaidInitPromise) return mermaidInitPromise;
 
   mermaidInitPromise = import('mermaid').then(({ default: mermaid }) => {
-    mermaid.initialize({
-      startOnLoad: false,
-      theme: 'default',
-      securityLevel: 'strict',
-      fontFamily: 'inherit',
-    });
+    mermaid.initialize(MERMAID_CONFIG);
   });
 
   return mermaidInitPromise;
+}
+
+// ─── Rendered SVG: nothing that loads from elsewhere ─────────────────────────
+
+let svgPurifier: ReturnType<typeof DOMPurify> | null = null;
+
+/** A url() in CSS that points anywhere but at this document (`url(#marker)`). */
+const OUTSIDE_CSS_URL = /url\(\s*(?!['"]?#)[^)]*\)/gi;
+const CSS_LOADS = /@import|image\s*\(|image-set\s*\(|cross-fade\s*\(|element\s*\(|\\/i;
+
+/** Its own DOMPurify instance: mermaid adds hooks to the shared one, and these must not run there. */
+function purifier(): ReturnType<typeof DOMPurify> {
+  if (svgPurifier) return svgPurifier;
+  const instance = DOMPurify(window);
+  instance.addHook('uponSanitizeAttribute', (_node, data) => {
+    const name = data.attrName.toLowerCase();
+    const value = data.attrValue ?? '';
+    if ((name === 'href' || name === 'xlink:href') && !value.trim().startsWith('#')) data.keepAttr = false;
+    if (/url\s*\(/i.test(value) && (value.replace(OUTSIDE_CSS_URL, '') !== value || CSS_LOADS.test(value))) data.keepAttr = false;
+  });
+  instance.addHook('uponSanitizeElement', (node) => {
+    if (node.nodeName.toLowerCase() !== 'style') return;
+    const css = node.textContent ?? '';
+    const kept = css.replace(OUTSIDE_CSS_URL, 'none');
+    node.textContent = CSS_LOADS.test(kept) ? '' : kept;
+  });
+  svgPurifier = instance;
+  return instance;
+}
+
+/**
+ * The drawing as it is shown, copied and exported: no element that loads on its own, no link out, and
+ * no CSS url() other than a reference into the drawing itself.
+ */
+export function sanitizeRenderedSvg(svg: string): string {
+  return purifier().sanitize(svg, {
+    ADD_TAGS: ['foreignobject'],
+    ADD_ATTR: ['dominant-baseline'],
+    HTML_INTEGRATION_POINTS: { foreignobject: true },
+    FORBID_TAGS: [
+      'image', 'img', 'picture', 'source', 'video', 'audio', 'track', 'iframe', 'frame', 'frameset', 'object',
+      'embed', 'input', 'link', 'use', 'feimage', 'script', 'meta', 'base',
+    ],
+    FORBID_ATTR: ['src', 'srcset', 'poster', 'background', 'ping', 'action', 'formaction', 'data'],
+  }) as string;
 }
 
 /** How long (ms) to wait after the last `chart` change before rendering.
@@ -654,12 +717,14 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
       // Always normalise first — fixes visual bugs in otherwise-valid source
       const normalised = normalizeMermaid(chart);
 
-      // Pass 1 — normalised source
+      // Pass 1 — normalised source. What mermaid is given passes the source policy last, after every
+      // local fix-up, so none of them can bring a construct back.
       try {
-        const r = await mermaid.render(containerId, normalised);
+        const r = await mermaid.render(containerId, neutralizeMermaidSource(normalised));
         if (!cancelled) {
-          setSvgContent(r.svg);
-          setResponsiveSvg(makeSvgResponsive(r.svg));
+          const svg = sanitizeRenderedSvg(r.svg);
+          setSvgContent(svg);
+          setResponsiveSvg(makeSvgResponsive(svg));
         }
         return;
       } catch {
@@ -672,10 +737,11 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
       const { result: sanitized, changed } = sanitizeMermaid(normalised);
       if (changed) {
         try {
-          const r = await mermaid.render(`${containerId}s`, sanitized);
+          const r = await mermaid.render(`${containerId}s`, neutralizeMermaidSource(sanitized));
           if (!cancelled) {
-            setSvgContent(r.svg);
-            setResponsiveSvg(makeSvgResponsive(r.svg));
+            const svg = sanitizeRenderedSvg(r.svg);
+            setSvgContent(svg);
+            setResponsiveSvg(makeSvgResponsive(svg));
           }
           return;
         } catch {

@@ -32,6 +32,9 @@ ACME_SPEC = (Path(__file__).resolve().parents[6] / "integration-tests" / "openap
 PER_MEMBER, SHARED = "a" * 32, "b" * 32
 MODEL = {"modelKey": "mk1", "modelName": "mn1", "isReasoning": True}
 
+# What a service-account agent may attach follows the caller policy; these tests pin the base one.
+pytestmark = pytest.mark.usefixtures("default_caller_policy")
+
 
 async def _services() -> dict[str, Any]:
     config = InMemoryConfigService()

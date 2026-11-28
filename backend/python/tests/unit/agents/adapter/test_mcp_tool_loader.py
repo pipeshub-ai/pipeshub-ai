@@ -9,6 +9,7 @@ fallback tool was worse than no tool at all."""
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -582,6 +583,33 @@ class TestServerInstructions:
         assert context.mcp_server_instructions == [
             {"instanceId": "inst-1", "name": "JiraMCP", "instructions": "Search before creating issues."},
         ]
+
+    async def test_a_run_others_read_records_none_listed_or_cached_and_still_loads_the_tools(
+        self, monkeypatch: pytest.MonkeyPatch, fake_sessions: type[_FakeClientManager],
+    ) -> None:
+        # They came with the person's sign-in, and a model repeated them in an answer everyone in a chat reads.
+        monkeypatch.setattr(_FakeClientManager, "rejected", "Bearer nobody-sends-this")
+        monkeypatch.setattr(_FakeClientManager, "server_instructions", "Search before creating issues.")
+        kept: dict[str, Any] = {}
+
+        async def get(key: str, default: Any = None, **_: Any) -> Any:  # noqa: ANN401
+            return kept.get(key, default)
+
+        async def put(key: str, value: Any, **_: Any) -> bool:  # noqa: ANN401
+            kept[key] = value
+            return True
+
+        store = SimpleNamespace(get_config=get, set_config=put)
+        for read_by_others in (True, False, True):
+            registry = ToolRegistry()
+            context = _context_with_server(config_service=store)
+            context._read_by_others = read_by_others
+
+            await MCPToolProvider().load_into(registry, context)
+
+            assert bool(context.mcp_server_instructions) is not read_by_others
+            assert registry.has("mcp_jira_mcp_search")
+        assert len(fake_sessions.seen_tokens) == 1, "the later turns read the kept listing"
 
     async def test_a_server_without_instructions_adds_none(
         self, monkeypatch: pytest.MonkeyPatch, fake_sessions: type[_FakeClientManager],

@@ -11,6 +11,7 @@ import { PgMailLogRepository } from '../../src/libs/repositories/mail-log/pg';
 import type { OutboxEventRow } from '../../src/libs/repositories/outbox';
 import type { Tx } from '../../src/libs/repositories/uow';
 import { describeNotificationContract } from './contract/notification.contract';
+import { describeNotificationDelivery } from './contract/notification-delivery.contract';
 import { describeOutboxContract } from './contract/outbox.contract';
 import {
   OrgLedger,
@@ -49,7 +50,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
 
       describe('NotificationRepository contract', () => {
         describeNotificationContract({
-          repo: scoped(new PgNotificationRepository(), ledger),
+          repo: scoped(new PgNotificationRepository(), ledger, { deleteByIds: 0 }),
           newId,
           setCreatedAt: (id, at) =>
             stack.admin(
@@ -57,6 +58,22 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
                   'UPDATE platform.notifications SET created_at = $2 WHERE id = $1',
                   [id, at],
                 ) },
+            ),
+        });
+      });
+
+      describe('the notification consumer on PostgreSQL', () => {
+        describeNotificationDelivery({
+          repo: new PgNotificationRepository(),
+          newId,
+          stored: (orgId, userId) =>
+            stack.admin(async (c) =>
+              (
+                await c.query<{ type: string; dedupe_key: string | null }>(
+                  'SELECT type, dedupe_key FROM platform.notifications WHERE org_id = $1 AND assigned_to = $2',
+                  [orgId, userId],
+                )
+              ).rows.map((r) => ({ type: r.type, ...(r.dedupe_key !== null && { dedupeKey: r.dedupe_key }) })),
             ),
         });
       });

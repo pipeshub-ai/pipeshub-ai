@@ -31,6 +31,10 @@ import {
   liveLinkedAccount,
   slackIdentityLinks,
 } from '../../configuration_manager/slack-identity/slack-linked-account';
+import {
+  TOKEN_CLASS,
+  TOKEN_CLASS_CLAIM,
+} from '../../../libs/services/token-class';
 
 /**
  * Turns a scoped service token (`/internal/...` routes: Slack bot, service
@@ -197,6 +201,7 @@ const actAsUser = (
       mobile: user.mobile,
       userSlug: user.userSlug,
       role: 'member',
+      [TOKEN_CLASS_CLAIM]: TOKEN_CLASS.run,
     },
     STAND_IN_TOKEN_TTL_SECONDS,
   );

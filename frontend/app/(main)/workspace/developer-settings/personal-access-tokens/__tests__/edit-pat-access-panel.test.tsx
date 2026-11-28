@@ -34,6 +34,12 @@ const only = () => document.getElementById('pat-access-knowledge-limit-only') as
 const save = () => screen.getByRole('button', { name: text.save }) as HTMLButtonElement;
 // The store puts the newest toast first.
 const lastToast = () => useToastStore.getState().toasts[0];
+/** Presses the newest toast's action as its button does: runs it, then closes that toast, so one waiting behind it shows. */
+const pressToastAction = () => {
+  const toast = lastToast();
+  toast?.action?.onClick?.();
+  if (toast) useToastStore.getState().removeToast(toast.id);
+};
 
 function open(t: PatListItem = token) {
   const onSaved = vi.fn();
@@ -116,7 +122,7 @@ describe('Changing what a personal access token can see', () => {
     await waitFor(() => expect(lastToast()?.action).toBeTruthy());
 
     await act(async () => {
-      lastToast()?.action?.onClick?.();
+      pressToastAction();
     });
 
     await waitFor(() => expect(onSaved).toHaveBeenLastCalledWith(token));
@@ -203,7 +209,7 @@ describe('Changing what a personal access token can see', () => {
     fireEvent.click(save());
     await waitFor(() => expect(lastToast()?.action).toBeTruthy());
     await act(async () => {
-      lastToast()?.action?.onClick?.();
+      pressToastAction();
     });
 
     await waitFor(() => expect(onReload).toHaveBeenCalled());

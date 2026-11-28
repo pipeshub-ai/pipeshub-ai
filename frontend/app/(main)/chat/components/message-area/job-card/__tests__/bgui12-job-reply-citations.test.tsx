@@ -67,14 +67,14 @@ describe('BGUI-12: a job reply\'s citation chips name their source', () => {
     expect(reply.textContent).toMatch(/Titans\s*TATA IPL 2026, Final: RC…\s*1/);
     expect(reply.textContent).toContain('Sooryavanshi awards');
     expect(reply.textContent).not.toContain('](http');
-    // The same page twice is one group, as the chat's answer draws it.
-    expect(reply.querySelectorAll('.citation-number-circle')).toHaveLength(3);
+    // Every citation keeps its number; the same page twice is one group, as the chat's answer draws it.
+    expect(within(reply).getAllByRole('button', { name: /^Citation \d/ })).toHaveLength(3);
+    expect(within(reply).getAllByRole('group', { name: 'Sooryavanshi awards' })).toHaveLength(1);
   });
 
   it('BGUI12-V2: a chip opens the answer\'s popover with the passage and a link to the page', async () => {
     view(h(JobReply, { text: IPL, citations: [web(1, FINAL, 'TATA IPL 2026 Final', 'RCB chased 156 with 12 balls left.')] }));
-    const circle = screen.getByTestId('job-reply').querySelector('.citation-number-circle') as HTMLElement;
-    fireEvent.click(circle.closest('a, button') as HTMLElement);
+    fireEvent.click(within(screen.getByTestId('job-reply')).getByRole('button', { name: /^Citation 1/ }));
     const popover = await screen.findByText('RCB chased 156 with 12 balls left.');
     const card = popover.closest('[data-radix-popper-content-wrapper]') as HTMLElement;
     expect(within(card).getByRole('link').getAttribute('href')).toBe(FINAL);
@@ -82,7 +82,7 @@ describe('BGUI-12: a job reply\'s citation chips name their source', () => {
 
   it('BGUI12-V10: the popover is scoped outside the message list, which keeps it open, and closes with the reply', async () => {
     const { unmount } = view(h(JobReply, { text: IPL, citations: [web(1, FINAL, 'Final', 'RCB chased 156.')] }));
-    fireEvent.click(screen.getByTestId('job-reply').querySelector('.citation-number-circle')?.closest('a, button') as HTMLElement);
+    fireEvent.click(within(screen.getByTestId('job-reply')).getByRole('button', { name: /^Citation 1/ }));
     await screen.findByText('RCB chased 156.');
     const key = useInlineCitationPopoverStore.getState().activeKey;
     // The list clears a key no row of it holds (its streaming clean-up): the reply's key is not one it may clear.
@@ -96,7 +96,7 @@ describe('BGUI-12: a job reply\'s citation chips name their source', () => {
     view(h(JobReply, { text: 'Revenue grew [1](/record/rec-q3/preview#blockIndex=2).', citations: [record(1)] }));
     const reply = screen.getByTestId('job-reply');
     expect(reply.textContent).toContain('Q3 board pack');
-    fireEvent.click(reply.querySelector('.citation-number-circle')?.closest('a, button') as HTMLElement);
+    fireEvent.click(within(reply).getByRole('button', { name: /^Citation 1/ }));
     expect(await screen.findByText('Q3 revenue grew 12%.')).toBeTruthy();
     expect(screen.getByRole('button', { name: /preview/i })).toBeTruthy();
   });

@@ -10,7 +10,7 @@ vi.mock('@/app/components/ui/MaterialIcon', () => ({
 }));
 // jsdom has no matchMedia.
 let mobile = false;
-vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => mobile }));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => mobile, useIsBelowDesktop: () => mobile }));
 
 const replace = vi.fn();
 vi.mock('next/navigation', () => ({ useRouter: () => ({ replace, push: vi.fn() }) }));

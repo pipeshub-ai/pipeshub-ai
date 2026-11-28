@@ -34,6 +34,8 @@ const zeusClosed = {
 
 const beforeNarration = { type: 'text', content: 'Reading your request', settled: true };
 const askCall = { type: 'tool_call', toolCallId: 'ask-1', toolName: 'ask_user_question', status: 'completed' };
+// The call as the answer leaves it: the card and its answers, drawn as the call's row in the box.
+const answeredAsk = { ...askCall, question: { payload: card, answers: zeusClosed } };
 const afterNarration = { type: 'text', content: 'Searching Zeus for closed issues', settled: true };
 const afterTool = { type: 'tool_call', toolCallId: 'search-1', toolName: 'jira_search', status: 'completed' };
 const finalText = { type: 'text', content: 'Three closed issues.', isFinal: true };
@@ -69,7 +71,7 @@ afterEach(() => {
 });
 
 describe('ChatResponse — answering the card, and the work after it', () => {
-  it('lets the user pick, change and submit answers, then shows the resumed run under the card', () => {
+  it('lets the user pick, change and submit answers, then shows the resumed run under the answered question', () => {
     useChatStore.getState().updateSlot(slotId, {
       pendingAskUserQuestion: { assistantMessageId: 'msg-1', payload: card as never, answers: {}, status: 'pending' },
     });
@@ -103,7 +105,7 @@ describe('ChatResponse — answering the card, and the work after it', () => {
     expect(options).toEqual({ resumeAskUserQuestion: true, runId: expect.any(String), onSendOutcome: expect.any(Function) });
 
     view.rerender(
-      <Row isStreaming streamingContent="" streamingParts={parts(beforeNarration, askCall, afterNarration, afterTool)} />,
+      <Row isStreaming streamingContent="" streamingParts={parts(beforeNarration, answeredAsk, afterNarration, afterTool)} />,
     );
     const shownCard = shownQuestion();
     const after = screen.getByText('Searching Zeus for closed issues');
@@ -133,7 +135,7 @@ describe('ChatResponse — answering the card, and the work after it', () => {
         answer="Three closed issues."
         persistedAskUserQuestion={card as never}
         persistedAskUserQuestionAnswers={zeusClosed as never}
-        persistedParts={parts(beforeNarration, askCall, afterNarration, afterTool, finalText)}
+        persistedParts={parts(beforeNarration, answeredAsk, afterNarration, afterTool, finalText)}
       />,
     );
 
@@ -145,7 +147,7 @@ describe('ChatResponse — answering the card, and the work after it', () => {
     expect(precedes(after, screen.getByText('Three closed issues.'))).toBe(true);
   });
 
-  it('streams a regenerate with changed answers under the card it is running with', () => {
+  it('streams a regenerate with changed answers after the card it is running with', () => {
     useChatStore.setState({
       regenAnswers: { messageId: 'msg-1', payload: card as never, message: 'User selections: …', answers: zeusClosed as never },
     });

@@ -1,8 +1,9 @@
 'use client';
 
-import { Flex } from '@radix-ui/themes';
+import { Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { ChatSectionElement, GeneratingTitleItem } from './chat-section-element';
+import { GeneratingTitleItem } from './chat-section-element';
+import { ChatListRow, useRowSelect } from './chat-list-row';
 import { ELEMENT_HEIGHT } from '@/app/components/sidebar';
 import type { PendingConversation } from '@/chat/store';
 import {
@@ -18,12 +19,11 @@ import type { Conversation } from '@/chat/types';
 // Re-export for consumers that still import from here
 export { TIME_GROUP_KEYS, type TimeGroupKey };
 
-/** A time bucket, or the owner's pinned chats shown above all of them. */
+/** A time bucket, or the owner's pinned chats shown above all of them, with no label. */
 export type SidebarGroupKey = TimeGroupKey | 'Pinned';
 
-/** Maps the fixed group keys to their i18n translation key */
-const TIME_GROUP_I18N: Record<SidebarGroupKey, string> = {
-  'Pinned': 'chat.pinned',
+/** Maps the time group keys to their i18n translation key */
+const TIME_GROUP_I18N: Record<TimeGroupKey, string> = {
   'Today': 'timeGroup.today',
   'Yesterday': 'timeGroup.yesterday',
   'Previous 7 Days': 'timeGroup.previous7Days',
@@ -31,13 +31,14 @@ const TIME_GROUP_I18N: Record<SidebarGroupKey, string> = {
 };
 
 /**
- * Groups conversations into time buckets.
+ * Groups conversations into the viewer's local-day buckets, relative to `now` (default: the current time).
  * Delegates to the shared `groupByTime` utility.
  */
 export function groupConversationsByTime(
-  conversations: Conversation[]
+  conversations: Conversation[],
+  now?: number,
 ): Record<TimeGroupKey, Conversation[]> {
-  return groupByTime(conversations, (conv) => getConversationLastActivityMs(conv));
+  return groupByTime(conversations, (conv) => getConversationLastActivityMs(conv), { now });
 }
 
 /**
@@ -55,10 +56,11 @@ export function getNonEmptyGroups(
  * not again under the day it was last active.
  */
 export function groupConversationsWithPinned(
-  conversations: Conversation[]
+  conversations: Conversation[],
+  now?: number,
 ): Array<[SidebarGroupKey, Conversation[]]> {
   const { pinned, rest } = splitPinned(conversations);
-  const timed = getNonEmptyGroups(groupConversationsByTime(rest));
+  const timed = getNonEmptyGroups(groupConversationsByTime(rest, now));
   return pinned.length > 0 ? [['Pinned', pinned], ...timed] : timed;
 }
 
@@ -79,7 +81,8 @@ interface TimeGroupProps {
 
 /**
  * TimeGroup — renders a time-period sub-heading ("Today", "Yesterday", …)
- * followed by the list of chat items in that period.
+ * followed by the list of chat items in that period. The pinned chats lead
+ * the list with no sub-heading: their pin marks them.
  */
 export function TimeGroup({
   label,
@@ -90,44 +93,37 @@ export function TimeGroup({
   agentId,
 }: TimeGroupProps) {
   const { t } = useTranslation();
+  const select = useRowSelect(onSelectConversation);
   const pendingSortedNewestFirst = [...pendingConversations].sort(
     (a, b) => b.createdAt - a.createdAt
   );
   return (
     <Flex direction="column">
-      {/* Sub-heading */}
-      <Flex
-        align="center"
-        style={{
-          height: ELEMENT_HEIGHT,
-          padding: '0 var(--space-3)',
-        }}
-      >
-        <span
-          style={{
-            fontSize: 12,
-            fontWeight: 400,
-            lineHeight: 'var(--line-height-1)',
-            letterSpacing: '0.04px',
-            color: 'var(--slate-11)',
-          }}
+      {/* Sub-heading: a quiet, non-interactive 32px label row over the group's rows */}
+      {label !== 'Pinned' && (
+        <Flex
+          align="center"
+          data-sidebar-sub-label=""
+          style={{ height: ELEMENT_HEIGHT, padding: '0 var(--space-3)', flexShrink: 0 }}
         >
-          {t(TIME_GROUP_I18N[label])}
-        </span>
-      </Flex>
+          <Text size="1" weight="regular" style={{ color: 'var(--text-secondary)' }}>
+            {t(TIME_GROUP_I18N[label])}
+          </Text>
+        </Flex>
+      )}
 
-      {/* Chat items */}
-      <Flex direction="column" gap="1">
+      {/* Chat items: rows sit flush, one 36px row after another */}
+      <Flex direction="column">
         {pendingSortedNewestFirst.map((pending) => (
           <GeneratingTitleItem key={pending.slotId} slotId={pending.slotId} />
         ))}
         {conversations.map((conv) => (
-          <ChatSectionElement
+          <ChatListRow
             key={conv.id}
             conversation={conv}
             isActive={currentConversationId === conv.id}
-            onClick={() => onSelectConversation(conv.id)}
             agentId={agentId}
+            select={select}
           />
         ))}
       </Flex>

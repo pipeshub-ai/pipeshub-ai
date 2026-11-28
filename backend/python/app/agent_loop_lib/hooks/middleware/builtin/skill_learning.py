@@ -79,10 +79,13 @@ class SkillLearning:
         *,
         source_session_id: str | None = None,
         source_agent_key: str | None = None,
+        may_learn: Callable[[], bool] | None = None,
     ) -> None:
         self._manager = manager
         self._spawn = spawn_skill_writer
         self._timeline = timeline_store
+        # Asked when a run ends, before anything is extracted from it: outcomes are recorded either way. None: always.
+        self._may_learn = may_learn
         # The conversation candidates are learned from, recorded on each so its erasure takes them (CLEANUP-G7).
         # Separate from the hook's session id, which also counts skill usage.
         self._source_session_id = source_session_id
@@ -103,7 +106,7 @@ class SkillLearning:
         """Both responsibilities for one finished run. The POST_AGENT hook calls it
         on today's loop; the durable harness's post-run step calls it once per run."""
         await self._record_outcomes(result, session_id)
-        if result.success:
+        if result.success and (self._may_learn is None or self._may_learn()):
             await self._learn(result, session_id=session_id, run_id=run_id)
 
     async def _record_outcomes(self, result: AgentResult, session_id: str | None) -> None:

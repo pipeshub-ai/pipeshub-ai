@@ -23,6 +23,9 @@ from openapi_schema_validator import (  # noqa: E402
 )
 
 _OPERATION_ID = "getRecordContent"
+# Any read-budget parameter sends the read to the query service's record reader
+# instead of the connector service's whole-record route.
+_BUDGETED = {"maxChars": 2000}
 
 
 @pytest.mark.integration
@@ -122,14 +125,16 @@ class TestConnectorRecordContent:
             resp.json(), _OPERATION_ID, status_code="401"
         )
 
-    def test_get_record_content_unknown_record_is_forbidden(self) -> None:
-        """Unknown IDs 403 rather than 404 — the access check can't tell a missing
-        record from an inaccessible one, so existence is never leaked."""
-        resp = self.connectors.get_record_content(str(uuid4()))
-        assert resp.status_code == 403, resp.text
-        assert_response_matches_openapi_operation(
-            resp.json(), _OPERATION_ID, status_code="403"
-        )
+    @pytest.mark.parametrize("params", [{}, _BUDGETED], ids=["whole", "budgeted"])
+    def test_get_record_content_unknown_record_is_not_found(self, params: dict[str, int]) -> None:
+        """An id that names no record is a 404 "Record not found", in both read
+        modes (integration_test_record_reads_hide_existence.py pins that a record
+        the caller can't open gets the same answer)."""
+        resp = self.connectors.get_record_content(str(uuid4()), params=params)
+        assert resp.status_code == 404, resp.text
+        body = resp.json()
+        assert body["error"]["message"] == "Record not found", body
+        assert_response_matches_openapi_operation(body, _OPERATION_ID, status_code="404")
 
     def test_get_record_content_without_connector_read_scope(
         self,
@@ -147,6 +152,6 @@ class TestConnectorRecordContent:
         assert_response_matches_openapi_operation(
             body, _OPERATION_ID, status_code="403"
         )
-        # A record-access denial is also a 403, so pin the scope check specifically —
-        # otherwise this still passes if the token turns out to be fine.
+        # Pin the scope check by its message: the 403 alone would also pass for a
+        # token refused for some other reason.
         assert "scope" in body["error"]["message"].lower(), body

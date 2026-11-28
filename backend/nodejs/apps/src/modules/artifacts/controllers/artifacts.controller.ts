@@ -1,4 +1,5 @@
 import { Response, NextFunction } from 'express';
+import { DomainHttpError } from '../../../libs/errors/domain-http.error';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import {
   InternalServerError,
@@ -10,6 +11,10 @@ import {
   executeConnectorCommand,
   handleBackendError,
 } from '../../tokens_manager/utils/connector.utils';
+import {
+  conversationContextOf,
+  listFilterOf,
+} from '../../enterprise_search/services/conversation/http/conversation-context';
 import { ConversationTitleService } from '../services/conversation-title.service';
 
 type ArtifactListItem = {
@@ -78,8 +83,7 @@ function buildQueryString(query: Record<string, unknown>): string {
 
 async function enrichConversationTitles(
   items: ArtifactListItem[],
-  orgId: string,
-  userId: string,
+  req: AuthenticatedUserRequest,
 ): Promise<ArtifactListItem[]> {
   const conversationIds = items
     .map((item) => item.conversationId)
@@ -87,11 +91,11 @@ async function enrichConversationTitles(
   if (!conversationIds.length) {
     return items;
   }
-  const titles = await ConversationTitleService.batchTitles(
-    conversationIds,
-    orgId,
-    userId,
-  );
+  const titles = await ConversationTitleService.batchTitles(conversationIds, {
+    readFilter: listFilterOf(req),
+    userId: String(req.user?.userId),
+    accessibleProjectIds: conversationContextOf(req).accessibleProjectIds ?? [],
+  });
   return items.map((item) => {
     if (!item.conversationId) {
       return item;
@@ -124,8 +128,8 @@ export const listArtifacts =
     next: NextFunction,
   ): Promise<void> => {
     try {
-      const { userId, orgId } = requireIdentity(req);
-      const qs = buildQueryString(req.query as Record<string, unknown>);
+      requireIdentity(req);
+      const qs = buildQueryString(req.query);
       const uri = `${appConfig.connectorBackend}/api/v1/artifacts${qs ? `?${qs}` : ''}`;
       const connectorResponse =
         await executeConnectorCommand<ArtifactListResponse>(
@@ -144,7 +148,7 @@ export const listArtifacts =
       const items = Array.isArray(data.items)
         ? (data.items as ArtifactListItem[])
         : [];
-      data.items = await enrichConversationTitles(items, orgId, userId);
+      data.items = await enrichConversationTitles(items, req);
       res.status(statusCode).json(data);
     } catch (error: unknown) {
       next(handleBackendError(error, 'list artifacts'));
@@ -159,7 +163,7 @@ export const getArtifact =
     next: NextFunction,
   ): Promise<void> => {
     try {
-      const { userId, orgId } = requireIdentity(req);
+      requireIdentity(req);
       const { artifactId } = req.params as { artifactId: string };
       const connectorResponse = await executeConnectorCommand<ArtifactListItem>(
         artifactUri(appConfig.connectorBackend, artifactId),
@@ -174,7 +178,7 @@ export const getArtifact =
         connectorResponse.data,
         'Failed to get artifact',
       ) as ArtifactListItem;
-      const [enriched] = await enrichConversationTitles([data], orgId, userId);
+      const [enriched] = await enrichConversationTitles([data], req);
       res.status(statusCode).json(enriched);
     } catch (error: unknown) {
       next(handleBackendError(error, 'get artifact'));
@@ -211,6 +215,38 @@ export const listArtifactVersions =
     }
   };
 
+const NAMED_REFUSAL = /^[A-Z][A-Z0-9_]{2,63}$/;
+
+/** The connectors service refused a share and named why, with a code a client can look up. */
+class ArtifactShareRefusedError extends DomainHttpError {
+  constructor(code: string, message: string) {
+    super(code, message, 403);
+  }
+}
+
+/** A 403 whose detail names a code keeps it, so a client can tell why the file was refused. */
+const namedRefusal = (response: {
+  statusCode: number;
+  data?: unknown;
+}): DomainHttpError | undefined => {
+  if (response.statusCode !== 403) return undefined;
+  const detail = (response.data as { detail?: unknown } | undefined)?.detail as
+    { code?: unknown; message?: unknown } | undefined;
+  if (
+    !detail ||
+    typeof detail.code !== 'string' ||
+    !NAMED_REFUSAL.test(detail.code)
+  ) {
+    return undefined;
+  }
+  return new ArtifactShareRefusedError(
+    detail.code,
+    typeof detail.message === 'string'
+      ? detail.message
+      : 'This file cannot be shared',
+  );
+};
+
 // Sharing is decided in the connectors service: only the owner may share, and
 // only with users of the same org. This layer forwards the caller's identity.
 const proxyArtifactPermissions =
@@ -233,7 +269,10 @@ const proxyArtifactPermissions =
       );
       const statusCode = connectorResponse.statusCode;
       if (statusCode < 200 || statusCode >= 300) {
-        throw handleBackendError(connectorResponse, operation);
+        throw (
+          namedRefusal(connectorResponse) ??
+          handleBackendError(connectorResponse, operation)
+        );
       }
       res
         .status(statusCode)

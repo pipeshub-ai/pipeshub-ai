@@ -11,7 +11,7 @@ import { primaryHttpDocumentationUrl } from '@/app/(main)/agents/agent-builder/c
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { useBrand } from '@/lib/branding';
 import { ToolsetInstanceRowCard } from './toolset-instance-row-card';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { pagePaddingX } from '@/app/components/ui/responsive';
 import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 import { SegmentedTabs } from '@/app/components/ui/segmented-tabs';
@@ -80,7 +80,7 @@ export function ActionTypeDetailsLayout({
   instanceFilter,
   pagination = null,
 }: ActionTypeDetailsLayoutProps) {
-  const isMobile = useIsMobile();
+  const isMobile = useIsBelowDesktop();
   const { t } = useTranslation();
   const brand = useBrand();
   const scopeBackLabel =

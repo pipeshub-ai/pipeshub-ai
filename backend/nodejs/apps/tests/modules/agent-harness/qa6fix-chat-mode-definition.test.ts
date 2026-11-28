@@ -27,10 +27,14 @@ const ROUTES = readFileSync(
   'utf8',
 );
 
-/** Every `router.post(path, …, validate(schema), …)` of the chat router, as [path, schema name]. */
+/**
+ * Every `router.post(path, …, validate(schema), …)` of the chat router, as [path, schema name]. A route that takes the
+ * edition's request fields validates `withBodyFields(schema, …)`: those add fields beside the route's own, so its mode
+ * is the route schema's.
+ */
 const validated = (): Array<[string, string]> =>
   [...ROUTES.matchAll(/router\.post\(\s*'([^']+)',([\s\S]*?)\n {2}\);/g)].flatMap((route) => {
-    const schema = /ValidationMiddleware\.validate\((\w+)\)/.exec(route[2] as string);
+    const schema = /ValidationMiddleware\.validate\(\s*(?:withBodyFields\(\s*)?(\w+)\s*[,)]/.exec(route[2] as string);
     return schema === null ? [] : [[route[1] as string, schema[1] as string] as [string, string]];
   });
 

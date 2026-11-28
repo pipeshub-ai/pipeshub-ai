@@ -7,6 +7,7 @@ import {
   UpstreamCall,
 } from '../../http/upstream-call';
 import { Readable } from 'stream';
+import { withRunBearer } from '../../services/token-class';
 
 export interface AICommandOptions {
   uri: string;
@@ -51,7 +52,8 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
     this.method = options.method;
     this.signal = options.signal;
     this.body = this.sanitizeBody(options.body);
-    this.headers = this.sanitizeHeaders(options.headers!);
+    // Headers are optional: a command built without them sends only the defaults, as the base command does.
+    this.headers = withRunBearer(this.sanitizeHeaders(options.headers ?? {}));
     this.timeoutMs = options.timeoutMs ?? AI_SERVICE_TIMEOUT_MS;
     this.maxAttempts = options.maxAttempts ?? 3;
   }
@@ -212,7 +214,11 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
         },
         this.maxAttempts,
         300,
-        undefined,
+        // Only a refused connection proves the AI service never got the turn;
+        // a retry after a reset or a timeout could run it, and its tools, twice.
+        (error) =>
+          (error as { cause?: { code?: unknown } } | null)?.cause?.code ===
+          'ECONNREFUSED',
         callerSignal,
       );
     } catch (error: unknown) {

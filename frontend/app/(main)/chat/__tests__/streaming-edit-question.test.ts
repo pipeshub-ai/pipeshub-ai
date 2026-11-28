@@ -12,6 +12,7 @@ import {
   sseFrame,
   sseResponse,
 } from '@/lib/api/__tests__/sse-response';
+import { NOT_ALLOWED, NOT_ALLOWED_TEXT, withTestAdminRefusals } from '@/lib/api/__tests__/admin-refusals-double';
 import type { ConversationMessage } from '../types';
 
 installMemoryStorage();
@@ -20,7 +21,16 @@ vi.mock('@/config', async () => {
   const auth = await vi.importActual<typeof import('@/lib/store/auth-store')>('@/lib/store/auth-store');
   const rules = await vi.importActual<typeof import('@/app/(main)/chat/approval-ask-rules')>('@/app/(main)/chat/approval-ask-rules');
   const runErrors = await vi.importActual<typeof import('@/app/(main)/chat/run-error-extras')>('@/app/(main)/chat/run-error-extras');
-  return { useAuthStore: auth.useAuthStore, approvalAskRules: rules.approvalAskRules, runErrorExtras: runErrors.runErrorExtras, logoutAndRedirect: vi.fn() };
+  const { defaultChatExtension } = await vi.importActual<typeof import('@/app/(main)/chat/chat-extension')>(
+    '@/app/(main)/chat/chat-extension',
+  );
+  return {
+    useAuthStore: auth.useAuthStore,
+    approvalAskRules: rules.approvalAskRules,
+    runErrorExtras: runErrors.runErrorExtras,
+    logoutAndRedirect: vi.fn(),
+    chatExtension: defaultChatExtension,
+  };
 });
 
 const { useAuthStore } = await import('@/config');
@@ -30,6 +40,7 @@ const { ChatStreamError } = await import('../stream-error');
 const { StreamError } = await import('@/lib/api/stream-errors');
 const { getThreadMessagePlainText } = await import('../runtime');
 const { apiClient } = await import('@/lib/api');
+const { toast } = await import('@/lib/store/toast-store');
 
 const fetchMock = vi.fn<typeof fetch>();
 const initialState = useChatStore.getState();
@@ -54,7 +65,7 @@ function stored(overrides: Partial<ConversationMessage>): ConversationMessage {
   } as ConversationMessage;
 }
 
-function conversationWith(question: string, answer: string) {
+function conversationWith(question: string, answer: string, { status = 'complete', updatedAt = '2026-09-18T00:00:00.000Z' } = {}) {
   return {
     _id: 'conv-1',
     id: 'conv-1',
@@ -62,11 +73,11 @@ function conversationWith(question: string, answer: string) {
     createdAt: '2026-09-18T00:00:00.000Z',
     updatedAt: '2026-09-18T00:00:00.000Z',
     isShared: false,
-    status: 'complete',
+    status,
     modelInfo: { modelKey: 'm1', modelName: 'gpt-5' },
     messages: [
       stored({ _id: 'q1', messageType: 'user_query', content: question }),
-      stored({ _id: 'a1', messageType: 'bot_response', content: answer }),
+      stored({ _id: 'a1', messageType: 'bot_response', content: answer, updatedAt }),
     ],
   };
 }
@@ -81,9 +92,18 @@ function threadWith(question: string): ThreadMessageLike[] {
 function newSlot(question = 'Old question'): string {
   const slotId = useChatStore.getState().createSlot('conv-1');
   useChatStore.setState({ activeSlotId: slotId });
-  useChatStore.getState().updateSlot(slotId, { messages: threadWith(question) });
+  useChatStore.getState().updateSlot(slotId, {
+    messages: threadWith(question),
+    rawMessages: conversationWith(question, 'old answer').messages,
+  });
   return slotId;
 }
+
+/** What the server has once its run went on after the connection dropped: going still, or over with the answer anew. */
+const stillRunning = () => ({ data: { conversation: conversationWith('Old question', 'old answer', { status: 'Inprogress' }) } });
+const answeredAnew = (question: string) => ({
+  data: { conversation: conversationWith(question, 'new answer', { updatedAt: '2026-09-18T00:05:00.000Z' }) },
+});
 
 const slot = (id: string) => useChatStore.getState().slots[id];
 const questionOf = (id: string) => getThreadMessagePlainText(slot(id).messages[0]);
@@ -194,6 +214,81 @@ describe('regenerating with an edited question', () => {
     expect(getThreadMessagePlainText(slot(slotId).messages[1])).toBe('old answer');
   });
 
+  it('says the edit was not saved when the request is refused (an answer asked on the wrong route got a 404)', async () => {
+    const { useToastStore } = await import('@/lib/store/toast-store');
+    useToastStore.getState().clearAll();
+    const slotId = newSlot();
+    fetchMock.mockResolvedValueOnce(jsonResponse(404, { error: { code: 'CONVERSATION_NOT_FOUND' } }));
+
+    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, { query: 'Edited question' });
+
+    const errors = useToastStore.getState().toasts.filter((t) => t.variant === 'error');
+    expect(errors.map((t) => t.title)).toEqual(["Your edit wasn't saved. Try again."]);
+    expect(questionOf(slotId)).toBe('Old question');
+  });
+
+  describe('the words of an edit that was not taken go back to the box', () => {
+    it('when the request is refused', async () => {
+      const slotId = newSlot();
+      fetchMock.mockResolvedValueOnce(jsonResponse(409, { error: { code: 'REFUSED', message: 'Not here' } }));
+
+      await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, { query: 'Edited question' });
+
+      expect(slot(slotId).composerRestore).toBe('Edited question');
+    });
+
+    it('when the run is refused after it opened', async () => {
+      const slotId = newSlot();
+      fetchMock.mockImplementationOnce(async () => sseResponse([frame('RUN_ERROR', { message: NOT_ALLOWED_TEXT, code: NOT_ALLOWED })]));
+
+      await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, { query: 'Edited question' });
+
+      expect(slot(slotId).composerRestore).toBe('Edited question');
+    });
+
+    it('to the box they were written in, when the answer is on a slot of its own', async () => {
+      const answerSlot = newSlot();
+      const box = useChatStore.getState().createSlot('conv-2');
+      useChatStore.setState({ activeSlotId: box });
+      fetchMock.mockResolvedValueOnce(jsonResponse(409, { error: { code: 'REFUSED', message: 'Not here' } }));
+
+      await streamRegenerateForSlot(answerSlot, 'a1', MODEL, undefined, { query: 'Edited question' });
+
+      expect(slot(box).composerRestore).toBe('Edited question');
+      expect(slot(answerSlot).composerRestore ?? null).toBeNull();
+    });
+
+    it('not when the connection dropped and the run saved the edit', async () => {
+      const slotId = newSlot();
+      fetchMock.mockRejectedValueOnce(new TypeError('network error'));
+      vi.spyOn(apiClient, 'get').mockResolvedValue(answeredAnew('Edited question'));
+
+      await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, { query: 'Edited question' });
+
+      expect(slot(slotId).composerRestore ?? null).toBeNull();
+    });
+
+    it('not on a plain regenerate: there are no words to keep', async () => {
+      const slotId = newSlot();
+      fetchMock.mockResolvedValueOnce(jsonResponse(409, { error: { code: 'REFUSED', message: 'Not here' } }));
+
+      await streamRegenerateForSlot(slotId, 'a1', MODEL);
+
+      expect(slot(slotId).composerRestore ?? null).toBeNull();
+    });
+  });
+
+  it('a plain regenerate that fails adds no edit toast', async () => {
+    const { useToastStore } = await import('@/lib/store/toast-store');
+    useToastStore.getState().clearAll();
+    const slotId = newSlot();
+    fetchMock.mockResolvedValueOnce(jsonResponse(404, {}));
+
+    await streamRegenerateForSlot(slotId, 'a1', MODEL);
+
+    expect(useToastStore.getState().toasts.map((t) => t.title)).not.toContain("Your edit wasn't saved. Try again.");
+  });
+
   it('puts the stored question back when the run ends in an error', async () => {
     const slotId = newSlot();
     fetchMock.mockImplementationOnce(async () =>
@@ -204,6 +299,69 @@ describe('regenerating with an edited question', () => {
 
     expect(slot(slotId).isStreaming).toBe(false);
     expect(questionOf(slotId)).toBe('Old question');
+  });
+
+  describe('a refused run says why, and keeps the answer on screen', () => {
+    withTestAdminRefusals();
+    const refusal = () => sseResponse([frame('RUN_ERROR', { message: NOT_ALLOWED_TEXT, code: NOT_ALLOWED })]);
+    const toastError = () => vi.spyOn(toast, 'error');
+
+    it('an edit: the toast has the server\'s words, the question and the answer go back', async () => {
+      const shown = toastError();
+      const slotId = newSlot();
+      fetchMock.mockImplementationOnce(async () => refusal());
+
+      await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, { query: 'Edited question' });
+
+      expect(shown.mock.calls.map(([title]) => title)).toEqual([NOT_ALLOWED_TEXT]);
+      expect(questionOf(slotId)).toBe('Old question');
+      expect(getThreadMessagePlainText(slot(slotId).messages[1])).toBe('old answer');
+      expect(slot(slotId).isStreaming).toBe(false);
+    });
+
+    it('an edit refused in the server\'s own words says those once, and not to try again', async () => {
+      const shown = toastError();
+      const slotId = newSlot();
+      fetchMock.mockResolvedValueOnce(jsonResponse(403, { error: { message: 'You cannot do this here.' } }));
+
+      await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, { query: 'Edited question' });
+
+      expect(shown.mock.calls.map(([title]) => title)).toEqual(['You cannot do this here.']);
+      expect(questionOf(slotId)).toBe('Old question');
+    });
+
+    it('a plain regenerate says it too', async () => {
+      const shown = toastError();
+      const slotId = newSlot();
+      fetchMock.mockImplementationOnce(async () => refusal());
+
+      await streamRegenerateForSlot(slotId, 'a1', MODEL);
+
+      expect(shown.mock.calls.map(([title]) => title)).toEqual([NOT_ALLOWED_TEXT]);
+      expect(getThreadMessagePlainText(slot(slotId).messages[1])).toBe('old answer');
+    });
+
+    it('a request the server refused outright says it too', async () => {
+      const shown = toastError();
+      const slotId = newSlot();
+      fetchMock.mockResolvedValueOnce(jsonResponse(403, { error: { message: 'You cannot do this here.' } }));
+
+      await streamRegenerateForSlot(slotId, 'a1', MODEL);
+
+      expect(shown).toHaveBeenCalledTimes(1);
+    });
+
+    it('a dropped connection says nothing: the run goes on at the server, and its answer takes the old one\'s place', async () => {
+      const shown = toastError();
+      const slotId = newSlot();
+      fetchMock.mockRejectedValueOnce(new TypeError('network error'));
+      vi.spyOn(apiClient, 'get').mockResolvedValue(answeredAnew('Old question'));
+
+      await streamRegenerateForSlot(slotId, 'a1', MODEL);
+
+      expect(shown).not.toHaveBeenCalled();
+      expect(getThreadMessagePlainText(slot(slotId).messages[1])).toBe('new answer');
+    });
   });
 
   it('still sends the question when its row is not in the thread', async () => {
@@ -572,20 +730,35 @@ describe('editing the files of the question', () => {
 describe('an edit whose connection drops', () => {
   const EDIT = { query: 'Edited question' };
 
-  it('reads what the server did back, instead of putting the old question on screen', async () => {
+  /** The edit's run went on and answered: the edited question is on screen all along, and its answer in the end. */
+  async function expectFollowed() {
     const slotId = newSlot();
+    vi.useFakeTimers();
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValue(stillRunning());
+    const run = streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, EDIT);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(slot(slotId)).toMatchObject({ isStreaming: true, regenerateMessageId: 'a1', convId: 'conv-1' });
+    expect(questionOf(slotId)).toBe('Edited question');
+
+    get.mockResolvedValue(answeredAnew('Edited question'));
+    await vi.advanceTimersByTimeAsync(3_000);
+    await run;
+    expect(slot(slotId)).toMatchObject({ isStreaming: false, regenerateMessageId: null });
+    expect(questionOf(slotId)).toBe('Edited question');
+    expect(getThreadMessagePlainText(slot(slotId).messages[1])).toBe('new answer');
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('reads what the server did back, instead of putting the old question on screen', async () => {
     fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
 
-    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, EDIT);
-
-    expect(slot(slotId).isStreaming).toBe(false);
-    expect(slot(slotId).remoteRunInProgress).toBe(true);
-    expect(slot(slotId).convId).toBe('conv-1');
-    expect(questionOf(slotId)).toBe('Edited question');
+    await expectFollowed();
   });
 
   it('does the same when the connection drops part-way through the answer', async () => {
-    const slotId = newSlot();
     fetchMock.mockImplementationOnce(async () =>
       sseResponse({
         chunks: [frame('TEXT_MESSAGE_START'), frame('TEXT_MESSAGE_CONTENT', { delta: 'Two ' })],
@@ -593,20 +766,13 @@ describe('an edit whose connection drops', () => {
       }),
     );
 
-    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, EDIT);
-
-    expect(slot(slotId).remoteRunInProgress).toBe(true);
-    expect(questionOf(slotId)).toBe('Edited question');
+    await expectFollowed();
   });
 
   it('does the same when the stream closes without saying how it ended', async () => {
-    const slotId = newSlot();
     fetchMock.mockImplementationOnce(async () => sseResponse([frame('TEXT_MESSAGE_START')]));
 
-    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, EDIT);
-
-    expect(slot(slotId).remoteRunInProgress).toBe(true);
-    expect(questionOf(slotId)).toBe('Edited question');
+    await expectFollowed();
   });
 
   it('keeps the card of the old turn off the screen, and does not bring it back', async () => {
@@ -622,14 +788,24 @@ describe('an edit whose connection drops', () => {
       pendingAskUserQuestion: { assistantMessageId: 'a1', payload: card, answers: {}, status: 'persisted' } as never,
     });
     fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    vi.useFakeTimers();
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValue(stillRunning());
+    const cardGone = () => {
+      expect(slot(slotId).pendingAskUserQuestion).toBeNull();
+      expect((slot(slotId).messages[1].metadata?.custom as Record<string, unknown>)).not.toHaveProperty(
+        'persistedAskUserQuestion',
+      );
+    };
 
-    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, EDIT);
+    const run = streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, EDIT);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(slot(slotId).isStreaming).toBe(true);
+    cardGone();
 
-    expect(slot(slotId).pendingAskUserQuestion).toBeNull();
-    expect((slot(slotId).messages[1].metadata?.custom as Record<string, unknown>)).not.toHaveProperty(
-      'persistedAskUserQuestion',
-    );
-    expect(slot(slotId).remoteRunInProgress).toBe(true);
+    get.mockResolvedValue(answeredAnew('Edited question'));
+    await vi.advanceTimersByTimeAsync(3_000);
+    await run;
+    cardGone();
   });
 
   it('puts the old question back when the server says the run failed', async () => {
@@ -664,14 +840,16 @@ describe('an edit whose connection drops', () => {
     expect(slot(slotId).remoteRunInProgress).toBe(false);
   });
 
-  it('leaves a plain regenerate that drops as it was: nothing was edited to read back', async () => {
+  it('a plain regenerate that drops is read back the same way', async () => {
     const slotId = newSlot();
     fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    vi.spyOn(apiClient, 'get').mockResolvedValue(answeredAnew('Old question'));
 
     await streamRegenerateForSlot(slotId, 'a1', MODEL);
 
     expect(slot(slotId).remoteRunInProgress).toBe(false);
     expect(questionOf(slotId)).toBe('Old question');
+    expect(getThreadMessagePlainText(slot(slotId).messages[1])).toBe('new answer');
   });
 });
 

@@ -64,6 +64,13 @@ function bearerAuth(accessToken: string): { token: string } {
   return { token: `Bearer ${accessToken}` };
 }
 
+type SocketListener = (current: Socket | null) => void;
+const socketListeners = new Set<SocketListener>();
+
+function announceSocket(): void {
+  for (const listener of [...socketListeners]) listener(socket);
+}
+
 function clearRetryTimer(): void {
   if (retryTimer !== null) {
     clearTimeout(retryTimer);
@@ -110,12 +117,25 @@ function teardownSocket(): void {
     socket.disconnect();
     socket.removeAllListeners();
     socket = null;
+    announceSocket();
   }
   connectedWithToken = null;
 }
 
 export function getNotificationSocket(): Socket | null {
   return socket;
+}
+
+/**
+ * Calls `listener` with the current socket now and with each one that replaces it (a new token makes a new socket, and
+ * `removeAllListeners` drops whatever was on the old one), `null` once there is none. Returns the unsubscribe.
+ */
+export function onNotificationSocket(listener: SocketListener): () => void {
+  socketListeners.add(listener);
+  listener(socket);
+  return () => {
+    socketListeners.delete(listener);
+  };
 }
 
 export function connectNotificationSocket(accessToken: string | null): Socket | null {
@@ -133,7 +153,7 @@ export function connectNotificationSocket(accessToken: string | null): Socket | 
   teardownSocket();
 
   const { origin, path } = getSocketEndpoint(url);
-  socket = io(origin, {
+  const created = io(origin, {
     path,
     transports: ['websocket', 'polling'],
     auth: bearerAuth(accessToken),
@@ -143,9 +163,21 @@ export function connectNotificationSocket(accessToken: string | null): Socket | 
     reconnectionDelayMax: RECONNECT_DELAY_MAX_MS,
     randomizationFactor: 0.5,
   });
+  socket = created;
   connectedWithToken = accessToken;
-  attachConnectionListeners(socket);
+  attachConnectionListeners(created);
+  announceSocket();
   return socket;
+}
+
+/**
+ * Brings back a socket that is neither connected nor trying to be, at once: the tab came back into view or the
+ * network came back, and waiting for the next scheduled retry would miss what arrives meanwhile.
+ */
+export function ensureNotificationSocketConnected(): void {
+  if (!socket || socket.connected || socket.active) return;
+  clearRetryTimer();
+  socket.connect();
 }
 
 export function disconnectNotificationSocket(): void {

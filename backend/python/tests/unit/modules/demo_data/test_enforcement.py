@@ -252,7 +252,8 @@ async def test_the_record_page_hides_a_switched_off_demo_record(excluded, expect
 @pytest.mark.parametrize(("excluded", "expect_404"), [(OFF, True), (frozenset(), False)])
 async def test_the_file_stream_hides_a_switched_off_demo_record(excluded, expect_404) -> None:
     graph = MagicMock()
-    record = MagicMock(org_id="org", connector_id="demo-1")
+    # The record the route reads by id, as a stored Record carries it: the access check reads it off the record.
+    record = MagicMock(id="rec-1", org_id="org", connector_id="demo-1")
     graph.get_document = AsyncMock(return_value={"_key": "org"})
     graph.get_record_by_id = AsyncMock(return_value=record)
     _demo_record_owned().serve(graph)

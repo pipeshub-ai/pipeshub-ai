@@ -116,7 +116,16 @@ describe('schema-gated claims: the rule (P1b RU-2)', () => {
       foldVersion: RUN_SPEC_FOLD_VERSION,
       features: KNOWN_WORKER_FEATURES.filter(
         (feature) =>
-          !['vendor_signin', 'model_fallback', 'mcp_first_use', 'mcp_carried_pins', 'region_aware', 'trace_content'].includes(feature),
+          ![
+            'vendor_signin',
+            'model_fallback',
+            'mcp_first_use',
+            'mcp_carried_pins',
+            // No run admitted before it pinned how its earlier turns are given.
+            'answers_only_history',
+            'region_aware',
+            'trace_content',
+          ].includes(feature),
       ),
     });
     // SIGNGAP: a deployment fact, not a run shape; requiring it would strand the run where the add-on is off.

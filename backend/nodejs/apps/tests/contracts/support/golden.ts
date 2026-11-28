@@ -11,6 +11,7 @@ import path from 'path'
 import { expect } from 'chai'
 import { AGENT_KEY, Flow, Run, appConfig, startStream } from '../../modules/enterprise_search/controller/streaming-flows'
 import { settle } from '../../modules/enterprise_search/controller/chat-test-harness'
+import { turnDeps } from '../../modules/enterprise_search/helpers/turn-deps'
 
 export const GOLDEN_DIR = path.join(__dirname, '..', 'golden')
 export const UPSTREAM_DIR = path.join(GOLDEN_DIR, 'upstream')
@@ -27,7 +28,8 @@ export interface Scenario {
 
 const chatFlow = (query: string): Flow => ({
   name: 'streamChat',
-  handler: (c) => c.streamChat(appConfig) as never,
+  // With the turn handlers' dependencies, as the route builds it.
+  handler: (c) => c.streamChat(appConfig, turnDeps()) as never,
   prepare: () => ({ params: {}, body: { query, chatMode: 'internal_search', protocol: 'agui', runId: RUN_ID } }),
   aiPath: '/api/v1/chat/stream',
   agent: false,
@@ -36,7 +38,7 @@ const chatFlow = (query: string): Flow => ({
 
 const agentFlow = (query: string, chatMode: string): Flow => ({
   name: 'streamAgentConversation',
-  handler: (c) => c.streamAgentConversation(appConfig) as never,
+  handler: (c) => c.streamAgentConversation(appConfig, turnDeps()) as never,
   prepare: () => ({ params: { agentKey: AGENT_KEY }, body: { query, chatMode, protocol: 'agui', runId: RUN_ID } }),
   aiPath: `/api/v1/agent/${AGENT_KEY}/chat/stream`,
   agent: true,

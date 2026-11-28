@@ -885,6 +885,16 @@ class TestCreateExecuteQueryTool:
         assert result["ok"] is False
         assert "unexpected" in result["error"]
 
+class TestTheFullResultRows:
+    """The tool hands a query's full result rows to the edition's hook (``SqlExtension``). These run with the
+    default one, whichever this build installs: a CSV of the rows is exported in the background."""
+
+    @pytest.fixture(autouse=True)
+    def _default_sql_extension(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.modules.agents.sql_extension import default_sql_extension
+
+        monkeypatch.setattr("app.edition_services.sql_extension", default_sql_extension)
+
     @pytest.mark.asyncio
     async def test_csv_export_registered_when_prerequisites_met(self):
         from app.utils.execute_query import create_execute_query_tool
@@ -1061,6 +1071,53 @@ class TestCreateExecuteQueryTool:
             })
 
         mock_register.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_csv_export_is_stamped_with_the_turn_run_id(self) -> None:
+        from app.utils.execute_query import create_execute_query_tool
+
+        impl = {"ok": True, "markdown_result": "|x|", "row_count": 1, "column_count": 1,
+                "raw_columns": ["x"], "raw_rows": [(1,)]}
+        with patch("app.utils.execute_query._execute_query_impl", new_callable=AsyncMock, return_value=impl), \
+                patch("app.utils.execute_query.register_task") as register, \
+                patch("app.sandbox.artifact_upload.save_query_result_csv", new_callable=AsyncMock) as save:
+            tool = create_execute_query_tool(
+                config_service=MagicMock(), conversation_id="conv-1", blob_store=MagicMock(),
+                run_id="run-9", **_reachable(),
+            )
+            result = await tool.ainvoke({"query": "SELECT 1", "source_name": "PostgreSQL", "connector_id": "conn-1"})
+            await register.call_args[0][1]
+
+        assert save.await_args.kwargs["run_id"] == "run-9"
+        assert "result_artifact" not in result
+
+    @pytest.mark.asyncio
+    async def test_the_rows_and_the_turn_go_to_the_editions_hook(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.modules.agents.sql_extension import SqlExtension
+        from app.utils.execute_query import create_execute_query_tool
+
+        kept: list[dict] = []
+
+        class _Recording(SqlExtension):
+            async def keep_query_result(self, result: dict, **kwargs: object) -> None:
+                kept.append(kwargs)
+                result["kept"] = True
+
+        monkeypatch.setattr("app.edition_services.sql_extension", lambda: _Recording())
+        impl = {"ok": True, "markdown_result": "|x|", "row_count": 1, "column_count": 1,
+                "raw_columns": ["x"], "raw_rows": [(1,)]}
+        with patch("app.utils.execute_query._execute_query_impl", new_callable=AsyncMock, return_value=impl):
+            tool = create_execute_query_tool(
+                config_service=MagicMock(), conversation_id="conv-1", run_id="run-9",
+                artifact_owner_user_id="u-bob", **_reachable(),
+            )
+            result = await tool.ainvoke({"query": "SELECT 1", "source_name": "PostgreSQL", "connector_id": "conn-1"})
+
+        (call,) = kept
+        assert (call["columns"], call["rows"], call["run_id"]) == (["x"], [(1,)], "run-9")
+        assert (call["user_id"], call["artifact_owner_user_id"], call["source_name"]) == ("u1", "u-bob", "PostgreSQL")
+        assert result["kept"] is True
+        assert "raw_columns" not in result and "raw_rows" not in result
 
 
 class TestExecuteQueryToolConnectorAllowlist:

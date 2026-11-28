@@ -29,7 +29,7 @@ import {
   markConversationFailed,
   saveCompleteConversation,
 } from '../../../src/modules/enterprise_search/utils/utils';
-import { historyTurns } from '../../../src/modules/enterprise_search/utils/utils';
+import { sealedHistoryTurns } from '../../../src/modules/enterprise_search/utils/utils';
 import {
   EMPTY_LEDGER,
   extendLedger,
@@ -104,7 +104,7 @@ class LegacyWriter {
         ledger,
         written.map((message) => ({
           seq: message.seq,
-          turns: JSON.parse(JSON.stringify(historyTurns(message))) as Array<
+          turns: JSON.parse(JSON.stringify(sealedHistoryTurns(message))) as Array<
             Record<string, unknown>
           >,
           provenance: null,
@@ -355,7 +355,27 @@ for (const bin of pgBins()) {
         const citations = (
           await transactAs(() => repo().getCitations(citationIds, org), org)
         ).sort((a, b) => a.content.localeCompare(b.content));
-        return comparable({ row, messages, citations });
+        // The history a model is sent seals each row with its id and version, so two writes of one conversation never
+        // share a ledger digest: each must be the one its own stored rows give.
+        const ledger = row?.harnessLedger;
+        expect(ledger, 'the session keeps its ledger').to.not.equal(undefined);
+        expect(ledger, 'the ledger accounts for the stored rows').to.deep.equal(
+          extendLedger(
+            { ...EMPTY_LEDGER },
+            messages.map((m) => ({
+              seq: m.seq,
+              turns: JSON.parse(
+                JSON.stringify(sealedHistoryTurns(m as unknown as IMessage)),
+              ) as Array<Record<string, unknown>>,
+            })),
+            ledger!.seq,
+          ),
+        );
+        return comparable({
+          row: { ...row, harnessLedger: { ...ledger, digest: 'digest' } },
+          messages,
+          citations,
+        });
       };
 
       /** Each step in a unit of its own, as admission and the ending commit run them. */
@@ -1007,6 +1027,86 @@ for (const bin of pgBins()) {
         expect(question!.command).to.deep.include({
           name: 'review',
           typed: '/review',
+        });
+        const left = (
+          await conversations.listMessages(sessionId, { orgId: org })
+        ).map((r) => r.dto.content);
+        expect(left).to.deep.equal(['first', 'One.']);
+      });
+
+      it("regenerate: a failed run's error row is its answer, and Try again takes its turn back", async () => {
+        const org = hexOrg(),
+          owner = hexOrg();
+        const sessionId = await newSession(org, owner);
+        const ref = { orgId: org, sessionId };
+        await transactAs(
+          (tx) =>
+            lean.appendUserTurn(
+              ref,
+              { query: 'first', chatMode: 'quick', attachments: [] },
+              tx,
+            ),
+          org,
+        );
+        await transactAs(
+          (tx) =>
+            lean.saveRunTranscript(
+              runOf(org, sessionId, owner),
+              answer('One.'),
+              tx,
+            ),
+          org,
+        );
+        await transactAs(
+          (tx) =>
+            lean.appendUserTurn(
+              ref,
+              { query: 'second', chatMode: 'quick', attachments: [] },
+              tx,
+            ),
+          org,
+        );
+        await transactAs(
+          (tx) =>
+            lean.saveRunTranscript(
+              runOf(org, sessionId, owner),
+              {
+                kind: 'failure',
+                code: 'model_failed',
+                message: 'The model did not answer.',
+              } as RunTranscript,
+              tx,
+            ),
+          org,
+        );
+        const rows = (
+          await conversations.listMessages(sessionId, { orgId: org })
+        ).map((r) => [r.dto._id, r.dto.messageType]);
+        expect(rows.map(([, type]) => type)).to.deep.equal([
+          'user_query',
+          'bot_response',
+          'user_query',
+          'error',
+        ]);
+        const failed = rows[3]![0]!;
+        const earlier = rows[1]![0]!;
+        expect(
+          await transactAs((tx) => lean.hasAnswer(ref, failed, tx), org),
+        ).to.equal(true);
+        expect(
+          await transactAs(
+            (tx) => lean.retractLastAnswer(ref, earlier, tx),
+            org,
+          ),
+          'not the last answer',
+        ).to.equal(null);
+        const question = await transactAs(
+          (tx) => lean.retractLastAnswer(ref, failed, tx),
+          org,
+        );
+        expect(question).to.deep.include({
+          query: 'second',
+          chatMode: 'quick',
         });
         const left = (
           await conversations.listMessages(sessionId, { orgId: org })

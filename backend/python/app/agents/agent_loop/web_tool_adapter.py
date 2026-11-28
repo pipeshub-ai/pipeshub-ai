@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.core.messages import ImagePart, TextPart
 from app.agent_loop_lib.core.types import Source
-from app.agent_loop_lib.tools.base import ToolOutput
+from app.agent_loop_lib.tools.base import Tag, ToolOutput
 from app.agent_loop_lib.tools.tags import (
     TAG_EFFECT_READ,
     TAG_FLOW_OPENS_ADDRESS,
@@ -156,6 +156,13 @@ class WebToolAdapter(PipesHubStructuredToolAdapter):
             # A page sent with its images: the view is keyed by the page's text.
             content = next((part.text for part in content if isinstance(part, TextPart)), None)
         return self._views.pop(content, None) if isinstance(content, str) else None
+
+    @property
+    def tags(self) -> list[Tag]:
+        # The web tools' own tags (a read whose arguments leave, the flow it takes), and for a fetch the outbound GET's
+        # category, so a tool guard can treat the URL as data leaving the box.
+        egress = [Tag("category", "egress")] if self._tool_name == FETCH_URL else []
+        return [*super().tags, *egress]
 
     @property
     def short_description(self) -> str:

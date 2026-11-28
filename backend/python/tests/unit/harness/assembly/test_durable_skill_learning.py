@@ -8,8 +8,10 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.agent_loop_lib.core.messages import ToolCall
+from app.agent_loop_lib.hooks.events import HookEvent
 from app.agent_loop_lib.hooks.middleware.builtin.skill_learning import SkillLearning
-from app.agents.agent_loop.skills_wiring import skill_writer
+from app.agent_loop_lib.hooks.registry import HookRegistry
+from app.agents.agent_loop.skills_wiring import register_skill_learning, skill_writer
 from app.harness.assembly.assembler import PipesHubRuntimeAssembler
 from app.harness.assembly.skill_learning import (
     SKILL_LEARNING_STEP,
@@ -24,7 +26,9 @@ from tests.support.config_service import RIG_PLATFORM_FLAGS
 from tests.unit.agent_loop_lib.hooks.middleware.builtin.test_skill_learning import (
     _candidate,
     _FakeSkillManager,
+    _result,
 )
+from tests.unit.agents.adapter.conftest import make_context
 from tests.unit.harness.assembly import world as w
 
 if TYPE_CHECKING:
@@ -133,6 +137,52 @@ async def test_cleanup_g7_the_assembled_runs_learning_names_its_conversation() -
     # Candidates carry the conversation so its erasure takes them (CLEANUP-G7); usage counts stay off.
     assert step._learning._source_session_id == "ses-1"
     assert step._session_id is None
+
+
+class _LearnsFromNoRun:
+    """An edition that lets no finished run be distilled into a skill."""
+
+    def may_learn_skills(self, context: Any) -> bool:  # noqa: ANN401
+        return False
+
+
+async def _todays_learning() -> SkillLearning:
+    hooks = HookRegistry()
+    register_skill_learning(
+        hooks, _FakeSkillManager(), AsyncMock(), provider="langchain", model_name="m", context=make_context(),
+    )
+    [learning] = [middleware for _, middleware in hooks.on(HookEvent.POST_AGENT)._stack]
+    return learning
+
+
+async def _durable_learning() -> SkillLearning:
+    port = ScriptedModelPort(ScriptedModel(ModelScript(id="t", turns=[Turn(reply=Reply(text="ok"))])))
+    runtime = await PipesHubRuntimeAssembler(_skills_on(w.Services()), model_factory=w.model_factory(port)).build(
+        w.claim(w.pinned_spec(tool_ids=[]))  # type: ignore[arg-type]
+    )
+    [step] = runtime.post_run
+    return step._learning
+
+
+@pytest.mark.usefixtures("_deployment")
+@pytest.mark.parametrize("built", [_todays_learning, _durable_learning], ids=["today", "durable"])
+async def test_both_loops_learn_only_from_a_run_the_edition_lets_them(
+    built: Any, monkeypatch: pytest.MonkeyPatch,  # noqa: ANN401
+) -> None:
+    learning = await built()
+    assert type(learning) is SkillLearning
+    manager = _FakeSkillManager([_candidate("a", "pending")])
+    learning._manager = manager  # type: ignore[assignment]
+
+    with monkeypatch.context() as edition:
+        edition.setattr("app.edition_services.chat_extension", _LearnsFromNoRun)
+        await learning.settle(_result(success=True, loaded_skills=["deploy"]), session_id="ses-1", run_id="run-1")
+    assert manager.outcomes == [("deploy", "ses-1", True)]
+    assert manager.learn_calls == []
+
+    # The default extension learns from every run.
+    await learning.settle(_result(success=True), session_id="ses-1", run_id="run-1")
+    assert manager.learn_calls == ["ses-1"]
 
 
 @pytest.fixture

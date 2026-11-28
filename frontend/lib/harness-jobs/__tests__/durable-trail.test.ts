@@ -47,7 +47,15 @@ describe('durable frames into the trail', () => {
   });
 
   it('a question the run asks is a decision row, and a run that ended to wait for the answer Needs you', () => {
-    const trail = trailFromFrames(goldenEvents('agent_ask_user_question'), words);
+    // A durable run's final snapshot is its whole end state; the recorded classic stream keeps only `final` there, so
+    // the state the run ended in is given back to it as a durable run sends it.
+    const frames = goldenEvents('agent_ask_user_question').map((e) => {
+      const data = e.data as { type?: string; snapshot?: { final?: boolean } };
+      return data.type === 'STATE_SNAPSHOT' && data.snapshot?.final === true
+        ? { ...e, data: { ...data, snapshot: { ...data.snapshot, status: 'waiting_input' } } }
+        : e;
+    });
+    const trail = trailFromFrames(frames, words);
     const ask = trail.entries.find((e) => e.kind === 'decision');
     expect(ask).toMatchObject({ title: 'Which region should the report cover?', state: 'waiting' });
     expect(ask?.answer).toBeUndefined();

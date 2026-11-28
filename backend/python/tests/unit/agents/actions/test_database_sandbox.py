@@ -271,8 +271,6 @@ class TestScheduleCSVExport:
 
     @pytest.mark.asyncio
     async def test_success_uploads_and_creates_record(self):
-        import asyncio
-
         from app.agents.actions.database_sandbox import database_sandbox as mod
 
         mock_blob = MagicMock()
@@ -285,7 +283,7 @@ class TestScheduleCSVExport:
         state = _make_state(blob_store=mock_blob, user_id="user-1", graph_provider=graph)
         sandbox = mod.DatabaseSandbox(state)
 
-        captured_tasks: list[asyncio.Task] = []
+        captured_tasks: list = []
 
         with patch(
             "app.sandbox.artifact_upload.create_artifact_record",
@@ -344,8 +342,6 @@ class TestScheduleCSVExport:
 
     @pytest.mark.asyncio
     async def test_record_creation_failure_still_returns_upload(self):
-        import asyncio
-
         from app.agents.actions.database_sandbox import database_sandbox as mod
 
         mock_blob = MagicMock()
@@ -357,7 +353,7 @@ class TestScheduleCSVExport:
         state = _make_state(blob_store=mock_blob, user_id="user-1")
         sandbox = mod.DatabaseSandbox(state)
 
-        captured_tasks: list[asyncio.Task] = []
+        captured_tasks: list = []
 
         with patch(
             "app.sandbox.artifact_upload.create_artifact_record",
@@ -379,8 +375,6 @@ class TestScheduleCSVExport:
 
     @pytest.mark.asyncio
     async def test_without_a_user_the_export_is_not_registered(self):
-        import asyncio
-
         from app.agents.actions.database_sandbox import database_sandbox as mod
 
         mock_blob = MagicMock()
@@ -391,7 +385,7 @@ class TestScheduleCSVExport:
         mock_blob.save_versioned_artifact_to_storage = AsyncMock()
         sandbox = mod.DatabaseSandbox(_make_state(blob_store=mock_blob))
 
-        captured_tasks: list[asyncio.Task] = []
+        captured_tasks: list = []
 
         with patch(
             "app.sandbox.artifact_upload.create_artifact_record", AsyncMock(),
@@ -410,8 +404,6 @@ class TestScheduleCSVExport:
 
     @pytest.mark.asyncio
     async def test_blob_save_raises_resolves_to_none(self):
-        import asyncio
-
         from app.agents.actions.database_sandbox import database_sandbox as mod
 
         mock_blob = MagicMock()
@@ -421,7 +413,7 @@ class TestScheduleCSVExport:
         state = _make_state(blob_store=mock_blob, user_id="user-1")
         sandbox = mod.DatabaseSandbox(state)
 
-        captured_tasks: list[asyncio.Task] = []
+        captured_tasks: list = []
 
         with patch.object(
             mod, "register_task",
@@ -452,6 +444,55 @@ class TestScheduleCSVExport:
             sandbox._schedule_csv_export([{"id": "1"}], "sqlite_result")
 
         mock_register.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_export_is_stamped_with_the_turn_run_id(self) -> None:
+        from app.agents.actions.database_sandbox import database_sandbox as mod
+
+        state = _make_state(blob_store=MagicMock(), user_id="user-1", run_id="run-9")
+        captured_tasks: list = []
+        with patch.object(mod, "save_query_result_csv", AsyncMock(return_value=None)) as save, patch.object(
+            mod, "register_task", lambda conv_id, task: captured_tasks.append(task),
+        ):
+            mod.DatabaseSandbox(state)._schedule_csv_export([{"id": "1"}], "sqlite_result")
+            await captured_tasks[0]
+
+        assert save.await_args.kwargs["run_id"] == "run-9"
+
+
+class TestTheResultRowsHook:
+    """A tool hands its full result rows to ``_keep_result_rows`` once its answer is built; by
+    default they go to the background CSV export and the answer is left as it is."""
+
+    @pytest.mark.asyncio
+    async def test_by_default_the_rows_are_exported_and_the_answer_is_unchanged(self) -> None:
+        from app.agents.actions.database_sandbox import database_sandbox as mod
+
+        sandbox = mod.DatabaseSandbox(_make_state())
+        payload = {"row_count": 1}
+        with patch.object(sandbox, "_schedule_csv_export") as export:
+            await sandbox._keep_result_rows(payload, [{"id": "1"}], "sqlite_result")
+
+        export.assert_called_once_with([{"id": "1"}], "sqlite_result", provenance=None)
+        assert payload == {"row_count": 1}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("tool", "label"), [("execute_sqlite", "sqlite_result"), ("execute_postgresql", "pg_result")])
+    async def test_each_tool_hands_over_its_rows_with_its_answer(self, tool: str, label: str, monkeypatch) -> None:
+        from app.agents.actions.database_sandbox import database_sandbox as mod
+
+        monkeypatch.setenv("SANDBOX_PG_URL", "postgresql://sandbox")
+        sandbox = mod.DatabaseSandbox(_make_state())
+        executed = ExecutionResult(success=True, stdout="id\n1\n2\n", exit_code=0, execution_time_ms=5)
+        with patch.object(mod, "get_executor") as get_executor, patch.object(
+            sandbox, "_keep_result_rows", AsyncMock(),
+        ) as keep:
+            get_executor.return_value.execute = AsyncMock(return_value=executed)
+            await getattr(sandbox, tool)("SELECT id FROM t")
+
+        payload, rows, given_label = keep.await_args.args
+        assert (rows, given_label) == ([{"id": "1"}, {"id": "2"}], label)
+        assert payload["row_count"] == 2
 
 
 class TestSqliteDisplayLimit:

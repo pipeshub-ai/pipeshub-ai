@@ -22,6 +22,10 @@ export const SESSION_BACKUP_COVERAGE: Readonly<
 > = {
   chatSessions: { copy: 'session' },
   chatSessionMessages: { copy: 'session' },
+  chatAnswerClosures: {
+    excluded:
+      "the reader check's closures of the chat's answer versions, made from their labels: a restored chat's reads make them again, and hide what they cannot make (PostgreSQL keeps none)",
+  },
   citations: { copy: 'session' },
   conversations: { copy: 'session' },
   agentconversations: { copy: 'session' },

@@ -159,7 +159,7 @@ async function mockProjectApis(page: import('@playwright/test').Page) {
 }
 
 async function sendMessage(page: import('@playwright/test').Page, message: string) {
-  const textarea = page.locator('textarea').last();
+  const textarea = page.getByTestId('chat-composer').last();
   await textarea.click();
   await textarea.fill(message);
   await textarea.press('Enter');
@@ -255,7 +255,7 @@ test.describe('Projects — nav + list + workspace (mocked backend)', () => {
 
   test('"Projects" nav item is visible and navigates to /projects', async ({ page }) => {
     await page.goto('/chat/');
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
     await expect(page.getByText('Projects', { exact: true }).first()).toBeVisible();
     await expect(page.getByText('Beta', { exact: true }).first()).toBeVisible();
     await page.getByText('Projects', { exact: true }).first().click();
@@ -271,7 +271,7 @@ test.describe('Projects — nav + list + workspace (mocked backend)', () => {
 
   test('project workspace renders name, description, and instructions', async ({ page }) => {
     await page.goto(`/projects/?projectId=${PROJECT_ID}`);
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
     await expect(page.getByText(PROJECT_NAME).first()).toBeVisible({ timeout: 10_000 });
     // The description is deliberately not asserted here: #3426 removed it from
     // the workspace. It added `chat.projects.workspace.addDescription`,
@@ -288,8 +288,8 @@ test.describe('Projects — nav + list + workspace (mocked backend)', () => {
 
   test('composer is available directly from the project workspace', async ({ page }) => {
     await page.goto(`/projects/?projectId=${PROJECT_ID}`);
-    await page.waitForSelector('textarea', { timeout: 15_000 });
-    const textarea = page.locator('textarea').last();
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
+    const textarea = page.getByTestId('chat-composer').last();
     await expect(textarea).toBeVisible();
   });
 
@@ -297,7 +297,7 @@ test.describe('Projects — nav + list + workspace (mocked backend)', () => {
     page,
   }) => {
     await page.goto(`/projects/?projectId=${PROJECT_ID}`);
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
     // ProjectConversationsSidebar ("New chat" + empty-state copy), not
     // ProjectsSidebar's "All projects" list header.
     await expect(page.getByText('No chats yet in this project')).toBeVisible({ timeout: 10_000 });
@@ -309,7 +309,7 @@ test.describe('Projects — nav + list + workspace (mocked backend)', () => {
     // The chat page serves this URL in place (see "Project new-chat resting
     // state" in chat/page.tsx): the composer sends from here, with no redirect.
     await page.goto(`/chat/?projectId=${PROJECT_ID}`);
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
     await expect(page).toHaveURL(new RegExp(`/chat/\\?projectId=${PROJECT_ID}$`));
     await expect(page.getByText('No chats yet in this project')).toBeVisible({ timeout: 10_000 });
   });
@@ -327,7 +327,7 @@ test.describe('Projects — starting a new project-scoped conversation', () => {
   test('stream request for a brand-new chat includes projectId', async ({ page }) => {
     let capturedBody: Record<string, unknown> | null = null;
 
-    await page.route('**/api/v1/conversations/stream', (route) => {
+    await page.route('**/api/v1/conversations/stream**', (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       capturedBody = route.request().postDataJSON();
       return route.fulfill({
@@ -350,7 +350,7 @@ test.describe('Projects — starting a new project-scoped conversation', () => {
     });
 
     await page.goto(`/projects/?projectId=${PROJECT_ID}`);
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
 
     await sendMessage(page, QUESTION);
 
@@ -362,7 +362,7 @@ test.describe('Projects — starting a new project-scoped conversation', () => {
   test('URL keeps ?projectId= alongside conversationId once the conversation is created', async ({
     page,
   }) => {
-    await page.route('**/api/v1/conversations/stream', (route) => {
+    await page.route('**/api/v1/conversations/stream**', (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,
@@ -384,7 +384,7 @@ test.describe('Projects — starting a new project-scoped conversation', () => {
     });
 
     await page.goto(`/projects/?projectId=${PROJECT_ID}`);
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
 
     await sendMessage(page, QUESTION);
 
@@ -403,7 +403,7 @@ test.describe('Projects — sharing (owner)', () => {
 
   test('owner can open Share from Members, add a member, and see them in the drawer', async ({ page }) => {
     await page.goto(`/projects/?projectId=${PROJECT_ID}`);
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
 
     // makeProjectDetail() sets role: 'owner', so the Members row opens the
     // share drawer directly (settings-panel.tsx gates the click on isOwner).

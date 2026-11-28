@@ -11,6 +11,8 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+from app.agents.agent_loop.cancellation.policy import CancelRequester, may_cancel
+
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.context import CancellationToken
     from app.agents.agent_loop.cancellation.registry import CancelOutcome, RunOwner
@@ -48,26 +50,13 @@ class InProcessRunCancellationRegistry:
                 )
             self._entries[run_id] = (token, owner)
 
-    async def cancel(self, run_id: str, requester: RunOwner) -> CancelOutcome:
+    async def cancel(self, run_id: str, requester: CancelRequester) -> CancelOutcome:
         async with self._lock:
             entry = self._entries.get(run_id)
         if entry is None:
             return "not_found"
         token, owner = entry
-        if owner.user_id != requester.user_id or owner.org_id != requester.org_id:
-            return "forbidden"
-        # Same-user/org still isn't enough: without this, a user who owns
-        # TWO conversations could cancel conversation B's run through a
-        # cancel request scoped (by Node's own ownership check) to
-        # conversation A, just by supplying B's runId. Only enforced when
-        # BOTH sides carry a conversation_id — an older Node build, or a
-        # run registered before a conversationId existed (a brand-new
-        # conversation's first turn), must not regress to a hard 403.
-        if (
-            owner.conversation_id
-            and requester.conversation_id
-            and owner.conversation_id != requester.conversation_id
-        ):
+        if not may_cancel(owner, requester):
             return "forbidden"
         token.cancel()
         return "cancelled"

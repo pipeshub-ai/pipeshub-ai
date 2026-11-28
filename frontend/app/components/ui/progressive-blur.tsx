@@ -2,13 +2,10 @@
 
 import { Box } from '@radix-ui/themes';
 
-const LAYERS = 6;
-const BASE_BLUR = 0.4;
-
 /**
- * Stacked masks so blur ramps instead of cutting a hard frosted edge.
- * A single backdrop-filter reads as a pane; doubling the radius per
- * layer matches how blur is perceived.
+ * The fade at a pane's edge: content dissolves into the surface instead of meeting a hard line. A plain eased
+ * gradient, not stacked backdrop blurs: those re-blur the band every frame the content under it moves (a streaming
+ * answer, a scroll), which halved the chat's frame rate.
  */
 export function ProgressiveBlur({
   height = 160,
@@ -21,8 +18,8 @@ export function ProgressiveBlur({
   placement?: 'top' | 'bottom';
   scrim?: string;
 }) {
-  const top = placement === 'top';
-  const away = top ? 'to top' : 'to bottom';
+  const away = placement === 'top' ? 'to top' : 'to bottom';
+  const at = (share: number) => `color-mix(in srgb, ${scrim} ${share}%, transparent)`;
   return (
     <Box
       aria-hidden
@@ -30,39 +27,14 @@ export function ProgressiveBlur({
         position: 'absolute',
         left: 0,
         right: 0,
-        top: top ? 0 : undefined,
-        bottom: top ? undefined : 0,
+        top: placement === 'top' ? 0 : undefined,
+        bottom: placement === 'top' ? undefined : 0,
         height,
         zIndex,
         pointerEvents: 'none',
+        // Eased, so the ramp has no visible start line.
+        background: `linear-gradient(${away}, transparent 0%, ${at(12)} 25%, ${at(45)} 50%, ${at(82)} 75%, ${scrim} 100%)`,
       }}
-    >
-      {Array.from({ length: LAYERS }, (_, i) => {
-        const start = (i / LAYERS) * 100;
-        const full = ((i + 1) / LAYERS) * 100;
-        const mask = `linear-gradient(${away}, transparent ${start}%, black ${full}%)`;
-        return (
-          <Box
-            key={i}
-            style={{
-              position: 'absolute',
-              inset: 0,
-              backdropFilter: `blur(${BASE_BLUR * 2 ** i}px)`,
-              WebkitBackdropFilter: `blur(${BASE_BLUR * 2 ** i}px)`,
-              maskImage: mask,
-              WebkitMaskImage: mask,
-            }}
-          />
-        );
-      })}
-      <Box
-        style={{
-          position: 'absolute',
-          inset: 0,
-          background: `linear-gradient(${away}, transparent 0%, ${scrim} 92%)`,
-          opacity: 0.9,
-        }}
-      />
-    </Box>
+    />
   );
 }

@@ -7,6 +7,8 @@ export interface SourceReadQuery {
    */
   authorization: string;
   sources: readonly CheckedSource[];
+  /** How long the check may take, at most, in one try; the authority's own budget when not given. */
+  timeoutMs?: number;
 }
 
 /**

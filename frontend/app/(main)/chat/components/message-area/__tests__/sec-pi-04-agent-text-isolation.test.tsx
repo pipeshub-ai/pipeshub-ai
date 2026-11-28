@@ -89,7 +89,22 @@ const FORGED_CLASSES = [
   'no-scrollbar',
 ];
 
-function expectNoForgedUi(container: HTMLElement) {
+/**
+ * An image the text names is held behind the app's own placeholder (not loaded, its host, Load image): that
+ * is the app's control, not one the text drew. Each must be exactly that placeholder; the checks read the rest.
+ */
+function withoutHeldImages(container: HTMLElement): HTMLElement {
+  const rest = container.cloneNode(true) as HTMLElement;
+  for (const held of Array.from(rest.querySelectorAll('[data-testid="remote-image-placeholder"]'))) {
+    expect(Array.from(held.querySelectorAll('button')).map((b) => b.textContent?.trim())).toEqual(['Load image']);
+    expect(held.textContent).toContain('External image not loaded');
+    held.remove();
+  }
+  return rest;
+}
+
+function expectNoForgedUi(answer: HTMLElement) {
+  const container = withoutHeldImages(answer);
   expect(container.querySelectorAll('button, form, input, select, textarea, label, iframe, dialog, style, script')).toHaveLength(0);
 
   for (const name of FORGED_CLASSES) {
@@ -149,9 +164,10 @@ describe('SEC-PI-04: agent text cannot look like system or approval UI', () => {
   it("SEC-PI-04: a code block's own copy and download buttons are the only buttons", () => {
     const { container } = renderAnswer(`${CORPUS}\n\n\`\`\`python\nprint("hi")\n\`\`\``);
 
-    const labels = Array.from(container.querySelectorAll('button')).map((b) => b.textContent?.trim());
+    const rest = withoutHeldImages(container);
+    const labels = Array.from(rest.querySelectorAll('button')).map((b) => b.textContent?.trim());
     expect(labels).toEqual([expect.stringContaining('Download'), expect.stringContaining('Copy')]);
-    expect(container.querySelectorAll('form, input, [data-testid]')).toHaveLength(0);
+    expect(rest.querySelectorAll('form, input, [data-testid]')).toHaveLength(0);
   });
 
   it('SEC-PI-04: the markdown pipeline keeps its own classes (callouts, task lists, code language, math)', () => {

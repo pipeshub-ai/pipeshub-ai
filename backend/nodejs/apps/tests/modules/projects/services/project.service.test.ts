@@ -5,7 +5,11 @@ import mongoose from 'mongoose';
 import { ProjectService } from '../../../../src/modules/projects/services/project.service';
 import { Project } from '../../../../src/modules/projects/schema/project.schema';
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema';
+import { readFilter } from '../../../../src/modules/enterprise_search/services/conversation/http/default-conversation-guards';
+import { matchesFilter } from '../../enterprise_search/controller/chat-test-harness';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
+import { useConversationExtensions } from '../../../../src/modules/enterprise_search/services/conversation/conversation-extensions';
+import { testAcl } from '../../enterprise_search/helpers/test-extensions';
 import {
   BadRequestError,
   ConflictError,
@@ -36,6 +40,7 @@ const OTHER_ORG_ID = new mongoose.Types.ObjectId().toString();
 const OWNER_ID = new mongoose.Types.ObjectId().toString();
 const MEMBER_ID = new mongoose.Types.ObjectId().toString();
 const OUTSIDER_ID = new mongoose.Types.ObjectId().toString();
+const VISIBLE = { $and: [{ userId: new mongoose.Types.ObjectId(OWNER_ID) }] };
 
 function makeProjectDoc(overrides: Record<string, any> = {}): any {
   const doc: any = {
@@ -64,7 +69,20 @@ function makeProjectDoc(overrides: Record<string, any> = {}): any {
   return doc;
 }
 
+/** The service moves access versions with separate updates after each change; they answer here. */
+function stubAclBumps(): { project: sinon.SinonStub; chat: sinon.SinonStub } {
+  const written = () => ({ exec: () => Promise.resolve({}) });
+  return {
+    project: sinon.stub(Project, 'updateMany').callsFake(written as never),
+    chat: sinon.stub(ChatSession, 'updateMany').callsFake(written as never),
+  };
+}
+const BUMP = { $inc: { aclVersion: 1 } };
+
 describe('ProjectService', () => {
+  beforeEach(() => useConversationExtensions({ acl: testAcl }));
+  afterEach(() => useConversationExtensions(undefined));
+
   afterEach(() => {
     sinon.restore();
   });
@@ -244,6 +262,42 @@ describe('ProjectService', () => {
       return stub.firstCall.args[0][0].$match;
     }
 
+    it('counts only the chats the caller can open: their own and project-shared ones', async () => {
+      const projectId = new mongoose.Types.ObjectId();
+      stubFindChain([
+        { _id: projectId, orgId: new mongoose.Types.ObjectId(ORG_ID), userId: new mongoose.Types.ObjectId(OWNER_ID), members: [], visibility: 'private' },
+      ]);
+      sinon.stub(Project, 'countDocuments').resolves(1);
+      const org = new mongoose.Types.ObjectId(ORG_ID);
+      const chats = [
+        { orgId: org, userId: new mongoose.Types.ObjectId(MEMBER_ID), projectId, isDeleted: false, title: 'mine' },
+        { orgId: org, userId: new mongoose.Types.ObjectId(OWNER_ID), projectId, isDeleted: false, projectVisibility: 'project', title: 'shared to the project' },
+        { orgId: org, userId: new mongoose.Types.ObjectId(OWNER_ID), projectId, isDeleted: false, projectVisibility: 'private', title: 'someone else\'s own' },
+        { orgId: org, userId: new mongoose.Types.ObjectId(MEMBER_ID), projectId, isDeleted: true, title: 'deleted' },
+      ];
+      // The count as the store runs it: the `$match` over the chats, grouped by project.
+      sinon.stub(ChatSession, 'aggregate').callsFake((async (pipeline: Array<{ $match: Record<string, unknown> }>) => {
+        const matched = chats.filter((chat) => matchesFilter(chat as never, pipeline[0]!.$match as never))
+        return matched.length > 0 ? [{ _id: projectId, count: matched.length }] : []
+      }) as never);
+      // The project list's own list scope (`shareRows: 'extendedOnly'`): owned chats and those of projects the caller sees.
+      const visibleConversations = readFilter(
+        { userId: MEMBER_ID, orgId: ORG_ID, teamIds: [] },
+        { kind: 'any' },
+        { accessibleProjectIds: [String(projectId)], includeOwned: true, includeShared: true, includeShareRows: false },
+      ) as never;
+
+      const { projects } = await ProjectService.list(ORG_ID, MEMBER_ID, {
+        page: 1,
+        limit: 20,
+        scope: 'all',
+        includeArchived: false,
+        visibleConversations,
+      });
+
+      expect(projects[0]?.conversationCount).to.equal(2);
+    });
+
     it('includes only the owner branch in scope "mine"', async () => {
       const findStub = stubFindChain([]);
       sinon.stub(Project, 'countDocuments').resolves(0);
@@ -254,6 +308,7 @@ describe('ProjectService', () => {
         limit: 20,
         scope: 'mine',
         includeArchived: false,
+        visibleConversations: VISIBLE,
       });
 
       const filter = filterOf(findStub);
@@ -272,6 +327,7 @@ describe('ProjectService', () => {
         limit: 20,
         scope: 'all',
         includeArchived: true,
+        visibleConversations: VISIBLE,
       });
 
       const filter = filterOf(findStub);
@@ -288,6 +344,7 @@ describe('ProjectService', () => {
         limit: 20,
         scope: 'all',
         includeArchived: false,
+        visibleConversations: VISIBLE,
         isArchived: true,
       });
 
@@ -304,6 +361,7 @@ describe('ProjectService', () => {
         scope: 'all',
         includeArchived: true,
         isArchived: false,
+        visibleConversations: VISIBLE,
       });
 
       expect(filterOf(findStub).isArchived).to.equal(false);
@@ -318,7 +376,7 @@ describe('ProjectService', () => {
       await ProjectService.list(
         ORG_ID,
         OWNER_ID,
-        { page: 1, limit: 20, scope: 'all', includeArchived: true },
+        { page: 1, limit: 20, scope: 'all', includeArchived: true, visibleConversations: VISIBLE },
         [teamId],
       );
 
@@ -340,6 +398,7 @@ describe('ProjectService', () => {
         limit: 20,
         scope: 'mine',
         includeArchived: false,
+        visibleConversations: VISIBLE,
         search: 'road',
       });
 
@@ -360,6 +419,7 @@ describe('ProjectService', () => {
         limit: 20,
         scope: 'mine',
         includeArchived: false,
+        visibleConversations: VISIBLE,
       });
 
       expect(totalCount).to.equal(1);
@@ -376,6 +436,7 @@ describe('ProjectService', () => {
         limit: 20,
         scope: 'mine',
         includeArchived: false,
+        visibleConversations: VISIBLE,
         search: 'Q3 (draft).*',
       });
 
@@ -404,9 +465,34 @@ describe('ProjectService', () => {
         limit: 20,
         scope: 'mine',
         includeArchived: false,
+        visibleConversations: VISIBLE,
       });
 
       expect(projects.map((p) => p.conversationCount)).to.deep.equal([5, 0]);
+    });
+
+    it('counts only the conversations the list filter admits, cast so string ids still match', async () => {
+      const projectId = new mongoose.Types.ObjectId();
+      stubFindChain([
+        { _id: projectId, orgId: new mongoose.Types.ObjectId(ORG_ID), userId: new mongoose.Types.ObjectId(OWNER_ID), members: [], visibility: 'private' },
+      ]);
+      sinon.stub(Project, 'countDocuments').resolves(1);
+      const aggregateStub = sinon.stub(ChatSession, 'aggregate').resolves([]);
+
+      await ProjectService.list(ORG_ID, OWNER_ID, {
+        page: 1,
+        limit: 20,
+        scope: 'mine',
+        includeArchived: false,
+        visibleConversations: { $and: [{ orgId: ORG_ID, isDeleted: false, $or: [{ userId: OWNER_ID }] }] },
+      });
+
+      const match = (aggregateStub.firstCall.args[0][0] as any).$match;
+      const [visible, scoped] = match.$and;
+      expect(visible.$and[0].orgId).to.be.instanceOf(mongoose.Types.ObjectId);
+      expect(visible.$and[0].$or[0].userId).to.be.instanceOf(mongoose.Types.ObjectId);
+      expect(visible.$and[0].$or[0].userId.toString()).to.equal(OWNER_ID);
+      expect(scoped.projectId.$in.map(String)).to.deep.equal([projectId.toString()]);
     });
 
     it('skips the aggregate entirely when there are no projects on the page', async () => {
@@ -419,6 +505,7 @@ describe('ProjectService', () => {
         limit: 20,
         scope: 'mine',
         includeArchived: false,
+        visibleConversations: VISIBLE,
       });
 
       expect(aggregateStub.called).to.equal(false);
@@ -445,6 +532,7 @@ describe('ProjectService', () => {
         limit: 20,
         scope: 'all',
         includeArchived: false,
+        visibleConversations: VISIBLE,
       });
 
       const sortStage = aggregateStub.firstCall.args[0].find((stage: any) => stage.$sort);
@@ -453,30 +541,14 @@ describe('ProjectService', () => {
       expect(projects[0]).to.not.have.property('pinnedBy');
     });
 
-    it('counts only the chats the caller can open: their own and project-shared ones', async () => {
-      const projectId = new mongoose.Types.ObjectId();
-      stubFindChain([
-        { _id: projectId, orgId: new mongoose.Types.ObjectId(ORG_ID), userId: new mongoose.Types.ObjectId(OWNER_ID), members: [], visibility: 'private' },
-      ]);
-      sinon.stub(Project, 'countDocuments').resolves(1);
-      const countStub = sinon.stub(ChatSession, 'aggregate').resolves([]);
-
-      await ProjectService.list(ORG_ID, OWNER_ID, {
-        page: 1,
-        limit: 20,
-        scope: 'mine',
-        includeArchived: false,
-      });
-
-      const match = countStub.firstCall.args[0][0]!.$match;
-      expect(match.$or).to.deep.equal([
-        { userId: new mongoose.Types.ObjectId(OWNER_ID) },
-        { projectVisibility: 'project' },
-      ]);
-    });
   });
 
   describe('update', () => {
+    let bumps: ReturnType<typeof stubAclBumps>;
+    beforeEach(() => {
+      bumps = stubAclBumps();
+    });
+
     it('refuses edits while the project is archived', async () => {
       const project = makeProjectDoc({ isArchived: true });
       sinon.stub(Project, 'findOne').resolves(project);
@@ -487,6 +559,18 @@ describe('ProjectService', () => {
         /archived/,
       );
       expect(project.save.called).to.equal(false);
+    });
+
+    it('bumps aclVersion only when visibility actually changes', async () => {
+      const project = makeProjectDoc({ aclVersion: 2 });
+      sinon.stub(Project, 'findOne').resolves(project);
+      await ProjectService.update(ORG_ID, OWNER_ID, project._id.toString(), { visibility: 'private' });
+      expect(bumps.project.called).to.equal(false);
+      await ProjectService.update(ORG_ID, OWNER_ID, project._id.toString(), { visibility: 'org' });
+      expect(bumps.project.callCount).to.equal(1);
+      expect(bumps.project.firstCall.args).to.deep.equal([{ _id: project._id.toString() }, BUMP]);
+      await ProjectService.update(ORG_ID, OWNER_ID, project._id.toString(), { name: 'x' });
+      expect(bumps.project.callCount).to.equal(1);
     });
 
     it('throws BadRequestError when clearing the name to blank', async () => {
@@ -793,15 +877,22 @@ describe('ProjectService', () => {
     it('unlinks sessions before marking the project deleted (non-replica-set path)', async () => {
       const project = makeProjectDoc();
       sinon.stub(Project, 'findOne').resolves(project);
-      const updateManyStub = sinon.stub(ChatSession, 'updateMany').resolves({} as any);
+      const chatId = new mongoose.Types.ObjectId();
+      sinon.stub(ChatSession, 'find').returns({ lean: () => ({ exec: () => Promise.resolve([{ _id: chatId }]) }) } as never);
+      const bumps = stubAclBumps();
 
       await ProjectService.softDelete(ORG_ID, OWNER_ID, project._id.toString());
 
-      expect(updateManyStub.calledBefore(project.save)).to.equal(true);
-      expect(updateManyStub.firstCall.args[0]).to.deep.equal({ projectId: new mongoose.Types.ObjectId(project._id) });
-      expect(updateManyStub.firstCall.args[1]).to.deep.equal({
-        $unset: { projectId: '', projectVisibility: '' },
-      });
+      const [unlink, chatBump] = bumps.chat.getCalls();
+      expect(unlink?.calledBefore(project.save.firstCall)).to.equal(true);
+      expect(unlink?.args.slice(0, 2)).to.deep.equal([
+        { projectId: new mongoose.Types.ObjectId(project._id) },
+        { $unset: { projectId: '', projectVisibility: '' } },
+      ]);
+      // The access versions move after the change: the project's chats (read before the unlink), then the project.
+      expect(chatBump?.args).to.deep.equal([{ _id: { $in: [chatId] } }, BUMP]);
+      expect(project.save.calledBefore(bumps.project)).to.equal(true);
+      expect(bumps.project.firstCall.args).to.deep.equal([{ _id: project._id.toString() }, BUMP]);
       expect(project.isDeleted).to.equal(true);
       expect(project.deletedBy?.toString()).to.equal(OWNER_ID);
     });
@@ -930,6 +1021,11 @@ describe('ProjectService', () => {
   });
 
   describe('upsertMembers', () => {
+    let bumps: ReturnType<typeof stubAclBumps>;
+    beforeEach(() => {
+      bumps = stubAclBumps();
+    });
+
     it('stores a team id as the graph id string, not an ObjectId', async () => {
       const project = makeProjectDoc();
       sinon.stub(Project, 'findOne').resolves(project);
@@ -970,6 +1066,17 @@ describe('ProjectService', () => {
         ]),
         ForbiddenError,
       );
+    });
+
+    it('bumps aclVersion after the member change', async () => {
+      const project = makeProjectDoc();
+      sinon.stub(Project, 'findOne').resolves(project);
+      await ProjectService.upsertMembers(ORG_ID, OWNER_ID, project._id.toString(), [
+        { principalId: MEMBER_ID, role: 'viewer' },
+      ]);
+      expect(bumps.project.calledOnce).to.equal(true);
+      expect(bumps.project.firstCall.args).to.deep.equal([{ _id: project._id.toString() }, BUMP]);
+      expect(project.save.calledBefore(bumps.project)).to.equal(true);
     });
 
     it('never adds the owner as a member row', async () => {
@@ -1028,6 +1135,11 @@ describe('ProjectService', () => {
   });
 
   describe('removeMember', () => {
+    let bumps: ReturnType<typeof stubAclBumps>;
+    beforeEach(() => {
+      bumps = stubAclBumps();
+    });
+
     it('throws ForbiddenError when a non-owner removes someone else', async () => {
       const project = makeProjectDoc({
         members: [
@@ -1139,6 +1251,7 @@ describe('ProjectService', () => {
         MEMBER_ID,
       );
       expect(updated.members).to.have.lengthOf(0);
+      expect(bumps.project.firstCall.args).to.deep.equal([{ _id: project._id.toString() }, BUMP]);
     });
 
     it('only removes the team row when principalType="team" is given, leaving a same-id user row intact', async () => {
@@ -1192,15 +1305,21 @@ describe('ProjectService', () => {
 
   describe('removeUserFromAllProjects', () => {
     it('pulls the user from every project member list in the org', async () => {
-      const updateManyStub = sinon.stub(Project, 'updateMany').resolves({} as any);
+      const memberOf = new mongoose.Types.ObjectId();
+      const find = sinon.stub(Project, 'find').returns({ lean: () => ({ exec: () => Promise.resolve([{ _id: memberOf }]) }) } as never);
+      const bumps = stubAclBumps();
       await ProjectService.removeUserFromAllProjects(ORG_ID, MEMBER_ID);
-      expect(updateManyStub.calledOnce).to.equal(true);
-      const [filter, update] = updateManyStub.firstCall.args;
-      expect((filter as any).orgId.toString()).to.equal(ORG_ID);
-      expect((update as any).$pull.members.principalId.toString()).to.equal(MEMBER_ID);
+      const [pull, bump] = bumps.project.getCalls();
+      const [filter, update] = pull!.args as any[];
+      expect(filter.orgId.toString()).to.equal(ORG_ID);
+      expect(update.$pull.members.principalId.toString()).to.equal(MEMBER_ID);
+      // Only the projects the user was a member of (read before the pull) move their access version, after it.
+      expect((find.firstCall.args[0] as any).members.$elemMatch.principalId.toString()).to.equal(MEMBER_ID);
+      expect(bump?.args).to.deep.equal([{ _id: { $in: [memberOf] } }, BUMP]);
     });
 
     it('propagates DB failures so the caller can abort and retry', async () => {
+      sinon.stub(Project, 'find').returns({ lean: () => ({ exec: () => Promise.resolve([]) }) } as never);
       sinon.stub(Project, 'updateMany').rejects(new Error('db down'));
       try {
         await ProjectService.removeUserFromAllProjects(ORG_ID, MEMBER_ID);

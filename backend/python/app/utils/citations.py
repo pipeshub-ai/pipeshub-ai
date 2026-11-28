@@ -1,5 +1,5 @@
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -545,6 +545,8 @@ _LINK_TEXT_WRAPPERS = ' \t\n`\'"[]()<>'
 _CITATION_BADGE = r'\[\d+\]\([^)]*\)'
 # How far back an already-written copy of the link text is looked for.
 _LINK_TEXT_ECHO_WINDOW = 2000
+# The closing bracket right after a link, which goes when the link leaves nothing in them.
+_CLOSING_BRACKET_RE = re.compile(r'[ \t]*\)')
 
 
 def _is_label_or_id(link_text: str) -> bool:
@@ -616,6 +618,7 @@ def _renumber_citation_links(
     md_matches: list,
     url_to_citation_num: dict[str, int],
     ref_to_url: dict[str, str] | None = None,
+    uncited: Collection[str] = (),
 ) -> str:
     """
     Replace citation markdown links with sequential ``[N](url)`` badges.
@@ -624,6 +627,10 @@ def _renumber_citation_links(
     A generic label ("source", "3") is replaced by the badge.  Descriptive text
     ("the Velora renewal", a ticket id such as ``NW-118``) is part of the sentence,
     so it stays as plain text in front of the badge: ``the Velora renewal [1](url)``.
+
+    A link to a record page no citation could be made for (``uncited``) is not one the
+    answer can show: its URL goes and its descriptive text stays, as for a dead ref.
+    Left as a link, a reader draws it as a badge with some other citation's number.
     """
     out = ''
     pos = 0
@@ -631,10 +638,23 @@ def _renumber_citation_links(
         raw_target = match.group(2).strip()
         full_url = _resolve_ref(raw_target, ref_to_url)
         new_num = url_to_citation_num.get(full_url)
+        dropped = new_num is None and full_url in uncited
         # Looked up raw above; written into the badge with parentheses encoded.
         full_url = _badge_url(full_url)
         out += text[pos:match.start()]
-        if new_num is None:
+        pos = match.end()
+        if dropped:
+            kept = kept_citation_link_text(match.group(1), out)
+            if kept:
+                out += _spaced(kept, out)
+            else:
+                # Nothing is left of it: the space before it goes too, and brackets it stood alone in.
+                out = out.rstrip(' \t')
+                closing = _CLOSING_BRACKET_RE.match(text, pos)
+                if closing and out.endswith('('):
+                    out = out[:-1].rstrip(' \t')
+                    pos = closing.end()
+        elif new_num is None:
             out += match.group(0)
         else:
             # Dead links before this one are stripped only after the walk; strip them in
@@ -642,7 +662,6 @@ def _renumber_citation_links(
             written = _strip_unresolved_ref_citations(out[-(len(match.group(1)) + _LINK_TEXT_ECHO_WINDOW):])
             kept = kept_citation_link_text(match.group(1), written)
             out += f"{_spaced(kept, out)} [{new_num}]({full_url})" if kept else f"[{new_num}]({full_url})"
-        pos = match.end()
     out += text[pos:]
     return _strip_unresolved_ref_citations(out)
 
@@ -1160,6 +1179,8 @@ def _normalize_markdown_link_citations(
         new_citation_num += 1
         return True
 
+    # Links to a record page no citation could be made for: their URLs go from the text.
+    uncited: set[str] = set()
     for url in unique_urls:
         handled, new_citation_num = _try_append_web_citation(
             url, web_records, web_page_index, new_citations, url_to_citation_num, new_citation_num,
@@ -1201,6 +1222,7 @@ def _normalize_markdown_link_citations(
                         rec, url, new_citations, url_to_citation_num, new_citation_num
                     )
                 elif not rec:
+                    uncited.add(url)
                     logger.warning(
                         "🔎 [KB-CITE] normalize(chat): DROPPED record-page citation | url=%s record_id=%s records_len=%d vrid_map_len=%d",
                         url, record_id,
@@ -1241,7 +1263,9 @@ def _normalize_markdown_link_citations(
                     )
 
 
-    answer_text = _renumber_citation_links(answer_text, md_matches, url_to_citation_num, ref_to_url=ref_to_url)
+    answer_text = _renumber_citation_links(
+        answer_text, md_matches, url_to_citation_num, ref_to_url=ref_to_url, uncited=uncited,
+    )
 
     return answer_text, new_citations
 
@@ -1333,6 +1357,8 @@ def _normalize_markdown_link_citations_for_agent(
     new_citations = []
     new_citation_num = 1
     web_page_index = _build_web_record_page_index(web_records)
+    # Links to a record page no citation could be made for: their URLs go from the text.
+    uncited: set[str] = set()
 
     for url in unique_urls:
         handled, new_citation_num = _try_append_web_citation(
@@ -1395,6 +1421,7 @@ def _normalize_markdown_link_citations_for_agent(
                         rec, url, new_citations, url_to_citation_num, new_citation_num
                     )
                 elif not rec:
+                    uncited.add(url)
                     logger.warning(
                         "🔎 [KB-CITE] normalize(agent): DROPPED record-page citation | url=%s record_id=%s records_len=%d vrid_map_len=%d",
                         url, record_id,
@@ -1504,6 +1531,8 @@ def _normalize_markdown_link_citations_for_agent(
 
 
 
-    answer_text = _renumber_citation_links(answer_text, md_matches, url_to_citation_num, ref_to_url=ref_to_url)
+    answer_text = _renumber_citation_links(
+        answer_text, md_matches, url_to_citation_num, ref_to_url=ref_to_url, uncited=uncited,
+    )
 
     return answer_text, new_citations

@@ -11,6 +11,7 @@ import {
   PERSONAL_INSTANCE_ERASER,
   type PersonalInstanceEraser,
 } from '../../agent-harness/ports/personal-instances';
+import { currentOrgContext } from '../../../libs/context/orgContext';
 import { Response, NextFunction } from 'express';
 import {
   SCHEDULE_ERASER,
@@ -101,8 +102,6 @@ import {
   EntitiesEventProducer,
   Event,
   EventType,
-  UserAddedEvent,
-  UserDeletedEvent,
   UserUpdatedEvent,
   SyncAction,
 } from '../services/entity_events.service';
@@ -164,6 +163,7 @@ import { getOAuthAppRepository } from '../../../libs/repositories/oauth-app';
 import { getOAuthTokenRepository } from '../../../libs/repositories/oauth-token';
 import { resolveOAuthTokenService } from '../../../libs/services/oauth-token-service.provider';
 import { ProjectService } from '../../projects/services/project.service';
+import { conversationExtensions } from '../../enterprise_search/services/conversation/conversation-extensions';
 import { ProjectKnowledgeBaseService } from '../../projects/services/project-kb.service';
 
 // What the auth service reads from an email lookup: the session and refresh
@@ -1169,7 +1169,7 @@ export class UserController {
           fullName: newUser.fullName,
           email: newUser.email,
           syncAction: SyncAction.Immediate,
-        } as UserAddedEvent,
+        },
       };
       try {
         await this.eventService.publishEvent(event);
@@ -1242,7 +1242,7 @@ export class UserController {
           fullName: newUser.fullName,
           email: newUser.email,
           syncAction: SyncAction.Immediate,
-        } as UserAddedEvent,
+        },
       });
     } catch (eventError) {
       logger.error('Failed to publish user creation event', {
@@ -1662,7 +1662,7 @@ export class UserController {
           ...(user.lastName && { lastName: user.lastName }),
           ...(user.designation && { designation: user.designation }),
           email: user.email,
-        } as UserUpdatedEvent,
+        },
       };
 
       await this.eventService.publishEvent(event);
@@ -1707,7 +1707,7 @@ export class UserController {
           ...(user.lastName && { lastName: user.lastName }),
           ...(user.designation && { designation: user.designation }),
           email: user.email,
-        } as UserUpdatedEvent,
+        },
       };
 
       await this.eventService.publishEvent(event);
@@ -1752,7 +1752,7 @@ export class UserController {
           ...(user.lastName && { lastName: user.lastName }),
           ...(user.designation && { designation: user.designation }),
           email: user.email,
-        } as UserUpdatedEvent,
+        },
       };
 
       await this.eventService.publishEvent(event);
@@ -1797,7 +1797,7 @@ export class UserController {
           ...(user.lastName && { lastName: user.lastName }),
           ...(user.designation && { designation: user.designation }),
           email: user.email,
-        } as UserUpdatedEvent,
+        },
       };
 
       await this.eventService.publishEvent(event);
@@ -2020,6 +2020,15 @@ export class UserController {
       }
       await ProjectService.removeUserFromAllProjects(orgId, userId);
 
+      // Runs before the user is marked deleted so a failure leaves the delete
+      // retryable; the cleanup is idempotent.
+      const deletedUserFields =
+        await conversationExtensions().lifecycle.userDeleted(orgId, userId, {
+          actorUserId: String(req.user.userId ?? req.user._id),
+          requestId: req.context?.requestId,
+          logger: this.logger,
+        });
+
       // CLEANUP-G2: their private conversations go, the shared ones move to an admin; before the user is
       // marked deleted, so a retry finds what is left.
       await this.handOverConversations(orgId, userId, req.user);
@@ -2067,12 +2076,12 @@ export class UserController {
           orgId: user.orgId,
           userId: user._id,
           email: user.email,
-        } as UserDeletedEvent,
+        },
       };
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
 
-      res.json({ message: 'User deleted successfully' });
+      res.json({ message: 'User deleted successfully', ...deletedUserFields });
     } catch (error) {
       auditUserRefusal('user.delete', error, {
         target: req.params.id as string,
@@ -2389,6 +2398,65 @@ export class UserController {
       });
     } catch (error) {
       auditUserRefusal('user.invite', error);
+      next(error);
+    }
+  }
+
+  /**
+   * The organisation an invite check looks in. The caller's own by default;
+   * a subclass that lets an administrator act for another organisation
+   * overrides this.
+   */
+  // eslint-disable-next-line @typescript-eslint/require-await -- async so an override can await
+  protected async resolveInviteCheckOrgId(
+    _req: AuthenticatedUserRequest,
+  ): Promise<string> {
+    return currentOrgContext().orgId as string;
+  }
+
+  /**
+   * Says which of the given addresses already belong to this organisation, so
+   * the invite form can warn before anything is sent. Addresses that would get
+   * a fresh invite are left out of the answer. Sends nothing and changes nothing.
+   */
+  async checkInviteStatus(
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      if (!req.user) {
+        throw new NotFoundError('User not found');
+      }
+      const { emails } = (req.body ?? {}) as { emails?: unknown };
+      if (!Array.isArray(emails)) {
+        throw new BadRequestError('Please provide an array of email addresses');
+      }
+      if (emails.length > MAX_BULK_INVITE) {
+        throw new BadRequestError(
+          `At most ${MAX_BULK_INVITE} addresses can be checked at once`,
+        );
+      }
+      const orgId = await this.resolveInviteCheckOrgId(req);
+      const candidates = this.normalizeEmails(
+        emails.filter((email): email is string => typeof email === 'string'),
+      ).filter((email) => isValidEmail(email) && !isServiceAccountEmail(email));
+
+      const existing =
+        candidates.length === 0
+          ? []
+          : (await getUserRepository().listByEmails(orgId, candidates)).filter(
+              // A removed account is not here; a service account is not a person, so it is not "already here".
+              (user) => !user.isDeleted && user.kind !== 'service',
+            );
+
+      res.status(200).json({
+        existing: existing.map((user) => ({
+          email: user.email,
+          status: user.hasLoggedIn ? 'member' : 'invited',
+        })),
+      });
+    } catch (error) {
       next(error);
     }
   }
@@ -2802,7 +2870,7 @@ export class UserController {
             userId: userId,
             email,
             syncAction: SyncAction.Immediate,
-          } as UserAddedEvent,
+          },
         };
         // A concurrent request may have disconnected the shared producer;
         // start() is idempotent and reconnects so the event isn't dropped.
@@ -2846,7 +2914,7 @@ export class UserController {
           userId: userId,
           email,
           syncAction: SyncAction.Immediate,
-        } as UserAddedEvent,
+        },
       };
       await this.eventService.start();
       await this.eventService.publishEvent(event);

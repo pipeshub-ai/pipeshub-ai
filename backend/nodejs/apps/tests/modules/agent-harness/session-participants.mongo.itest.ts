@@ -16,6 +16,7 @@ import { setUserRepository, type UserRepository } from '../../../src/libs/reposi
 import { appendMessages } from '../../../src/modules/enterprise_search/utils/utils';
 import { IMessage } from '../../../src/modules/enterprise_search/types/conversation.interfaces';
 import * as controller from '../../../src/modules/enterprise_search/controller/es_controller';
+import { behindGuard, realGuards } from '../enterprise_search/helpers/guarded-chat';
 import { IAMServiceCommand } from '../../../src/libs/commands/iam/iam.service.command';
 import { AIServiceCommand } from '../../../src/libs/commands/ai_service/ai.service.command';
 import { AuditedJournalStore } from '../../../src/modules/agent-harness/application/audited-journal-store';
@@ -114,7 +115,8 @@ describe('SS1 participant events on a MongoDB replica set', function () {
   ): Promise<unknown> => {
     const next = sinon.stub();
     const res = { status: () => res, json: () => res };
-    await handler(
+    // As the route mounts it: the sharing guard grants the chat, then the handler changes its participants.
+    await behindGuard(realGuards(), 'manageSharing', handler)(
       {
         headers: { authorization: 'Bearer owner' },
         params: { conversationId: sessionId },
@@ -130,9 +132,9 @@ describe('SS1 participant events on a MongoDB replica set', function () {
   };
 
   const share = (h: ContractHarness, sessionId: string, body: Record<string, unknown>, using: SessionParticipantRecorder<Tx> = recorder) =>
-    call(controller.shareConversationById(appConfig, () => using), h, sessionId, body);
+    call(controller.shareConversationById(appConfig, undefined, () => using), h, sessionId, body);
   const unshare = (h: ContractHarness, sessionId: string, userIds: string[]) =>
-    call(controller.unshareConversationById(appConfig, () => recorder), h, sessionId, { userIds });
+    call(controller.unshareConversationById(appConfig, undefined, () => recorder), h, sessionId, { userIds });
 
   const stream = async (h: ContractHarness, sessionId: string) =>
     journal.readStream(h.tenant.orgId, sessionId, 0, 100);

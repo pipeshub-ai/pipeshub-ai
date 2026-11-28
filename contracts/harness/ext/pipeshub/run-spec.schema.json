@@ -411,6 +411,20 @@
       },
       "description": "Whose turns this run's model may see (SS2, P2.5a), pinned by Node for a run in a shared context: the actor's role, the session's owner, the actor's own earlier runs and the other participants' runs whose label passed for the actor. Absent in a personal session: the run sees its whole session."
     },
+    "history": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "earlierTurns"
+      ],
+      "properties": {
+        "earlierTurns": {
+          "const": "answers",
+          "description": "Each earlier turn reaches the model as its question and its final answer's text: never its tool calls or their results (search results, fetched documents, tool outputs), the reference data its tools returned, or a compaction summary written before this run. A fact the answer states that no earlier answer said comes from this run's own tools, which cite it. The run's own turn reaches the model whole."
+        }
+      },
+      "description": "How the run's model is given the session's earlier turns. Pinned by Node on a run admitted in a chat that people besides its asker read (shared with anyone, or open to its project), and only on a run that requires the worker feature answers_only_history. Absent otherwise: the earlier turns reach the model as they were, tool results included."
+    },
     "memory": {
       "type": "object",
       "additionalProperties": false,
@@ -559,6 +573,7 @@
       "x-constant": "KNOWN_WORKER_FEATURES",
       "enum": [
         "agent_code",
+        "answers_only_history",
         "approval_edits",
         "assistant_agent",
         "caller",
@@ -792,6 +807,9 @@
         "visibleRuns": [
           "run_2"
         ]
+      },
+      "history": {
+        "earlierTurns": "answers"
       },
       "memory": {
         "recalled": [

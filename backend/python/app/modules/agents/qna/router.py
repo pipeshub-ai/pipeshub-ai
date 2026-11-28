@@ -37,6 +37,12 @@ logger = logging.getLogger(__name__)
 _PRIOR_ANSWER_CHARS = 1_500
 
 
+# The sources a run searches but its prompts may not name (`named_sources`): no name, no count.
+_UNNAMED_ALL = "every source the person asking can read (not listed: other people read this answer)"
+_UNNAMED_MORE = "more of what the person asking can read (not listed: other people read this answer)"
+_UNNAMED_PICKED = "the sources picked for this question (not listed: other people read this answer)"
+
+
 class RouteDecision(BaseModel):
     """Routing decision with structured chain-of-thought reasoning.
 
@@ -52,7 +58,7 @@ class RouteDecision(BaseModel):
 
 def build_capability_context(
     query_info: dict[str, Any],
-) -> tuple[str, int, list[dict], list[dict]]:
+) -> tuple[str, int | None, list[dict], list[dict]]:
     """
     Build a rich capability summary for the routing prompt.
 
@@ -60,6 +66,10 @@ def build_capability_context(
     query_info["knowledge"] and query_info["toolsets"]).  Falls back
     gracefully to filter counts + bare tool-name strings when only the
     lighter query_info structure is present (non-streaming chat / askAI).
+
+    `query_info["knowledgeUnnamed"]` says the run also searches sources the
+    prompt may not name (`named_sources`): they are one line with no name and
+    no count, and `n_knowledge` is None.
 
     Returns:
         (capability_block, n_knowledge, sources, tools_data) where `sources`
@@ -73,14 +83,16 @@ def build_capability_context(
     # ── Knowledge sources ─────────────────────────────────────────────────
     agent_knowledge: list[dict] = query_info.get("knowledge") or []
     connector_cfgs = query_info.get("connector_configs") or {}
+    unnamed = bool(query_info.get("knowledgeUnnamed"))
+    n_knowledge: int | None
 
     if agent_knowledge:
         sources = classify_knowledge_sources(
             agent_knowledge,
             connector_configs=connector_cfgs if isinstance(connector_cfgs, dict) else None,
         )
-        n_knowledge = len(sources)
-        lines.append(f"Knowledge sources ({n_knowledge} total):")
+        n_knowledge = None if unnamed else len(sources)
+        lines.append("Knowledge sources:" if unnamed else f"Knowledge sources ({n_knowledge} total):")
         for c in sources:
             if c["source_type"] == "app":
                 line = f"  • {c['label']} — app connector (type: {c['type_key']})"
@@ -92,6 +104,11 @@ def build_capability_context(
             if k["source_type"] == "kb":
                 scope = ', 1 scoped collection' if k.get("connector_id") else ""
                 lines.append(f"  • {k['label']} — knowledge base{scope}")
+        if unnamed:
+            lines.append(f"  • {_UNNAMED_MORE}")
+    elif unnamed:
+        n_knowledge = None
+        lines.append(f"Knowledge sources: {_UNNAMED_PICKED if query_info.get('knowledgePicked') else _UNNAMED_ALL}")
     else:
         # Fallback: derive counts from filters (NO_KB_SELECTED sentinel excluded)
         filters = query_info.get("filters") or {}
@@ -236,6 +253,8 @@ async def build_prior_routing_messages(
                         virtual_record_id=vrid,
                         logger=logger,
                         is_service_account=is_service_account,
+                        conversation_id=query_info.get("conversationId"),
+                        acl_version=query_info.get("aclVersion"),
                     ):
                         continue
                     try:
@@ -321,9 +340,10 @@ def _within(blocks: list[dict], room: int) -> tuple[list[dict], int]:
     return kept, room
 
 
-def build_tier_rubric(capability_block: str, sql_verify_override: str, n_knowledge: int) -> str:
+def build_tier_rubric(capability_block: str, sql_verify_override: str, n_knowledge: int | None) -> str:
     """Builds the quick/react/deep tier-classification system prompt from
-    already-computed capability context.
+    already-computed capability context. `n_knowledge` is None when the
+    sources are not listed (`build_capability_context`): deep stays viable.
 
     Shared verbatim by `app.agents.agent_loop.intent.parse_intent_and_route`
     for its merged intent+route call, so the tier rubric never drifts
@@ -371,10 +391,8 @@ def build_tier_rubric(capability_block: str, sql_verify_override: str, n_knowled
         "collection is retrieved. Wanting to SEE a collection is not this.\n"
         "(b) The intent requires gathering information from ≥2 fully "
         "independent sources and combining it into one unified answer.\n"
-        f"Configuration check: {n_knowledge} source(s) configured — deep "
-        f"is {'viable' if n_knowledge >= 2 else 'NOT viable (need ≥2)'}.\n\n"
-
-        "## What counts as a known vs unknown parameter\n"
+        + _source_check(n_knowledge)
+        + "## What counts as a known vs unknown parameter\n"
         "Known (does NOT require a prior tool call):\n"
         "  • Any search term, keyword, or topic that appears in the query text "
         "itself — the user's words ARE the search input.\n"
@@ -400,7 +418,7 @@ def build_tier_rubric(capability_block: str, sql_verify_override: str, n_knowled
 
         "Q3: Does the request imply acting on every item in a collection "
         "whose size is only known at runtime, or combining ≥2 fully "
-        f"independent sources ({n_knowledge} configured)? → **deep**\n\n"
+        f"independent sources ({'not listed' if n_knowledge is None else f'{n_knowledge} configured'})? → **deep**\n\n"
 
         "Q4: Does the query contain multiple distinct sub-questions, topics, "
         "or actions? → NOT quick; use react (if topics are related or "
@@ -412,6 +430,15 @@ def build_tier_rubric(capability_block: str, sql_verify_override: str, n_knowled
         "For follow-ups ('yes', 'ok', 'do it', 'give all', 'show more', "
         "'proceed') — infer the full intent from the conversation history "
         "above, then apply the decision tree to that inferred intent."
+    )
+
+
+def _source_check(n_knowledge: int | None) -> str:
+    if n_knowledge is None:
+        return "Configuration check: the sources are not listed here — deep is viable.\n\n"
+    return (
+        f"Configuration check: {n_knowledge} source(s) configured — deep "
+        f"is {'viable' if n_knowledge >= 2 else 'NOT viable (need ≥2)'}.\n\n"
     )
 
 

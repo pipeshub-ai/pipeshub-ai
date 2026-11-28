@@ -82,9 +82,13 @@ if TYPE_CHECKING:
 # again (R31HOT2). Every worker of this build.
 # `keyword_search_budget`: a run whose input carries the chat turn's `keywordSearchBudget`, which this worker's knowledge
 # searches read as today's loop does (R33JGAPS-FU-1). Every worker of this build.
+# `answers_only_history`: a spec pinning `x.pipeshub.history` (a chat others read): the session's earlier turns reach
+# the model as their questions and answers' text, never their tool calls, results or reference data. Every worker of
+# this build.
 # Each is a name of the contract's `WorkerFeature`, which Node reads too.
 PIPESHUB_FEATURES: tuple[WorkerFeature, ...] = (
     "agent_code",
+    "answers_only_history",
     "assistant_agent",
     "caller",
     "chat",

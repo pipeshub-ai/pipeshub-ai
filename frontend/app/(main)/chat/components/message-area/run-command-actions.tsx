@@ -10,6 +10,7 @@ import { startUndo } from '../../builtin-actions';
 import { NEW_CHAT_KEY, useBuiltinResults } from '../../builtin-results';
 import { RUN_PREFIX, sentRunLine } from '../../sandbox-commands';
 import { useChatStore } from '../../store';
+import { useAnswerSlotId } from './answer-slot-scope';
 import { useActivityPanelStore } from '../activity-panel/activity-panel-store';
 import type { DurableAgentRunHandle } from '../../types';
 
@@ -79,7 +80,7 @@ export function RunCommandActions({ question, answer, run }: { question: string;
   const isMobile = useIsMobile();
   const [failed, setFailed] = useState(false);
   const line = sentRunLine(question);
-  const slotId = useChatStore((s) => s.activeSlotId) ?? NEW_CHAT_KEY;
+  const slotId = useAnswerSlotId() ?? NEW_CHAT_KEY;
   const changed = useRunChangedFiles(run, line !== null);
   if (line === null) return null;
   const height = isMobile ? 44 : 28;

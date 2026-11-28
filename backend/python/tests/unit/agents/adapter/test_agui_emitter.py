@@ -207,6 +207,21 @@ class TestToolCallTranslation:
         assert starts[0]["approved"] is True
         assert "approved" not in starts[1]
 
+    async def test_a_call_refused_for_lost_access_says_why_on_its_start(self) -> None:
+        """So the asker's card can say why the call they approved didn't run."""
+        emitter, sink = _make_emitter()
+
+        await emitter.emit(_event(EventType.TOOL_CALL_START, {
+            "tool": "x", "args": {}, "tool_call_id": "c1", "approval_answer": "allowed", "approval_reason": "access_lost",
+        }))
+        await emitter.emit(_event(EventType.TOOL_CALL_START, {
+            "tool": "y", "args": {}, "tool_call_id": "c2", "approval_reason": "made_up",
+        }))
+
+        starts = [c.args[0]["data"] for c in sink.write.await_args_list if c.args[0]["event"] == "TOOL_CALL_START"]
+        assert starts[0]["approvalReason"] == "access_lost"
+        assert "approvalReason" not in starts[1]
+
     async def test_tool_call_start_forwards_args_summary(self) -> None:
         emitter, sink = _make_emitter()
 
@@ -341,6 +356,34 @@ class TestTextMessageTranslation:
 
         sink.write.reset_mock()
         await emitter.emit(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "late"}))
+        sink.write.assert_not_awaited()
+
+    async def test_a_reply_discarded_after_it_ended_is_taken_back(self) -> None:
+        """A hook overruled the reply (`ask_in_text_recovery`): the message already ended, so only
+        the take-back frame goes out, once."""
+        emitter, sink = _make_emitter()
+
+        await emitter.emit(_event(EventType.TEXT_MESSAGE_START, {}))
+        message_id = sink.write.await_args.args[0]["data"]["messageId"]
+        await emitter.emit(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "Which report do you mean?"}))
+        await emitter.emit(_event(EventType.TEXT_MESSAGE_END, {"turn_index": 0}))
+        sink.write.reset_mock()
+        await emitter.emit(_event(EventType.TEXT_MESSAGE_END, {"turn_index": 0, "discarded": True}))
+        await emitter.emit(_event(EventType.TEXT_MESSAGE_END, {"turn_index": 0, "discarded": True}))
+
+        frames = [call.args[0]["data"] for call in sink.write.await_args_list]
+        assert [(f["type"], f["name"], f["value"]) for f in frames] == [
+            ("CUSTOM", MESSAGE_DISCARDED_EVENT_NAME, {"messageId": message_id}),
+        ]
+
+    async def test_an_end_with_no_open_message_and_no_discard_sends_nothing(self) -> None:
+        emitter, sink = _make_emitter()
+
+        await emitter.emit(_event(EventType.TEXT_MESSAGE_START, {}))
+        await emitter.emit(_event(EventType.TEXT_MESSAGE_END, {}))
+        sink.write.reset_mock()
+        await emitter.emit(_event(EventType.TEXT_MESSAGE_END, {}))
+
         sink.write.assert_not_awaited()
 
 

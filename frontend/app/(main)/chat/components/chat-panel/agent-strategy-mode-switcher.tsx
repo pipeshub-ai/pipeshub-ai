@@ -42,8 +42,8 @@ export function AgentStrategyModeSwitcher({
     <Flex
       align="center"
       style={{
-        background: 'var(--olive-1)',
-        border: '1px solid var(--olive-3)',
+        background: 'var(--surface-raised)',
+        border: '1px solid var(--border-subtle)',
         borderRadius: 'var(--radius-1)',
         padding: 'var(--space-1)',
         flexShrink: 0,
@@ -62,7 +62,7 @@ export function AgentStrategyModeSwitcher({
           cursor: disabled ? 'default' : 'pointer',
           paddingLeft: 'var(--space-3)',
           paddingRight: 'var(--space-3)',
-          transition: 'background-color 0.15s ease',
+          transition: 'background-color var(--motion-micro) var(--motion-ease)',
         }}
       >
         <MaterialIcon

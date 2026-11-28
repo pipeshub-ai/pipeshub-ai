@@ -37,15 +37,19 @@ export function ConnectorsCollectionsPanel({
     <Flex direction="column" gap="4" style={{ flex: 1, overflow: 'hidden' }}>
       {/* Header: title + expand/collapse toggle */}
       <Flex align="center" justify="between" style={{ width: '100%' }}>
-        <Text size="1" weight="medium" style={{ color: 'var(--slate-12)' }}>
+        <Text size="1" weight="medium" style={{ color: 'var(--text-primary)' }}>
           {t('chat.connectorsCollectionsTitle', { defaultValue: 'Connectors and Collections' })}
         </Text>
         <IconButton
-          aria-label={viewMode === 'overlay' ? t('recordView.exitFullscreen') : t('recordView.openFullscreen')}
           variant="ghost"
           color="gray"
           size="1"
           onClick={onToggleView}
+          aria-label={
+            viewMode === 'overlay'
+              ? t('chat.collapsePanel', { defaultValue: 'Collapse panel' })
+              : t('chat.expandPanel', { defaultValue: 'Expand panel' })
+          }
           style={{
             cursor: onToggleView ? 'pointer' : 'default',
             flexShrink: 0,
@@ -64,7 +68,7 @@ export function ConnectorsCollectionsPanel({
         </IconButton>
       </Flex>
 
-      <CollectionsTab selection={selection} onSelectionChange={onSelectionChange} />
+      <CollectionsTab selection={selection} onSelectionChange={onSelectionChange} appearance="apps-panel" />
     </Flex>
   );
 }

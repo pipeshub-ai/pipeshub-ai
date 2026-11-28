@@ -12,6 +12,7 @@
  */
 
 import { test, expect } from '../fixtures/base.fixture';
+import { expectComposerText } from '../helpers/composer.helper';
 import type { Page } from '@playwright/test';
 import { buildAguiConversation, buildAguiSseBody } from './agui-sse-builder';
 
@@ -120,7 +121,7 @@ async function openChat(page: Page, initial: Stored) {
     },
   );
 
-  await page.route(`**/api/v1/conversations/${CONV_ID}/message/*/regenerate`, (route) => {
+  await page.route(`**/api/v1/conversations/${CONV_ID}/message/*/regenerate**`, (route) => {
     if (route.request().method() !== 'POST') return route.fallback();
     const body = route.request().postDataJSON() as Record<string, unknown>;
     regenerates.push({ url: route.request().url(), body });
@@ -160,7 +161,7 @@ const questionHeading = (page: Page, text: string) =>
   page.getByRole('heading', { level: 1 }).filter({ hasText: text });
 
 const editButton = (page: Page) => page.getByRole('button', { name: 'Edit', exact: true });
-const composer = (page: Page) => page.locator('textarea').last();
+const composer = (page: Page) => page.getByTestId('chat-composer').last();
 
 /** The icon fades in on hover, so the pointer has to be over the question first. */
 async function startEdit(page: Page, question: string) {
@@ -177,7 +178,7 @@ test.describe('Chat — editing the last question', () => {
     const { regenerates, attachmentDeletes } = await openChat(page, conversation(QUESTION, ANSWER));
 
     await startEdit(page, QUESTION);
-    await expect(composer(page)).toHaveValue(QUESTION);
+    await expectComposerText(composer(page), QUESTION);
 
     await composer(page).fill(EDITED_QUESTION);
     await composer(page).press('Enter');
@@ -202,7 +203,7 @@ test.describe('Chat — editing the last question', () => {
     await composer(page).press('Escape');
 
     await expect(page.getByText('Edit query')).toHaveCount(0);
-    await expect(composer(page)).toHaveValue('');
+    await expectComposerText(composer(page), '');
     await expect(questionHeading(page, QUESTION)).toBeVisible();
     expect(regenerates).toEqual([]);
   });

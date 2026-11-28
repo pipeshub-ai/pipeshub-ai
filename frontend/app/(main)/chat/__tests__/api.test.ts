@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { apiClient, streamSSEGet, streamSSERequest } from '@/lib/api';
-import { ChatApi } from '../api';
+import { ChatApi, mapApiConversationToConversation } from '../api';
+import { AgentsApi } from '@/app/(main)/agents/api';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { ANSWER, completedRun } from './durable-frames';
 
@@ -21,7 +22,8 @@ vi.mock('@/lib/store/feature-flags-store', async (importOriginal) => ({
     setState: (next: Partial<FeatureState>) => Object.assign(featureState, next),
   },
 }));
-import { CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS, type StreamChatRequest } from '../types';
+import { CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS, type ConversationApiResponse, type StreamChatRequest } from '../types';
+import { chatExtension } from '@/config';
 
 vi.mock('@/lib/api', () => ({
   apiClient: {
@@ -146,10 +148,11 @@ describe('ChatApi durable agent transport', () => {
     });
   });
 
-  // F-4: with the harness off, agent and assistant chat never touch the durable transport.
+  // F-4: with the harness off, agent and assistant chat never touch the durable transport. Every chat turn asks its
+  // final frame for that turn's rows alone (`frame=turn`), on the same route.
   it.each([
-    ['agent chat', { agentId: 'agent-1', chatMode: 'agent:auto' }, '/api/v1/agents/agent-1/conversations/stream'],
-    ['assistant chat', { chatMode: 'quick' }, '/api/v1/conversations/stream'],
+    ['agent chat', { agentId: 'agent-1', chatMode: 'agent:auto' }, '/api/v1/agents/agent-1/conversations/stream?frame=turn'],
+    ['assistant chat', { chatMode: 'quick' }, '/api/v1/conversations/stream?frame=turn'],
   ])('uses the legacy stream for %s when the rollout has no harness', async (_name, extra, endpoint) => {
     mockedStream.mockReset();
     useFeatureFlagsStore.setState({ flags: { ENABLE_AGENT_HARNESS: true }, agentHarness: null });
@@ -193,7 +196,7 @@ describe('ChatApi durable agent transport', () => {
 
     expect(mockedPost).not.toHaveBeenCalled();
     expect(mockedStream).toHaveBeenCalledWith(
-      '/api/v1/conversations/stream',
+      '/api/v1/conversations/stream?frame=turn',
       expect.any(Object),
       expect.any(Object),
     );
@@ -323,6 +326,21 @@ describe('ChatApi stream bodies — no model resolved', () => {
   it('leaves the model out of an agent regenerate', async () => {
     await ChatApi.streamAgentRegenerate('agent-1', 'conv-1', 'msg-1', {}, { ...noModel, chatMode: 'auto' } as never);
     expectNoModelFields();
+  });
+
+  // An agent route takes the agent's own modes: the one an agent mode names, and auto for anything else.
+  it.each([
+    ['agent', 'auto'],
+    ['internal_search', 'auto'],
+    ['web_search', 'auto'],
+    ['agent:auto', 'auto'],
+    ['agent:deep', 'deep'],
+    ['agent:quick', 'quick'],
+    ['', 'auto'],
+    [undefined, 'auto'],
+  ])('sends an agent route a mode it takes, from %s: %s', async (chatMode, sent) => {
+    await ChatApi.streamMessage({ ...base, agentId: 'agent-1', chatMode: chatMode as never }, {});
+    expect(sentBody().chatMode).toBe(sent);
   });
 
   it('still sends a chosen model, falling back to its name for the friendly name', async () => {
@@ -480,5 +498,99 @@ describe('mapApiConversationToConversation', () => {
     expect(inProject.projectId).toBe('p1');
     expect(inProject.projectVisibility).toBe('private');
     expect('projectId' in mapApiConversationToConversation(base)).toBe(false);
+  });
+});
+
+describe('mapApiConversationToConversation', () => {
+  it('keeps the project link so "Move to project" shows the current project', () => {
+    const row = {
+      _id: 'conv-1',
+      title: 'Hello',
+      projectId: 'proj-1',
+      projectVisibility: 'project',
+    } as ConversationApiResponse;
+    expect(mapApiConversationToConversation(row)).toMatchObject({
+      projectId: 'proj-1',
+      projectVisibility: 'project',
+    });
+  });
+});
+
+describe('the conversation routes', () => {
+  const request: StreamChatRequest = {
+    query: 'Q',
+    modelKey: 'k',
+    modelName: 'm',
+    modelFriendlyName: 'M',
+    chatMode: 'quick',
+    filters: { apps: [], kb: [] },
+    conversationId: 'c1',
+  };
+  const model = { modelKey: 'k', modelName: 'm', modelFriendlyName: 'M', filters: { apps: [], kb: [] } };
+
+  beforeEach(() => {
+    mockedGet.mockReset();
+    mockedPost.mockReset();
+    vi.mocked(streamSSERequest).mockReset();
+    vi.mocked(streamSSERequest).mockResolvedValue(undefined as never);
+  });
+
+  it('build on the path the extension gives a conversation', async () => {
+    const path = vi
+      .spyOn(chatExtension, 'conversationPath')
+      .mockImplementation((id, agentId) => `/base/${agentId ?? 'none'}/${id}`);
+    mockedGet.mockResolvedValue({ data: { conversation: { messages: [] } } });
+    mockedPost.mockResolvedValueOnce({ data: { cancelled: true } });
+
+    await ChatApi.fetchConversation('c1');
+    await AgentsApi.fetchAgentConversation('a1', 'c1');
+    await ChatApi.streamMessage(request, {});
+    await ChatApi.streamMessage({ ...request, agentId: 'a1' }, {});
+    await ChatApi.streamRegenerate('c1', 'm1', {}, { ...model, chatMode: 'quick' });
+    await ChatApi.streamAgentRegenerate('a1', 'c1', 'm1', {}, { ...model, chatMode: 'auto' });
+    await ChatApi.cancelStream('c1', 'run-1', 'a1');
+
+    expect(mockedGet.mock.calls[0][0]).toBe('/base/none/c1/');
+    expect(mockedGet.mock.calls[1][0]).toBe('/base/a1/c1');
+    const streamed = vi.mocked(streamSSERequest).mock.calls.map(([url]) => url);
+    expect(streamed[0]).toMatch(/^\/base\/none\/c1\/messages\/stream/);
+    expect(streamed[1]).toMatch(/^\/base\/a1\/c1\/messages\/stream/);
+    expect(streamed[2]).toMatch(/^\/base\/none\/c1\/message\/m1\/regenerate/);
+    expect(streamed[3]).toMatch(/^\/base\/a1\/c1\/message\/m1\/regenerate/);
+    expect(mockedPost.mock.calls[0][0]).toBe('/base/a1/c1/cancel');
+    path.mockRestore();
+  });
+
+  it('keep an agent conversation on its usual path by default', async () => {
+    mockedGet.mockResolvedValueOnce({ data: { conversation: { messages: [] } } });
+    await AgentsApi.fetchAgentConversation('a1', 'c1', { page: 2, limit: 5 });
+    expect(mockedGet.mock.calls[0][0]).toBe('/api/v1/agents/a1/conversations/c1');
+    expect(mockedGet.mock.calls[0][1]).toMatchObject({ params: { page: 2, limit: 5 } });
+  });
+});
+
+describe('ChatApi.fetchConversations — error toast opt-out', () => {
+  const empty = {
+    data: {
+      conversations: [],
+      source: 'owned',
+      pagination: { page: 1, limit: 10, totalCount: 0, totalPages: 0, hasNextPage: false, hasPrevPage: false },
+    },
+  };
+  beforeEach(() => {
+    mockedGet.mockReset();
+  });
+
+  it('forwards suppressErrorToast to the request config', async () => {
+    mockedGet.mockResolvedValueOnce(empty);
+    await ChatApi.fetchConversations(1, 10, { source: 'owned', suppressErrorToast: true });
+    expect(mockedGet.mock.calls[0][1]).toMatchObject({ suppressErrorToast: true });
+  });
+
+  it('leaves the flag unset by default, so the shared error toast still applies', async () => {
+    mockedGet.mockResolvedValueOnce(empty);
+    await ChatApi.fetchConversations(1, 10, { source: 'owned' });
+    const config = mockedGet.mock.calls[0][1] as { suppressErrorToast?: boolean };
+    expect(config.suppressErrorToast).toBeUndefined();
   });
 });

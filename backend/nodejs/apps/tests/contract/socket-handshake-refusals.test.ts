@@ -10,6 +10,19 @@ import { NotificationService } from '../../src/modules/notification/service/noti
 import { DesktopProxySocketGateway } from '../../src/modules/desktop_proxy/socket/desktop-proxy.gateway';
 import { AuthTokenService } from '../../src/libs/services/authtoken.service';
 import { HANDSHAKE_REFUSAL } from '../../src/libs/utils/socket-handshake-refusal';
+import { createFakeRedisProvider } from '../helpers/fake-redis-provider';
+
+/** Starts the socket server as one API process does with no Redis server: Socket.IO's own adapter, nothing to connect. */
+function initializeAlone(service: { initialize(server: http.Server): void }, server: http.Server): void {
+  const mode = process.env.REDIS_MODE;
+  process.env.REDIS_MODE = 'inprocess';
+  try {
+    service.initialize(server);
+  } finally {
+    if (mode === undefined) delete process.env.REDIS_MODE;
+    else process.env.REDIS_MODE = mode;
+  }
+}
 
 /**
  * SOCKET HANDSHAKE REFUSALS
@@ -62,12 +75,13 @@ async function notificationRefusals(): Promise<Record<string, Refusal>> {
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const service = new NotificationService(
     new AuthTokenService(JWT_SECRET, 'scoped-secret'),
+    createFakeRedisProvider(),
   );
   const internals = service as unknown as { sessionRefusal: sinon.SinonStub };
   internals.sessionRefusal = sinon
     .stub()
     .rejects(new Error('database unreachable'));
-  service.initialize(server);
+  initializeAlone(service, server);
   const refusal = async (auth: object): Promise<Refusal> => {
     const packet = await connectAnswer(base, auth);
     expect(packet.startsWith('44'), packet).to.equal(true);

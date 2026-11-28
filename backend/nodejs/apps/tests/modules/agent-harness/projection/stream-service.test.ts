@@ -12,11 +12,21 @@ import { SessionErasedError } from '../../../../src/modules/agent-harness/domain
 import { AguiFrame } from '../../../../src/modules/agent-harness/projection/frames';
 import { FrameSink, RunStreamService } from '../../../../src/modules/agent-harness/projection/stream-service';
 import { parseStreamId } from '../../../../src/modules/agent-harness/projection/stream-id';
-import { GoldenJournal, liveSteps, normalizeFrames, parseSse, project, readJournal, rechunked } from '../../../contracts/support/durable';
+import {
+  GoldenJournal,
+  liveSteps,
+  normalizeFrames,
+  parseSse,
+  project,
+  readJournal,
+  rechunked,
+} from '../../../contracts/support/durable';
 import { testCipher } from '../support/data-protection';
 import { InMemoryRecordReadAccess } from '../../../../src/modules/agent-harness/adapters/in-memory-record-access';
 import { RunConversationView } from '../../../../src/modules/agent-harness/ports/conversation-reader';
 import { redactRunConversationFor } from '../../../../src/modules/enterprise_search/utils/utils';
+import { configureVisibility, resetVisibility } from '../../../../src/modules/enterprise_search/services/conversation/privacy/visibility';
+import { FAILED_FOR_OTHERS } from '../../../../src/modules/agent-harness/projection/audiences';
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command';
 import { SharedCitationService } from '../../../../src/modules/agent-harness/application/shared-citations';
 import { InMemoryArtifactReadAccess } from '../../../../src/modules/agent-harness/adapters/in-memory-artifact-access';
@@ -191,6 +201,7 @@ const settle = async (): Promise<void> => {
   for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setImmediate(resolve));
 };
 
+/** The legacy golden's frames; a durable stream is held to them with its snapshots as the legacy relay sends them. */
 const legacyFrames = (scenario: string): AguiFrame[] => {
   const fs = require('fs') as typeof import('fs');
   const path = require('path') as typeof import('path');
@@ -832,7 +843,12 @@ describe('agent-harness projection: RunStreamService', () => {
       const snapshot = sink.frames().filter((f) => f.type === 'STATE_SNAPSHOT').map((f) => f['snapshot'] as Record<string, unknown>);
       return String(snapshot.find((s) => s['final'] === true)!['answer']);
     };
-    afterEach(() => sinon.restore());
+    // These rows are the whole chat: its store holds nothing before them.
+    beforeEach(() => configureVisibility({ rowsUpTo: async () => [] }));
+    afterEach(() => {
+      sinon.restore();
+      resetVisibility();
+    });
 
     it('withheld: no answer text, citation, step or earlier answer reaches the viewer', async () => {
       const world = new World('agent_quick_tool_call');
@@ -902,6 +918,99 @@ describe('agent-harness projection: RunStreamService', () => {
       expect(sink.body).to.include('STORED answer');
       expect(sink.body).to.not.include(NOTICE);
       expect(sink.body).to.not.include(TOOL);
+    });
+
+    it('what a reader gets of a durable answer they may see: its final text, never a step, and that steps were left out', async () => {
+      const world = new World('agent_quick_tool_call');
+      readable([FILE]);
+      const sink = await watch(world, conversation(world, { question: { attachments: [{ recordId: FILE }] } }));
+      const final = sink.frames().filter((f) => f.type === 'STATE_SNAPSHOT').map((f) => f['snapshot'] as Record<string, unknown>).find((snap) => snap['final'] === true)!;
+      // The owner's final snapshot of the same run has its tool call and narration; the reader's keeps the final text.
+      const owners = (await answerOf(world));
+      expect(final['answer']).to.equal(owners);
+      expect((final['parts'] as Array<Record<string, unknown>>).every((part) => part['type'] === 'text' && part['isFinal'] === true)).to.equal(true);
+      expect(final).to.not.have.property('reasoning');
+      expect(final['activityWithheld']).to.equal(true);
+      // The saved row in RUN_FINISHED: the same, as a chat read gives it.
+      const finished = sink.frames().at(-1)!;
+      const rows = ((finished['result'] as Record<string, unknown>)['conversation'] as { messages: Array<Record<string, unknown>> }).messages;
+      const answer = rows.find((row) => row['messageType'] === 'bot_response')!;
+      expect(answer['activityWithheld']).to.equal(true);
+      expect(answer).to.not.have.property('reasoning');
+      expect(answer['tools'] ?? []).to.deep.equal([]);
+      expect((answer['parts'] as Array<Record<string, unknown>>).map((part) => part['type'])).to.deep.equal(['text']);
+      expect(JSON.stringify(finished)).to.not.include(TOOL);
+    });
+
+    it("the run's answer after one withheld from the viewer is withheld too, though it cites nothing", async () => {
+      const world = new World('agent_quick_tool_call');
+      readable([]);
+      // The earlier answer cites a record the viewer can't open; the run's own turn reused it and cites nothing.
+      const sink = await watch(world, conversation(world, {
+        before: [
+          { _id: 'row-q1', seq: 1, messageType: 'user_query', content: 'before' },
+          { _id: 'row-a1', seq: 2, messageType: 'bot_response', content: OTHER, citations: [{ citationId: 'c', citationData: { content: OTHER, metadata: { recordId: FILE } } }] },
+        ],
+        question: { _id: 'row-q2', seq: 3 },
+        answer: { _id: 'row-a2', seq: 4 },
+      }));
+      for (const leaked of [OTHER, 'STORED answer', JSON.stringify(await answerOf(world)).slice(1, -1), FILE])
+        expect(sink.body, leaked).to.not.include(leaked);
+      expect(sink.body).to.include(NOTICE);
+      const finished = sink.frames().at(-1)!;
+      expect(finished.type).to.equal('RUN_FINISHED');
+      const rows = ((finished['result'] as Record<string, unknown>)['conversation'] as { messages: Array<Record<string, unknown>> }).messages;
+      // Both answers are hidden from the viewer: the earlier one for its record, the run's own as built on it.
+      expect(rows.filter((row) => row['messageType'] === 'bot_response').map((row) => row['answerHidden'] !== undefined)).to.deep.equal([true, true]);
+    });
+
+    describe("another person's failed run", () => {
+      const REASON = "The AI model's provider isn't responding right now. Please try again in a minute.";
+      /** A run whose answer the worker classified as a failure: it ends as answered runs do, and is stored as an error row. */
+      const failedWorld = (): World => {
+        const world = new World('agent_quick_final_answer');
+        const finalized = world.journal.events.find((e) => e.type === 'x.pipeshub.answer.finalized')!;
+        finalized.data = { ...finalized.data, answer: REASON, partTexts: [REASON], errorCode: 'provider_unavailable', answerMatchType: 'Error' };
+        return world;
+      };
+      const failedRow = (world: World) =>
+        conversation(world, { answer: { messageType: 'error', content: REASON, parts: [{ type: 'text', content: REASON }], errorCode: 'provider_unavailable', tools: [], reasoning: [] } });
+      const finalOf = (sink: Sink): Record<string, unknown> =>
+        sink.frames().filter((f) => f.type === 'STATE_SNAPSHOT').map((f) => f['snapshot'] as Record<string, unknown>).find((snap) => snap['final'] === true)!;
+
+      it('reads to a viewer as failed, never why: in the final snapshot and in RUN_FINISHED', async () => {
+        const world = failedWorld();
+        readable([]);
+        const sink = await watch(world, failedRow(world));
+        for (const leaked of [REASON, 'provider_unavailable']) expect(sink.body, leaked).to.not.include(leaked);
+        const final = finalOf(sink);
+        expect(final).to.deep.include({ answer: FAILED_FOR_OTHERS, citations: [], reasonWithheld: true });
+        expect(final['parts']).to.deep.equal([{ type: 'text', content: FAILED_FOR_OTHERS, isFinal: true }]);
+        const finished = sink.frames().at(-1)!;
+        expect(finished.type).to.equal('RUN_FINISHED');
+        const rows = ((finished['result'] as Record<string, unknown>)['conversation'] as { messages: Array<Record<string, unknown>> }).messages;
+        expect(rows.find((row) => row['messageType'] === 'error')).to.deep.include({ content: FAILED_FOR_OTHERS, reasonWithheld: true });
+      });
+
+      it('a run that fails outright reads to a viewer as failed, its message, code and servers left out', async () => {
+        const world = new World('chat_llm_unavailable');
+        readable([]);
+        const sink = await watch(world, conversation(world, { answer: { messageType: 'error', content: 'No AI model is set up' } }));
+        const error = sink.frames().find((f) => f.type === 'RUN_ERROR')!;
+        expect(error).to.deep.equal({ type: 'RUN_ERROR', message: FAILED_FOR_OTHERS, reasonWithheld: true });
+        expect(sink.body).to.not.include('No AI model');
+      });
+
+      it('its asker keeps the reason', async () => {
+        const world = failedWorld();
+        readable([]);
+        const sink = await watch(world, failedRow(world), { audience: 'owner' });
+        expect(finalOf(sink)['answer']).to.equal(REASON);
+        expect(sink.body).to.not.include(FAILED_FOR_OTHERS);
+        const outright = new World('chat_llm_unavailable');
+        const own = await watch(outright, conversation(outright, { answer: { messageType: 'error', content: 'x' } }), { audience: 'owner' });
+        expect(own.frames().find((f) => f.type === 'RUN_ERROR')).to.deep.include({ code: 'llm_initialization_failed' });
+      });
     });
 
     it('a viewer nobody named, or a run whose stored answer is gone, reads no answer', async () => {

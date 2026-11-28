@@ -8,6 +8,7 @@ import { deriveUserActionSecret } from '../utils/jwtKeys';
 import jwt, { SignOptions } from 'jsonwebtoken';
 import { Request } from 'express';
 import { isMcpRelay, relayKey } from '../middlewares/mcp-relay';
+import { TOKEN_CLASS, TOKEN_CLASS_CLAIM } from './token-class';
 
 interface TokenPayload extends Record<string, any> {}
 
@@ -102,13 +103,16 @@ export class AuthTokenService {
     return isMcpRelay(req, this.relayVerificationKey);
   }
 
+  /** The claims of a regular token signed with this service's key; throws when it does not verify. */
+  private verifiedRegular(token: string): TokenPayload {
+    return jwt.verify(token, this.jwtVerificationKey, {
+      algorithms: this.jwtAlgorithms,
+    }) as TokenPayload;
+  }
+
   async verifyToken(token: string): Promise<TokenPayload> {
     try {
-      const decoded = jwt.verify(token, this.jwtVerificationKey, {
-        algorithms: this.jwtAlgorithms,
-      }) as TokenPayload;
-
-      return decoded;
+      return this.verifiedRegular(token);
     } catch (error) {
       // Not logged here: the layer that answers the 401 logs it once, with this cause.
       throw withCause(new UnauthorizedError('Invalid token'), error);
@@ -169,6 +173,30 @@ export class AuthTokenService {
     expiresIn: SignOptions['expiresIn'] = '7d',
   ): string {
     return jwt.sign(payload, this.jwtSecret, { expiresIn } as SignOptions);
+  }
+
+  /**
+   * The run's copy of an app session token: the same claims, issue time and expiry, marked as a run's. Undefined
+   * for any other bearer, and for one that does not verify, so nothing is ever minted from a forged token.
+   */
+  runTokenFor(bearer: string): string | undefined {
+    let claims: unknown;
+    try {
+      claims = this.verifiedRegular(bearer);
+    } catch {
+      return undefined;
+    }
+    if (
+      claims === null ||
+      typeof claims !== 'object' ||
+      (claims as TokenPayload)[TOKEN_CLASS_CLAIM] !== TOKEN_CLASS.session
+    ) {
+      return undefined;
+    }
+    return jwt.sign(
+      { ...(claims as TokenPayload), [TOKEN_CLASS_CLAIM]: TOKEN_CLASS.run },
+      this.jwtSecret,
+    );
   }
 
   generateScopedToken(

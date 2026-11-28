@@ -639,15 +639,15 @@ describe('agent-harness projection: RunProjector', () => {
       const projector = new RunProjector(projectorContext(base));
       projector.begin();
       const frames = projector.project(events);
-      const tail = frames.slice(-3).map((f) => f.frame);
-      expect(tail.map((f) => f.type)).to.deep.equal(['STATE_SNAPSHOT', 'STATE_DELTA', 'STATE_SNAPSHOT']);
+      const tail = frames.slice(-2).map((f) => f.frame);
+      // As the legacy error answer ends: the failed state, then the final snapshot. Its reason is never streamed as
+      // answer text: no delta carries it, only the final snapshot does.
+      expect(tail.map((f) => f.type)).to.deep.equal(['STATE_SNAPSHOT', 'STATE_SNAPSHOT']);
       expect((tail[0]!['snapshot'] as Record<string, unknown>)['status']).to.equal('failed');
-      expect(tail[1]!['delta']).to.deep.equal([
-        { op: 'replace', path: '/citations', value: [] },
-        { op: 'replace', path: '/normalizedAnswer', value: DEADLINE_MESSAGE },
-        { op: 'replace', path: '/rawLength', value: DEADLINE_MESSAGE.length },
-      ]);
-      expect(tail[2]!['snapshot']).to.deep.equal({ final: true, ...completion });
+      expect(tail[1]!['snapshot']).to.deep.equal({ final: true, ...completion });
+      expect(
+        frames.filter((f) => f.frame.type === 'STATE_DELTA' && JSON.stringify(f.frame['delta']).includes(DEADLINE_MESSAGE)),
+      ).to.deep.equal([]);
       expect(frames.some((f) => f.frame.type === 'RUN_ERROR')).to.equal(false);
       expect(projector.terminal).to.deep.equal({ kind: 'finished' });
       const [finished] = projector.finish({ _id: 'c' }, {});

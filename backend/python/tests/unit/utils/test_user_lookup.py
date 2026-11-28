@@ -22,6 +22,7 @@ from fastapi import HTTPException
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import TokenScopes, config_node_constants
 from app.core.org_context import OrgContext, bind
+from app.modules.authz.chat_content_access import can_read_record
 from app.utils import error_class, user_lookup
 from app.utils.logger import log_record_fields
 from app.utils.user_lookup import (
@@ -33,6 +34,7 @@ from app.utils.user_lookup import (
     get_org_or_503,
     get_record_or_503,
     get_user_or_503,
+    read_or_503,
 )
 from app.utils.user_messages import DATABASE_UNREACHABLE
 from tests.support.graph_read_errors import (
@@ -502,6 +504,7 @@ HELPERS = {
     "get_document_or_503": lambda g: lambda rid: get_document_or_503(g, rid, CollectionNames.RECORDS.value),
     "get_record_or_503": lambda g: lambda rid: get_record_or_503(g, rid),
     "check_record_access_or_503": lambda g: lambda rid: check_record_access_or_503(g, "u1", "org-1", rid),
+    "read_or_503": lambda g: lambda rid: read_or_503(can_read_record(g, user_id="u1", org_id="org-1", record=rid)),
 }
 
 

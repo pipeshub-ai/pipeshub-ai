@@ -275,9 +275,9 @@ export interface MemoryPin {
 }
 
 /**
- * The pin for the run's context. In a shared context (SS2) the actor's
- * personal memories stay out (ARCHITECTURE 4.9) and their writes go to the
- * conversation. Null when there is nothing to pin.
+ * The pin for the run's context. `shared`: a shared context (SS2), or a chat anyone besides its owner reads now (shared
+ * with someone, or open to its project), as the history rule decides it. There the actor's personal memories stay out
+ * (ARCHITECTURE 4.9) and their writes go to the conversation. Null when there is nothing to pin.
  */
 export function memoryPin(
   admission: MemoryAdmission | undefined,

@@ -7493,11 +7493,11 @@
     },
     {
       "schemaVersion": 1,
-      "ref": "toolset:pipeshub/internaltools@c.a4ce96ba7085",
+      "ref": "toolset:pipeshub/internaltools@c.0e23a7ae7e08",
       "kind": "toolset",
       "publisher": "pipeshub",
       "name": "internaltools",
-      "version": "c.a4ce96ba7085",
+      "version": "c.0e23a7ae7e08",
       "orgId": null,
       "provenance": "release",
       "source": {
@@ -7579,8 +7579,8 @@
                       },
                       "options": {
                         "type": "array",
-                        "description": "2 to 4 options that lead to different results. Never put the answer in an option: if you already know what each option would lead to (each project's owner or deadline), reply with those answers instead of asking. NEVER use catch-all labels such as 'Other', 'Something else', 'None of the above' or 'Enter your own': the app adds its own 'Something else' choice for typed answers.",
-                        "minItems": 2,
+                        "description": "2 to 4 options that lead to different results, or one isUserInput option when the user must type the value. Never put the answer in an option: if you already know what each option would lead to (each project's owner or deadline), reply with those answers instead of asking. NEVER use catch-all labels such as 'Other', 'Something else', 'None of the above' or 'Enter your own': the app adds its own 'Something else' choice for typed answers.",
+                        "minItems": 1,
                         "maxItems": 4,
                         "items": {
                           "type": "object",
@@ -7624,11 +7624,11 @@
             "effect": "read",
             "sink": null,
             "provider": "platform",
-            "digest": "sha256:285e8f1eba8bad56dc730ec737b63351c613e7d6f4dc17a2270b724e9b103fd9"
+            "digest": "sha256:80cc94964f32f8d9aee95b5f2ed879b4c904d0d6f8d543b45a30ac29067f741b"
           }
         ]
       },
-      "descriptorSetDigest": "sha256:c185f612d7eb02ec88d58141c022efadd6d3048b89e4e296eb87a7861f471ebd",
+      "descriptorSetDigest": "sha256:f1c30baed3ebab0bd3d91c77a2aae1085ee734c7e101b5f04f27b11a88c5d346",
       "deprecated": false,
       "createdAt": 0
     },

@@ -14,7 +14,9 @@ export function StatusMessageComponent({ status }: StatusMessageProps) {
   const statusText = status.message || 'Processing...';
 
   return (
+    // The list scrolling a streaming answer does not follow this line under the answer's text (MessageList).
     <Flex
+      data-status-line=""
       align="start"
       gap="2"
       style={{

@@ -624,9 +624,11 @@ class _RecordResolver:
         )
         record_type = record.get("record_type") or record.get("recordType")
         if record_type == "SQL_TABLE" and self._graph_provider:
-            return await _enrich_sql_table_with_fk_relations(
-                record, self._graph_provider, self._user_id or "", self._org_id or "",
-                connection_sources=self._connection_sources,
+            from app.modules.agents.sql_extension import get_sql_extension
+
+            return await get_sql_extension().enrich_sql_table(
+                record, self._graph_provider, user_id=self._user_id or "", org_id=self._org_id or "",
+                connection_sources=self._connection_sources, blob_store=self._ensure_blob_store,
             )
         return record
 

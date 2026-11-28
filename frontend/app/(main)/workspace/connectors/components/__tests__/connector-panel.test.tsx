@@ -166,14 +166,18 @@ describe('ConnectorPanel: validating credentials', () => {
     expect((screen.getByPlaceholderText('e.g. Production Slack') as HTMLInputElement).value).toBe('Jira');
   });
 
-  it('asks for an instance name before anything else', async () => {
+  it('keeps Next disabled without an instance name, and says why under the field once it is left', async () => {
     startCreate();
     await screen.findByText('API Token credentials');
     fillCredentials({ name: '   ' });
 
-    fireEvent.click(nextButton());
+    expect((nextButton() as HTMLButtonElement).disabled).toBe(true);
+    const nameInput = screen.getByPlaceholderText('e.g. Production Slack');
+    fireEvent.blur(nameInput);
 
     expect(await screen.findByText('Enter an instance name.')).toBeTruthy();
+    expect(nameInput.getAttribute('aria-invalid')).toBe('true');
+    fireEvent.click(nextButton());
     expect(api.createConnectorInstance).not.toHaveBeenCalled();
   });
 

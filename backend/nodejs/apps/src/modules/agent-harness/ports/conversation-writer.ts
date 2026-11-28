@@ -72,6 +72,7 @@ export interface ConversationWriter<Tx = unknown> {
    * Whether `answerId` is an answer of this conversation in this org. Asked
    * before anything about the conversation's runs, so an id from elsewhere is
    * not found rather than told the conversation's state (QA-26).
+   * The error row a failed run left in its place is an answer too.
    */
   hasAnswer(ref: ConversationRef, answerId: string, tx: Tx): Promise<boolean>;
 
@@ -81,6 +82,7 @@ export interface ConversationWriter<Tx = unknown> {
    * returns the question as stored, to be asked again. Null otherwise; nothing
    * is removed. Not an accounted harness write, so the next import realigns
    * the journal's history to the conversation (MG-2c).
+   * That answer may be the error row a failed run left in its place.
    */
   retractLastAnswer(
     ref: ConversationRef,

@@ -4,7 +4,10 @@ import sinon from 'sinon'
 import { Types } from 'mongoose'
 import * as controller from '../../../../src/modules/enterprise_search/controller/es_controller'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
+import { ConversationNotFoundError } from '../../../../src/modules/enterprise_search/services/conversation/domain/errors'
 import { FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
+import { behindGuard, realGuards } from '../helpers/guarded-chat'
+import { chatListScope, withListScope } from '../helpers/list-scope'
 
 const ORG = oid()
 const OTHER_ORG = oid()
@@ -29,16 +32,21 @@ async function call<T = Record<string, unknown>>(
 ): Promise<Outcome<T>> {
   const res = new FakeSSEResponse()
   const next = sinon.stub()
-  const req = { headers: { authorization: 'Bearer token' }, params, query, body: {}, user: user ?? undefined, context: { requestId: 'req-pin' } }
+  // The auth middleware puts string ids on `req.user`; ownership is decided by comparing them as strings.
+  const reqUser = user ? { userId: String(user.userId), orgId: String(user.orgId) } : undefined
+  const req = { headers: { authorization: 'Bearer token' }, params, query, body: {}, user: reqUser, context: { requestId: 'req-pin' } }
   await handler(req as never, res as never, next as never)
   await settle()
   return { status: res.statusCode, body: res.jsonBody as T, error: next.firstCall?.args[0] as Outcome<T>['error'] }
 }
 
-const pin = controller.pinConversation as Handler
-const unpin = controller.unpinConversation as Handler
-const list = controller.getAllConversations as Handler
-const archive = controller.archiveConversation as Handler
+// Each handler runs behind the guard its route mounts; the guards are built per call so `sinon.restore` cannot reset them.
+const guarded = (op: 'read' | 'archiveSelf', handler: Handler): Handler =>
+  ((req: never, res: never, next: never) => behindGuard(realGuards(), op, handler)(req, res, next)) as Handler
+const pin = guarded('read', controller.pinConversation as Handler)
+const unpin = guarded('read', controller.unpinConversation as Handler)
+const list = withListScope(controller.getAllConversations as Handler, 'any', chatListScope)
+const archive = guarded('archiveSelf', controller.archiveConversation as Handler)
 
 function fresh(): InMemoryChatStore {
   const store = new InMemoryChatStore()
@@ -152,7 +160,8 @@ describe('es_controller pin: a chat the owner pins is listed first, and only the
 
       const out = await call(pin, { params: { conversationId: idOf(chat) }, user: null })
 
-      expect(out.error?.statusCode).to.equal(400)
+      // The route's guard turns an anonymous caller away before the handler's own check.
+      expect(out.error?.statusCode).to.equal(401)
       expect(store.writes).to.deep.equal([])
     })
 
@@ -211,6 +220,49 @@ describe('es_controller pin: a chat the owner pins is listed first, and only the
       expect(store.session(chat._id)?.isPinned).to.equal(true)
       expect(store.writes).to.deep.equal([])
     })
+  })
+
+  describe('a pin or unpin the handler refuses', () => {
+    const notFound = (out: Outcome<unknown>): void => {
+      expect(out.error).to.be.instanceOf(ConversationNotFoundError)
+      expect(out.error?.statusCode).to.equal(404)
+      expect((out.error as { code?: string } | undefined)?.code).to.equal('CONVERSATION_NOT_FOUND')
+      expect(out.error?.message).to.equal('Conversation not found')
+    }
+    const recipient: User = { userId: RECIPIENT, orgId: ORG }
+
+    for (const [name, handler] of [['pin', pin], ['unpin', unpin]] as const) {
+      for (const accessLevel of ['read', 'write'] as const) {
+        it(`${name} by someone the chat is shared with at ${accessLevel} is the not-found every denial gives, and writes nothing`, async () => {
+          const store = fresh()
+          const chat = store.addSession({
+            orgId: ORG,
+            userId: OWNER,
+            initiator: OWNER,
+            isShared: true,
+            sharedWith: [{ userId: RECIPIENT, accessLevel }],
+            ...(name === 'unpin' ? { isPinned: true } : {}),
+          })
+          store.writes.length = 0
+
+          const out = await call(handler, { params: { conversationId: idOf(chat) }, user: recipient })
+
+          notFound(out)
+          expect(store.writes).to.deep.equal([])
+        })
+      }
+    }
+
+    for (const [what, fields] of [
+      ['an archived chat', { isArchived: true }],
+      ['a chat the caller did not start', { initiator: OTHER }],
+    ] as const) {
+      it(`so is pinning ${what}`, async () => {
+        const store = fresh()
+        const chat = store.addSession({ orgId: ORG, userId: OWNER, initiator: OWNER, ...fields })
+        notFound(await call(pin, { params: { conversationId: idOf(chat) } }))
+      })
+    }
   })
 
   describe('archiveConversation', () => {

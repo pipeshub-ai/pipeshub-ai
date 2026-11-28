@@ -19,6 +19,7 @@ from app.agents.run_definition import ASSISTANT_AGENT_KEY
 from app.control_plane.contracts.generated.resolved_run_config import ResolvedRunConfig
 from app.control_plane.runtime.pinning import pin_digest
 from app.harness.assembly.descriptor_pins import DescriptorPin, pinned_descriptors
+from app.harness.assembly.history import answers_only_turns
 from app.harness.contracts.generated.pipeshub.run_spec import (
     Audience,
     PipeshubRunSpecExtension,
@@ -223,6 +224,9 @@ class RunContext(_Frozen):
     sub_agent: SubAgentRef | None = None
     max_children: int = 0
     audience: AudienceRef | None = None
+    # A chat others read when the run was admitted (``x.pipeshub.history``): earlier turns reach the model as their
+    # questions and answers' text, never their tool calls, results or reference data.
+    history_answers_only: bool = False
     memory: MemoryPinRef | None = None
     # The claim's attempt (sandboxes are labelled with it so the sweeper reaps what a dead attempt left).
     attempt_id: str | None = None
@@ -408,7 +412,9 @@ class RunContext(_Frozen):
                 snapshot.previous_conversations if snapshot is not None else (),
                 ext.audience,
                 spec.principal_ref,
+                answers_only=ext.history is not None,
             ),
+            history_answers_only=ext.history is not None,
             caller_email=snapshot.caller.email if snapshot is not None and snapshot.caller else None,
             caller_display_name=(
                 snapshot.caller.display_name if snapshot is not None and snapshot.caller else None
@@ -459,9 +465,14 @@ def _visible_history(
     turns: Iterable[dict[str, JsonValue]],
     audience: Audience | None,
     principal_ref: str,
+    *,
+    answers_only: bool = False,
 ) -> tuple[dict[str, JsonValue], ...]:
     """The conversation history the run's own actor may give the model (SS2); Node
-    projected it already, and projecting again changes nothing but drops ``sender``."""
+    projected it already, and projecting again changes nothing but drops ``sender``.
+    ``answers_only`` (a chat others read): Node dropped the answers' tool results already, and so does this."""
+    if answers_only:
+        turns = [cast("dict[str, JsonValue]", turn) for turn in answers_only_turns(turns)]
     if audience is None:
         return tuple(turns)
     projected = project_turns(

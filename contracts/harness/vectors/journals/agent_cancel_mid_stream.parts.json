@@ -4,8 +4,7 @@
   {
    "type": "text",
    "content": "",
-   "runId": "run-golden",
-   "isFinal": true
+   "runId": "run-golden"
   },
   {
    "type": "tool_call",
@@ -17,6 +16,11 @@
    "argsSummary": "Export Report: \"q3\"",
    "resultPreview": "{\"name\": \"q3\", \"rows\": 3}",
    "resultSummary": "Completed successfully"
+  },
+  {
+   "type": "text",
+   "content": "",
+   "isFinal": true
   }
  ]
 }

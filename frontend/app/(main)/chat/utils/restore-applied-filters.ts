@@ -13,11 +13,14 @@ const LEGACY_COLLECTIONS_APP_PREFIX = 'knowledgeBase_';
 const hasId = (node: AppliedFilterNode | null | undefined): node is AppliedFilterNode =>
   typeof node?.id === 'string' && node.id !== '';
 
+// A source the question named with @ scoped that question only: it was never part of the chat's selection.
+const selected = (nodes: AppliedFilterNode[]): AppliedFilterNode[] => nodes.filter((node) => node.mentioned !== true);
+
 function restorable(applied: AppliedFilters): AppliedFilters {
   const kept = { ...applied };
   for (const bucket of BUCKETS) {
     const nodes = applied[bucket];
-    if (nodes) kept[bucket] = nodes.filter(hasId);
+    if (nodes) kept[bucket] = selected(nodes.filter(hasId));
   }
   return {
     ...kept,

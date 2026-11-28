@@ -105,6 +105,40 @@ describe('CreateAgentDialog', () => {
     expect(router.replace).not.toHaveBeenCalled();
   });
 
+  it('refuses a name over 200 characters on the name, before any request', () => {
+    const { dialog } = renderDialog();
+    typeName(dialog, 'a'.repeat(201));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create agent' }));
+
+    const alert = within(dialog).getByRole('alert');
+    expect(alert.textContent).toBe('Name must be at most 200 characters.');
+    const input = within(dialog).getByPlaceholderText('e.g. Support bot');
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    expect(input.getAttribute('aria-describedby')).toBe(alert.id);
+    expect(createAgent).not.toHaveBeenCalled();
+  });
+
+  it('puts a server answer about the name on the name, not in the callout, and asks for no toast', async () => {
+    createAgent.mockRejectedValue(
+      apiFailure(400, {
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Name must be less than 200 characters',
+          fieldErrors: [{ field: 'name', message: 'Name must be less than 200 characters' }],
+        },
+      }),
+    );
+    const { dialog } = renderDialog();
+    typeName(dialog, 'Support bot');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create agent' }));
+
+    expect(await within(dialog).findByRole('alert')).toBeTruthy();
+    expect(within(dialog).getAllByText('Name must be less than 200 characters')).toHaveLength(1);
+    expect(within(dialog).getByPlaceholderText('e.g. Support bot').getAttribute('aria-invalid')).toBe('true');
+    // The global error toast is what produced the second message: the request opts out of it.
+    expect(createAgent.mock.calls[0]?.[1]).toEqual({ suppressErrorToast: true });
+  });
+
   it("shows the server's reason when the service agent cannot be created", async () => {
     createAgent.mockRejectedValue(apiFailure(403, { message: 'Only admins can create service agents.' }));
     const { dialog } = renderDialog();

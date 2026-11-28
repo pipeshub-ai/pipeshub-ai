@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -180,7 +179,7 @@ class TestSyncBuiltinSkills:
         ), patch(
             "app.agents.agent_loop.skills.manager_factory.SkillSource",
         ) as mock_source, patch(
-            "app.agents.agent_loop.skills.manager_factory.GraphSkillStore",
+            "app.edition_services.skill_store",
         ):
             mock_source.BUILTIN = "builtin"
             await sync_builtin_skills(MagicMock(), "org-1", manager)
@@ -201,7 +200,7 @@ class TestSyncBuiltinSkills:
             "app.agents.agent_loop.skills.manager_factory.get_builtin_seeder",
             return_value=seeder,
         ), patch(
-            "app.agents.agent_loop.skills.manager_factory.GraphSkillStore",
+            "app.edition_services.skill_store",
         ):
             await sync_builtin_skills(MagicMock(), "org-1", manager)
         manager.refresh.assert_not_called()
@@ -256,7 +255,7 @@ class TestBuildRuntimeSkillManager:
         fake_manager.start = AsyncMock()
 
         context = SimpleNamespace(
-            graph_provider=MagicMock(), org_id="o", user_id="u", retrieval_service=MagicMock(),
+            graph_provider=MagicMock(), org_id="o", user_id="u", user_key="key-u", retrieval_service=MagicMock(),
             user_info={}, agent_skills=None,
         )
         registry = MagicMock()
@@ -299,6 +298,31 @@ class TestBuildRuntimeSkillManager:
         )
 
 
+    @pytest.mark.asyncio
+    async def test_a_run_reads_only_the_persons_own_skills_and_its_agents(self) -> None:
+        """A skill can hold what only its writer could open: another person's run never loads it,
+        unless the agent's creator assigned it to the agent."""
+        from types import SimpleNamespace
+
+        from app.agents.agent_loop.skills.manager_factory import (
+            build_runtime_skill_manager,
+        )
+
+        context = SimpleNamespace(
+            graph_provider=MagicMock(), org_id="o", user_id="u", user_info={"_key": "key-u"},
+            retrieval_service=MagicMock(), agent_skills=["team-playbook"],
+        )
+        with patch(
+            "app.agents.agent_loop.skills.manager_factory._build_manager", new_callable=AsyncMock,
+        ) as build, patch("app.agents.agent_loop.skills.manager_factory.schedule_builtin_skill_reconcile"):
+            await build_runtime_skill_manager(context, MagicMock())
+        args, kwargs = build.call_args
+        # Stamped with the runtime's user id; read as the person by each id their skills are stamped under
+        # (the account id, the graph user key), with the agent's assigned skills shared.
+        assert args[2] == "u"
+        assert kwargs["visibility"] == SkillVisibility.of(["u", "key-u"], shared=["team-playbook"])
+
+
 class TestBuildManagerInternal:
     """Direct tests for ``_build_manager`` — covers lines 159-175."""
 
@@ -309,7 +333,7 @@ class TestBuildManagerInternal:
         mock_manager = MagicMock()
         mock_manager.start = AsyncMock()
 
-        with patch("app.agents.agent_loop.skills.manager_factory.GraphSkillStore") as mock_store, \
+        with patch("app.edition_services.skill_store") as mock_store, \
              patch("app.agents.agent_loop.skills.manager_factory.SemanticSkillIndex"), \
              patch("app.agents.agent_loop.skills.manager_factory.GraphUsageTracker"), \
              patch("app.agents.agent_loop.skills.manager_factory.RubricSkillEvaluator"), \
@@ -336,7 +360,7 @@ class TestBuildManagerInternal:
         mock_manager.start = AsyncMock()
         mock_transport = MagicMock()
 
-        with patch("app.agents.agent_loop.skills.manager_factory.GraphSkillStore"), \
+        with patch("app.edition_services.skill_store"), \
              patch("app.agents.agent_loop.skills.manager_factory.SemanticSkillIndex"), \
              patch("app.agents.agent_loop.skills.manager_factory.GraphUsageTracker"), \
              patch("app.agents.agent_loop.skills.manager_factory.RubricSkillEvaluator"), \
@@ -364,7 +388,7 @@ class TestBuildManagerInternal:
         mock_manager = MagicMock()
         mock_manager.start = AsyncMock()
 
-        with patch("app.agents.agent_loop.skills.manager_factory.GraphSkillStore"), \
+        with patch("app.edition_services.skill_store"), \
              patch("app.agents.agent_loop.skills.manager_factory.SemanticSkillIndex"), \
              patch("app.agents.agent_loop.skills.manager_factory.GraphUsageTracker"), \
              patch("app.agents.agent_loop.skills.manager_factory.RubricSkillEvaluator"), \
@@ -390,7 +414,7 @@ class TestBuildManagerInternal:
         mock_manager = MagicMock()
         mock_manager.start = AsyncMock()
 
-        with patch("app.agents.agent_loop.skills.manager_factory.GraphSkillStore") as mock_store, \
+        with patch("app.edition_services.skill_store") as mock_store, \
              patch("app.agents.agent_loop.skills.manager_factory.SemanticSkillIndex"), \
              patch("app.agents.agent_loop.skills.manager_factory.GraphUsageTracker"), \
              patch("app.agents.agent_loop.skills.manager_factory.RubricSkillEvaluator"), \
@@ -406,9 +430,12 @@ class TestBuildManagerInternal:
                 extractor_transport=None,
                 visibility=SkillVisibility.of(["creator-scope"]),
             )
-        mock_store.assert_called_once_with(
-            gp, "org", "user", visibility=SkillVisibility.of(["creator-scope"]), rights=None, provenance=None,
-        )
+        args, kwargs = mock_store.call_args
+        assert args == (gp, "org", "user")
+        assert kwargs == {
+            "visibility": SkillVisibility.of(["creator-scope"]), "rights": None, "provenance": None,
+            "also_visible": frozenset(), "origins": None, "own_skills": True,
+        }
 
     @pytest.mark.asyncio
     async def test_manager_start_awaited(self) -> None:
@@ -417,7 +444,7 @@ class TestBuildManagerInternal:
         mock_manager = MagicMock()
         mock_manager.start = AsyncMock()
 
-        with patch("app.agents.agent_loop.skills.manager_factory.GraphSkillStore"), \
+        with patch("app.edition_services.skill_store"), \
              patch("app.agents.agent_loop.skills.manager_factory.SemanticSkillIndex"), \
              patch("app.agents.agent_loop.skills.manager_factory.GraphUsageTracker"), \
              patch("app.agents.agent_loop.skills.manager_factory.RubricSkillEvaluator"), \

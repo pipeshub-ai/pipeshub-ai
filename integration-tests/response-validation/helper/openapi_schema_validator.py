@@ -4,12 +4,21 @@ Validate JSON response bodies against schemas defined in ``pipeshub-openapi.yaml
 Uses ``jsonschema`` Draft 7 with a ``referencing.Registry`` rooted at the full
 OpenAPI document so ``#/components/schemas/...`` resolves. Adapts OpenAPI 3.0
 ``nullable`` into JSON Schema compatible ``anyOf`` / ``type`` shapes.
+
+A downstream build that serves a larger spec lists its spec files in a
+``suite_extensions/openapi_schema_validator.py`` (helper/suite_extensions.py):
+``OPENAPI_OVERLAYS`` and ``OPENAPI_FRAGMENTS``, paths from the repository root.
+They are merged as the app merges them (overlays first, then fragments), so a
+body is checked against the spec that build serves. No extension may loosen an
+object this spec closes with ``additionalProperties: false``.
 """
 
 from __future__ import annotations
 
 import copy
+import json
 import re
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -78,15 +87,114 @@ def adapt_openapi_nullable(obj: Any) -> Any:
     return result
 
 
+def merge_overlay(target: dict[str, Any], overlay: dict[str, Any]) -> None:
+    """As the app merges a spec overlay: objects key by key, lists keep every distinct item, any other value replaces."""
+    for key, value in overlay.items():
+        current = target.get(key)
+        if isinstance(value, dict):
+            into = current if isinstance(current, dict) else {}
+            merge_overlay(into, value)
+            target[key] = into
+        elif isinstance(current, list) and isinstance(value, list):
+            seen = {json.dumps(item) for item in current}
+            target[key] = [*current, *(item for item in value if json.dumps(item) not in seen)]
+        else:
+            target[key] = value
+
+
+def _is_tag_list(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(tag, dict) and isinstance(tag.get("name"), str) for tag in value)
+
+
+def merge_fragment(base: dict[str, Any], fragment: dict[str, Any]) -> dict[str, Any]:
+    """As the app merges a spec fragment: objects key by key, named tags by name, ``null`` removes the key, any other
+    value replaces."""
+    merged = dict(base)
+    for key, value in fragment.items():
+        current = merged.get(key)
+        if value is None:
+            merged.pop(key, None)
+        elif key == "tags" and _is_tag_list(value) and _is_tag_list(current):
+            by_name = {tag["name"]: tag for tag in current}
+            for tag in value:
+                by_name[tag["name"]] = tag
+            merged[key] = list(by_name.values())
+        elif isinstance(value, dict) and isinstance(current, dict):
+            merged[key] = merge_fragment(current, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _closed_objects(node: Any, path: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
+    """Where ``node`` has ``additionalProperties: false``."""
+    found: list[tuple[Any, ...]] = []
+    if isinstance(node, dict):
+        if node.get("additionalProperties") is False:
+            found.append(path)
+        for key, value in node.items():
+            found.extend(_closed_objects(value, (*path, key)))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            found.extend(_closed_objects(value, (*path, index)))
+    return found
+
+
+def _at(node: Any, path: tuple[Any, ...]) -> Any:
+    for step in path:
+        if (isinstance(node, dict) and step in node) or (
+            isinstance(node, list) and isinstance(step, int) and step < len(node)
+        ):
+            node = node[step]
+        else:
+            return None
+    return node
+
+
+def _extension_spec_files() -> tuple[list[Path], list[Path]]:
+    root = Path(__file__).resolve().parents[2]
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    from helper import suite_extensions
+
+    overlays: list[Path] = []
+    fragments: list[Path] = []
+    for module in suite_extensions.modules("openapi_schema_validator", root):
+        overlays.extend(_REPO_ROOT / p for p in getattr(module, "OPENAPI_OVERLAYS", ()))
+        fragments.extend(_REPO_ROOT / p for p in getattr(module, "OPENAPI_FRAGMENTS", ()))
+    return overlays, fragments
+
+
+def _read_yaml(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as fh:
+        raw = yaml.safe_load(fh)
+    if not isinstance(raw, dict):
+        raise ValueError(f"OpenAPI YAML root must be a mapping: {path}")
+    return raw
+
+
+def merged_spec(base: dict[str, Any], overlays: list[Path], fragments: list[Path]) -> dict[str, Any]:
+    """``base`` with the overlays and then the fragments merged in; an extension that reopens an object ``base``
+    closes with ``additionalProperties: false`` is an error."""
+    spec = copy.deepcopy(base)
+    for path in overlays:
+        merge_overlay(spec, _read_yaml(path))
+    for path in fragments:
+        spec = merge_fragment(spec, _read_yaml(path))
+    for path in _closed_objects(base):
+        node = _at(spec, path)
+        if isinstance(node, dict) and node.get("additionalProperties") is not False:
+            raise ValueError(f"an OpenAPI extension loosens additionalProperties at {'/'.join(map(str, path))}")
+    return spec
+
+
 @lru_cache(maxsize=1)
 def load_openapi_document() -> dict[str, Any]:
     if not _OPENAPI_PATH.is_file():
         raise FileNotFoundError(f"OpenAPI spec not found: {_OPENAPI_PATH}")
-    with _OPENAPI_PATH.open("r", encoding="utf-8") as fh:
-        raw = yaml.safe_load(fh)
-    if not isinstance(raw, dict):
-        raise ValueError("OpenAPI YAML root must be a mapping")
-    return raw
+    raw = _read_yaml(_OPENAPI_PATH)
+    overlays, fragments = _extension_spec_files()
+    return merged_spec(raw, overlays, fragments) if overlays or fragments else raw
 
 
 def _make_registry(adapted_root: dict[str, Any]) -> Registry:

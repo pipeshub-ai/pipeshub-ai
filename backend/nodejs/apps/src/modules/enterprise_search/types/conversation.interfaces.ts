@@ -6,6 +6,15 @@ import type { RunCommand } from '../../agent-harness/domain/commands';
 import type { CutShortReason } from '../../agent-harness/contracts/generated/core/enums';
 import type { OutcomeView } from '../../agent-harness/projection/outcome-view';
 import type { CouldNotDoView, NotFoundView } from '../../agent-harness/projection/timeline';
+import type {
+  AnswerProvenance,
+  LabelHistoryEntry,
+} from '../services/conversation/privacy/label.types';
+import type {
+  AnswerConsent,
+  AnswerConsentEntry,
+  ShareRequest,
+} from '../schema/answer-share.schema';
 
 export interface AiSearchResponse {
   searchResults: ICitation[];
@@ -188,6 +197,8 @@ export interface IMessagePart {
   approved?: boolean;
   /** How a call that waited for approval was settled (Python `tool_approvals.Outcome.answer`). */
   approvalAnswer?: 'allowed' | 'declined' | 'expired';
+  /** Why an allowed call didn't run, which its card says (Python `tool_approvals.Outcome.reason`). */
+  approvalReason?: 'access_lost';
   /** `approval` parts: `pending`, `approved`, `denied`, `closed` or `expired`. */
   status?:
     | 'running'
@@ -244,14 +255,32 @@ export interface IMessagePart {
   };
 }
 
+/** An agent tool the requester could not use: not set up, not signed in, or removed. Holds no credentials. */
+export interface IUnavailableTool {
+  kind: 'toolset' | 'mcp';
+  instanceId: string;
+  displayName: string;
+  name?: string | null;
+  problem: 'not_configured' | 'not_authenticated' | 'not_found';
+  authMode?: string | null;
+  /** One credential an administrator enters for everyone. */
+  sharedCredential: boolean;
+  /** The requester can connect it themselves. */
+  userCanConnect: boolean;
+  /** The answer called the tool's stub: it needed the tool. A list saved before stubs has none. */
+  needed?: boolean;
+}
+
 export interface IMessage {
-  messageType: 'user_query' | 'bot_response' | 'error' | 'feedback' | 'system' | 'tool_call';
+  messageType: 'user_query' | 'bot_response' | 'error' | 'feedback' | 'system' | 'tool_call' | 'note';
   content: string;
   contentFormat?: 'MARKDOWN' | 'JSON' | 'HTML';
   /** Set on a `bot_response` persisted from a cancelled/disconnected run. */
   status?: 'stopped';
   citations?: IMessageCitation[];
   confidence?: string;
+  /** Only `Capability Card` (an answer produced by an extension instead of the model) is kept; the UI hides the search chrome for it. */
+  answerMatchType?: 'Capability Card';
   followUpQuestions?: IFollowUpQuestion[];
   feedback?: IFeedback[];
   metadata?: IMessageMetadata;
@@ -279,10 +308,16 @@ export interface IMessage {
   foreignTurn?: boolean;
   /** Copied from another conversation by a fork: it names none of that conversation's runs (FORKFIX). */
   copied?: boolean;
-  /** The durable run that wrote this answer (UX5). */
+  /**
+   * The run that wrote the row was given what earlier turns' tools returned, which name no record: the reader check
+   * hides such an answer from everyone but its asker. Absent on rows written before it was recorded.
+   */
+  earlierResults?: boolean;
+  /**
+   * The run that wrote the row: the activity panel finds a durable run after a reload (UX5), the row's archived label
+   * keeps it, and a file the run wrote names it.
+   */
   runId?: string;
-  /** An error answer's code (`messageType: 'error'`), worded by the web app (ERR-UX). */
-  errorCode?: string;
   /** With errorCode `mcp_tool_withdrawn`: the servers' labels the web app's words name (WP-84). */
   errorServers?: string[];
   /** With errorCode `operator_stopped`: the operator control's scope and reason, which the web app words (ADR-OPS-01 D5). */
@@ -302,6 +337,31 @@ export interface IMessage {
    * read unless selected by name (it names sources a reader may not see).
    */
   label?: PipeshubTurnLabel;
+  /** Tools the agent had but the requester could not use on this turn; the answer ran without them. */
+  unavailableTools?: IUnavailableTool[];
+  /**
+   * `error`: the failure's code. The web app words it in the reader's language (ERR-UX); a refusal only an admin can
+   * lift carries its own code, so a reader of the stored row knows trying again cannot help.
+   */
+  errorCode?: string;
+  /** `user_query`; absent on legacy rows (author = session owner). */
+  authorUserId?: Types.ObjectId;
+  /** `bot_response` / `error` / `tool_call`: the user whose turn produced the row. */
+  requestedBy?: Types.ObjectId;
+  /** The `user_query` `_id` this row answers, same session. */
+  inReplyTo?: Types.ObjectId;
+  /** `bot_response` / `error`: the version of the stored content, new on every write of it; absent on older rows. */
+  labelVer?: string;
+  /** `bot_response` / `error`: what the model calls behind the answer were given. Never returned in a response. */
+  provenance?: AnswerProvenance;
+  /** The labels of earlier versions of this row, newest last. Never returned in a response. */
+  labelHistory?: LabelHistoryEntry[];
+  /** A `bot_response` only: the asker shared this version in place. */
+  consent?: AnswerConsent;
+  /** A `bot_response` with a share with people only; never selected by default, never returned. */
+  consentTo?: AnswerConsentEntry[];
+  /** A `bot_response` only: members' asks to see it; never selected by default, never returned. */
+  shareRequests?: ShareRequest[];
 }
 
 export interface IConversation {
@@ -312,10 +372,7 @@ export interface IConversation {
   messages: IMessageDocument[];
   isShared?: boolean;
   shareLink?: string;
-  sharedWith?: Array<{
-    userId: Types.ObjectId;
-    accessLevel: 'read' | 'write';
-  }>;
+  sharedWith?: IChatSessionShareRow[];
   isDeleted?: boolean;
   deletedBy?: Types.ObjectId;
   isArchived?: boolean;
@@ -348,6 +405,8 @@ export interface IConversation {
     messageId?: Types.ObjectId;
     stack?: string;
     metadata?: Map<string, any>;
+    /** Who asked the failed run; absent on failures saved before it was recorded. */
+    requestedBy?: Types.ObjectId;
   }>;
   // Additional metadata for useful information
   metadata?: Map<string, any>;
@@ -386,6 +445,22 @@ export interface IConversationModel extends Model<IConversationDocument> {
  * the agent.conversation.schema.ts override `enum: ['agent_chat']`) — this
  * type only ever needs the latter, written on agent sessions.
  */
+/**
+ * One `chatSessions.sharedWith[]` entry. Rows written by `/share` are `{userId, accessLevel}`
+ * only (no `principalType`): readers must infer a user principal from `userId`.
+ */
+export interface IChatSessionShareRow {
+  principalType?: 'user' | 'team';
+  /** Present iff the principal is a user. */
+  userId?: Types.ObjectId;
+  /** Graph team id (UUID or `all_<orgId>`), present iff the principal is a team. */
+  teamId?: string;
+  accessLevel: 'read' | 'write';
+  addedBy?: Types.ObjectId;
+  addedAt?: Date;
+  updatedAt?: Date;
+}
+
 export interface IChatSession {
   userId: Types.ObjectId;
   orgId: Types.ObjectId;
@@ -413,6 +488,8 @@ export interface IChatSession {
   createdAt?: Date;
   updatedAt?: Date;
   failReason?: String;
+  /** Who asked the run that left the session `Failed`. */
+  failedRunBy?: Types.ObjectId;
   status?: String;
   modelInfo?: IAIModel;
   conversationErrors?: Array<{
@@ -422,6 +499,8 @@ export interface IChatSession {
     messageId?: Types.ObjectId;
     stack?: string;
     metadata?: Map<string, any>;
+    /** Who asked the failed run; absent on failures saved before it was recorded. */
+    requestedBy?: Types.ObjectId;
   }>;
   metadata?: Map<string, any>;
 
@@ -439,6 +518,8 @@ export interface IChatSession {
   codingEnginePin?: string;
   /** GIT-FLOW (WP-26): the repository the chat's engine works on. */
   repository?: { url: string; baseRef?: string; toolsetInstanceId: string };
+  /** Bumped on every visible change. Absent on legacy rows. */
+  rev?: number;
 
   // ---- Agent-only fields, present only when sessionType === 'agent' ----
   agentKey?: string;
@@ -452,6 +533,8 @@ export interface IChatSession {
   projectId?: Types.ObjectId;
   /** Per-conversation override of the project's default chat-sharing visibility. */
   projectVisibility?: 'private' | 'project';
+  /** When it last became visible to its project; cleared when it is not. */
+  projectVisibleAt?: Date;
   /** Compare models: set on a hidden branch, the chat it branched from. */
   compareOf?: Types.ObjectId;
   /** Compare models: the parent's `user_query` the branch re-asks. */
@@ -477,6 +560,11 @@ export interface IChatSessionMessage extends IMessage {
   orgId: Types.ObjectId;
   /** Internal sort key — never returned in a response; gaps are legal. */
   seq: number;
+  /** The session `rev` the row was last written at; absent on rows older than stamping. */
+  changeRev?: number;
+  /** Set on a removed row, which stays only as an emptied marker. */
+  removedAt?: Date;
+  removedBy?: Types.ObjectId;
 }
 
 export interface IChatSessionMessageDocument
@@ -497,6 +585,7 @@ export type AnswerMatchType =
   | 'Exact Match'
   | 'Partial Match'
   | 'No Match'
+  | 'Capability Card'
   | 'Error';
 
 export interface IAIResponse {
@@ -548,6 +637,12 @@ export interface IAIResponse {
   notFound?: NotFoundView;
   /** R32REPO-FU-1: a durable run's "could not do" fact, worded by the web app. */
   limits?: CouldNotDoView;
+  /** Tools the run left out because the requester has not connected them (AI backend `UnavailableTool`). */
+  unavailableTools?: IUnavailableTool[];
+  /** Non-streaming routes only: the run's custom events the chat extension asked to keep. Never stored. */
+  events?: unknown[];
+  /** The answer's label as the AI backend built it; read only through `answerLabelFrom`, never returned. */
+  provenance?: unknown;
 }
 
 export interface IAIModel {

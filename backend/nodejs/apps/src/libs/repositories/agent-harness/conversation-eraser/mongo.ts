@@ -13,6 +13,7 @@ import {
 } from '../../../../modules/agent-harness/application/conversation-attachments';
 import { ChatSession } from '../../../../modules/enterprise_search/schema/chat.session.schema';
 import { ChatSessionMessage } from '../../../../modules/enterprise_search/schema/chat.session.message.schema';
+import { ChatAnswerClosure } from '../../../../modules/enterprise_search/schema/chat.answer.closure.schema';
 import Citation from '../../../../modules/enterprise_search/schema/citation.schema';
 import { Conversation } from '../../../../modules/enterprise_search/schema/conversation.schema';
 import { AgentConversation } from '../../../../modules/enterprise_search/schema/agent.conversation.schema';
@@ -30,6 +31,7 @@ const markRemovedElsewhere =
   (org: Types.ObjectId, session: Types.ObjectId): MarkAttachmentsRemoved =>
   async (recordIds) => {
     const ids = [...recordIds];
+    // row-writer-exempt: an erased upload is marked removed on other chats' rows, unstamped: their readers see it at their next full read
     const marked = await ChatSessionMessage.updateMany(
       {
         orgId: org,
@@ -47,8 +49,9 @@ const markRemovedElsewhere =
 /**
  * A conversation's own documents (E7 step `conversation`): the chat
  * attachments its messages carry (through the query service, QA15-F4), the
- * citations they point at, the messages, the session, and the frozen legacy
- * copy the chatSessions migration left under the same id. Attachments and
+ * citations they point at, the messages, the reader check's stored closures of
+ * its answers, the session, and the frozen legacy copy the chatSessions
+ * migration left under the same id. Attachments and
  * citations first, so a crash before the messages go leaves the message list
  * to find them again. An erased upload another conversation's message also
  * names is marked removed there (QA-15G), so that chip reads as removed rather
@@ -135,8 +138,14 @@ export class HarnessConversationEraser
       );
       citations += deleted.deletedCount;
     }
+    // row-writer-exempt: an erased chat's rows go with it; nobody reads them again
     const removedMessages = await ChatSessionMessage.deleteMany(
       { sessionId: session, orgId: org },
+      MAJORITY,
+    );
+    // The reader check's closures of the chat's answer versions, kept beside its rows under the chat's id.
+    const closures = await ChatAnswerClosure.deleteMany(
+      { orgId: org, sessionId: session },
       MAJORITY,
     );
     const sessions = await ChatSession.deleteOne(
@@ -155,6 +164,9 @@ export class HarnessConversationEraser
       messages: removedMessages.deletedCount,
       sessions: sessions.deletedCount,
       ...attachments,
+      ...(closures.deletedCount > 0
+        ? { answerClosures: closures.deletedCount }
+        : {}),
     };
   }
 }

@@ -11,7 +11,7 @@ import { cancelStreamForSlot, streamMessageForSlot } from '../streaming';
 import { isToolApprovalResumeQuery } from '../tool-approval';
 import { pickModelInfoFromConversationBundle } from '../utils/apply-conversation-model-info';
 import { CompareApi } from './compare-api';
-import { useCompareStore } from './compare-store';
+import { chatOpenToOthers, useCompareStore } from './compare-store';
 import { MAX_COMPARE_MODELS, type BranchRequest, type CompareTurn } from './types';
 import type { ConversationMessage, ModelInfo, ModelOverride, StreamChatRequest } from '../types';
 
@@ -86,10 +86,19 @@ export function onLeaveChat(mountedAt: string): void {
 }
 
 // Moving from one open chat to another starts that chat with Compare off. A new chat's first send only
-// creates a slot while nothing was open, so it is never a move.
+// creates a slot while nothing was open, so it is never a move. Watched while Compare is on: the chat store
+// can still be loading when this module runs (it reaches this module through the edition's chat extension).
+let stopWatchingMoves: (() => void) | null = null;
 if (typeof window !== 'undefined') {
-  useChatStore.subscribe((state, prev) => {
-    if (state.activeSlotId && prev.activeSlotId && state.activeSlotId !== prev.activeSlotId) onNewChat();
+  useCompareStore.subscribe(({ enabled }) => {
+    if (enabled && !stopWatchingMoves) {
+      stopWatchingMoves = useChatStore.subscribe((state, prev) => {
+        if (state.activeSlotId && prev.activeSlotId && state.activeSlotId !== prev.activeSlotId) onNewChat();
+      });
+    } else if (!enabled && stopWatchingMoves) {
+      stopWatchingMoves();
+      stopWatchingMoves = null;
+    }
   });
 }
 
@@ -118,6 +127,8 @@ function watchSlots(): void {
  */
 export function applyCompareToRequest(slotId: string, request: StreamChatRequest, displayQuery: string): boolean {
   if (request.agentId) return false;
+  // A Compare left on from another chat never runs in one others read: the send is answered as usual.
+  if (chatOpenToOthers(useChatStore.getState().slots[slotId])) return false;
   const models = getActiveCompareModels();
   if (!models) return false;
   const [primary, second] = models;

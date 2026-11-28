@@ -100,6 +100,22 @@ class TestToolInput:
         assert isinstance(result, ToolOutput) and result.success is False
         assert "2 to 4" in result.error
 
+    async def test_one_typed_option_is_enough_for_a_card(self) -> None:
+        """Seen live: a question for a name nothing can list was refused for having one option, so the
+        model padded it with a choice the user had already made."""
+        payload = json.loads(await _ask({
+            "question": "What is the name of the collection?",
+            "options": [{"label": "Enter the collection name", "isUserInput": True}],
+        }))
+        assert payload["questions"][0]["options"] == [
+            {"id": "opt_enter_the_collection_name", "label": "Enter the collection name", "isUserInput": True},
+        ]
+
+    async def test_one_typed_option_that_is_a_catch_all_is_refused(self) -> None:
+        result = await _ask({"question": "Which one?", "options": [{"label": "Enter your own", "isUserInput": True}]})
+        assert isinstance(result, ToolOutput) and result.success is False
+        assert "isUserInput" in result.error
+
     async def test_more_than_three_questions_are_refused(self) -> None:
         result = await _ask(*(_q(f"Question {i}?") for i in range(4)))
         assert isinstance(result, ToolOutput) and result.success is False
@@ -175,7 +191,9 @@ class TestToolInput:
         meta = getattr(InternalTools.ask_user_question, TOOL_META_ATTR)
         items = next(p for p in meta.parameters if p.name == "questions").items
         options = items["properties"]["options"]
-        assert (options["minItems"], options["maxItems"]) == (2, 4)
+        assert (options["minItems"], options["maxItems"]) == (1, 4)
+        assert "or one isUserInput option" in options["description"]
+        assert "or one isUserInput option" in meta.description
         assert "description" in options["items"]["properties"]
         assert "recommended" not in options["items"]["properties"]
         assert "recommended or best" in meta.description

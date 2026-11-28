@@ -30,6 +30,7 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
 from app.agents.actions.knowledge_graph.ops.scope import resolve_scope
+from app.modules.agents.privacy.ledger import note_shown
 from app.modules.agents.qna.chat_state import (
     ChatState,
     remember_record_ids,
@@ -351,11 +352,12 @@ class KnowledgeHub:
                 record_group_ids=use_record_group_ids,
             )
 
+            fetchable = _record_ids_in_items(response.items)
             remember_record_ids(
-                self.state,
-                _record_ids_in_items(response.items),
-                names={item.id: item.name for item in response.items or []},
+                self.state, fetchable, names={item.id: item.name for item in response.items or []},
             )
+            # Containers are named too: record groups, collections, apps.
+            note_shown(nodes=[item.id for item in response.items or [] if item.id and item.id not in fetchable])
             return _format_browse_response(response)
 
         except Exception as e:

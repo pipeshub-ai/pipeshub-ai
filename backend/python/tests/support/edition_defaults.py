@@ -46,3 +46,37 @@ def parser_identity_writers_extra() -> dict[tuple[str, str], str]:
     """Writers of ``hasIndexedCopy`` this build adds, ``(file under app/, function) -> why it writes no parser
     identity``, for ``tests/unit/modules/indexing/test_parser_identity_writers.py``. Here there are none."""
     return {}
+
+
+def extension_routers() -> bool:
+    """Whether the build mounts routes of its own beside the shared query and entity routers
+    (``query_extension_router``, ``entity_extension_router`` in ``app.edition_config``). Here it does not."""
+    return False
+
+
+def graph_provider_dirs_extra() -> tuple[str, ...]:
+    """Directories under ``app/`` (with a trailing slash) holding this build's graph providers, which
+    ``tests/unit/services/permissions/test_permission_writers_bump.py`` leaves out as it does the shared ones. Here
+    there are none."""
+    return ()
+
+
+def permission_edge_delete_exemptions_extra() -> dict[str, str]:
+    """Functions only this build has that ``tests/unit/services/permissions/test_permission_writers_bump.py`` adds to
+    ``NO_BUMP`` (``path::function`` under ``app/`` -> why it may delete edges there without bumping). Here there are
+    none."""
+    return {}
+
+
+def chat_loop_dirs_extra() -> tuple[str, ...]:
+    """Directories under ``app/`` holding this build's own agent modules and routes, where a chat run's tools also
+    come from: ``tests/unit/modules/agents/privacy/test_every_tool_has_a_class.py`` checks that none of them imports
+    a module whose tools no chat offers. Here there are none."""
+    return ()
+
+
+def model_call_dirs_extra() -> tuple[str, ...]:
+    """Directories under ``app/`` (with a trailing slash) holding this build's own model calls, which
+    ``tests/unit/modules/agents/privacy/test_model_call_inventory.py`` leaves out: the build classifies them in an
+    inventory of its own, with a test of its own. Here there are none."""
+    return ()

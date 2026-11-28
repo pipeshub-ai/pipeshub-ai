@@ -83,9 +83,11 @@ def artifact_context_reminder(context: "AgentContext") -> "Middleware[TurnContex
             # standalone `code_*.py` list entry it can't show the user
             # anyway. `list_artifacts()` (the tool) is unaffected — it
             # still returns everything, unfiltered.
+            # In a run others read, only the files every member may open and those the request picked
+            # (`told_files`): a file the reminder names is a parent of the answer.
             artifacts = await registry.list_for_conversation(
                 actor=actor, conversation_id=context.conversation_id, limit=_MAX_ARTIFACTS_IN_REMINDER,
-                visibility_filter=ArtifactVisibility.VISIBLE,
+                visibility_filter=ArtifactVisibility.VISIBLE, told=context.told_files,
             )
         except Exception:
             logger.warning(

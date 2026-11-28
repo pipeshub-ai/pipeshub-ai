@@ -182,7 +182,14 @@ from app.core.org_jobs import for_each_org, of_org
 from app.core.signed_url import SIGNED_URL_PURPOSE, SignedUrlHandler
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.harness.knowledge.service import KnowledgePublications
-from app.models.entities import ArtifactRecord, Record, RecordType
+from app.models.entities import ArtifactRecord, Record, RecordType, deserialize_artifact_versions
+from app.modules.authz.chat_content_access import (
+    SERVED_VERSION,
+    can_read_record,
+    is_chat_content,
+    resolve_read_access,
+    served_version,
+)
 from app.modules.demo_data.access import refuse_hidden_demo_record
 from app.services.artifact_registry.models import Actor
 from app.utils.untrusted_content import untrusted_content_headers
@@ -258,6 +265,7 @@ from app.utils.user_lookup import (
     get_record_or_503,
     get_user_or_503,
     raise_if_unavailable,
+    read_or_503,
 )
 from harness_core.knowledge.errors import PublicationAnswerOnly
 from harness_core.knowledge.publications import require_raw
@@ -397,6 +405,26 @@ def _refuse_epub_pdf_preview(file_extension: str | None) -> None:
             status_code=HttpStatusCode.UNPROCESSABLE_ENTITY.value,
             detail=EPUB_PREVIEW_UNAVAILABLE,
         )
+
+
+async def _record_as_of(graph_provider: IGraphDBProvider, record: dict, version: int) -> dict:
+    """An artifact's record as of `version`: what a reader who may open no later version is told of it."""
+    current = record.get("version")
+    if not isinstance(current, int) or version == current:
+        return record
+    record_id = record.get("id") or record.get("_key")
+    artifact = await graph_provider.get_document(record_id, CollectionNames.ARTIFACTS.value) if record_id else None
+    entry = next(
+        (e for e in deserialize_artifact_versions((artifact or {}).get("versions")) if e.get("registryVersion") == version),
+        {},
+    )
+    return {
+        **record,
+        "version": version,
+        "sizeInBytes": entry.get("sizeBytes"),
+        "updatedAtTimestamp": entry.get("createdAt") or record.get("createdAtTimestamp"),
+        **({"mimeType": entry["mimeType"]} if entry.get("mimeType") else {}),
+    }
 
 
 async def _recover_artifact_version(
@@ -886,27 +914,25 @@ async def get_record_content_internal(
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
         # Org mismatch: reject rather than widen. A record with no org cannot be
-        # confined to one, so it is refused as well.
+        # confined to one, so it is refused as well. Same response as a missing
+        # record, as `stream_record` gives, so no caller can probe another org's ids.
         if not record.org_id or record.org_id != org_id:
             logger.warning(
                 "get_record_content_internal: org mismatch record=%s record_org=%r token_org=%s",
                 record_id, record.org_id, org_id,
             )
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Record does not belong to your organization",
-            )
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
-        # Independent ACL check — never trust the caller.
-        access = await check_record_access_or_503(graph_provider, user_id, org_id, record_id)
-        if not access:
+        # Independent ACL check — never trust the caller. Denied reads look
+        # exactly like a missing record so the route is no existence oracle.
+        # The check is of the version served.
+        if not await read_or_503(can_read_record(
+            graph_provider, user_id=user_id, org_id=org_id, record=record, version=version,
+        )):
             logger.warning(
                 "get_record_content_internal: access denied user=%s record=%s", user_id, record_id,
             )
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="You do not have permission to access this record",
-            )
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
         await refuse_hidden_demo_record(graph_provider, config_service, org_id, user_id, getattr(record, "connector_id", None))
 
         return await _resolve_record_content_response(
@@ -1564,8 +1590,10 @@ async def get_signed_url(
 
         mint_user = caller_user or path_user
         if not is_scoped:
-            access = await check_record_access_or_503(graph_provider, mint_user, caller_org, record_id)
-            if not access:
+            if not await read_or_503(can_read_record(
+                graph_provider,
+                user_id=mint_user, org_id=caller_org, record=record,
+            )):
                 raise HTTPException(
                     status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
                 )
@@ -1788,12 +1816,13 @@ async def download_file(
                 status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
             )
 
-        if not is_scoped:
-            access = await check_record_access_or_503(graph_provider, user_id, record_org, record_id)
-            if not access:
-                raise HTTPException(
-                    status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
-                )
+        if not is_scoped and not await read_or_503(can_read_record(
+            graph_provider,
+            user_id=user_id, org_id=record_org, record=record,
+        )):
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
+            )
 
         connector_id = record.connector_id
         await refuse_hidden_demo_record(
@@ -1868,18 +1897,22 @@ async def stream_record(
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
         # Permission check: Verify user has access to this record
-        # This handles both KB-level and direct record permissions
-
-        access_check = await check_record_access_or_503(graph_provider, user_id, org_id, record_id)
-        if not access_check:
+        # This handles both KB-level and direct record permissions.
+        # Of an artifact, the version served is one the reader may open: the one
+        # asked for, or with none asked the newest they may open.
+        # Called without FastAPI (internal callers, tests) the parameter is its `Query` default.
+        version = version if isinstance(version, int) else None
+        granted = await read_or_503(resolve_read_access(
+            graph_provider, user_id=user_id, org_id=org_id, record=record,
+            version=version, newest_readable=True,
+        ))
+        if granted is None:
             logger.warning(f"User {user_id} does not have access to record {record_id}")
             await _publication_raw_read(
                 graph_provider, config_service, org_id, user_id, record_id, allow_full=True,
-                denied=HTTPException(
-                    status_code=HttpStatusCode.FORBIDDEN.value,
-                    detail="You do not have permission to access this record"
-                ),
+                denied=HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"),
             )
+        version = served_version(granted, version)
         await refuse_hidden_demo_record(graph_provider, config_service, org_id, user_id, getattr(record, "connector_id", None))
         await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
         if isinstance(record, ArtifactRecord):
@@ -2182,13 +2215,17 @@ async def get_record_by_id(
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
 
-        has_access = await check_record_access_or_503(graph_provider, user_id, org_id, record_id)
+        # Of an artifact, the record is told as of the newest version the reader may open, as the stream serves it.
+        has_access = await read_or_503(resolve_read_access(
+            graph_provider, user_id=user_id, org_id=org_id, record=record_id, newest_readable=True,
+        ))
         logger.debug(f"🚀 has_access: {has_access}")
         if not has_access:
             await _publication_raw_read(
                 graph_provider, container.config_service(), org_id, user_id, record_id, allow_full=True,
                 denied=HTTPException(status_code=404, detail="You do not have access to this record"),
             )
+        served = has_access.pop(SERVED_VERSION, None) if has_access else None
         doc = await get_document_or_503(graph_provider, record_id, CollectionNames.RECORDS.value)
         await refuse_hidden_demo_record(
             graph_provider, container.config_service(), org_id, user_id, (doc or {}).get("connectorId")
@@ -2205,6 +2242,8 @@ async def get_record_by_id(
         hide_source_paths(request, has_access, (doc or {}).get("connectorId"))
         record: object = cast("dict[str, object]", has_access).get("record")
         if isinstance(record, dict):
+            if isinstance(served, int):
+                record = await _record_as_of(graph_provider, record, served)
             has_access["record"] = api_record(record)
         has_access["stageStates"] = await _stage_states_of(graph_provider, record)
         return has_access
@@ -2233,18 +2272,24 @@ async def get_record_content(
     org_id = request.state.user.get("orgId")
 
     try:
-        # The one own-access check, `check_access` as the agent's fetch_record runs it; the fetch below reuses its
-        # answer. Without own access, a live `full` publication may still disclose the record (P2.13).
-        accessible = await accessible_node_ids(graph_provider, {record_id}, user_id, org_id)
+        doc = await get_document_or_503(graph_provider, record_id, CollectionNames.RECORDS.value)
+        if doc is None:
+            accessible: set[str] = set()
+        elif is_chat_content(doc):
+            # A chat attachment or artifact is the edition's to grant (a shared chat's member
+            # reads one the graph gives them nothing on), as every other read of it is.
+            granted = await read_or_503(can_read_record(graph_provider, user_id=user_id, org_id=org_id, record=doc))
+            accessible = {record_id} if granted else set()
+        else:
+            # The one own-access check, `check_access` as the agent's fetch_record runs it; the fetch below reuses
+            # its answer.
+            accessible = await accessible_node_ids(graph_provider, {record_id}, user_id, org_id)
         if record_id not in accessible:
+            # Without own access, a live `full` publication may still disclose the record (P2.13).
             await _publication_raw_read(
                 graph_provider, container.config_service(), org_id, user_id, record_id, allow_full=True,
-                denied=HTTPException(
-                    status_code=HttpStatusCode.FORBIDDEN.value,
-                    detail="You do not have permission to access this record",
-                ),
+                denied=HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"),
             )
-        doc = await get_document_or_503(graph_provider, record_id, CollectionNames.RECORDS.value)
         await refuse_hidden_demo_record(
             graph_provider, container.config_service(), org_id, user_id, (doc or {}).get("connectorId")
         )

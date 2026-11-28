@@ -61,6 +61,8 @@ export interface CollaboratorBackend extends ContractBackend {
     accessLevel: 'read' | 'write',
   ): Promise<void>;
   unshare(orgId: string, sessionId: string, userId: string): Promise<void>;
+  /** Opens the conversation to a project of its own, shared with nobody; absent where no conversation is kept. */
+  openToProject?(orgId: string, sessionId: string): Promise<void>;
   /** The conversation's messages with their sender; absent where no conversation is kept. */
   messages?(sessionId: string): Promise<Array<{ messageType: string; senderId?: string }>>;
 }

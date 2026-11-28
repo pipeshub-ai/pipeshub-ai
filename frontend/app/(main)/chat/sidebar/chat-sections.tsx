@@ -1,62 +1,135 @@
 'use client';
 
-import React, { useId, useMemo, useState } from 'react';
-import { RecentsToggle } from './recents-toggle';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Flex } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { useChatStore, selectPendingForSidebar } from '@/chat/store';
+import { isConversationStreamingInScope, useChatStore } from '@/chat/store';
+import { usePendingForSidebar } from './use-pending-for-sidebar';
+import type { MoreChatsSection } from '@/chat/store';
 import { useCommandStore } from '@/lib/store/command-store';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { debugLog } from '@/chat/debug-logger';
+import { useLocalDay } from '@/lib/hooks/use-local-day';
 import { ChatSection } from './chat-section';
 import { groupConversationsWithPinned } from './time-group';
-import { orderPinnedFirst } from '@/chat/utils/pinned-conversations';
-import { sidebarDot, strongestDot } from '@/lib/harness-jobs/jobs-list';
+import { splitPinned } from '@/chat/utils/pinned-conversations';
+import { chatSlots } from '@/config';
+import { RAIL_SHARED_UNPINNED_ROWS, RAIL_UNPINNED_ROWS } from '../constants';
+import type { Conversation } from '@/chat/types';
+import { readRailMemory, writeRailMemory } from './rail-memory';
+import { sidebarDot, strongestDot, type SidebarDot } from '@/lib/harness-jobs/jobs-list';
+import type { ChatSlot } from '@/chat/types';
+import { waitsInScope } from '@/chat/interactions';
 import { ChatDotMark, markWords } from './chat-section-element';
 
 /**
- * Maximum number of chat items shown per section before
- * overflow triggers a "More" button. Chat-sidebar-specific.
+ * A section's chats for the rail: every pinned one, newest activity first, then its `limit` newest others,
+ * and whether it needs "More" for the rest of those: past the cap here, or another page on the server. The store keeps
+ * more, so the realtime watches still see every chat; only the rail shows fewer. `hasNextPage` is this section's own
+ * pagination. `hidden`: the loaded chats past the cap, which More stands for.
  */
-const MAX_VISIBLE_CHATS = 10;
+function railRows(conversations: Conversation[], hasNextPage: boolean, limit: number) {
+  const { pinned, rest } = splitPinned(conversations);
+  return {
+    rows: [...pinned, ...rest.slice(0, limit)],
+    hidden: rest.slice(limit),
+    hasMore: rest.length > limit || (conversations.length > 0 && hasNextPage),
+  };
+}
+
+/**
+ * The strongest mark of the chats a More hides, so a chat past the cap still says it needs the person: needs you over
+ * working over finished and not seen, each as its row would mark it, from the list already loaded and this tab's own
+ * runs (no added request): the server's run state where the agent harness sends one, and else what this tab is
+ * answering, waiting on or saw finish out of view. The chat open now shows no finished mark, as its row would not.
+ */
+function hiddenMark(
+  hidden: Conversation[],
+  currentConversationId: string | null,
+  slots: Record<string, ChatSlot>,
+  unread: ReadonlySet<string>,
+): SidebarDot | null {
+  return strongestDot(
+    hidden.map((c) =>
+      sidebarDot(c.harnessState, {
+        streaming: isConversationStreamingInScope(slots, c.id, null),
+        unread: unread.has(c.id),
+        active: c.id === currentConversationId,
+        waiting: waitsInScope(slots, c.id, null),
+      }),
+    ),
+  );
+}
+
+/** A mark as a string a store selector can return, so the rail redraws only when a More's mark changes. */
+const markKey = (mark: SidebarDot | null): string => (mark === null ? '' : `${mark.dot}${mark.unseen ? ':unseen' : ''}`);
+const markOfKey = (key: string): SidebarDot | null => {
+  if (key === '') return null;
+  const [dot, unseen] = key.split(':');
+  return { dot: dot as SidebarDot['dot'], ...(unseen === 'unseen' && { unseen: true }) };
+};
+
+/**
+ * A More's mark: the one the slots draw where they draw one (`ChatSlots.useMoreMark`), else the strongest mark of the
+ * chats it hides (`hiddenMark`) in the row mark's words for a screen reader, redrawn as the hidden chats' own state
+ * changes and only when the mark does.
+ */
+function useRailMoreMark(hidden: Conversation[], currentConversationId: string | null): React.ReactNode {
+  const { t } = useTranslation();
+  const drawn = chatSlots.useMoreMark?.(hidden, currentConversationId);
+  const key = useChatStore((s) =>
+    chatSlots.useMoreMark ? '' : markKey(hiddenMark(hidden, currentConversationId, s.slots, s.unreadConversationIds)),
+  );
+  const own = useMemo(() => markOfKey(key), [key]);
+  if (chatSlots.useMoreMark) return drawn ?? null;
+  return own ? <ChatDotMark dot={own.dot} label={markWords(t, own)} /> : null;
+}
 
 /** Number of skeleton items shown while loading each section */
-const SHARED_CHATS_SKELETON_COUNT = 2;
 const YOUR_CHATS_SKELETON_COUNT = 3;
 
 /**
- * Chat sections — renders "Shared Chats" and "Your Chats" with
- * time-grouped conversations and overflow "More" buttons.
+ * Chat sections in the rail's own scroller: "Shared chats", then "Your chats". A chat the viewer pinned leads the list
+ * it is in, so the rail still says who can read it. Shared chats shows only when it has a chat, unless the slots offer
+ * a way to start one (`useSharedChatsStart`): then it stays, with a + and a line while empty. Your chats files its
+ * unpinned rows under the day of their last activity (Today, Yesterday, Last 7 days, Older), showing only the days that
+ * have one, under its pins. Each lists all its pins and at most RAIL_SHARED_UNPINNED_ROWS (Shared chats) or
+ * RAIL_UNPINNED_ROWS (Your chats) others, then "More", which opens the rest of that section and carries the strongest
+ * mark of the chats it hides.
  *
  * Wrapped in React.memo to prevent parent-cascade re-renders.
  */
 export const ChatSections = React.memo(function ChatSections({
   onOpenMoreChats,
 }: {
-  onOpenMoreChats: (sectionType: 'shared' | 'your') => void;
+  onOpenMoreChats: (sectionType: MoreChatsSection) => void;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const currentConversationId = searchParams?.get('conversationId') ?? null;
   const { t } = useTranslation();
 
-  const conversations = useChatStore((s) => s.conversations);
-  const sharedConversations = useChatStore((s) => s.sharedConversations);
+  const conversations = chatSlots.useVisibleConversations(useChatStore((s) => s.conversations));
+  const sharedConversations = chatSlots.useVisibleConversations(useChatStore((s) => s.sharedConversations));
   const isConversationsLoading = useChatStore((s) => s.isConversationsLoading);
   const conversationsError = useChatStore((s) => s.conversationsError);
-  const pendingConversations = useChatStore((s) => s.pendingConversations);
-  const slots = useChatStore((s) => s.slots);
   const pagination = useChatStore((s) => s.pagination);
   const sharedPagination = useChatStore((s) => s.sharedPagination);
+  // The first load keeps the room Shared chats took last time, its pins included, so nothing under it moves when the
+  // lists arrive; from the first frame, before the effect that starts the load. A row count, never a title.
+  const [lastTime] = useState(() => ({ sharedRows: readRailMemory('sharedRows') ?? 0 }));
+  const sharedStart = chatSlots.useSharedChatsStart?.() ?? null;
+  const listsLoadedAt = useChatStore((s) => s.conversationsLoadedAt);
+  const firstLoadPending = useChatStore((s) => s.conversationsLoadedAt === null && !s.conversationsError);
 
   // ── Render-reason tracking ──────────────────────────────────────
   debugLog.tick('[sidebar] [ChatSections]');
   const prevChatSectionsRef = React.useRef<Record<string, unknown>>({});
   const currentSectionsVals: Record<string, unknown> = {
     currentConversationId, conversations, sharedConversations,
-    isConversationsLoading, conversationsError, pendingConversations, slots, pagination, sharedPagination,
+    isConversationsLoading, conversationsError, pagination, sharedPagination,
   };
   const sectionsReasons: string[] = [];
   for (const [k, v] of Object.entries(currentSectionsVals)) {
@@ -71,10 +144,8 @@ export const ChatSections = React.memo(function ChatSections({
 
   const dispatch = useCommandStore((s) => s.dispatch);
   const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
-  const isMobile = useIsMobile();
-
-  const recentsId = useId();
-  const [recentsCollapsed, setRecentsCollapsed] = useState(true);
+  // The drawer layout: opening a chat closes the drawer.
+  const isMobile = useIsBelowDesktop();
 
   const handleNewChat = () => {
     if (!dispatch('newChat')) router.push('/chat/');
@@ -83,108 +154,79 @@ export const ChatSections = React.memo(function ChatSections({
     if (isMobile) closeMobileSidebar();
   };
 
-  // Overflow detection — show "More" if there are more items than fit,
-  // OR if the server indicated there are additional pages to fetch.
-  // Only OR in pagination when this section has items: store `pagination` is shared
-  // across loads, so "your" chats' hasNext must not show "More" on empty Shared.
-  const hasMoreShared =
-    sharedConversations.length > MAX_VISIBLE_CHATS ||
-    (sharedConversations.length > 0 && (sharedPagination?.hasNextPage ?? false));
-  const hasMoreYour =
-    conversations.length > MAX_VISIBLE_CHATS ||
-    (conversations.length > 0 && (pagination?.hasNextPage ?? false));
-
-  // Slice for overflow limit
-  const visibleShared = hasMoreShared
-    ? sharedConversations.slice(0, MAX_VISIBLE_CHATS)
-    : sharedConversations;
-  // Pinned chats take the visible slots first, so the cap never hides one
-  // behind "More" while an unpinned chat is shown.
-  const orderedYour = useMemo(() => orderPinnedFirst(conversations), [conversations]);
-  const visibleYour = hasMoreYour
-    ? orderedYour.slice(0, MAX_VISIBLE_CHATS)
-    : orderedYour;
-
-  // Group only "Your Chats": Pinned first, then by time
-  const yourNonEmptyGroups = groupConversationsWithPinned(visibleYour);
-
-  // Folded, Recents still says when a chat in it needs the person or is working (CJ14-FU-2), from the list it holds.
-  const foldedMark = useMemo(
-    () =>
-      recentsCollapsed
-        ? strongestDot(
-            [...conversations, ...sharedConversations].map((c) =>
-              sidebarDot(c.harnessState, { streaming: false, unread: false, active: c.id === currentConversationId }),
-            ),
-          )
-        : null,
-    [recentsCollapsed, conversations, sharedConversations, currentConversationId],
+  // Each section ORs in only its own pagination, and only when it has items.
+  const shared = useMemo(
+    () => railRows(sharedConversations, sharedPagination?.hasNextPage ?? false, RAIL_SHARED_UNPINNED_ROWS),
+    [sharedConversations, sharedPagination],
   );
+  const your = useMemo(
+    () => railRows(conversations, pagination?.hasNextPage ?? false, RAIL_UNPINNED_ROWS),
+    [conversations, pagination],
+  );
+  // Days from the viewer's local midnight, which moves on by itself: a rail left open overnight regroups at midnight.
+  // The pins come first, with no label of their own.
+  const today = useLocalDay();
+  const yourDays = useMemo(() => groupConversationsWithPinned(your.rows, today), [your.rows, today]);
+  // Each More carries the mark of the chats it hides.
+  const sharedMoreMark = useRailMoreMark(shared.hidden, currentConversationId);
+  const yourMoreMark = useRailMoreMark(your.hidden, currentConversationId);
 
-  const activePendingConversations = useMemo(() => {
-    const convIds = new Set(conversations.map((c) => c.id));
-    return selectPendingForSidebar(pendingConversations, slots, convIds, 'global');
-  }, [pendingConversations, slots, conversations]);
+  // Rows Shared chats shows, its More included.
+  const sharedRowsShown = shared.rows.length + (shared.hasMore ? 1 : 0);
+  const reserveShared = lastTime.sharedRows > 0 && firstLoadPending && sharedRowsShown === 0;
+  // What the next first load keeps room for: what the section shows after each load, and as it changes.
+  useEffect(() => {
+    if (listsLoadedAt === null) return;
+    writeRailMemory('sharedRows', sharedRowsShown);
+  }, [listsLoadedAt, sharedRowsShown]);
+
+  const convIds = useMemo(() => new Set(conversations.map((c) => c.id)), [conversations]);
+  const activePendingConversations = usePendingForSidebar(convIds, 'global');
 
   return (
-    <Flex
-      direction="column"
-      gap="3"
-      style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}
-    >
-      {/* Recents — collapsible wrapper for both Shared and Your Chats */}
-      <Flex
-        direction="column"
-        style={recentsCollapsed ? undefined : { flex: 1, minHeight: 0, overflow: 'hidden' }}
-      >
-        {/* Recents header with collapse toggle */}
-        <RecentsToggle
-          collapsed={recentsCollapsed}
-          onToggle={() => setRecentsCollapsed((c) => !c)}
-          controls={recentsId}
-          mark={foldedMark ? <ChatDotMark dot={foldedMark.dot} label={markWords(t, foldedMark)} /> : null}
+    <Flex direction="column" gap="4">
+      {/* Shared chats: earned by a chat being in it, so hidden while empty, unless it can start one */}
+      {(sharedRowsShown > 0 || reserveShared || sharedStart) && (
+        <ChatSection
+          variant="rail"
+          title={t('chat.sharedChats')}
+          conversations={shared.rows}
+          // Rows to come keep their room as a skeleton; a section with none keeps its line, so it is the same height.
+          isLoading={reserveShared || (isConversationsLoading && sharedRowsShown > 0)}
+          hasError={!!conversationsError}
+          currentConversationId={currentConversationId}
+          onSelectConversation={handleSelectConversation}
+          onAdd={sharedStart?.onAdd}
+          addLabel={sharedStart?.addLabel}
+          onNewChat={handleNewChat}
+          // Its rows and its More: the ones it showed last time while the first load is out, then the ones it is
+          // about to show while the skeleton fades, so the section keeps one height.
+          skeletonCount={reserveShared ? lastTime.sharedRows : sharedRowsShown}
+          hasMore={shared.hasMore}
+          onMore={() => onOpenMoreChats('shared')}
+          moreMark={sharedMoreMark}
+          emptyStateText={sharedStart?.emptyText ?? t('chat.noSharedChats')}
         />
+      )}
 
-        {!recentsCollapsed && (
-          <Flex
-            id={recentsId}
-            direction="column"
-            gap="3"
-            style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}
-          >
-            {/* Shared Chats — flat list (no time grouping) */}
-            <ChatSection
-              title={t('chat.sharedChats')}
-              conversations={visibleShared}
-              isLoading={isConversationsLoading}
-              hasError={!!conversationsError}
-              currentConversationId={currentConversationId}
-              onSelectConversation={handleSelectConversation}
-              onNewChat={handleNewChat}
-              skeletonCount={SHARED_CHATS_SKELETON_COUNT}
-              hasMore={hasMoreShared}
-              onMore={() => onOpenMoreChats('shared')}
-              emptyStateText={t('chat.noSharedChats')}
-            />
-
-            {/* Your Chats — time-grouped */}
-            <ChatSection
-              title={t('chat.yourChats')}
-              timeGroups={yourNonEmptyGroups}
-              isLoading={isConversationsLoading}
-              hasError={!!conversationsError}
-              currentConversationId={currentConversationId}
-              onSelectConversation={handleSelectConversation}
-              onNewChat={handleNewChat}
-              skeletonCount={YOUR_CHATS_SKELETON_COUNT}
-              isScrollable
-              hasMore={hasMoreYour}
-              onMore={() => onOpenMoreChats('your')}
-              pendingConversations={activePendingConversations}
-            />
-          </Flex>
-        )}
-      </Flex>
+      {/* Your chats: the pinned ones, then the rest by day, with a + that starts a new chat */}
+      <ChatSection
+        variant="rail"
+        title={t('chat.yourChats')}
+        timeGroups={yourDays}
+        isLoading={isConversationsLoading}
+        hasError={!!conversationsError}
+        currentConversationId={currentConversationId}
+        onSelectConversation={handleSelectConversation}
+        onAdd={handleNewChat}
+        onNewChat={handleNewChat}
+        skeletonCount={YOUR_CHATS_SKELETON_COUNT}
+        hasMore={your.hasMore}
+        onMore={() => onOpenMoreChats('your')}
+        moreMark={yourMoreMark}
+        pendingConversations={activePendingConversations}
+        emptyStateText={t('chat.yourChatsEmpty')}
+      />
     </Flex>
   );
 });

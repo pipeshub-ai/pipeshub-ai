@@ -13,6 +13,7 @@ import { TooManyRequestsError } from '../errors/http.errors';
 import { isMcpRelay } from './mcp-relay';
 import { pathForLog } from './access-log.middleware';
 import { AuthenticatedUserRequest, AuthenticatedServiceRequest } from './types';
+import { SharedRateLimitStore } from './shared-rate-limit-store';
 
 /**
  * Never read X-Forwarded-For / X-Real-IP directly: the client controls them.
@@ -222,13 +223,16 @@ export interface KeyedRateLimiterOptions {
   anonymousSubKey?: (req: Request) => string | undefined;
   // Writes the 429 body, for surfaces whose clients expect another shape than the REST error.
   respond?: (res: Response, message: string, retryAfter: number | null) => void;
+  /** Error code sent on a 429, with `retryAfter` under `details`. Without it the historical body is kept. */
+  code?: string;
+  /** Count in the shared cache so the limit holds across replicas; falls back to in-process on error. */
+  shared?: boolean;
 }
 
 /**
- * Per-user (fallback: per-IP) limiter used by the OAuth-client and skills-import
- * surfaces. The store is in-process, matching `createOAuthClientRateLimiter`'s
- * historical behaviour — N replicas therefore admit N×max/min until a shared
- * store is wired.
+ * Per-user (fallback: per-IP) limiter. The store is in-process unless `shared`
+ * is set — N replicas then admit N×max/min. `prefix` is the bucket identity, so
+ * two limiters that must not share a count need different prefixes.
  */
 export function createKeyedRateLimiter(
   logger: Logger,
@@ -243,6 +247,8 @@ export function createKeyedRateLimiter(
     isFailure,
     anonymousSubKey,
     respond,
+    code,
+    shared,
   } = options;
 
   const keyFor = (req: Request): string => {
@@ -268,6 +274,7 @@ export function createKeyedRateLimiter(
         }
       : {}),
     keyGenerator: keyFor,
+    ...(shared ? { store: new SharedRateLimitStore(prefix, logger) } : {}),
     handler: (req: Request, res: Response): void => {
       const retryAfter = res.getHeader('Retry-After');
       logger.warn('Rate limit exceeded', {
@@ -285,11 +292,18 @@ export function createKeyedRateLimiter(
       }
       const error = new TooManyRequestsError(message);
       res.status(429).json({
-        error: {
-          code: error.code,
-          message: error.message,
-          retryAfter: retrySeconds,
-        },
+        error:
+          code === undefined
+            ? {
+                code: error.code,
+                message: error.message,
+                retryAfter: retrySeconds,
+              }
+            : {
+                code,
+                message: error.message,
+                details: { retryAfter: retrySeconds },
+              },
       });
     },
   };
@@ -310,6 +324,7 @@ export function createOAuthClientRateLimiter(
     prefix: 'oauth-client',
     maxRequestsPerMinute,
     message: 'Too many OAuth client requests. Please try again later.',
+    shared: true,
   });
 }
 
@@ -326,6 +341,7 @@ export function createSkillsImportRateLimiter(
     prefix: 'skills-import',
     maxRequestsPerMinute,
     message: 'Too many skill import requests. Please try again later.',
+    shared: true,
   });
 }
 
@@ -365,8 +381,9 @@ function signInAccountKey(req: Request): string | undefined {
  * Pair it with createAuthIpRateLimiter on anonymous routes: on its own it
  * would let one address try every account. Mount it after any middleware
  * that sets req.user or req.sessionInfo, or it falls back to the shared
- * per-IP key. The limit is per replica (in-process store), so N pods admit
- * up to N × maxRequestsPerMinute until a shared store is wired.
+ * per-IP key. Every replica counts in the shared cache (`SharedRateLimitStore`),
+ * so N pods admit maxRequestsPerMinute, not N times it; while the cache cannot
+ * answer, each counts in-process.
  */
 export function createAuthRateLimiter(
   logger: Logger,
@@ -377,6 +394,7 @@ export function createAuthRateLimiter(
     maxRequestsPerMinute,
     message: 'Too many authentication requests. Please try again later.',
     anonymousSubKey: signInAccountKey,
+    shared: true,
   });
 }
 
@@ -393,6 +411,7 @@ export function createAuthIpRateLimiter(
     prefix: 'auth-ip',
     maxRequestsPerMinute: maxAuthRequestsPerMinute * AUTH_PER_IP_MULTIPLIER,
     message: 'Too many authentication requests. Please try again later.',
+    shared: true,
   });
 }
 
@@ -410,6 +429,7 @@ export function createInitAuthRateLimiter(
     prefix: 'auth-init',
     maxRequestsPerMinute: maxAuthRequestsPerMinute * AUTH_PER_IP_MULTIPLIER,
     message: 'Too many sign-in requests. Please try again later.',
+    shared: true,
   });
 }
 
@@ -422,7 +442,8 @@ export function createInitAuthRateLimiter(
  * Only responses of 400 or above count. Every org's real deliveries arrive from
  * Slack's few egress addresses, so counting them would let one busy workspace
  * throttle all the others, and a 429 makes Slack redeliver and add more load.
- * Bad signatures (the bot's 401) still fill the bucket.
+ * Bad signatures (the bot's 401) still fill the bucket. It counts in-process: a
+ * shared fixed window cannot give back the hit of a delivery that succeeded.
  */
 export function createSlackEventsRateLimiter(
   logger: Logger,

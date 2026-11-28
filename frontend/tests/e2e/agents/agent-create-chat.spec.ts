@@ -78,7 +78,7 @@ test.describe('Build an agent and chat with it', () => {
     await expect(page).toHaveURL(new RegExp(`/chat/\\?agentId=${agentKey}`), { timeout: 30_000 });
     await expect(page.getByRole('button', { name: 'Agent options' })).toContainText(name, { timeout: 30_000 });
 
-    const input = page.locator('textarea').last();
+    const input = page.getByTestId('chat-composer').last();
     if (model) {
       await model.watchFor([passphrase]);
       const reply = `Kestrel ${randomBytes(3).toString('hex')} is ready.`;

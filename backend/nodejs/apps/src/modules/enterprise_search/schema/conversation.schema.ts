@@ -10,6 +10,7 @@ import {
   CONFIDENCE_LEVELS,
   REASONING_EFFORT_VALUES,
 } from '../constants/constants';
+import { unavailableToolSchema } from './unavailable-tool.schema';
 
 const toolCallItemSchema = new Schema(
   {
@@ -253,6 +254,8 @@ const messageSchema = new Schema<IMessage>(
     // schema.ts's identical field: shape varies by `type`, and `sub_agent`
     // nests the same shape recursively.
     parts: [Schema.Types.Mixed],
+    // Tools the requester could not use on this turn (additive).
+    unavailableTools: { type: [unavailableToolSchema], default: undefined },
   },
   { timestamps: true },
 );

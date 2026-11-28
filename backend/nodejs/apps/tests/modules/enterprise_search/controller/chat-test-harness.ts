@@ -36,12 +36,43 @@ const isPlainObject = (value: unknown): value is Doc =>
   !(value instanceof Date) &&
   !(value instanceof RegExp)
 
+/** A path part that is a number also names an array's element at that place, as the server reads `sharedWith.0`. */
+const elementAt = (value: unknown[], head: string | undefined): unknown[] =>
+  head !== undefined && /^\d+$/.test(head) && Number(head) < value.length ? [value[Number(head)]] : []
+
 const valuesAt = (value: unknown, path: string[]): unknown[] => {
   if (path.length === 0) return [value]
-  if (Array.isArray(value)) return value.flatMap((item) => valuesAt(item, path))
+  if (Array.isArray(value)) {
+    const [head, ...rest] = path
+    return [...elementAt(value, head).flatMap((item) => valuesAt(item, rest)), ...value.flatMap((item) => valuesAt(item, path))]
+  }
   if (!isPlainObject(value)) return [undefined]
   const [head, ...rest] = path
   return valuesAt(value[head as string], rest)
+}
+
+/** Like `valuesAt` but leaves the last segment's array intact, which `$elemMatch` needs. */
+const rawAt = (value: unknown, path: string[]): unknown[] => {
+  if (path.length === 0) return [value]
+  if (Array.isArray(value)) {
+    const [head, ...rest] = path
+    return [...elementAt(value, head).flatMap((item) => rawAt(item, rest)), ...value.flatMap((item) => rawAt(item, path))]
+  }
+  if (!isPlainObject(value)) return [undefined]
+  const [head, ...rest] = path
+  return rawAt(value[head as string], rest)
+}
+
+const deepEquals = (a: unknown, b: unknown): boolean => {
+  const x = normalize(a)
+  const y = normalize(b)
+  if (x instanceof Date && y instanceof Date) return x.getTime() === y.getTime()
+  if (Array.isArray(x) && Array.isArray(y)) return x.length === y.length && x.every((item, i) => deepEquals(item, y[i]))
+  if (isPlainObject(x) && isPlainObject(y)) {
+    const keys = Object.keys(x)
+    return keys.length === Object.keys(y).length && keys.every((k) => k in y && deepEquals(x[k], y[k]))
+  }
+  return x === y
 }
 
 const equals = (candidate: unknown, expected: unknown): boolean => {
@@ -53,12 +84,109 @@ const equals = (candidate: unknown, expected: unknown): boolean => {
   return a === b
 }
 
-const compare = (candidate: unknown, bound: unknown, test: (a: number, b: number) => boolean): boolean => {
-  const toNumber = (v: unknown): number => (v instanceof Date ? v.getTime() : Number(v))
-  return candidate !== undefined && candidate !== null && test(toNumber(candidate), toNumber(bound))
+/**
+ * An `$in` list as one lookup: `equals` against any of its values. Exactly `values.some((a) => equals(c, a))`, without
+ * a pass over the list per row.
+ */
+const inLookup = (values: unknown[]): ((candidate: unknown) => boolean) => {
+  const same = new Set<unknown>()
+  const times = new Set<number>()
+  let anyNull = false
+  for (const value of values) {
+    const v = normalize(value)
+    if (v === null) anyNull = true
+    else if (v instanceof Date) times.add(v.getTime())
+    // `===` never matches NaN; a Set would.
+    else if (!Number.isNaN(v)) same.add(v)
+  }
+  const match = (candidate: unknown): boolean => {
+    if (Array.isArray(candidate)) return candidate.some(match)
+    const c = normalize(candidate)
+    if (c === null || c === undefined) return anyNull || same.has(c)
+    if (c instanceof Date) return times.has(c.getTime())
+    return same.has(c)
+  }
+  return match
 }
 
-const matchesCondition = (candidates: unknown[], condition: unknown): boolean => {
+/**
+ * The `$in` lists of the scan in progress, each turned into a lookup once: a scan of many rows against a long list
+ * (MongoDB answers it from the `_id` index) stays linear. Set only while one synchronous scan runs, so a list changed
+ * between two queries is never matched against an old lookup.
+ */
+let scanLookups: WeakMap<unknown[], (candidate: unknown) => boolean> | undefined
+
+const scanning = <T>(scan: () => T): T => {
+  if (scanLookups) return scan()
+  scanLookups = new WeakMap()
+  try {
+    return scan()
+  } finally {
+    scanLookups = undefined
+  }
+}
+
+const typeRank = (v: unknown): number => {
+  // Aggregation sorts a missing field below null, so `$expr: {$eq: ['$absent', null]}` is false.
+  if (v === undefined) return -1
+  if (v === null) return 0
+  if (typeof v === 'number') return 1
+  if (typeof v === 'string') return 2
+  if (Array.isArray(v)) return 5
+  if (isObjectId(v)) return 7
+  if (typeof v === 'boolean') return 8
+  if (v instanceof Date) return 9
+  return 4
+}
+
+/** BSON comparison order: values of different types sort by type, same-type values by value. */
+const bsonOrder = (a: unknown, b: unknown): number => {
+  const rankA = typeRank(a)
+  const rankB = typeRank(b)
+  if (rankA !== rankB) return rankA - rankB
+  const x = normalize(a)
+  const y = normalize(b)
+  if (x instanceof Date && y instanceof Date) return x.getTime() - y.getTime()
+  if (typeof x === 'number' && typeof y === 'number') return x - y
+  if (typeof x === 'boolean' && typeof y === 'boolean') return Number(x) - Number(y)
+  const left = typeof x === 'string' ? x : JSON.stringify(x)
+  const right = typeof y === 'string' ? y : JSON.stringify(y)
+  return left < right ? -1 : left > right ? 1 : 0
+}
+
+/** Query comparison brackets by BSON type: a missing field or a value of another type (a Date against an ObjectId, a string against a number) never matches. */
+const compare = (candidate: unknown, bound: unknown, test: (order: number) => boolean): boolean => {
+  if (Array.isArray(candidate)) return candidate.some((item) => compare(item, bound, test))
+  if (candidate === undefined || candidate === null) return false
+  return typeRank(candidate) === typeRank(bound) && test(bsonOrder(candidate, bound))
+}
+
+/** The `$type` names a query can state (often to match a partial index), for the values the store holds. */
+const BSON_TYPES: Record<string, (value: unknown) => boolean> = {
+  object: isPlainObject,
+  string: (value) => typeof value === 'string',
+  date: (value) => value instanceof Date,
+  objectId: isObjectId,
+}
+
+/** A value's BSON type, as the server names it in its errors. */
+const bsonTypeName = (value: unknown): string => {
+  if (value === null) return 'null'
+  if (typeof value === 'number') return Number.isInteger(value) ? 'int' : 'double'
+  if (typeof value === 'boolean') return 'bool'
+  return Object.entries(BSON_TYPES).find(([, is]) => is(value))?.[0] ?? typeof value
+}
+
+const LOGICAL_KEYS = new Set(['$and', '$or', '$nor', '$expr'])
+
+const satisfiesElemMatch = (element: unknown, sub: Filter): boolean => {
+  const keys = Object.keys(sub)
+  const onScalars = keys.length > 0 && keys.every((k) => k.startsWith('$') && !LOGICAL_KEYS.has(k))
+  if (onScalars) return !Array.isArray(element) && matchesCondition([element], sub, [element])
+  return isPlainObject(element) && matchesFilter(element, sub)
+}
+
+const matchesCondition = (candidates: unknown[], condition: unknown, raw: unknown[]): boolean => {
   const isOperator = isPlainObject(condition) && Object.keys(condition).some((key) => key.startsWith('$'))
   if (!isOperator) return candidates.some((candidate) => equals(candidate, condition))
   return Object.entries(condition).every(([operator, argument]) => {
@@ -67,29 +195,40 @@ const matchesCondition = (candidates: unknown[], condition: unknown): boolean =>
         return candidates.some((c) => equals(c, argument))
       case '$ne':
         return !candidates.some((c) => equals(c, argument))
-      case '$in':
-        return (argument as unknown[]).some((a) => candidates.some((c) => equals(c, a)))
+      case '$in': {
+        const values = argument as unknown[]
+        if (!scanLookups) return values.some((a) => candidates.some((c) => equals(c, a)))
+        let match = scanLookups.get(values)
+        if (!match) {
+          match = inLookup(values)
+          scanLookups.set(values, match)
+        }
+        return candidates.some(match)
+      }
       case '$nin':
         return !(argument as unknown[]).some((a) => candidates.some((c) => equals(c, a)))
       case '$exists':
         return candidates.some((c) => c !== undefined) === Boolean(argument)
       case '$gte':
-        return candidates.some((c) => compare(c, argument, (a, b) => a >= b))
+        return candidates.some((c) => compare(c, argument, (o) => o >= 0))
       case '$lt':
-        return candidates.some((c) => compare(c, argument, (a, b) => a < b))
+        return candidates.some((c) => compare(c, argument, (o) => o < 0))
       case '$lte':
-        return candidates.some((c) => compare(c, argument, (a, b) => a <= b))
+        return candidates.some((c) => compare(c, argument, (o) => o <= 0))
       case '$gt':
-        return candidates.some((c) => compare(c, argument, (a, b) => a > b))
+        return candidates.some((c) => compare(c, argument, (o) => o > 0))
+      case '$elemMatch':
+        return raw.some((r) => Array.isArray(r) && r.some((element) => satisfiesElemMatch(element, argument as Filter)))
+      case '$type': {
+        const isType = BSON_TYPES[argument as string]
+        if (!isType) throw new Error(`The in-memory store does not understand $type ${String(argument)}`)
+        return candidates.some(isType)
+      }
       case '$regex': {
         const flags = typeof condition.$options === 'string' ? condition.$options : ''
         const pattern = new RegExp(String(argument), flags)
         return candidates.some((c) => typeof c === 'string' && pattern.test(c))
       }
-      case '$elemMatch':
-        return candidates.some(
-          (c) => Array.isArray(c) && c.some((item) => isPlainObject(item) && matchesFilter(item, argument as Filter)),
-        )
       case '$options':
         return true
       default:
@@ -98,13 +237,79 @@ const matchesCondition = (candidates: unknown[], condition: unknown): boolean =>
   })
 }
 
+const isTruthy = (v: unknown): boolean => v !== false && v !== null && v !== undefined && v !== 0
+
+/** The aggregation expressions `$expr` and update pipelines may use; anything else throws rather than silently matching. */
+const evalExpr = (expr: unknown, doc: Doc): unknown => {
+  if (typeof expr === 'string') {
+    // `$$this` is the `$filter` variable, kept on the document under the key `$this`.
+    return expr.startsWith('$') ? rawAt(doc, expr.slice(1).split('.'))[0] : expr
+  }
+  if (Array.isArray(expr)) return expr.map((item) => evalExpr(item, doc))
+  if (!isPlainObject(expr)) return expr
+  const keys = Object.keys(expr)
+  if (keys.length !== 1 || !(keys[0] as string).startsWith('$')) return expr
+  const operator = keys[0] as string
+  const raw = expr[operator]
+  if (operator === '$literal') return raw
+  if (operator === '$filter') {
+    const { input, cond } = raw as { input: unknown; cond: unknown }
+    const items = evalExpr(input, doc)
+    if (!Array.isArray(items)) throw new Error('$filter needs an array input')
+    return items.filter((item) => isTruthy(evalExpr(cond, { ...doc, $this: item })))
+  }
+  const args = (Array.isArray(raw) ? raw : [raw]).map((item) => evalExpr(item, doc))
+  switch (operator) {
+    case '$eq':
+      return bsonOrder(args[0], args[1]) === 0
+    case '$ne':
+      return bsonOrder(args[0], args[1]) !== 0
+    case '$lt':
+      return bsonOrder(args[0], args[1]) < 0
+    case '$lte':
+      return bsonOrder(args[0], args[1]) <= 0
+    case '$gt':
+      return bsonOrder(args[0], args[1]) > 0
+    case '$gte':
+      return bsonOrder(args[0], args[1]) >= 0
+    case '$and':
+      return args.every(isTruthy)
+    case '$or':
+      return args.some(isTruthy)
+    case '$not':
+      return !isTruthy(args[0])
+    case '$ifNull': {
+      const found = args.slice(0, -1).find((a) => a !== null && a !== undefined)
+      return found ?? args[args.length - 1]
+    }
+    case '$size':
+      if (!Array.isArray(args[0])) throw new Error('The argument to $size must be an array')
+      return args[0].length
+    case '$concatArrays':
+      if (!args.every(Array.isArray)) throw new Error('$concatArrays only supports arrays')
+      return (args as unknown[][]).flat()
+    case '$add':
+      if (!args.every((a) => typeof a === 'number')) throw new Error('$add only supports numbers')
+      return (args as number[]).reduce((sum, a) => sum + a, 0)
+    default:
+      throw new Error(`The in-memory store does not understand $expr.${operator.slice(1)}`)
+  }
+}
+
 /** Evaluates a MongoDB query filter against one plain document, the way the server would. */
 export const matchesFilter = (doc: Doc, filter: Filter): boolean =>
   Object.entries(filter).every(([key, condition]) => {
     if (key === '$or') return (condition as Filter[]).some((f) => matchesFilter(doc, f))
     if (key === '$and') return (condition as Filter[]).every((f) => matchesFilter(doc, f))
+    if (key === '$nor') {
+      // The server refuses an empty `$nor` outright; matching everything would hide that.
+      if (!Array.isArray(condition) || condition.length === 0) throw new Error('$nor argument must be a non-empty array')
+      return !(condition as Filter[]).some((f) => matchesFilter(doc, f))
+    }
+    if (key === '$expr') return isTruthy(evalExpr(condition, doc))
     if (key.startsWith('$')) throw new Error(`The in-memory store does not understand ${key}`)
-    return matchesCondition(valuesAt(doc, key.split('.')), condition)
+    const path = key.split('.')
+    return matchesCondition(valuesAt(doc, path), condition, rawAt(doc, path))
   })
 
 interface QueryState {
@@ -115,10 +320,12 @@ interface QueryState {
   populate?: boolean
   session?: unknown
   exclude?: string[]
+  /** The top-level fields a projection names; absent, every field. */
+  include?: string[]
 }
 
 /** Chainable, awaitable stand-in for a Mongoose query. */
-class FakeQuery<T> implements PromiseLike<T> {
+export class FakeQuery<T> implements PromiseLike<T> {
   private readonly state: QueryState = { lean: false }
 
   constructor(private readonly run: (state: QueryState) => T) {}
@@ -139,11 +346,20 @@ class FakeQuery<T> implements PromiseLike<T> {
     this.state.lean = true
     return this
   }
-  /** Honours `-field` exclusions on `lean()` results; any other projection is ignored. */
+  /**
+   * Honours a string projection on `lean()` results as Mongoose does: `-field` drops the field; named fields keep only
+   * those (a nested path, its top-level field), `_id` and any `+field` beside them. A `+field` alone adds a hidden field
+   * to the whole row, which every row here already holds. Object projections are ignored.
+   */
   select(projection?: unknown): this {
     if (typeof projection === 'string') {
-      const excluded = projection.split(/\s+/).filter((token) => token.startsWith('-')).map((token) => token.slice(1))
+      const tokens = projection.split(/\s+/).filter((token) => token !== '')
+      const top = (token: string): string => token.split('.')[0] as string
+      const excluded = tokens.filter((token) => token.startsWith('-')).map((token) => token.slice(1))
+      const named = tokens.filter((token) => !token.startsWith('-') && !token.startsWith('+')).map(top)
+      const added = tokens.filter((token) => token.startsWith('+')).map((token) => top(token.slice(1)))
       this.state.exclude = [...(this.state.exclude ?? []), ...excluded]
+      if (named.length > 0) this.state.include = [...(this.state.include ?? []), ...named, ...added]
     }
     return this
   }
@@ -167,7 +383,7 @@ class FakeQuery<T> implements PromiseLike<T> {
   }
 }
 
-interface StoredDoc {
+export interface StoredDoc {
   toObject(): unknown
   $session(session?: unknown): unknown
 }
@@ -178,7 +394,11 @@ const bindSession = <D extends StoredDoc>(doc: D, state: QueryState): D => {
   return doc
 }
 
-const shape = (docs: StoredDoc[], state: QueryState): unknown[] => {
+/** Mongoose hydrates a new document for every read: what a caller changes on one reaches the store only by a write. */
+const copyOf = <D extends StoredDoc>(doc: D): D =>
+  (doc.constructor as unknown as { hydrate(o: unknown): D }).hydrate(doc.toObject())
+
+export const shape = (docs: StoredDoc[], state: QueryState, copies = false): unknown[] => {
   let rows = [...docs]
   const sortEntries = Object.entries(state.sort ?? {})
   if (sortEntries.length > 0) {
@@ -203,17 +423,38 @@ const shape = (docs: StoredDoc[], state: QueryState): unknown[] => {
   }
   if (state.skip) rows = rows.slice(state.skip)
   if (state.limit) rows = rows.slice(0, state.limit)
-  if (!state.lean) return rows.map((row) => bindSession(row, state))
+  if (!state.lean) return rows.map((row) => bindSession(copies ? copyOf(row) : row, state))
   return rows.map((row) => {
     const object = row.toObject() as Doc
     for (const field of state.exclude ?? []) delete object[field]
+    if (state.include) {
+      const kept = new Set(['_id', ...state.include])
+      for (const field of Object.keys(object)) if (!kept.has(field)) delete object[field]
+    }
     return object
   })
 }
 
 type SessionOption = { session?: unknown } | null | undefined
+type UpdateOptions = {
+  session?: unknown
+  arrayFilters?: Filter[]
+  new?: boolean
+  returnDocument?: 'before' | 'after'
+  upsert?: boolean
+} | null | undefined
 
-const plain = (doc: { toObject(): unknown }): Doc => doc.toObject() as Doc
+interface UpdateResult {
+  acknowledged: boolean
+  matchedCount: number
+  modifiedCount: number
+}
+
+export const plain = (doc: { toObject(): unknown }): Doc => doc.toObject() as Doc
+
+const assertNoUpsert = (options: UpdateOptions): void => {
+  if (options?.upsert) throw new Error('The in-memory store does not understand upsert; extend the update stubs before relying on it')
+}
 
 /** Mirrors the MongoDB driver and Mongoose, which refuse any operation on an ended session. */
 const assertSessionUsable = (options: SessionOption): void => {
@@ -223,24 +464,214 @@ const assertSessionUsable = (options: SessionOption): void => {
   }
 }
 
-const applyUpdate = (doc: SessionDoc | MessageDoc, update: Doc): void => {
-  // Like Mongoose, plain top-level keys are set next to any operators in the same update.
-  const plain = Object.fromEntries(Object.entries(update).filter(([key]) => !key.startsWith('$')))
-  const set = { ...plain, ...((update.$set as Doc | undefined) ?? {}) }
-  for (const [path, value] of Object.entries(set)) doc.set(path, value)
-  for (const path of Object.keys((update.$unset as Doc | undefined) ?? {})) doc.set(path, undefined)
-  for (const [path, value] of Object.entries((update.$inc as Doc | undefined) ?? {})) {
-    doc.set(path, Number(doc.get(path) ?? 0) + Number(value))
+const pathValue = (doc: unknown, path: string): unknown =>
+  path === ''
+    ? doc
+    : path.split('.').reduce<unknown>((value, token) => {
+        if (Array.isArray(value)) return value[Number(token)]
+        return isPlainObject(value) ? value[token] : undefined
+      }, doc)
+
+const arrayFilterIdentifier = (filter: Filter): string | undefined => {
+  const [key, condition] = Object.entries(filter)[0] ?? []
+  if (key === undefined) return undefined
+  if (key.startsWith('$')) return arrayFilterIdentifier((condition as Filter[])[0] ?? {})
+  return key.split('.')[0]
+}
+
+/** Every top-level field name an array filter names, through `$or`, `$and` and `$nor` too. */
+const arrayFilterNames = (filter: Filter): string[] =>
+  Object.entries(filter).flatMap(([key, condition]) =>
+    key.startsWith('$') ? (Array.isArray(condition) ? condition.flatMap((f) => arrayFilterNames(f as Filter)) : []) : [key.split('.')[0] as string],
+  )
+
+/** The `$[identifier]`s of an update, each with the first path that uses it. */
+const filteredIdentifiers = (update: Doc | Doc[]): Map<string, string> => {
+  const used = new Map<string, string>()
+  if (Array.isArray(update)) return used
+  for (const [key, value] of Object.entries(update)) {
+    for (const path of key.startsWith('$') ? Object.keys(isPlainObject(value) ? value : {}) : [key]) {
+      for (const match of path.matchAll(/\$\[([^\]]+)\]/g)) if (!used.has(match[1] as string)) used.set(match[1] as string, path)
+    }
   }
-  for (const [path, value] of Object.entries((update.$push as Doc | undefined) ?? {})) {
-    const current = (doc.get(path) as unknown[] | undefined) ?? []
-    const each = isPlainObject(value) && Array.isArray(value.$each) ? value.$each : [value]
-    doc.set(path, [...current, ...each])
+  return used
+}
+
+/**
+ * The server checks `arrayFilters` when it parses the update, before it reads a document, so a bad one fails even when
+ * nothing matches: one top-level field name per filter, alphanumeric from a lowercase letter, one filter per
+ * identifier, each filter used by the update, and each identifier the update uses filtered.
+ */
+const assertArrayFilters = (update: Doc | Doc[], arrayFilters: Filter[] | undefined): void => {
+  const used = filteredIdentifiers(update)
+  const named = new Set<string>()
+  for (const filter of arrayFilters ?? []) {
+    const names = [...new Set(arrayFilterNames(filter))]
+    if (names.length === 0) throw new Error('Cannot use an expression without a top-level field name in arrayFilters')
+    if (names.length > 1) {
+      throw new Error(`Error parsing array filter :: caused by :: Expected a single top-level field name, found ${names.map((n) => `'${n}'`).join(' and ')}`)
+    }
+    const name = names[0] as string
+    if (!/^[a-z][a-zA-Z0-9]*$/.test(name)) {
+      throw new Error(`Error parsing array filter :: caused by :: The top-level field name must be an alphanumeric string beginning with a lowercase letter, found '${name}'`)
+    }
+    if (named.has(name)) throw new Error(`Found multiple array filters with the same top-level field name ${name}`)
+    named.add(name)
+    if (!used.has(name)) throw new Error(`The array filter for identifier '${name}' was not used in the update`)
   }
+  for (const [identifier, path] of used) {
+    if (!named.has(identifier)) throw new Error(`No array filter found for identifier '${identifier}' in path '${path}'`)
+  }
+}
+
+/** The index the plain positional `$` stands for: the first element the query's predicate on that array matched. */
+const positionalIndex = (doc: Doc, filter: Filter | undefined, arrayPath: string): number => {
+  const items = pathValue(doc, arrayPath)
+  if (Array.isArray(items) && filter) {
+    for (const [key, condition] of Object.entries(filter)) {
+      let test: ((item: unknown) => boolean) | undefined
+      if (key === arrayPath) {
+        const sub = isPlainObject(condition) ? condition.$elemMatch : undefined
+        test = (item) => (sub ? satisfiesElemMatch(item, sub as Filter) : matchesCondition([item], condition, [item]))
+      } else if (key.startsWith(`${arrayPath}.`)) {
+        const rest = key.slice(arrayPath.length + 1)
+        test = (item) => isPlainObject(item) && matchesFilter(item, { [rest]: condition })
+      }
+      const index = test ? items.findIndex(test) : -1
+      if (index >= 0) return index
+    }
+  }
+  throw new Error('The positional operator did not find the match needed from the query')
+}
+
+interface UpdateContext {
+  filter?: Filter
+  arrayFilters?: Filter[]
+  isInsert?: boolean
+}
+
+/** Replaces `$`, `$[]` and `$[ident]` segments with the concrete array indexes they stand for. */
+const expandPath = (doc: Doc, path: string, ctx: UpdateContext): string[] => {
+  let prefixes: string[][] = [[]]
+  for (const token of path.split('.')) {
+    if (token !== '$' && !token.startsWith('$[')) {
+      prefixes = prefixes.map((prefix) => [...prefix, token])
+      continue
+    }
+    prefixes = prefixes.flatMap((prefix) => {
+      const arrayPath = prefix.join('.')
+      const items = pathValue(doc, arrayPath)
+      if (!Array.isArray(items)) {
+        throw new Error(`The path '${arrayPath}' must exist in the document in order to apply array updates`)
+      }
+      let indexes: number[]
+      if (token === '$') {
+        indexes = [positionalIndex(doc, ctx.filter, arrayPath)]
+      } else if (token === '$[]') {
+        indexes = items.map((_, i) => i)
+      } else {
+        const identifier = token.slice(2, -1)
+        const filters = (ctx.arrayFilters ?? []).filter((f) => arrayFilterIdentifier(f) === identifier)
+        if (filters.length === 0) throw new Error(`No array filter found for identifier '${identifier}' in path '${path}'`)
+        indexes = items.flatMap((item, i) => (filters.every((f) => matchesFilter({ [identifier]: item }, f)) ? [i] : []))
+      }
+      return indexes.map((i) => [...prefix, String(i)])
+    })
+  }
+  return prefixes.map((prefix) => prefix.join('.'))
+}
+
+const UPDATE_OPERATORS = new Set(['$set', '$unset', '$inc', '$push', '$pull', '$addToSet', '$setOnInsert', '$max', '$min'])
+
+const matchesPullCondition = (element: unknown, condition: unknown): boolean => {
+  if (!isPlainObject(condition)) return equals(element, condition)
+  if (Object.keys(condition).some((k) => k.startsWith('$'))) return matchesCondition([element], condition, [element])
+  return isPlainObject(element) && matchesFilter(element, condition)
+}
+
+const applyUpdate = (doc: SessionDoc | MessageDoc, update: Doc | Doc[], ctx: UpdateContext = {}): void => {
+  // An update pipeline: each `$set` stage is evaluated against the document as the stage before left it.
+  if (Array.isArray(update)) {
+    for (const stage of update) {
+      if (Object.keys(stage).some((key) => key !== '$set')) {
+        throw new Error('The in-memory store only understands $set stages in an update pipeline')
+      }
+      for (const [path, expr] of Object.entries(stage.$set as Doc)) doc.set(path, evalExpr(expr, plain(doc)))
+    }
+    return
+  }
+  for (const key of Object.keys(update)) {
+    if (key.startsWith('$') && !UPDATE_OPERATORS.has(key)) {
+      throw new Error(`The in-memory store does not understand ${key}; extend applyUpdate before relying on it`)
+    }
+  }
+  const operators = Object.keys(update).some((key) => key.startsWith('$'))
+  const each = (source: Doc | undefined, apply: (path: string, value: unknown) => void): void => {
+    for (const [path, value] of Object.entries(source ?? {})) {
+      for (const concrete of expandPath(plain(doc), path, ctx)) apply(concrete, value)
+    }
+  }
+  const currentArray = (path: string): unknown[] => {
+    const value = pathValue(plain(doc), path)
+    return Array.isArray(value) ? value : []
+  }
+  const set = (path: string, value: unknown): void => {
+    doc.set(path, value)
+  }
+
+  // Mongoose folds top-level non-operator keys into `$set` even next to operators such as `$inc`.
+  const flat = Object.fromEntries(Object.entries(update).filter(([key]) => !key.startsWith('$')))
+  each(operators ? { ...flat, ...(update.$set as Doc | undefined) } : update, set)
+  if (ctx.isInsert) each(update.$setOnInsert as Doc | undefined, set)
+  each(update.$unset as Doc | undefined, (path) => doc.set(path, undefined))
+  each(update.$inc as Doc | undefined, (path, value) => doc.set(path, Number(doc.get(path) ?? 0) + Number(value)))
+  each(update.$push as Doc | undefined, (path, value) => {
+    const current = pathValue(plain(doc), path)
+    if (current !== undefined && !Array.isArray(current)) {
+      throw new Error(`The field '${path}' must be an array but is of type ${bsonTypeName(current)} in document {_id: ${String(doc.get('_id'))}}`)
+    }
+    const modifiers = isPlainObject(value) && Array.isArray(value.$each) ? value : undefined
+    for (const modifier of Object.keys(modifiers ?? {})) {
+      if (modifier !== '$each' && modifier !== '$slice') {
+        throw new Error(`The in-memory store does not understand ${modifier} in $push; extend applyUpdate before relying on it`)
+      }
+    }
+    const next = [...currentArray(path), ...(modifiers ? (modifiers.$each as unknown[]) : [value])]
+    const slice = modifiers?.$slice
+    doc.set(path, typeof slice === 'number' ? (slice < 0 ? next.slice(slice) : next.slice(0, slice)) : next)
+  })
+  each(update.$pull as Doc | undefined, (path, condition) =>
+    doc.set(path, currentArray(path).filter((element) => !matchesPullCondition(element, condition))),
+  )
+  each(update.$addToSet as Doc | undefined, (path, value) => {
+    const additions = isPlainObject(value) && Array.isArray(value.$each) ? value.$each : [value]
+    const next = currentArray(path)
+    for (const addition of additions) if (!next.some((existing) => deepEquals(existing, addition))) next.push(addition)
+    doc.set(path, next)
+  })
+  each(update.$max as Doc | undefined, (path, value) => {
+    const current = pathValue(plain(doc), path)
+    if (current === undefined || current === null || bsonOrder(value, current) > 0) doc.set(path, value)
+  })
+  each(update.$min as Doc | undefined, (path, value) => {
+    const current = pathValue(plain(doc), path)
+    if (current === undefined || current === null || bsonOrder(value, current) < 0) doc.set(path, value)
+  })
+}
+
+export interface StoreOptions {
+  /**
+   * Every read hands back a new document and a save stores what it wrote, as MongoDB does: a caller's unsaved change to
+   * what it read never reaches the store. Off, a read hands back the stored row itself, which a double that writes by
+   * changing what it read relies on.
+   */
+  copies?: boolean
 }
 
 /** Every chat session and message the controller reads or writes, held in memory. */
 export class InMemoryChatStore {
+  constructor(private readonly options: StoreOptions = {}) {}
+
   readonly sessions: SessionDoc[] = []
   readonly messages: MessageDoc[] = []
   /** Every citation the controller saved, so `populate` can resolve message citations. */
@@ -262,6 +693,8 @@ export class InMemoryChatStore {
       return { toObject: () => doc }
     }) as never)
   }
+  /** Further model stubs `install()` applies, for collections other suites add. */
+  static readonly installers: Array<(store: InMemoryChatStore) => void> = []
 
   addSession(fields: Doc): SessionDoc {
     const doc = new ChatSession({ lastActivityAt: Date.now(), status: 'Complete', ...fields })
@@ -272,7 +705,8 @@ export class InMemoryChatStore {
   addMessage(session: SessionDoc, fields: Doc): MessageDoc {
     const seq = ((session.get('nextSeq') as number | undefined) ?? 0) + 1
     session.set('nextSeq', seq)
-    const doc = new ChatSessionMessage({ sessionId: session._id, orgId: session.orgId, seq, ...fields })
+    // A stored row always has `createdAt` (schema timestamps); feedback reads it.
+    const doc = new ChatSessionMessage({ sessionId: session._id, orgId: session.orgId, seq, createdAt: new Date(), ...fields })
     this.messages.push(doc)
     return doc
   }
@@ -281,6 +715,40 @@ export class InMemoryChatStore {
     const doc = new Citation(fields)
     this.citations.push(doc)
     return doc
+  }
+
+  /** The unique indexes of `chatSessionMessages`: `{sessionId, seq}` and the partial `{sessionId, authorUserId, clientMessageId}`. */
+  assertUniqueKeys(doc: MessageDoc): void {
+    const key = (m: MessageDoc, fields: string[]): string => JSON.stringify(fields.map((f) => normalize(m.get(f))))
+    // An edition's field: read by path, as the schema here may not declare it.
+    const clientKey = typeof doc.get('clientMessageId') === 'string' ? ['sessionId', 'authorUserId', 'clientMessageId'] : undefined
+    for (const other of this.messages) {
+      if (key(other, ['sessionId', 'seq']) === key(doc, ['sessionId', 'seq'])) {
+        throw Object.assign(new Error('E11000 duplicate key error collection: chatSessionMessages index: sessionId_1_seq_1'), { code: 11000, keyPattern: { sessionId: 1, seq: 1 } })
+      }
+      if (clientKey && typeof other.get('clientMessageId') === 'string' && key(other, clientKey) === key(doc, clientKey)) {
+        throw Object.assign(new Error('E11000 duplicate key error collection: chatSessionMessages index: sessionId_1_authorUserId_1_clientMessageId_1'), {
+          code: 11000,
+          keyPattern: { sessionId: 1, authorUserId: 1, clientMessageId: 1 },
+        })
+      }
+    }
+  }
+
+  /** The partial unique index `{orgId, initiator, creationKey}` of `chatSessions`. */
+  assertUniqueCreationKey(doc: SessionDoc): void {
+    const key = doc.get('creationKey') as unknown
+    if (typeof key !== 'string') return
+    const same = (other: SessionDoc): boolean =>
+      other.get('creationKey') === key &&
+      String(other.get('orgId')) === String(doc.get('orgId')) &&
+      String(other.get('initiator')) === String(doc.get('initiator'))
+    if (this.sessions.some(same)) {
+      throw Object.assign(new Error('E11000 duplicate key error collection: chatSessions index: orgId_1_initiator_1_creationKey_1'), {
+        code: 11000,
+        keyPattern: { orgId: 1, initiator: 1, creationKey: 1 },
+      })
+    }
   }
 
   session(id: unknown): SessionDoc | undefined {
@@ -295,7 +763,7 @@ export class InMemoryChatStore {
   }
 
   private findSessions(filter: Filter): SessionDoc[] {
-    return this.sessions.filter((s) => matchesFilter(plain(s), filter))
+    return scanning(() => this.sessions.filter((s) => matchesFilter(plain(s), filter)))
   }
 
   /** What `populate('citations.citationId')` does to a lean message row. */
@@ -315,14 +783,16 @@ export class InMemoryChatStore {
   }
 
   private findMessages(filter: Filter): MessageDoc[] {
-    return this.messages.filter((m) => matchesFilter(plain(m), filter))
+    return scanning(() => this.messages.filter((m) => matchesFilter(plain(m), filter)))
   }
 
   install(): void {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const store = this
+    const copies = this.options.copies === true
+    const handed = <D extends StoredDoc>(doc: D): D => (copies ? copyOf(doc) : doc)
     const one = (doc: StoredDoc | undefined, state: QueryState): unknown =>
-      doc === undefined ? null : state.lean ? doc.toObject() : bindSession(doc, state)
+      doc === undefined ? null : state.lean ? doc.toObject() : bindSession(handed(doc), state)
     const withSession = <T>(query: FakeQuery<T>, options: SessionOption): FakeQuery<T> =>
       options?.session != null ? query.session(options.session) : query
 
@@ -335,16 +805,49 @@ export class InMemoryChatStore {
     }
     for (const collection of [ChatSession.collection, Citation.collection]) {
       sinon.stub(collection, 'insertOne').callsFake(((_doc: unknown, options?: SessionOption) => acknowledge(options)) as never)
-      sinon.stub(collection, 'updateOne').callsFake(((_filter: unknown, _update: unknown, options?: SessionOption) =>
-        acknowledge(options)) as never)
     }
+    sinon.stub(Citation.collection, 'updateOne').callsFake(((_filter: unknown, _update: unknown, options?: SessionOption) =>
+      acknowledge(options)) as never)
+    // A stored row saving itself already holds its change; applying the save's update again would repeat a `$push`.
+    const selfSaves = new Set<SessionDoc>()
+    // `save()` on a document read from the store sends only its changes, as it does to the server.
+    sinon.stub(ChatSession.collection, 'updateOne').callsFake(((filter: Filter, update: Doc, options?: SessionOption) => {
+      assertSessionUsable(options)
+      const doc = store.findSessions(filter)[0]
+      if (doc && !selfSaves.has(doc)) applyUpdate(doc, update, { filter })
+      const matched = doc ? 1 : 0
+      return Promise.resolve({ acknowledged: true, matchedCount: matched, modifiedCount: matched })
+    }) as never)
     const realSessionSave = ChatSession.prototype.save
     sinon.stub(ChatSession.prototype, 'save').callsFake(async function (this: SessionDoc, options?: SessionOption) {
       store.writes.push('chatSession.save')
-      const saved = await realSessionSave.call(this, options as never)
-      if (!store.sessions.includes(this)) store.sessions.push(this)
-      return saved
+      // Checked and tracked before the first await, so two creates racing on one key cannot both pass.
+      const tracked = store.sessions.includes(this)
+      const inserting = !tracked && this.isNew
+      if (inserting) {
+        store.assertUniqueCreationKey(this)
+        store.sessions.push(this)
+      }
+      if (tracked) selfSaves.add(this)
+      try {
+        const saved = await realSessionSave.call(this, options as never)
+        // The store keeps what was written, not the caller's document.
+        const at = inserting && copies ? store.sessions.indexOf(this) : -1
+        if (at >= 0) store.sessions[at] = copyOf(this)
+        return saved
+      } catch (error) {
+        if (inserting) store.sessions.splice(store.sessions.indexOf(this), 1)
+        throw error
+      } finally {
+        selfSaves.delete(this)
+      }
     } as never)
+    sinon.stub(ChatSession, 'deleteOne').callsFake(((filter: Filter) => {
+      const doomed = store.findSessions(filter)[0]
+      if (doomed) store.sessions.splice(store.sessions.indexOf(doomed), 1)
+      store.writes.push('chatSession.deleteOne')
+      return new FakeQuery(() => ({ acknowledged: true, deletedCount: doomed ? 1 : 0 }))
+    }) as never)
     sinon.stub(ChatSession, 'findOne').callsFake(((filter: Filter, _projection?: unknown, options?: SessionOption) => {
       assertSessionUsable(options)
       return withSession(new FakeQuery((state) => one(store.findSessions(filter)[0], state)), options)
@@ -352,44 +855,71 @@ export class InMemoryChatStore {
     sinon.stub(ChatSession, 'findById').callsFake(((id: unknown) =>
       new FakeQuery((state) => one(store.session(id), state))) as never)
     sinon.stub(ChatSession, 'find').callsFake(((filter: Filter) =>
-      new FakeQuery((state) => shape(store.findSessions(filter), state))) as never)
+      new FakeQuery((state) => shape(store.findSessions(filter), state, copies))) as never)
     sinon.stub(ChatSession, 'countDocuments').callsFake(((filter: Filter) =>
       new FakeQuery(() => store.findSessions(filter).length)) as never)
-    sinon.stub(ChatSession, 'updateOne').callsFake(((filter: Filter, update: Doc) => {
-      const doc = store.findSessions(filter)[0]
-      if (doc) {
-        applyUpdate(doc, update)
-        store.writes.push('chatSession.updateOne')
-      }
-      return Promise.resolve({ acknowledged: true, matchedCount: doc ? 1 : 0, modifiedCount: doc ? 1 : 0 })
-    }) as never)
-    sinon.stub(ChatSession, 'findOneAndUpdate').callsFake(((filter: Filter, update: Doc, options?: (SessionOption & { returnDocument?: 'before' | 'after' }) | null) => {
+    const asUpdated = (doc: SessionDoc | MessageDoc | undefined, filter: Filter, update: Doc, options: UpdateOptions): FakeQuery<unknown> => {
       assertSessionUsable(options)
-      const doc = store.findSessions(filter)[0]
-      // Like the driver, the document as it was before the update unless `returnDocument: 'after'`.
-      const before = doc ? doc.toObject() : undefined
-      if (doc) {
-        applyUpdate(doc, update)
-        store.writes.push(update.$inc ? 'chatSession.allocateSeq' : 'chatSession.update')
+      assertNoUpsert(options)
+      assertArrayFilters(update, options?.arrayFilters)
+      // Mongoose returns the pre-update document unless the caller asks for `new: true` or `returnDocument: 'after'`.
+      const returnsBefore = !(options?.new === true || options?.returnDocument === 'after')
+      const before = doc ? plain(doc) : undefined
+      if (doc) applyUpdate(doc, update, { filter, arrayFilters: options?.arrayFilters })
+      // The server answers with the document as this update left it, even if another update lands before the caller reads it.
+      const after = doc && !returnsBefore ? (doc.constructor as unknown as { hydrate(o: unknown): StoredDoc }).hydrate(plain(doc)) : undefined
+      return new FakeQuery((state) => {
+        if (after) return state.lean ? after.toObject() : bindSession(after, state)
+        if (!doc || !before || !returnsBefore) return one(doc, state)
+        if (state.lean) return before
+        return bindSession((doc.constructor as unknown as { hydrate(o: unknown): MessageDoc }).hydrate(before), state)
+      })
+    }
+    // Only a matched filter writes, so a lost race or a failed fence leaves `writes` untouched.
+    const updateStub =
+      <D extends SessionDoc | MessageDoc>(find: (filter: Filter) => D[], label: string, many: boolean) =>
+      (filter: Filter, update: Doc, options?: UpdateOptions) => {
+        assertSessionUsable(options)
+        assertNoUpsert(options)
+        return withSession(
+          new FakeQuery<UpdateResult>(() => {
+            assertArrayFilters(update, options?.arrayFilters)
+            const matched = many ? find(filter) : find(filter).slice(0, 1)
+            let modifiedCount = 0
+            for (const doc of matched) {
+              const before = JSON.stringify(plain(doc))
+              applyUpdate(doc, update, { filter, arrayFilters: options?.arrayFilters })
+              if (JSON.stringify(plain(doc)) !== before) modifiedCount += 1
+            }
+            if (matched.length > 0) store.writes.push(label)
+            return { acknowledged: true, matchedCount: matched.length, modifiedCount }
+          }),
+          options,
+        )
       }
-      // An atomic $inc returns the counter as this call left it, even if another call runs before the await.
-      const after = doc && update.$inc ? doc.toObject() : undefined
-      return new FakeQuery((state) =>
-        options?.returnDocument === 'after' ? (after ?? one(doc, state)) : (before ?? null),
-      )
+    sinon.stub(ChatSession, 'updateOne').callsFake(updateStub((f) => store.findSessions(f), 'chatSession.updateOne', false) as never)
+    sinon.stub(ChatSession, 'updateMany').callsFake(updateStub((f) => store.findSessions(f), 'chatSession.updateMany', true) as never)
+    sinon.stub(ChatSessionMessage, 'updateOne').callsFake(updateStub((f) => store.findMessages(f), 'message.updateOne', false) as never)
+    sinon.stub(ChatSessionMessage, 'updateMany').callsFake(updateStub((f) => store.findMessages(f), 'message.updateMany', true) as never)
+    sinon.stub(ChatSession, 'findOneAndUpdate').callsFake(((filter: Filter, update: Doc, options?: UpdateOptions) => {
+      const doc = store.findSessions(filter)[0]
+      const query = asUpdated(doc, filter, update, options)
+      if (doc) store.writes.push((update.$inc as Doc | undefined)?.nextSeq !== undefined ? 'chatSession.allocateSeq' : 'chatSession.update')
+      return query
     }) as never)
 
     sinon.stub(ChatSessionMessage, 'insertMany').callsFake(((docs: Doc[], options?: SessionOption) => {
       assertSessionUsable(options)
       const inserted = docs.map((fields) => new ChatSessionMessage(fields))
-      store.messages.push(...inserted)
+      for (const doc of inserted) store.assertUniqueKeys(doc)
+      store.messages.push(...inserted.map(handed))
       store.writes.push('message.insert')
       return Promise.resolve(inserted)
     }) as never)
     sinon.stub(ChatSessionMessage, 'find').callsFake(((filter: Filter, _projection?: unknown, options?: SessionOption) => {
       assertSessionUsable(options)
       return withSession(
-        new FakeQuery((state) => store.populated(shape(store.findMessages(filter), state), state)),
+        new FakeQuery((state) => store.populated(shape(store.findMessages(filter), state, copies), state)),
         options,
       )
     }) as never)
@@ -399,7 +929,7 @@ export class InMemoryChatStore {
       assertSessionUsable(options)
       // `findOne(...).sort(...)` returns the first row in that order, as MongoDB does.
       return withSession(
-        new FakeQuery((state) => shape(store.findMessages(filter), { ...state, limit: 1 })[0] ?? null),
+        new FakeQuery((state) => shape(store.findMessages(filter), { ...state, limit: 1 }, copies)[0] ?? null),
         options,
       )
     }) as never)
@@ -413,14 +943,17 @@ export class InMemoryChatStore {
       store.writes.push('message.replace')
       return new FakeQuery((state) => one(replaced, state))
     }) as never)
-    sinon.stub(ChatSessionMessage, 'findOneAndUpdate').callsFake(((filter: Filter, update: Doc, options?: SessionOption) => {
-      assertSessionUsable(options)
+    sinon.stub(ChatSessionMessage, 'deleteMany').callsFake(((filter: Filter) => {
+      const doomed = new Set(store.findMessages(filter))
+      store.messages.splice(0, store.messages.length, ...store.messages.filter((m) => !doomed.has(m)))
+      if (doomed.size > 0) store.writes.push('message.delete')
+      return new FakeQuery(() => ({ acknowledged: true, deletedCount: doomed.size }))
+    }) as never)
+    sinon.stub(ChatSessionMessage, 'findOneAndUpdate').callsFake(((filter: Filter, update: Doc, options?: UpdateOptions) => {
       const doc = store.findMessages(filter)[0]
-      if (doc) {
-        applyUpdate(doc, update)
-        store.writes.push('message.update')
-      }
-      return new FakeQuery((state) => one(doc, state))
+      const query = asUpdated(doc, filter, update, options)
+      if (doc) store.writes.push('message.update')
+      return query
     }) as never)
 
     const realCitationSave = Citation.prototype.save
@@ -430,6 +963,23 @@ export class InMemoryChatStore {
       store.citations.push(this)
       return realCitationSave.call(this, options as never)
     } as never)
+    // Real Mongoose `insertMany()` runs, as `save()` does: it validates the documents and stamps them (timestamps, the
+    // version key) itself. Only the driver call is faked; what it inserted a later populated read finds, as after a save.
+    const realCitationInsertMany = Citation.insertMany.bind(Citation)
+    sinon.stub(Citation.collection, 'insertMany').callsFake(((docs: Array<{ _id?: unknown }>, options?: SessionOption) => {
+      assertSessionUsable(options)
+      return Promise.resolve({
+        acknowledged: true,
+        insertedCount: docs.length,
+        insertedIds: Object.fromEntries(docs.map((doc, index) => [index, doc._id])),
+      })
+    }) as never)
+    sinon.stub(Citation, 'insertMany').callsFake((async (docs: unknown[], options?: Record<string, unknown>) => {
+      store.writes.push(...docs.map(() => 'citation.save'))
+      const inserted = (await realCitationInsertMany(docs as never, options as never)) as unknown as Array<InstanceType<typeof Citation>>
+      store.citations.push(...inserted)
+      return inserted
+    }) as never)
     sinon.stub(Citation, 'updateMany').callsFake((() => {
       store.writes.push('citation.updateMany')
       return new FakeQuery(() => ({ modifiedCount: 0 }))
@@ -437,6 +987,7 @@ export class InMemoryChatStore {
     sinon.stub(Users, 'find').callsFake((() => new FakeQuery(() => [])) as never)
     sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
     sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false)
+    for (const installer of InMemoryChatStore.installers) installer(store)
   }
 }
 
@@ -490,9 +1041,10 @@ export class FakeSSEResponse extends EventEmitter {
     this.resolveEnded = resolve
   })
 
-  writeHead(statusCode: number): this {
+  writeHead(statusCode: number, headers: Record<string, string> = {}): this {
     this.statusCode = statusCode
     this.headersSent = true
+    for (const [name, value] of Object.entries(headers)) this.headers[name.toLowerCase()] = value
     return this
   }
   setHeader(name: string, value: string): this {
@@ -575,6 +1127,8 @@ type Reply =
  */
 export class FakeAIBackend {
   readonly calls: RecordedCall[] = []
+  /** Runs as each request reaches the service, before it is answered; lets a test change the world mid-turn. */
+  onRequest?: () => void
   private controller: ReadableStreamDefaultController<Uint8Array> | null = null
   private streamReply: Reply | null = null
   private stallStreamOpen = false
@@ -587,6 +1141,7 @@ export class FakeAIBackend {
     if (!(searchUtils.keepRunAlive as { restore?: unknown }).restore) sinon.stub(searchUtils, 'keepRunAlive')
     sinon.stub(globalThis, 'fetch').callsFake((input: string | URL | Request, init?: RequestInit) => {
       const url = input instanceof Request ? input.url : input.toString()
+      this.onRequest?.()
       const rawBody = typeof init?.body === 'string' ? init.body : '{}'
       const headers = Object.fromEntries(new Headers(init?.headers).entries())
       this.calls.push({ url, method: init?.method ?? 'GET', headers, body: JSON.parse(rawBody) as Record<string, unknown> })

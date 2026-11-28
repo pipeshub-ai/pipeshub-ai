@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from neo4j.exceptions import ServiceUnavailable
 
+from app.modules.agents.context.told_files import TOLD_FILES_KEY, ToldFiles
 from app.agents.actions.artifacts.artifacts import ArtifactManager
 from app.config.constants.arangodb import OriginTypes
 from app.models.entities import ArtifactType, LifecycleStatus
@@ -545,6 +546,20 @@ class TestListArtifacts:
         assert entry["artifact_id"] == "art-1"
         assert entry["derived_from_code_artifact_id"] == "code-1"
         assert entry["derived_from_code_version"] == 2
+
+    async def test_the_listing_is_told_which_files_the_run_may_be_told_about(self) -> None:
+        """In a run others read, the tool lists only the files every member may open and the ones the request
+        picked, as the run's state says (`told_files`); outside a run, every file its asker may open."""
+        told = ToldFiles(every_member_only=True, picked=frozenset({"art-1"}))
+        registry = MagicMock()
+        registry.list_for_conversation = AsyncMock(return_value=[])
+        manager, _ = _make_manager(registry=registry, **{TOLD_FILES_KEY: told})
+        await manager.list_artifacts()
+        assert registry.list_for_conversation.await_args.kwargs["told"] is told
+
+        manager, _ = _make_manager(registry=registry)
+        await manager.list_artifacts()
+        assert registry.list_for_conversation.await_args.kwargs["told"] is None
 
     async def test_empty_conversation_returns_empty_list(self) -> None:
         registry = MagicMock()

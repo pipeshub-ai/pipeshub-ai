@@ -6,7 +6,11 @@ import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-bu
 const api = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), delete: vi.fn() }));
 const addToast = vi.hoisted(() => vi.fn());
 const router = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn(), prefetch: vi.fn(), back: vi.fn(), refresh: vi.fn() }));
-vi.mock('@/lib/api', () => ({ apiClient: api, streamSSERequest: vi.fn() }));
+vi.mock('@/lib/api', () => ({
+  apiClient: api,
+  sharedGet: (url: string) => api.get(url).then(({ data }: { data: unknown }) => data),
+  streamSSERequest: vi.fn(),
+}));
 vi.mock('next/navigation', async (importOriginal) => ({
   ...(await importOriginal<typeof import('next/navigation')>()),
   useRouter: () => router,

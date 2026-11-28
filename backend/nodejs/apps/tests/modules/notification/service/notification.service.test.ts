@@ -8,6 +8,7 @@ import { NotificationService } from '../../../../src/modules/notification/servic
 import { Logger } from '../../../../src/libs/services/logger.service'
 import { withCause } from '../../../../src/libs/errors/base.error'
 import { UnauthorizedError } from '../../../../src/libs/errors/http.errors'
+import { createFakeRedisProvider } from '../../../helpers/fake-redis-provider'
 
 describe('NotificationService', () => {
   let service: NotificationService
@@ -17,7 +18,7 @@ describe('NotificationService', () => {
     mockAuthTokenService = {
       verifyToken: sinon.stub().resolves({ userId: 'user-1', orgId: 'org-1' }),
     }
-    service = new NotificationService(mockAuthTokenService)
+    service = new NotificationService(mockAuthTokenService, createFakeRedisProvider())
   })
 
   afterEach(() => {
@@ -35,6 +36,8 @@ describe('NotificationService', () => {
       const use = sinon.spy(Server.prototype, 'use')
       const expired = withCause(new UnauthorizedError('Invalid token'), new jwt.TokenExpiredError('jwt expired', new Date(0)))
       mockAuthTokenService.verifyToken = sinon.stub().rejects(expired)
+      // Only the handshake is under test: the in-memory adapter instead of the Redis one.
+      sinon.stub(service as any, 'redisAdapter').returns(undefined)
       service.initialize(http.createServer())
       const authenticate = use.firstCall.args[0] as (socket: unknown, next: (err?: Error) => void) => Promise<void>
 
@@ -107,6 +110,55 @@ describe('NotificationService', () => {
       expect(emitStub.calledOnce).to.be.true
       expect(emitStub.calledWith('test-event', { data: 'test' })).to.be.true
     })
+
+    describe('with Redis, a user with no socket here', () => {
+      /** This replica's server, with no socket for user-1 here; asked, the other replicas answer `answers`. */
+      function replicaWhereOthersAnswer(answers: unknown[]) {
+        const emitStub = sinon.stub()
+        const toStub = sinon.stub().returns({ emit: emitStub })
+        const askStub = sinon.stub().resolves(answers)
+        ;(service as any).io = { sockets: { adapter: { rooms: new Map() } }, to: toStub, serverSideEmitWithAck: askStub }
+        ;(service as any).distributed = true
+        return { emitStub, toStub, askStub }
+      }
+      const answered = () => new Promise((resolve) => setImmediate(resolve))
+
+      it('gets it through Redis at once, and it is held here when no replica has a socket for them', async () => {
+        const { emitStub, toStub, askStub } = replicaWhereOthersAnswer([false])
+
+        const result = service.sendToUser('user-1', 'test-event', { data: 'test' })
+
+        expect(result).to.be.true
+        expect(toStub.calledOnceWith('user-1')).to.be.true
+        expect(emitStub.calledOnceWith('test-event', { data: 'test' })).to.be.true
+        await answered()
+        expect(askStub.calledOnce).to.be.true
+        expect(askStub.firstCall.args[1]).to.equal('user-1')
+        expect((service as any).notificationQueue.get('user-1')).to.have.lengthOf(1)
+      })
+
+      it('has nothing held here when another replica has their socket, which got it through Redis', async () => {
+        const { emitStub } = replicaWhereOthersAnswer([false, true])
+
+        expect(service.sendToUser('user-1', 'test-event', { data: 'test' })).to.be.true
+        await answered()
+
+        expect(emitStub.calledOnceWith('test-event', { data: 'test' })).to.be.true
+        expect((service as any).notificationQueue.has('user-1')).to.be.false
+      })
+
+      it('has what is sent while the answer is on its way held in order, after one question to the replicas', async () => {
+        const { askStub } = replicaWhereOthersAnswer([])
+
+        service.sendToUser('user-1', 'test-event', { n: 1 })
+        service.sendToUser('user-1', 'test-event', { n: 2 })
+        await answered()
+
+        expect(askStub.calledOnce).to.be.true
+        const held = (service as any).notificationQueue.get('user-1') as Array<{ data: unknown }>
+        expect(held.map((h) => h.data)).to.deep.equal([{ n: 1 }, { n: 2 }])
+      })
+    })
   })
 
   describe('sendToOrg', () => {
@@ -162,15 +214,21 @@ describe('NotificationService', () => {
       expect(() => service.shutdown()).to.not.throw()
     })
 
-    it('should disconnect all sockets and close io', () => {
+    it("should disconnect this replica's sockets and close io", () => {
       const disconnectSockets = sinon.stub()
       const close = sinon.stub()
-      ;(service as any).io = { disconnectSockets, close }
+      ;(service as any).io = { local: { disconnectSockets }, close }
 
       service.shutdown()
       expect(disconnectSockets.calledWith(true)).to.be.true
       expect(close.calledOnce).to.be.true
       expect((service as any).io).to.be.null
+    })
+
+    it('should clear connected users', () => {
+      ;(service as any).connectedUsers.add('user-1')
+      service.shutdown()
+      expect((service as any).connectedUsers.size).to.equal(0)
     })
 
     it('should clear queue processing interval', () => {
@@ -189,6 +247,7 @@ describe('NotificationService', () => {
       expect((service as any).notificationQueue.size).to.equal(0)
     })
   })
+
 
   describe('extractToken', () => {
     it('should extract token from Bearer format', () => {
@@ -553,7 +612,8 @@ describe('NotificationService', () => {
     it('should log queued notification count during shutdown', () => {
       const disconnectSockets = sinon.stub()
       const close = sinon.stub()
-      ;(service as any).io = { disconnectSockets, close }
+      // This replica's sockets: through the Redis adapter a plain disconnect would drop every replica's.
+      ;(service as any).io = { local: { disconnectSockets }, close }
       ;(service as any).queueNotification('user-1', 'event-1', {})
       ;(service as any).queueNotification('user-1', 'event-2', {})
       ;(service as any).queueNotification('user-2', 'event-3', {})
@@ -594,13 +654,15 @@ describe('NotificationService', () => {
       expect(result).to.be.false
     })
 
-    it('should return false when user is not connected', () => {
+    it('emits with no socket on this replica, since another replica may hold one', () => {
+      const emitStub = sinon.stub()
       ;(service as any).io = {
         sockets: { adapter: { rooms: new Map() } },
-        to: sinon.stub().returns({ emit: sinon.stub() }),
+        to: sinon.stub().returns({ emit: emitStub }),
       }
       const result = service.emitForceLogout('user-1')
-      expect(result).to.be.false
+      expect(result).to.be.true
+      expect(emitStub.calledOnceWith('force_logout', { reason: 'role_changed' })).to.be.true
     })
 
     it('should emit force_logout and return true when user is connected', () => {

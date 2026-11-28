@@ -1,241 +1,178 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom';
-import { Box, Text, Theme, VisuallyHidden } from '@radix-ui/themes';
+import { Theme } from '@radix-ui/themes';
 import {
   useToastStore,
   selectToasts,
-  selectIsHovered,
+  type Toast as ToastType,
   type ToastPlacement,
-  type Toast as ToastData,
 } from '@/lib/store/toast-store';
 import { useThemeAppearance } from '@/app/components/theme-provider';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { Toast } from './toast';
+import { Toast, TOAST_WIDTH } from './toast';
+import {
+  TOAST_EDGE,
+  TOAST_RIGHT,
+  toastBottom,
+  useToastCornerStack,
+  type CornerStack,
+} from './toast-corner';
 
-// ========================================
-// Stack configuration (visual only; height is not fixed — avoids viewport cutoff)
-// ========================================
+/** Where the pointer last was on the page: null before it has moved there, and once it has left. */
+type PointerAt = React.MutableRefObject<{ x: number; y: number } | null>;
 
-const GAP_EXPANDED = 12;
-const GAP_COLLAPSED = 6;
+/** A press on one of these does its own job; a press anywhere else on a card closes it. */
+const TOAST_CONTROLS = 'button, a, input, textarea, select, [role="button"], [role="link"]';
 
-interface ToastStackProps {
+interface ToastRegionProps {
+  /** `status` is polite; `alert` interrupts, for errors. */
+  role: 'status' | 'alert';
+  toast: ToastType | null;
   placement: ToastPlacement;
-  toasts: ReturnType<typeof selectToasts>;
-  isHovered: boolean;
+  /** Toast cards other hosts put in the corner; a bottom toast sits above them. */
+  stacked: CornerStack;
+  pointerAt: PointerAt;
   onHoverChange: (hovered: boolean) => void;
   onDismiss: (id: string) => void;
 }
 
-function ToastStack({
-  placement,
-  toasts,
-  isHovered,
-  onHoverChange,
-  onDismiss,
-}: ToastStackProps) {
-  if (toasts.length === 0) return null;
-
-  const maxVisible = 3;
-  const visibleToasts = toasts.slice(0, maxVisible);
-  const hiddenCount = Math.max(0, toasts.length - maxVisible);
-  const gap = isHovered ? GAP_EXPANDED : GAP_COLLAPSED;
+/**
+ * A live region, mounted for as long as the app is, so a screen reader is
+ * already listening when a toast arrives. It is the toast's own size and lets
+ * clicks through wherever there is no toast. It stays in its corner whatever
+ * the page shows: open panels and the chat composer do not move it.
+ *
+ * Pointing at a card or focusing it pauses its clock, so Undo and View can be
+ * reached. A card that comes up under the resting pointer, as over the button
+ * the hand goes to next, does not pause while the pointer stays on it, or it
+ * would never leave that button: it pauses once the pointer has left it and
+ * come back. A press on a card's text closes it, as its close button does.
+ */
+function ToastRegion({ role, toast, placement, stacked, pointerAt, onHoverChange, onDismiss }: ToastRegionProps) {
   const isTop = placement === 'top';
-
+  const regionRef = useRef<HTMLDivElement>(null);
+  const cameUpUnderPointer = useRef(false);
+  const toastId = toast?.id;
+  useLayoutEffect(() => {
+    const at = pointerAt.current;
+    const box = toastId ? regionRef.current?.getBoundingClientRect() : undefined;
+    cameUpUnderPointer.current =
+      !!at && !!box && at.x >= box.left && at.x <= box.right && at.y >= box.top && at.y <= box.bottom;
+  }, [toastId, pointerAt]);
   return (
-    <Box
+    <div
+      ref={regionRef}
+      role={role}
+      aria-live={role === 'alert' ? 'assertive' : 'polite'}
+      aria-atomic="true"
       data-ph-toast-region=""
-      data-ph-toast-placement={placement}
-      onMouseEnter={() => onHoverChange(true)}
-      onMouseLeave={() => onHoverChange(false)}
+      data-ph-toast-placement={toast ? placement : undefined}
+      onMouseEnter={() => {
+        if (!cameUpUnderPointer.current) onHoverChange(true);
+      }}
+      onMouseLeave={() => {
+        cameUpUnderPointer.current = false;
+        onHoverChange(false);
+      }}
+      onFocus={() => onHoverChange(true)}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) onHoverChange(false);
+      }}
+      onClick={(e) => {
+        if (!toast?.showCloseButton || (e.target as Element).closest(TOAST_CONTROLS)) return;
+        // A press that ends a text selection is someone copying the text.
+        if (window.getSelection()?.toString()) return;
+        onDismiss(toast.id);
+      }}
       style={{
         position: 'fixed',
-        ...(isTop
-          ? { top: 'max(16px, env(safe-area-inset-top, 0px))' }
-          : { bottom: 'max(16px, env(safe-area-inset-bottom, 0px))' }),
-        right: 'max(16px, env(safe-area-inset-right, 0px))',
-        left: 'auto',
-        maxHeight: 'calc(100dvh - 32px)',
-        maxWidth: 'min(420px, calc(100vw - 32px))',
-        width: '100%',
+        ...(isTop ? { top: `max(${TOAST_EDGE}, env(safe-area-inset-top, 0px))` } : { bottom: toastBottom(stacked) }),
+        right: TOAST_RIGHT,
+        width: TOAST_WIDTH,
+        maxWidth: `calc(100vw - 2 * ${TOAST_EDGE})`,
         zIndex: 9999,
         pointerEvents: 'none',
         display: 'flex',
-        flexDirection: isTop ? 'column' : 'column-reverse',
-        gap,
-        overflowY: 'hidden',
-        overflowX: 'hidden',
-        alignItems: 'stretch',
-        boxSizing: 'border-box',
+        justifyContent: 'flex-end',
       }}
     >
-      {visibleToasts.map((toast, index) => {
-        const depth = visibleToasts.length - 1 - index;
-        const isCollapsed = !isHovered && visibleToasts.length > 1;
-        const scale = isCollapsed ? Math.max(0.92, 1 - depth * 0.03) : 1;
-        const opacity = isCollapsed ? Math.max(0.55, 1 - depth * 0.18) : 1;
-
-        return (
-          <Box
-            key={toast.id}
-            style={{
-              flexShrink: 0,
-              pointerEvents: 'auto',
-              transform: `scale(${scale})`,
-              transformOrigin: isTop ? 'top right' : 'bottom right',
-              opacity,
-              transition: 'transform 0.25s ease, opacity 0.25s ease',
-              animation: toast.isExiting ? 'none' : 'toastSlideIn 0.3s ease',
-            }}
-          >
-            <Toast toast={toast} onDismiss={onDismiss} />
-          </Box>
-        );
-      })}
-
-      {hiddenCount > 0 ? (
-        <Box
+      {toast ? (
+        <Toast
+          key={toast.id}
+          toast={toast}
+          onDismiss={onDismiss}
           style={{
-            flexShrink: 0,
-            alignSelf: 'flex-end',
-            padding: '4px 8px',
-            backgroundColor: 'var(--slate-3)',
-            borderRadius: 'var(--radius-2)',
             pointerEvents: 'auto',
+            animation: toast.isExiting ? 'none' : 'toastSlideIn var(--motion-surface) var(--motion-ease)',
           }}
-        >
-          <Text size="1" style={{ color: 'var(--slate-11)', fontWeight: 500 }}>
-            +{hiddenCount} more
-          </Text>
-        </Box>
+        />
       ) : null}
-    </Box>
+    </div>
   );
 }
 
-/** How long the region stays empty before the same words are put back, so they are heard again. */
-const REPEAT_ANNOUNCEMENT_GAP_MS = 100;
-
-/**
- * Screen readers hear toasts through this region, which stays mounted with or without toasts:
- * a live region inserted together with its text is often not read at all. It carries the toast
- * that changed last, whether it was just added or just updated (a progress toast turning into
- * its result), so two requests that finish in any order are both heard. A dismissal says nothing.
- */
-function ToastAnnouncer({ toasts }: { toasts: ToastData[] }) {
-  const [text, setText] = useState('');
-  const seen = useRef(new Map<string, string>());
-  const shown = useRef<{ id: string; text: string }>({ id: '', text: '' });
-  // Owned by the change that set it: a re-render with no toast change must not cancel it.
-  const restore = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => () => {
-    if (restore.current) clearTimeout(restore.current);
-  }, []);
-
+/** Follows the pointer over the page, so a card can tell whether it came up under it. */
+function usePointerAt(): PointerAt {
+  const at = useRef<{ x: number; y: number } | null>(null);
   useEffect(() => {
-    const words = (t: ToastData) => [t.title, t.description].filter(Boolean).join('. ');
-    const signature = (t: ToastData) => `${t.variant}\u0000${words(t)}`;
-    // Newest first, as the store keeps them, so a burst of changes reads the newest.
-    const changed = toasts.find((t) => seen.current.get(t.id) !== signature(t));
-    seen.current = new Map(toasts.map((t) => [t.id, signature(t)]));
-    if (!changed) return;
-
-    if (restore.current) clearTimeout(restore.current);
-    restore.current = null;
-    const next = words(changed);
-    const previous = shown.current;
-    shown.current = { id: changed.id, text: next };
-    if (next !== previous.text) {
-      setText(next);
-      return;
-    }
-    // A change with the same words leaves the region unchanged, which is not announced.
-    // Empty it, then put the words back in a later task; a newer change cancels the restore.
-    setText('');
-    restore.current = setTimeout(() => {
-      restore.current = null;
-      setText(next);
-    }, REPEAT_ANNOUNCEMENT_GAP_MS);
-  }, [toasts]);
-
-  return (
-    <VisuallyHidden>
-      <div role="status" aria-live="polite" aria-atomic="true" data-ph-toast-announcer="">
-        {text}
-      </div>
-    </VisuallyHidden>
-  );
+    const follow = (e: PointerEvent) => {
+      at.current = { x: e.clientX, y: e.clientY };
+    };
+    // Off the page, or a finger lifted, the pointer is nowhere a card could come up under.
+    const leave = (e: PointerEvent) => {
+      if (!e.relatedTarget) at.current = null;
+    };
+    const options = { capture: true, passive: true } as const;
+    window.addEventListener('pointermove', follow, options);
+    window.addEventListener('pointerdown', follow, options);
+    window.addEventListener('pointerout', leave, options);
+    return () => {
+      window.removeEventListener('pointermove', follow, options);
+      window.removeEventListener('pointerdown', follow, options);
+      window.removeEventListener('pointerout', leave, options);
+    };
+  }, []);
+  return at;
 }
 
 export function ToastContainer() {
   const toasts = useToastStore(selectToasts);
-  const isHovered = useToastStore(selectIsHovered);
   const { setHovered, removeToast } = useToastStore();
   const { appearance } = useThemeAppearance();
   const isMobile = useIsMobile();
+  const pointerAt = usePointerAt();
 
+  const stacked = useToastCornerStack();
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
     setMounted(true);
   }, []);
 
-  const announcer = <ToastAnnouncer toasts={toasts.filter((t) => !t.isExiting)} />;
+  // One toast at a time: the newest that is not waiting. Toasts waiting behind an Undo toast are not drawn yet.
+  const current = toasts.find((t) => !t.isWaiting) ?? null;
 
-  if (toasts.length === 0 || !mounted) {
-    return announcer;
-  }
+  if (!mounted) return null;
 
-  // On a phone, side panels fill the screen with their actions in the footer; keep toasts off them.
-  const topToasts = isMobile ? toasts : toasts.filter((t) => t.placement === 'top');
-  const bottomToasts = isMobile ? [] : toasts.filter((t) => t.placement !== 'top');
+  // Bottom right; the top edge for a caller that asks, and on a phone, where side panels fill the screen with their
+  // actions in the footer.
+  const placement: ToastPlacement = isMobile || current?.placement === 'top' ? 'top' : 'bottom';
+  const isError = current?.variant === 'error';
+  const shared = {
+    placement,
+    stacked,
+    pointerAt,
+    onHoverChange: setHovered,
+    onDismiss: removeToast,
+  };
 
-  return (
-    <>
-      {announcer}
-      {ReactDOM.createPortal(
-    <Theme accentColor="jade" grayColor="olive" appearance={appearance} radius="medium" data-accent-color="emerald">
-      <style jsx global>{`
-        @keyframes toastSlideIn {
-          from {
-            transform: translateX(100%);
-            opacity: 0;
-          }
-          to {
-            transform: translateX(0);
-            opacity: 1;
-          }
-        }
-
-        @keyframes spin {
-          from {
-            transform: rotate(0deg);
-          }
-          to {
-            transform: rotate(360deg);
-          }
-        }
-      `}</style>
-
-      <ToastStack
-        placement="top"
-        toasts={topToasts}
-        isHovered={isHovered}
-        onHoverChange={setHovered}
-        onDismiss={removeToast}
-      />
-      <ToastStack
-        placement="bottom"
-        toasts={bottomToasts}
-        isHovered={isHovered}
-        onHoverChange={setHovered}
-        onDismiss={removeToast}
-      />
+  // The portal sits outside the app's Theme, so it brings one: the same appearance; accent and gray come from the defaults.
+  return ReactDOM.createPortal(
+    <Theme appearance={appearance} hasBackground={false}>
+      <ToastRegion role="status" toast={current && !isError ? current : null} {...shared} />
+      <ToastRegion role="alert" toast={current && isError ? current : null} {...shared} />
     </Theme>,
     document.body
-      )}
-    </>
   );
 }

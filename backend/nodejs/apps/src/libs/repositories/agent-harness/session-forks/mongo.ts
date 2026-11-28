@@ -269,6 +269,7 @@ export class HarnessSessionForkStore implements SessionForkStore<Tx> {
         ? []
         : await Citation.insertMany(datas, { session: tx, ordered: true });
     let next = 0;
+    // row-writer-exempt: the harness's private fork writes a new chat's first rows, accounted in its ledger
     await ChatSessionMessage.insertMany(
       fork.messages.map((message, index) => ({
         sessionId,

@@ -9,6 +9,7 @@ type AvailableFlag = {
   key: string;
   label: string;
   description: string;
+  descriptionKey?: string;
   defaultEnabled: boolean;
   advanced?: boolean;
 };
@@ -207,5 +208,29 @@ describe('LabsPage feature flags', () => {
       expect(screen.getByRole('switch', { name: label })).toBeTruthy();
     }
     expect(accordion.getAttribute('aria-expanded')).toBe('true');
+  });
+});
+
+describe('LabsPage flag descriptions', () => {
+  it("shows the server's description, or the translation a flag names instead", async () => {
+    vi.mocked(LabsApi.getAvailableFlags).mockResolvedValue([
+      ...FLAGS,
+      {
+        key: 'ENABLE_TRANSLATED',
+        label: 'Enable Translated',
+        description: 'English text from the server',
+        descriptionKey: 'workspace.labs.errors.fileSizeMax',
+        defaultEnabled: false,
+      },
+    ]);
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByText('Enable Translated')).toBeTruthy();
+    });
+
+    expect(screen.getByText(en.workspace.labs.errors.fileSizeMax)).toBeTruthy();
+    expect(screen.queryByText('English text from the server')).toBeNull();
+    expect(screen.getByText('mcp')).toBeTruthy();
   });
 });

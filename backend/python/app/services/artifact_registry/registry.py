@@ -15,15 +15,17 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import aiohttp
 
 from app.config.constants.arangodb import CollectionNames, Connectors, RecordTypes
 from app.models.entities import (
     ArtifactType,
+    ArtifactVersionWriter,
     ArtifactVisibility,
     LifecycleStatus,
+    artifact_version_writer,
     deserialize_artifact_versions,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -43,6 +45,10 @@ from .versioning import (
 )
 
 if TYPE_CHECKING:
+    from app.modules.agents.context.told_files import ToldFiles
+    from app.modules.authz.chat_content_access import ChatContentAccess
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+
     from .models import ArtifactProvenance
 
 logger = logging.getLogger(__name__)
@@ -100,14 +106,99 @@ _FUZZY_RESOLVE_EXTENSIONS: tuple[str, ...] = (
 # byte-identical content.
 _MAX_VERSION_CONFLICT_RETRIES = 1
 
+# A non-owner's read of a conversation artifact may need a remote decision per
+# artifact; check them in small concurrent windows rather than one at a time.
+_AUTHORIZE_WINDOW = 8
+
+
+def _ms(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _version_written_at(doc: dict, record: dict | None, version: int) -> int | None:
+    """When `version` of the artifact was written (epoch ms): its `versions` entry, or for version 1 with none, its
+    record's creation. None when neither says."""
+    for entry in deserialize_artifact_versions(doc.get("versions")):
+        if entry.get("registryVersion") == version:
+            return _ms(entry.get("createdAt"))
+    return _ms((record or {}).get("createdAtTimestamp")) if version == 1 else None
+
+
+def _note_read(artifact_id: str | None, doc: dict | None, version: int = 1, record: dict | None = None) -> None:
+    """An artifact read or listed for a chat request is a parent of its answer:
+    the row of the run that wrote the version read. The request's ledger skips its
+    own run's. `doc` is the artifact's own document: the runs that wrote it are
+    stored there, not on its record. A version whose writer was never kept names
+    no run, so the answer is its asker's alone, unless the document was read: then
+    its chat and when that version was written go with it, so a file an older
+    release wrote can be judged as an answer from before labels. A document that
+    could not be read gives nothing."""
+    from app.modules.agents.privacy.ledger import note_artifact_read
+
+    if not artifact_id:
+        return
+    writer = artifact_version_writer(doc, version)
+    run_id = writer.run_id if writer is not None else None
+    if doc is None or run_id:
+        note_artifact_read(artifact_id, run_id)
+        return
+    note_artifact_read(
+        artifact_id,
+        None,
+        conversation_id=str(doc.get("conversationId") or "") or None,
+        written_at=_version_written_at(doc, record, version),
+    )
+
+
+async def _note_read_by_id(
+    graph_provider: IGraphDBProvider, artifact_id: str, version: int, record: dict | None = None,
+) -> None:
+    """`_note_read` for a read that authorized against the record alone. The
+    artifact's document is read only while a request is labelled. One that can't
+    be read names no run, so the artifact counts as an earlier run's: the answer
+    is hidden from more people, never shown to more."""
+    from app.modules.agents.privacy.ledger import current_ledger
+
+    if not current_ledger().labels:
+        return
+    try:
+        doc = await graph_provider.get_document(artifact_id, CollectionNames.ARTIFACTS.value)
+    except Exception:
+        logger.warning("answer label: the run that wrote an artifact could not be read", exc_info=True)
+        doc = None
+    _note_read(artifact_id, doc if isinstance(doc, dict) else None, version, record)
+
+
+def _metadata_at(record: dict, artifact_doc: dict, version: int) -> ArtifactMetadata:
+    """The artifact's metadata as of `version`: what a reader who may open only
+    that version (and none after it) is told about the file."""
+    metadata = to_metadata_from_docs(record, artifact_doc)
+    if version == metadata.version:
+        return metadata
+    entry = next(
+        (e for e in deserialize_artifact_versions(artifact_doc.get("versions")) if e.get("registryVersion") == version),
+        {},
+    )
+    created = entry.get("createdAt") or metadata.created_at
+    return metadata.model_copy(update={
+        "version": version,
+        "size_bytes": int(entry.get("sizeBytes") or 0),
+        "content_hash": entry.get("contentHash"),
+        "mime_type": entry.get("mimeType") or metadata.mime_type,
+        "updated_at": created,
+    })
+
 
 class ArtifactRegistryService:
-    def __init__(self, graph_provider: Any, blob_store: Any, *, max_bytes: int | None = None) -> None:
+    def __init__(
+        self, graph_provider: Any, blob_store: Any, *, max_bytes: int | None = None,
+        chat_access: ChatContentAccess | None = None,
+    ) -> None:
         if max_bytes is None:
             max_bytes = input_max_bytes()
         self._graph_provider = graph_provider
         self._blob_store = blob_store
-        self._access = AccessPolicy(graph_provider)
+        self._access = AccessPolicy(graph_provider, chat_access)
         self._versions = VersionManager(graph_provider, blob_store, self._access)
         self._lineage = LineageTracker(graph_provider)
         self._urls = SignedUrlBroker(blob_store, max_bytes)
@@ -342,18 +433,19 @@ class ArtifactRegistryService:
     async def add_version(
         self, *, actor: Actor, artifact_id: str, content: bytes, mime_type: str | None = None,
         expected_version: int | None = None,
+        writer: ArtifactVersionWriter | None | Literal["actor"] = "actor",
     ) -> tuple[ArtifactVersion, ArtifactMetadata]:
         self._check_size(content)
         return await self._versions.add_version(
             actor=actor, artifact_id=artifact_id, content=content, mime_type=mime_type,
-            expected_version=expected_version,
+            expected_version=expected_version, writer=writer,
         )
 
     async def copy_to_conversation(
         self, *, actor: Actor, artifact_id: str, up_to_version: int, conversation_id: str,
     ) -> ArtifactCopy:
-        """Copy versions 1..`up_to_version` of `artifact_id` into a NEW
-        artifact owned by `conversation_id`.
+        """Copy the versions of `artifact_id` up to `up_to_version` that `actor`
+        may open into a NEW artifact owned by `conversation_id`.
 
         Used when a chat is forked: an artifact is reachable by anyone with
         a permission edge to its record, so a fork that kept pointing at the
@@ -361,26 +453,38 @@ class ArtifactRegistryService:
         its own edits into the original. The copy shares no record and no
         blob with the source. Versions after `up_to_version` are left behind
         on purpose — the fork must not see work that happened after it
-        branched.
+        branched — and so is every version `actor` may not open. Each copied
+        version keeps the run that wrote its source version: a fork keeps its
+        rows' runs, so it judges the copy by the same answers.
 
         An older version whose bytes can no longer be read is skipped; the
-        requested last version must be readable or the whole copy fails and
+        newest version to copy must be readable or the whole copy fails and
         the half-built record is discarded."""
         source = await self.resolve(actor=actor, ref=artifact_id)
-        last = max(1, min(up_to_version, source.version))
+        source_doc = await self._graph_provider.get_document(source.artifact_id, CollectionNames.ARTIFACTS.value)
+        # A copy of what a service-account agent made is still its output, so it is stamped too.
+        writer = actor.model_copy(update={"service_agent": True}) if (source_doc or {}).get("serviceAgentRun") is True else actor
+        record, readable = await self._access.readable_versions(actor, artifact_id)
+        wanted = [version for version in readable if version <= up_to_version]
+        if not wanted:
+            from .access import AccessDeniedError
+            raise AccessDeniedError(f"No version of artifact {artifact_id} up to {up_to_version} may be copied")
+        last = wanted[-1]
         copy: ArtifactMetadata | None = None
         versions: dict[int, int] = {}
         try:
-            for version in range(1, last + 1):
+            for version in wanted:
                 try:
-                    content = await self.get_content(actor=actor, artifact_id=artifact_id, version=version)
+                    content = await self._content_at(actor, artifact_id, record, version)
                 except ArtifactNotFoundError:
                     if version == last:
                         raise
                     continue
+                wrote = artifact_version_writer(source_doc, version)
                 if copy is None:
                     copy = await self.register(
-                        actor=actor, name=source.name, artifact_type=source.artifact_type,
+                        actor=writer.model_copy(update={"run_id": wrote.run_id if wrote else None}),
+                        name=source.name, artifact_type=source.artifact_type,
                         mime_type=source.mime_type, content=content, conversation_id=conversation_id,
                         description=source.description, source_tool=source.source_tool,
                         is_temporary=source.is_temporary, visibility=source.visibility,
@@ -389,8 +493,8 @@ class ArtifactRegistryService:
                     versions[version] = copy.version
                 else:
                     added, copy = await self.add_version(
-                        actor=actor, artifact_id=copy.artifact_id, content=content,
-                        mime_type=source.mime_type, expected_version=copy.version,
+                        actor=writer, artifact_id=copy.artifact_id, content=content,
+                        mime_type=source.mime_type, expected_version=copy.version, writer=wrote,
                     )
                     versions[version] = added.version
         except Exception:
@@ -403,6 +507,16 @@ class ArtifactRegistryService:
         return ArtifactCopy(
             source_artifact_id=artifact_id, source_document_id=source.document_id,
             artifact_id=copy.artifact_id, document_id=copy.document_id, versions=versions,
+        )
+
+    async def _content_at(self, actor: Actor, artifact_id: str, record: dict, version: int) -> bytes:
+        """The bytes of `version` of a record the caller already authorized for it."""
+        storage_version = await self._resolve_storage_version(artifact_id, record, version)
+        from app.agents.actions.util.blob_staging import fetch_blob_bytes
+
+        return await fetch_blob_bytes(
+            org_id=actor.org_id, config_service=self._blob_store.config_service,
+            storage_document_id=record["externalRecordId"], version=storage_version,
         )
 
     async def _discard_copy(self, artifact_id: str) -> None:
@@ -469,7 +583,7 @@ class ArtifactRegistryService:
         models routinely drop or guess wrong on the file extension when
         recalling a name from an earlier tool response's prose."""
         try:
-            record = await self._access.authorize_read(actor, ref)
+            record, served = await self._access.authorize_version(actor, ref)
         except Exception:
             if conversation_id is None:
                 raise
@@ -484,7 +598,8 @@ class ArtifactRegistryService:
         if not artifact_doc:
             from .access import ArtifactNotFoundError
             raise ArtifactNotFoundError(f"Artifact metadata missing for: {ref}")
-        return await self._with_lineage(to_metadata_from_docs(record, artifact_doc))
+        _note_read(ref, artifact_doc, served, record)
+        return await self._with_lineage(_metadata_at(record, artifact_doc, served))
 
     async def resolve_by_logical_name(
         self, actor: Actor, name: str, *, conversation_id: str,
@@ -508,12 +623,12 @@ class ArtifactRegistryService:
         for artifact_doc in candidates:
             artifact_id = artifact_doc.get("_key") or artifact_doc.get("id")
             try:
-                record = await self._access.authorize_read(actor, artifact_id)
+                record, served = await self._access.authorize_version(actor, artifact_id)
             except Exception:
                 continue
             if record.get("isDeleted"):
                 continue
-            return await self._with_lineage(to_metadata_from_docs(record, artifact_doc))
+            return await self._with_lineage(_metadata_at(record, artifact_doc, served))
         return None
 
     async def _resolve_by_logical_name_fuzzy(
@@ -554,8 +669,10 @@ class ArtifactRegistryService:
         return None
 
     async def get_content(self, *, actor: Actor, artifact_id: str, version: int | None = None) -> bytes:
-        record = await self._access.authorize_read(actor, artifact_id)
-        storage_version = await self._resolve_storage_version(artifact_id, record, version)
+        """The bytes of `version`, or with none asked of the newest version `actor` may open."""
+        record, served = await self._access.authorize_version(actor, artifact_id, version)
+        await _note_read_by_id(self._graph_provider, artifact_id, served, record)
+        storage_version = await self._resolve_storage_version(artifact_id, record, served)
         from app.agents.actions.util.blob_staging import fetch_blob_bytes
 
         return await fetch_blob_bytes(
@@ -566,14 +683,24 @@ class ArtifactRegistryService:
     async def get_download_url(
         self, *, actor: Actor, artifact_id: str, version: int | None = None, ttl_s: int = 600,
     ) -> str:
-        record = await self._access.authorize_read(actor, artifact_id)
-        storage_version = await self._resolve_storage_version(artifact_id, record, version)
-        signed = await self._urls.get_download_url(
-            org_id=actor.org_id, document_id=record["externalRecordId"], version=storage_version, ttl_s=ttl_s,
-        )
-        if signed:
-            return signed
-        return await self._blob_store.get_record_stream_url(artifact_id, version=version)
+        """A link to `version`, or with none asked to the newest version `actor` may open.
+
+        A signed link serves its storage object as it is when the link is opened,
+        for the link's whole life, and the current version's object takes every
+        later version. So only a reader who opens every version gets one; anyone
+        else gets the signed-in link, which is checked for each viewer when opened."""
+        record, served = await self._access.authorize_version(actor, artifact_id, version)
+        await _note_read_by_id(self._graph_provider, artifact_id, served, record)
+        if await self._access.opens_every_version(actor, artifact_id):
+            storage_version = await self._resolve_storage_version(artifact_id, record, served)
+            signed = await self._urls.get_download_url(
+                org_id=actor.org_id, document_id=record["externalRecordId"], version=storage_version, ttl_s=ttl_s,
+            )
+            if signed:
+                return signed
+        # Pinned unless it is the current version, which is what an unpinned link serves.
+        pinned = None if served == record.get("version", 1) else served
+        return await self._blob_store.get_record_stream_url(artifact_id, version=pinned)
 
     async def _resolve_storage_version(
         self, artifact_id: str, record: dict, version: int | None,
@@ -609,7 +736,7 @@ class ArtifactRegistryService:
 
     async def list_for_conversation(
         self, *, actor: Actor, conversation_id: str, include_lineage: bool = True, limit: int = 100,
-        visibility_filter: ArtifactVisibility | None = None,
+        visibility_filter: ArtifactVisibility | None = None, told: ToldFiles | None = None,
     ) -> list[ArtifactMetadata]:
         """List artifacts for a conversation, optionally filtered by visibility.
 
@@ -624,7 +751,10 @@ class ArtifactRegistryService:
         has no such field, and `doc.visibility == "VISIBLE"` drops every one
         of them, so a conversation's older deliverables would silently stop
         appearing in the reminder. Absent/unrecognised reads as VISIBLE,
-        matching `promote_to_visible` and `to_metadata_from_docs`."""
+        matching `promote_to_visible` and `to_metadata_from_docs`.
+
+        ``told`` is which files the run's model may be told about (`told_files`): in a run others read, each
+        artifact the request did not pick is listed only at the newest version every member of the chat may open."""
         filters: dict[str, Any] = {"orgId": actor.org_id, "conversationId": conversation_id}
         docs = await self._graph_provider.get_documents_paginated(
             CollectionNames.ARTIFACTS.value, skip=0,
@@ -632,21 +762,43 @@ class ArtifactRegistryService:
             filters=filters,
         )
         results: list[ArtifactMetadata] = []
-        for artifact_doc in docs:
-            artifact_id = artifact_doc.get("_key") or artifact_doc.get("id")
-            try:
-                record = await self._access.authorize_read(actor, artifact_id)
-            except Exception:
-                continue
-            metadata = to_metadata_from_docs(record, artifact_doc)
-            if visibility_filter is not None and metadata.visibility != visibility_filter:
-                continue
-            if include_lineage:
-                metadata = await self._with_lineage(metadata)
-            results.append(metadata)
-            if len(results) >= limit:
-                break
+        for start in range(0, len(docs), _AUTHORIZE_WINDOW):
+            window = docs[start:start + _AUTHORIZE_WINDOW]
+            records = await asyncio.gather(
+                *(self._authorized_record(actor, d, told) for d in window)
+            )
+            for artifact_doc, authorized in zip(window, records):
+                if authorized is None:
+                    continue
+                record, served = authorized
+                metadata = _metadata_at(record, artifact_doc, served)
+                if visibility_filter is not None and metadata.visibility != visibility_filter:
+                    continue
+                if include_lineage:
+                    metadata = await self._with_lineage(metadata)
+                results.append(metadata)
+                if len(results) >= limit:
+                    return results
         return results
+
+    async def _authorized_record(
+        self, actor: Actor, artifact_doc: dict, told: ToldFiles | None = None,
+    ) -> tuple[dict, int] | None:
+        """The record and the version of it `actor` is shown: the newest they may open, or, where `told` names only
+        what every member of the chat may open, the newest every member may (a file the request picked, as for
+        `actor`)."""
+        artifact_id = artifact_doc.get("_key") or artifact_doc.get("id")
+        every_member = told is not None and told.every_member_only and artifact_id not in told.picked
+        try:
+            if every_member:
+                record, served = await self._access.authorize_version_for_every_member(actor, artifact_id)
+            else:
+                record, served = await self._access.authorize_version(actor, artifact_id)
+        except Exception:
+            return None
+        # A listing names it; the reminder puts that name in front of a model.
+        _note_read(artifact_id, artifact_doc, served, record)
+        return record, served
 
     # ------------------------------------------------------------------
     # Visibility mutation

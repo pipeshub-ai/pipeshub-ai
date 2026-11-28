@@ -300,7 +300,7 @@ describe('PlusMenuButton filter badge', () => {
     onAttachFiles: vi.fn(),
     onToggleInternalSearch: vi.fn(),
     onToggleWebSearch: vi.fn(),
-    activeIconColor: 'var(--slate-12)',
+    activeIconColor: 'var(--emerald-a11)',
     open: false,
     onOpenChange: vi.fn(),
   };

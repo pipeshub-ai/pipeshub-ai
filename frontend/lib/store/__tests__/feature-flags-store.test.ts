@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // Only the selectors (pure functions of already-loaded state) are under
 // test here — stub the API client so importing the store doesn't pull in
@@ -8,12 +8,14 @@ vi.mock('@/lib/api/axios-instance', () => ({
 }));
 
 import { apiClient } from '@/lib/api/axios-instance';
+import { ErrorType } from '@/lib/api/api-error';
 import {
   useFeatureFlagsStore,
   selectAgentHarnessEnabled,
   selectAgentHarnessResumeEnabled,
   selectAgentHarnessOn,
   selectFeatureFlagsLoaded,
+  selectProjectsEnabled,
   selectMcpEnabled,
   selectActionsEnabled,
   selectVectorStoreRebuildEnabled,
@@ -194,5 +196,52 @@ describe('feature-flags-store selectors', () => {
         expect(selectEngineRunsEnabled(useFeatureFlagsStore.getState())).toBe(expected);
       });
     }
+  });
+});
+
+describe('fetchFlags', () => {
+  const get = vi.mocked(apiClient.get);
+  const noAnswer = { type: ErrorType.NETWORK_ERROR, message: 'Network error. Please check your connection.' };
+
+  beforeEach(() => {
+    useFeatureFlagsStore.setState({ flags: null, loading: false });
+    get.mockReset();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('asks again when a read gets no answer, so a blip does not turn Projects off', async () => {
+    get
+      .mockRejectedValueOnce(noAnswer)
+      .mockResolvedValueOnce({ data: { featureFlags: { ENABLE_PROJECTS: true } } });
+    const done = useFeatureFlagsStore.getState().fetchFlags();
+    await vi.advanceTimersByTimeAsync(0);
+    // Still unknown between the tries: the rail keeps the Projects row it showed last time.
+    expect(useFeatureFlagsStore.getState().flags).toBeNull();
+    await vi.runAllTimersAsync();
+    await done;
+    expect(selectProjectsEnabled(useFeatureFlagsStore.getState())).toBe(true);
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it('reads every opt-in flag as off once the last try gets no answer', async () => {
+    get.mockRejectedValue(noAnswer);
+    const done = useFeatureFlagsStore.getState().fetchFlags();
+    // The read's own tries (300 ms, then 1 s); the store's later retries are feature-flags-retry.test.ts's.
+    await vi.advanceTimersByTimeAsync(1300);
+    await done;
+    expect(useFeatureFlagsStore.getState().flags).toEqual({});
+    expect(get).toHaveBeenCalledTimes(3);
+    expect(useFeatureFlagsStore.getState().retrying).toBe(true);
+  });
+
+  it('does not ask again when the server answered with an error', async () => {
+    get.mockRejectedValueOnce({ type: ErrorType.SERVER_ERROR, statusCode: 500, message: 'Server error' });
+    await useFeatureFlagsStore.getState().fetchFlags();
+    expect(useFeatureFlagsStore.getState().flags).toEqual({});
+    expect(get).toHaveBeenCalledTimes(1);
   });
 });

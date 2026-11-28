@@ -1,4 +1,5 @@
 import { AxiosError, isAxiosError } from 'axios';
+import { adminRefusals } from './admin-refusals';
 
 export enum ErrorType {
   AUTHENTICATION_ERROR = 'AUTHENTICATION_ERROR',
@@ -17,15 +18,21 @@ export interface ProcessedError {
   type: ErrorType;
   message: string;
   statusCode?: number;
+  /** Machine-readable code from a nested `error.code`; undefined for string `error` bodies. */
+  code?: string;
   details?: Record<string, unknown>;
   /** Reference the server logged this failure under, shown so it can be quoted. */
   requestId?: string;
+  /** Which request field each problem belongs to (first message per field), when the server says. */
+  fieldErrors?: Record<string, string>;
   originalError?: Error;
 }
 
 interface NestedApiError {
   code?: string;
   message?: string;
+  details?: Record<string, unknown>;
+  fieldErrors?: Array<{ field?: unknown; message?: unknown }>;
 }
 
 interface ApiErrorResponse {
@@ -43,6 +50,47 @@ interface ApiErrorResponse {
   reason?: string;
   /** Node error middleware: the reference to quote when asking for help. */
   requestId?: string;
+}
+
+function nestedError(body: unknown): NestedApiError | undefined {
+  const error = (body as ApiErrorResponse | null | undefined)?.error;
+  return error && typeof error === 'object' ? error : undefined;
+}
+
+/**
+ * The per-field problems of a 4xx body (`error.fieldErrors`), as field to
+ * message. The first message per field wins; entries without both are skipped.
+ */
+export function extractApiFieldErrors(body: unknown): Record<string, string> | undefined {
+  const list = nestedError(body)?.fieldErrors;
+  if (!Array.isArray(list)) return undefined;
+  const out: Record<string, string> = {};
+  for (const item of list) {
+    const field = typeof item?.field === 'string' ? item.field : '';
+    const message = typeof item?.message === 'string' ? item.message.trim() : '';
+    if (field && message && !(field in out)) out[field] = message;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+export function extractApiErrorCode(body: unknown): string | undefined {
+  const code = nestedError(body)?.code;
+  return typeof code === 'string' && code ? code : undefined;
+}
+
+/** Top-level `details` wins; the nested one is only a fallback. */
+export function extractApiErrorDetails(body: unknown): Record<string, unknown> | undefined {
+  if (body == null || typeof body !== 'object') return undefined;
+  const top = (body as ApiErrorResponse).details;
+  if (top !== undefined) return top;
+  const nested = nestedError(body)?.details;
+  return nested && typeof nested === 'object' ? nested : undefined;
+}
+
+/** The server's words when a call met a refusal only an admin can lift, for the caller to say as they are. */
+export function refusalMessage(error: unknown): string | undefined {
+  const { statusCode, code, message } = (error ?? {}) as Partial<ProcessedError>;
+  return typeof message === 'string' && message && adminRefusals().isRefusedCall({ statusCode, code }) ? message : undefined;
 }
 
 /**
@@ -162,6 +210,8 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
   }
 
   const { status, data } = error.response;
+  const code = extractApiErrorCode(data);
+  const bodyDetails = extractApiErrorDetails(data);
   // The Node error middleware sends this beside the message; a nested
   // `error.requestId` is the same value one level down.
   const nestedRequestId =
@@ -191,7 +241,7 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
           type: ErrorType.AUTHENTICATION_ERROR,
           message: message || 'Session expired. Please sign in again.',
           statusCode: status,
-          details: data?.details,
+          details: bodyDetails,
           originalError: error,
         };
 
@@ -200,14 +250,14 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
           type: ErrorType.AUTHORIZATION_ERROR,
           message: message || 'You do not have permission to perform this action.',
           statusCode: status,
-          details: data?.details,
+          details: bodyDetails,
           originalError: error,
         };
 
       case 404: {
         const bodyStatus = typeof data?.status === 'string' ? data.status : undefined;
         const baseDetails =
-          data?.details && typeof data.details === 'object' ? { ...data.details } : {};
+          bodyDetails && typeof bodyDetails === 'object' ? { ...bodyDetails } : {};
         return {
           type: ErrorType.NOT_FOUND,
           message: message || 'The requested resource was not found.',
@@ -219,7 +269,7 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
                   ...(bodyStatus ? { apiStatus: bodyStatus } : {}),
                   ...(data?.accessNotices ? { accessNotices: data.accessNotices } : {}),
                 }
-              : data?.details,
+              : bodyDetails,
           originalError: error,
         };
       }
@@ -236,7 +286,7 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
               ? 'The upload is too large. Try a smaller file or fewer files.'
               : 'Invalid request. Please check your input.'),
           statusCode: status,
-          details: data?.errors ? { errors: data.errors } : data?.details,
+          details: data?.errors ? { errors: data.errors } : bodyDetails,
           originalError: error,
         };
 
@@ -245,7 +295,7 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
           type: ErrorType.CONFLICT,
           message: message || 'A conflict occurred. Please try again.',
           statusCode: status,
-          details: data?.details,
+          details: bodyDetails,
           originalError: error,
         };
 
@@ -259,7 +309,7 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
           type: ErrorType.SERVER_ERROR,
           message: serverMessage || busyMessage(retryAfterSeconds(error)),
           statusCode: status,
-          details: data?.accessNotices ? { ...data?.details, accessNotices: data.accessNotices } : data?.details,
+          details: data?.accessNotices ? { ...bodyDetails, accessNotices: data.accessNotices } : bodyDetails,
           originalError: error,
         };
       }
@@ -270,7 +320,7 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
           type: ErrorType.SERVER_ERROR,
           message: message || 'Server error. Please try again later.',
           statusCode: status,
-          details: data?.details,
+          details: bodyDetails,
           originalError: error,
         };
 
@@ -279,7 +329,7 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
           type: ErrorType.UNKNOWN_ERROR,
           message: message || 'An unexpected error occurred.',
           statusCode: status,
-          details: data?.details,
+          details: bodyDetails,
           originalError: error,
         };
     }
@@ -288,7 +338,10 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
 
   // The reference rides beside the message, never inside it: a client that
   // filters technical-looking text would otherwise drop the whole sentence.
-  return requestId ? { ...processed, requestId } : processed;
+  const withCode = code ? { ...processed, code } : processed;
+  const withRequestId = requestId ? { ...withCode, requestId } : withCode;
+  const fieldErrors = extractApiFieldErrors(data);
+  return fieldErrors ? { ...withRequestId, fieldErrors } : withRequestId;
 }
 
 /**
@@ -338,6 +391,20 @@ export function getUserFacingErrorMessage(error: unknown, fallback: string): str
   return text;
 }
 
+/**
+ * `suppressErrorToast` for a form that marks the offending field itself: an
+ * error the server pinned to a field skips the toast, any other failure keeps
+ * the one global toast.
+ */
+export function hasFieldErrors(error: ProcessedError): boolean {
+  return !!error.fieldErrors && Object.keys(error.fieldErrors).length > 0;
+}
+
+/** The field errors of a caught value; empty when it is not a field-pinned failure. */
+export function fieldErrorsOf(error: unknown): Record<string, string> {
+  return isProcessedError(error) ? (error.fieldErrors ?? {}) : {};
+}
+
 // Type guard to check if an error is a ProcessedError
 export function isProcessedError(error: unknown): error is ProcessedError {
   return (
@@ -354,6 +421,28 @@ export function isProcessedError(error: unknown): error is ProcessedError {
 /** The thing asked for no longer exists or is no longer the caller's to see (403 or 404). */
 export function isGoneError(error: unknown): boolean {
   return isProcessedError(error) && (error.statusCode === 403 || error.statusCode === 404);
+}
+
+/**
+ * The same request may succeed shortly: no answer came, the server was busy or failed, or its answer could not be read.
+ * An answer that refuses (a 4xx) stays a refusal, and a request the app cancelled is not asked again.
+ */
+export function isTransientError(error: unknown): boolean {
+  if (isRequestCancelledError(error)) return false;
+  if (error instanceof Error && (error.name === 'AbortError' || error.name === 'CanceledError')) return false;
+  if (!isProcessedError(error) || error.statusCode === undefined) return true;
+  return error.statusCode >= 500 || error.statusCode === 408 || error.statusCode === 429;
+}
+
+/**
+ * Which failures of a chat's detail the caller shows by itself, as `suppressErrorToast` takes it: a chat that is gone
+ * (`quietWhenGone`), and a failure after which it tries again (`quietWhenTransient`).
+ */
+export function detailToast({ quietWhenGone, quietWhenTransient }: { quietWhenGone?: boolean; quietWhenTransient?: boolean } = {}): {
+  suppressErrorToast?: (error: unknown) => boolean;
+} {
+  if (!quietWhenTransient) return quietWhenGone ? { suppressErrorToast: isGoneError } : {};
+  return { suppressErrorToast: (error) => isTransientError(error) || (quietWhenGone === true && isGoneError(error)) };
 }
 
 /** Retrieval `Status.ACCESSIBLE_RECORDS_NOT_FOUND` — search ran but no docs in scope. */
@@ -375,3 +464,4 @@ export function isSearchNoAccessibleDocumentsNotFound(error: unknown): boolean {
   if (Array.isArray(error.details?.accessNotices)) return true;
   return (error.message || '').includes(SEARCH_NO_ACCESSIBLE_DOCUMENTS_FRAGMENT);
 }
+

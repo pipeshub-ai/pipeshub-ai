@@ -4,11 +4,10 @@ import type React from 'react';
 import { Flex, IconButton, Button, SegmentedControl } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { BetaBadge } from '@/app/components/ui/beta-badge';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { MOBILE_HAMBURGER_GUTTER_PX } from '@/app/components/sidebar';
+import { useIsMobile, useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
+import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-button';
 import { useTranslation } from 'react-i18next';
 import type { ArtifactsViewMode } from '../types';
-import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-button';
 
 // Same toolbar metrics as the Collections header, so the two pages match.
 const TEXT_BUTTON: React.CSSProperties = {
@@ -41,6 +40,7 @@ export function ArtifactsHeader({
 }: ArtifactsHeaderProps) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
+  const isDrawerLayout = useIsBelowDesktop();
 
   return (
     <Flex
@@ -49,7 +49,7 @@ export function ArtifactsHeader({
       gap="3"
       style={{
         height: 40,
-        padding: isMobile ? `0 var(--space-2) 0 ${MOBILE_HAMBURGER_GUTTER_PX}px` : '0 var(--space-3)',
+        padding: isDrawerLayout ? '0 var(--space-2) 0 var(--space-3)' : '0 var(--space-3)',
         borderBottom: '1px solid var(--olive-3)',
         flexShrink: 0,
       }}

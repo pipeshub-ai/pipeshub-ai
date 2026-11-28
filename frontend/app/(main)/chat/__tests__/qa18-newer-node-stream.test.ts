@@ -68,11 +68,18 @@ const withoutAdded = (value: unknown): unknown => {
   return value;
 };
 
-/** Every callback the tab makes, in order, with what it passed. */
+/** The CUSTOM name a newer Node sends below. */
+const NEWER_NAME = 'x_newer_panel';
+
+/**
+ * Every callback the tab makes, in order, with what it passed. A CUSTOM name the tab does not know goes only to the
+ * chat extension's hook (`onCustomEvent`, which does nothing in this build): that hand-off is set aside.
+ */
 function play(frames: Recorded[]): unknown[] {
   const calls: unknown[] = [];
   const callbacks = new Proxy({} as StreamMessageCallbacks, {
     get: (_target, name) => (...args: unknown[]) => {
+      if (name === 'onCustomEvent' && args[0] === NEWER_NAME) return;
       calls.push([String(name), withoutAdded(JSON.parse(JSON.stringify(args ?? null)))]);
     },
   });
@@ -100,7 +107,7 @@ const newerFrames = (frames: Recorded[]): Recorded[] =>
   frames.flatMap((recorded, index) => [
     recorded,
     { id: `${recorded.id}+t${index}`, frame: { type: 'ACTIVITY_DELTA', runId: 'r', delta: [{ op: 'add' }] } },
-    { id: `${recorded.id}+c${index}`, frame: { type: 'CUSTOM', name: 'x_newer_panel', value: { open: true } } },
+    { id: `${recorded.id}+c${index}`, frame: { type: 'CUSTOM', name: NEWER_NAME, value: { open: true } } },
   ]);
 
 describe('QA18-7: this tab on a newer Node\'s stream', () => {

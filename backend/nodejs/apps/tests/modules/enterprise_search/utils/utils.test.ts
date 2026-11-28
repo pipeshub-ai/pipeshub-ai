@@ -37,15 +37,14 @@ import {
   appendMessages,
   updateMessageById,
   updateUserQueryContent,
-  deleteMessagesById,
+  retireMessagesById,
   getMessages,
   appendMessageFeedback,
   attachMessages,
   findSessionIdsMatchingContent,
   isClassifiedFailureAnswer,
 } from '../../../../src/modules/enterprise_search/utils/utils'
-import { buildFilter, buildAgentConversationFilter } from './session-filter-compat'
-import { buildAgentSharedWithMeFilter as buildSharedFilter } from '../../../../src/libs/repositories/conversation/mongo'
+import { buildFilter } from './session-filter-compat'
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
 import * as utilsModule from '../../../../src/modules/enterprise_search/utils/utils';
 import { attachPopulatedCitations } from '../../../../src/modules/enterprise_search/utils/utils';
@@ -64,15 +63,17 @@ const onDoc = (fn: (conversation: any, ...rest: any[]) => Promise<any>, at = 0) 
   }
 const markConversationFailed = onDoc(utilsModule.markConversationFailed)
 const replaceMessageWithError = onDoc(utilsModule.replaceMessageWithError)
-const markAgentConversationFailed = onDoc(utilsModule.markAgentConversationFailed)
 const handleRegenerationError = onDoc(utilsModule.handleRegenerationError as any, 2)
 const savePartialConversation = onDoc(utilsModule.savePartialConversation)
 import { InternalServerError, BadRequestError } from '../../../../src/libs/errors/http.errors'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
+import { configureVisibility, resetVisibility } from '../../../../src/modules/enterprise_search/services/conversation/privacy/visibility'
+import { labelContentHash } from '../../../../src/modules/enterprise_search/services/conversation/privacy/label'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { AGUI_PROTOCOL, LEGACY_PROTOCOL } from '../../../../src/modules/enterprise_search/utils/agui'
 import { CONVERSATION_STATUS } from '../../../../src/modules/enterprise_search/constants/constants'
+import { useConversationExtensions } from '../../../../src/modules/enterprise_search/services/conversation/conversation-extensions'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -99,8 +100,6 @@ const recordClassifiedFailureOnSession = (conversation: any, data: any) => {
   Object.assign(conversation, change)
   if (appendError) addErrorToConversation(conversation, appendError.message, appendError.errorType, undefined, undefined, appendError.metadata)
 }
-const buildAgentSharedWithMeFilter = (req: any, orgId: string, userId: string, agentKey: string): Record<string, any> =>
-  buildSharedFilter({ orgId, userId, agentKey, status: req.query?.status })
 const VALID_OID = new mongoose.Types.ObjectId().toString()
 const VALID_OID2 = new mongoose.Types.ObjectId().toString()
 
@@ -136,7 +135,7 @@ function createMockResponse(): any {
 
 /** Stub the `ChatSession.findOneAndUpdate` `$inc` call inside `allocateSeq()`. */
 function stubAllocateSeq(nextSeq: number): sinon.SinonStub {
-  return sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ nextSeq } as any)
+  return sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ nextSeq, rev: nextSeq } as any)
 }
 
 /** Stub the two calls `appendMessages()` makes: `allocateSeq()` then `ChatSessionMessage.insertMany()`. */
@@ -146,9 +145,10 @@ function stubAppendMessages(insertedDocs: any[] = [{ _id: new mongoose.Types.Obj
   return { allocateSeqStub, insertManyStub }
 }
 
-/** Stub the two calls `updateMessageById()` makes: `ChatSessionMessage.findById()` then `.findOneAndReplace()`. */
+/** Stub the calls `updateMessageById()` makes: `ChatSessionMessage.findById()`, the change stamp it takes from the session, then `.findOneAndReplace()`. */
 function stubUpdateMessageById(existingDoc: any, updatedDoc: any = existingDoc) {
   const findByIdStub = sinon.stub(ChatSessionMessage, 'findOne').resolves(existingDoc)
+  sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ rev: 1 } as any)
   const findOneAndReplaceStub = sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves(updatedDoc)
   return { findByIdStub, findOneAndReplaceStub }
 }
@@ -168,6 +168,14 @@ function stubGetMessagesChain(resolvedMessages: any[] = []) {
   return { findStub, chain }
 }
 
+/** The terminal session write is a conditional `updateOne`, not a save of the in-memory copy. */
+function stubSessionWrite(result: number | Error = 1): sinon.SinonStub {
+  const current = ChatSession.updateOne as unknown as Partial<sinon.SinonStub>
+  current.restore?.()
+  const stub = sinon.stub(ChatSession, 'updateOne')
+  return result instanceof Error ? stub.rejects(result) : stub.resolves({ matchedCount: result } as never)
+}
+
 describe('Enterprise Search Utils', () => {
   afterEach(() => {
     sinon.restore()
@@ -180,7 +188,7 @@ describe('Enterprise Search Utils', () => {
     it('getMessages filters by sessionId and orgId', async () => {
       const { findStub } = stubGetMessagesChain([])
       await getMessages(sessionId, { orgId })
-      expect((findStub.firstCall.args as unknown[])[0]).to.deep.equal({ sessionId, orgId })
+      expect((findStub.firstCall.args as unknown[])[0]).to.deep.equal({ sessionId, orgId, removedAt: { $exists: false } })
     })
 
     it('updateMessageById returns null for a message of another org', async () => {
@@ -192,13 +200,18 @@ describe('Enterprise Search Utils', () => {
       expect(replace.called).to.be.false
     })
 
-    it('deleteMessagesById and appendMessageFeedback carry the orgId', async () => {
-      const id = new mongoose.Types.ObjectId().toString()
-      const del = sinon.stub(ChatSessionMessage, 'deleteMany').resolves({ deletedCount: 0 } as any)
+    it('retireMessagesById and appendMessageFeedback carry the orgId', async () => {
+      const id = new mongoose.Types.ObjectId()
+      sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ rev: 1 } as any)
+      // Removing a row reads its label first, to archive it.
+      const read = sinon.stub(ChatSessionMessage, 'findOne').resolves({ _id: id, messageType: 'tool_call' } as any)
+      const retire = sinon.stub(ChatSessionMessage, 'updateOne').resolves({ matchedCount: 0 } as any)
       const upd = sinon.stub(ChatSessionMessage, 'findOneAndUpdate').resolves(null as any)
-      await deleteMessagesById([id], orgId)
+      // The ids go into the filters as given: strings here, as the other helpers of this block take them.
+      await retireMessagesById([id], { sessionId, orgId } as never)
       await appendMessageFeedback(id, orgId, {})
-      expect(del.firstCall.args[0]).to.deep.equal({ _id: { $in: [id] }, orgId })
+      expect(read.firstCall.args[0]).to.deep.include({ _id: id, orgId, sessionId })
+      expect(retire.firstCall.args[0]).to.deep.include({ _id: id, orgId, sessionId })
       expect(upd.firstCall.args[0]).to.deep.equal({ _id: id, orgId })
     })
   })
@@ -429,6 +442,51 @@ describe('Enterprise Search Utils', () => {
       expect(result.content).to.equal('AI says hello')
       expect(result.contentFormat).to.equal('MARKDOWN')
       expect(result.confidence).to.equal(0.9)
+    })
+
+    it('keeps the tools the answer ran without, cleaned and bounded', () => {
+      const gmail = { kind: 'toolset', instanceId: ' i-gmail ', displayName: ' Gmail ', name: 'gmail', problem: 'not_authenticated', authMode: null, sharedCredential: false, userCanConnect: true, token: 's3cret' }
+      const many = Array.from({ length: 60 }, (_, i) => ({ kind: 'mcp', instanceId: `m${i}`, displayName: `S${i}`, problem: 'not_found' }))
+      const message = buildAIResponseMessage({
+        statusCode: 200,
+        data: {
+          answer: 'No Gmail here',
+          unavailableTools: [gmail, { ...gmail }, { kind: 'agent', instanceId: 'x', problem: 'not_found' }, { kind: 'mcp', problem: 'not_found' }, 'junk', ...many],
+        },
+      } as any)
+      expect(message.unavailableTools).to.have.length(50)
+      expect(message.unavailableTools![0]).to.deep.equal({
+        kind: 'toolset', instanceId: 'i-gmail', displayName: 'Gmail', name: 'gmail', problem: 'not_authenticated', sharedCredential: false, userCanConnect: true,
+      })
+      expect(message.unavailableTools![1]).to.deep.equal({ kind: 'mcp', instanceId: 'm0', displayName: 'S0', problem: 'not_found', sharedCredential: false, userCanConnect: false })
+      expect(JSON.stringify(message)).not.to.include('s3cret')
+    })
+
+    it('keeps the mark of a tool the answer called (its stub), and only a true one', () => {
+      const gmail = { kind: 'toolset', instanceId: 'i-gmail', displayName: 'Gmail', problem: 'not_authenticated', sharedCredential: false, userCanConnect: true }
+      const message = buildAIResponseMessage({
+        statusCode: 200,
+        data: { answer: 'Your mail is not connected.', unavailableTools: [{ ...gmail, needed: true }, { ...gmail, instanceId: 'i-2', needed: 'yes' }] },
+      } as any)
+      expect(message.unavailableTools).to.deep.equal([{ ...gmail, needed: true }, { ...gmail, instanceId: 'i-2' }])
+    })
+
+    it('stores no unavailableTools when the run had none', () => {
+      const message = buildAIResponseMessage({ statusCode: 200, data: { answer: 'Hi', unavailableTools: [] } } as any)
+      expect(message).to.not.have.property('unavailableTools')
+    })
+
+    it('keeps answerMatchType only for the Capability Card', () => {
+      const card = buildAIResponseMessage({
+        statusCode: 200,
+        data: { answer: 'Help', confidence: 'High', answerMatchType: 'Capability Card' },
+      } as any)
+      expect(card.answerMatchType).to.equal('Capability Card')
+      const plain = buildAIResponseMessage({
+        statusCode: 200,
+        data: { answer: 'Hi', confidence: 'High', answerMatchType: 'Exact Match' },
+      } as any)
+      expect(plain).to.not.have.property('answerMatchType')
     })
 
     it('should persist classified failure answers as error messages', () => {
@@ -927,6 +985,35 @@ describe('Enterprise Search Utils', () => {
   // -----------------------------------------------------------------------
   // addComputedFields
   // -----------------------------------------------------------------------
+  describe('crash part: malformed sharedWith rows', () => {
+    const recipient = new mongoose.Types.ObjectId().toString()
+    const malformedShare: any = [{ accessLevel: 'read' }, { userId: recipient, accessLevel: 'write' }]
+
+    it('addComputedFields ignores rows without userId and computes the valid row', () => {
+      const conversation: any = {
+        _id: 'conv-1',
+        initiator: new mongoose.Types.ObjectId(VALID_OID),
+        sharedWith: malformedShare,
+      }
+      const result = addComputedFields(conversation, recipient)
+      expect(result.accessLevel).to.equal('write')
+      expect(result.isOwner).to.be.false
+    })
+
+    it('buildConversationResponse ignores rows without userId and computes the valid row', () => {
+      const conversation: any = {
+        _id: 'conv-1',
+        initiator: new mongoose.Types.ObjectId(VALID_OID),
+        sharedWith: [null, ...malformedShare],
+        messages: [],
+      }
+      const pagination = { page: 1, limit: 20, skip: 0, totalMessages: 0, hasNextPage: false, hasPrevPage: false }
+      const result = buildConversationResponse(conversation, recipient, pagination, [])
+      expect(result.access.accessLevel).to.equal('write')
+    })
+  })
+
+
   describe('addComputedFields', () => {
     it('should add computed fields to a conversation', () => {
       const conversation: any = {
@@ -1357,6 +1444,32 @@ describe('Enterprise Search Utils', () => {
       expect(result.messages[0]!.citations[0]).to.have.property('citationId')
       expect(result.messages[0]!.citations[0]).to.have.property('citationData')
     })
+
+    it('gives why the last answer failed only to the owner, as it does who else has access', () => {
+      const reason = 'Model quota exceeded for deployment gpt-x'
+      const conversation: any = {
+        _id: 'conv-1',
+        initiator: new mongoose.Types.ObjectId(VALID_OID),
+        title: 'Test',
+        messages: [],
+        sharedWith: [{ userId: VALID_OID2, accessLevel: 'read' }],
+        status: 'Failed',
+        failReason: reason,
+        createdAt: new Date(),
+      }
+      const pagination = {
+        page: 1, limit: 20, skip: 0, totalMessages: 0,
+        hasNextPage: false, hasPrevPage: false,
+      }
+
+      const reader = buildConversationResponse(conversation, VALID_OID2, pagination, [], { role: 'read', isOwner: false, accessLevel: 'read' })
+      expect(reader.failReason).to.equal(undefined)
+      expect(reader.sharedWith).to.equal(undefined)
+      expect(reader.status).to.equal('Failed')
+      const owner = buildConversationResponse(conversation, VALID_OID, pagination, [], { role: 'owner', isOwner: true, accessLevel: 'owner' })
+      expect(owner.failReason).to.equal(reason)
+      expect(buildConversationResponse(conversation, VALID_OID, pagination, []).failReason, 'with no access view').to.equal(reason)
+    })
   })
 
   // -----------------------------------------------------------------------
@@ -1475,97 +1588,6 @@ describe('Enterprise Search Utils', () => {
   })
 
   // -----------------------------------------------------------------------
-  // Agent Conversation Filters
-  // -----------------------------------------------------------------------
-  describe('buildAgentConversationFilter', () => {
-    it('should build filter from request with agentKey', () => {
-      const req = createMockRequest()
-      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-key-1')
-
-      expect(result).to.have.property('agentKey', 'agent-key-1')
-      expect(result).to.have.property('isDeleted', false)
-      expect(result).to.have.property('$or')
-    })
-
-    it('should scope the filter to agent sessions (sessionType: agent)', () => {
-      const req = createMockRequest()
-      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-key-1')
-      expect(result).to.have.property('sessionType', 'agent')
-    })
-
-    it('should include conversationId when provided', () => {
-      const req = createMockRequest()
-      const convId = new mongoose.Types.ObjectId().toString()
-      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-key-1', convId)
-      expect(result).to.have.property('_id')
-    })
-
-    it('should handle search in agent conversation filter', () => {
-      const req = createMockRequest({ query: { search: 'test' } })
-      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-key-1')
-      expect(result).to.have.property('$and')
-    })
-
-    it('should handle date range in agent conversation filter', () => {
-      const req = createMockRequest({
-        query: { startDate: '2024-01-01', endDate: '2024-12-31' },
-      })
-      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-key-1')
-      expect(result).to.have.property('createdAt')
-    })
-
-    it('should throw BadRequestError for search longer than 1000 chars', () => {
-      const longSearch = 'a'.repeat(1001)
-      const req = createMockRequest({ query: { search: longSearch } })
-      expect(() => buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-key-1')).to.throw('Search parameter too long')
-    })
-
-    it('does not grant shared-with-me access unless the caller opts in (fork, cancel and archive stay owner-only)', () => {
-      const req = createMockRequest()
-      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-key-1')
-      expect(JSON.stringify(result.$or)).to.not.contain('sharedWith')
-    })
-
-    it('with read access, a recipient matches only when isShared AND they are in sharedWith', () => {
-      const req = createMockRequest()
-      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-key-1', undefined, undefined, undefined, 'read')
-      const sharedBranch = result.$or.find((branch: any) => branch.isShared === true)
-      expect(sharedBranch.isShared).to.equal(true)
-      expect(String(sharedBranch.sharedWith.$elemMatch.userId)).to.equal(VALID_OID)
-      expect(sharedBranch.sharedWith.$elemMatch).to.not.have.property('accessLevel')
-      expect(result).to.have.property('sessionType', 'agent')
-      expect(result).to.have.property('agentKey', 'agent-key-1')
-      expect(result).to.have.property('isDeleted', false)
-    })
-
-    it('should handle shared filter in agent conversations', () => {
-      const req = createMockRequest({ query: { shared: 'true' } })
-      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-key-1')
-      expect(result).to.have.property('isShared', true)
-    })
-  })
-
-  describe('buildAgentSharedWithMeFilter', () => {
-    it('should build shared agent filter', () => {
-      const req = createMockRequest()
-      const result = buildAgentSharedWithMeFilter(req, VALID_OID2, VALID_OID, 'agent-key-1')
-
-      expect(result).to.have.property('agentKey', 'agent-key-1')
-      expect(result).to.have.property('isDeleted', false)
-      expect(result).to.have.property('isShared', true)
-      expect(result.orgId.toString()).to.equal(VALID_OID2)
-    })
-
-    it('should include status filter when provided', () => {
-      const req = createMockRequest({ query: { status: 'Complete' } })
-      const result = buildAgentSharedWithMeFilter(req, VALID_OID2, VALID_OID, 'agent-key-1')
-      expect(result).to.have.property('status', 'Complete')
-    })
-
-
-  })
-
-  // -----------------------------------------------------------------------
   // buildAgentConversationSortOptions
   // -----------------------------------------------------------------------
   describe('buildAgentConversationSortOptions', () => {
@@ -1634,7 +1656,7 @@ describe('Enterprise Search Utils', () => {
       addErrorToConversation(conversation, 'Error', 'type', messageId, 'stack trace', metadata)
       const error = conversation.conversationErrors[0]
       expect(error.messageId).to.equal(messageId)
-      expect(error.stack).to.equal('stack trace')
+      expect(error.stack, 'the stack is logged, never stored').to.equal(undefined)
       expect(error.metadata.get('key')).to.equal('value')
       expect(error.metadata.get('type')).to.equal('RUN_ERROR')
       expect(error.metadata.get('code')).to.equal('type')
@@ -1645,7 +1667,7 @@ describe('Enterprise Search Utils', () => {
   // handleRegenerationStreamData
   // -----------------------------------------------------------------------
   describe('handleRegenerationStreamData', () => {
-    it('should forward non-complete, non-error events to response', () => {
+    it('does not forward a frame of the old protocol: only named events reach the browser', () => {
       const res = createMockResponse()
       const chunk = Buffer.from('event: token\ndata: {"token":"hello"}\n\n')
       let capturedData: any = null
@@ -1656,13 +1678,37 @@ describe('Enterprise Search Utils', () => {
         null,
         null,
         null,
+        'req-1',
         res,
         (data) => { capturedData = data },
       )
 
-      expect(res.write.calledOnce).to.be.true
+      expect(res.write.called).to.be.false
       expect(capturedData).to.be.null
       expect(newBuffer).to.equal('')
+    })
+
+    it('should capture complete event data and not forward it', () => {
+      const res = createMockResponse()
+      const data = JSON.stringify({ answer: 'Hello', citations: [] })
+      const chunk = Buffer.from(`event: complete\ndata: ${data}\n\n`)
+      let capturedData: any = null
+
+      handleRegenerationStreamData(
+        chunk,
+        '',
+        null,
+        null,
+        null,
+        'req-1',
+        res,
+        (d) => { capturedData = d },
+      )
+
+      expect(capturedData).to.not.be.null
+      expect(capturedData.answer).to.equal('Hello')
+      // Complete events should not be forwarded
+      expect(res.write.called).to.be.false
     })
 
     it('should handle incomplete buffer', () => {
@@ -1675,6 +1721,7 @@ describe('Enterprise Search Utils', () => {
         null,
         null,
         null,
+        'req-1',
         res,
         () => {},
       )
@@ -1684,10 +1731,97 @@ describe('Enterprise Search Utils', () => {
       expect(res.write.called).to.be.false
     })
 
+    it('does not forward a complete frame it cannot read', () => {
+      const res = createMockResponse()
+      const chunk = Buffer.from('event: complete\ndata: {invalid json}\n\n')
+
+      handleRegenerationStreamData(
+        chunk,
+        '',
+        null,
+        null,
+        null,
+        'req-1',
+        res,
+        () => {},
+      )
+
+      // It would carry the whole answer: a copy Node cannot read is not passed on.
+      expect(res.write.called).to.be.false
+    })
+
+    it('handles an error frame of the old protocol without forwarding it', () => {
+      const res = createMockResponse()
+      const errorData = JSON.stringify({ error: 'Something failed', message: 'Details here' })
+      const chunk = Buffer.from(`event: error\ndata: ${errorData}\n\n`)
+
+      handleRegenerationStreamData(
+        chunk,
+        '',
+        null,
+        null,
+        null,
+        'req-1',
+        res,
+        () => {},
+      )
+
+      expect(res.write.called).to.be.false
+    })
+
+    it('should handle error events with conversation and messageId', () => {
+      const res = createMockResponse()
+      const errorData = JSON.stringify({ error: 'AI failed' })
+      const chunk = Buffer.from(`event: error\ndata: ${errorData}\n\n`)
+      const messageId = new mongoose.Types.ObjectId()
+
+      const mockConversation: any = {
+        _id: 'conv-1',
+        status: 'Inprogress',
+        conversationErrors: [],
+        save: sinon.stub().resolves({}),
+      }
+      // The error branch fires-and-forgets `replaceMessageWithError`, which
+      // calls `updateMessageById` -> `ChatSessionMessage.findById`/`.findOneAndReplace`.
+      stubUpdateMessageById({ _id: messageId, sessionId: 'conv-1', orgId: 'org-1', seq: 2 })
+
+      handleRegenerationStreamData(
+        chunk,
+        '',
+        mockConversation,
+        messageId,
+        null,
+        'req-1',
+        res,
+        () => {},
+      )
+
+      expect(res.write.called).to.be.false
+    })
+
+    it('should handle error events with unparseable data', () => {
+      const res = createMockResponse()
+      const chunk = Buffer.from('event: error\ndata: {bad json}\n\n')
+
+      handleRegenerationStreamData(
+        chunk,
+        '',
+        null,
+        null,
+        null,
+        'req-1',
+        res,
+        () => {},
+      )
+
+      expect(res.write.called).to.be.false
+    })
+
     it('should handle multiple events in a single chunk', () => {
       const res = createMockResponse()
       const chunk = Buffer.from(
-        'event: token\ndata: {"token":"a"}\n\nevent: token\ndata: {"token":"b"}\n\n'
+        'event: TEXT_MESSAGE_CONTENT\ndata: {"type":"TEXT_MESSAGE_CONTENT","delta":"a"}\n\n' +
+          'event: TEXT_MESSAGE_CONTENT\ndata: {"type":"TEXT_MESSAGE_CONTENT","delta":"b"}\n\n'
       )
 
       handleRegenerationStreamData(
@@ -1696,19 +1830,22 @@ describe('Enterprise Search Utils', () => {
         null,
         null,
         null,
+        'req-1',
         res,
         () => {},
+        AGUI_PROTOCOL,
       )
 
       expect(res.write.calledOnce).to.be.true
       const writeArg = res.write.firstCall.args[0]
-      expect(writeArg).to.include('token')
+      expect(writeArg).to.include('"delta":"a"')
+      expect(writeArg).to.include('"delta":"b"')
     })
 
     it('should combine previous buffer with new chunk', () => {
       const res = createMockResponse()
-      const previousBuffer = 'event: token\ndata: {"tok'
-      const chunk = Buffer.from('en":"hello"}\n\n')
+      const previousBuffer = 'event: TEXT_MESSAGE_CONTENT\ndata: {"type":"TEXT_MESSAGE_CONTENT","del'
+      const chunk = Buffer.from('ta":"hello"}\n\n')
 
       const newBuffer = handleRegenerationStreamData(
         chunk,
@@ -1716,20 +1853,56 @@ describe('Enterprise Search Utils', () => {
         null,
         null,
         null,
+        'req-1',
         res,
         () => {},
+        AGUI_PROTOCOL,
       )
 
       expect(res.write.calledOnce).to.be.true
       expect(newBuffer).to.equal('')
     })
 
+    it('should handle error event with metadata', () => {
+      const res = createMockResponse()
+      const errorData = JSON.stringify({
+        error: 'Custom error',
+        metadata: { retryCount: 3, region: 'us-east' },
+      })
+      const chunk = Buffer.from(`event: error\ndata: ${errorData}\n\n`)
+      const messageId = new mongoose.Types.ObjectId()
+
+      const mockConversation: any = {
+        _id: 'conv-1',
+        status: 'Inprogress',
+        conversationErrors: [],
+        save: sinon.stub().resolves({}),
+      }
+      stubUpdateMessageById({ _id: messageId, sessionId: 'conv-1', orgId: 'org-1', seq: 1 })
+
+      handleRegenerationStreamData(
+        chunk,
+        '',
+        mockConversation,
+        messageId,
+        null,
+        'req-1',
+        res,
+        () => {},
+      )
+
+      expect(res.write.called).to.be.false
+    })
   })
 
   // -----------------------------------------------------------------------
   // markConversationFailed
   // -----------------------------------------------------------------------
   describe('markConversationFailed (imported via utils)', () => {
+    beforeEach(() => {
+      stubSessionWrite()
+    })
+
     // We test the exported function through its effect on a mock conversation
 
     before(() => {
@@ -1759,7 +1932,7 @@ describe('Enterprise Search Utils', () => {
       const insertedMessages = insertManyStub.firstCall.args[0]
       expect(insertedMessages[0].messageType).to.equal('error')
       expect(insertedMessages[0].content).to.equal('Test failure reason')
-      expect(mockConversation.save.calledOnce).to.be.true
+      expect((ChatSession.updateOne as unknown as sinon.SinonStub).calledOnce).to.be.true
     })
 
     it('should add error to conversationErrors array', async () => {
@@ -1775,7 +1948,7 @@ describe('Enterprise Search Utils', () => {
 
       expect(mockConversation.conversationErrors).to.have.length(1)
       expect(mockConversation.conversationErrors[0].errorType).to.equal('stream_error')
-      expect(mockConversation.conversationErrors[0].stack).to.equal('stack trace')
+      expect(mockConversation.conversationErrors[0].stack, 'the stack is logged, never stored').to.equal(undefined)
       expect(mockConversation.conversationErrors[0].metadata.get('type')).to.equal('RUN_ERROR')
       expect(mockConversation.conversationErrors[0].metadata.get('code')).to.equal('stream_error')
     })
@@ -1785,8 +1958,9 @@ describe('Enterprise Search Utils', () => {
         _id: 'conv-3',
         orgId: 'org-1',
         status: 'Inprogress',
-        save: sinon.stub().rejects(new Error('DB error')),
+        save: sinon.stub().resolves(true),
       }
+      stubSessionWrite(new Error('DB error'))
       stubAppendMessages([{ _id: new mongoose.Types.ObjectId() }])
 
       try {
@@ -1821,6 +1995,10 @@ describe('Enterprise Search Utils', () => {
   describe('replaceMessageWithError', () => {
 
     before(() => {
+    })
+
+    beforeEach(() => {
+      stubSessionWrite()
     })
 
     it('should replace the message by id with an error, preserving its identity', async () => {
@@ -1871,7 +2049,7 @@ describe('Enterprise Search Utils', () => {
 
       expect(findOneAndReplaceStub.called).to.be.false
       expect(mockConversation.status).to.equal('Failed')
-      expect(mockConversation.save.calledOnce).to.be.true
+      expect((ChatSession.updateOne as unknown as sinon.SinonStub).calledOnce).to.be.true
     })
   })
 
@@ -1879,8 +2057,14 @@ describe('Enterprise Search Utils', () => {
   // markAgentConversationFailed
   // -----------------------------------------------------------------------
   describe('markAgentConversationFailed', () => {
+    beforeEach(() => {
+      stubSessionWrite()
+    })
+
+    let markAgentConversationFailed: any
 
     before(() => {
+      markAgentConversationFailed = require('../../../../src/modules/enterprise_search/utils/utils').markAgentConversationFailed
     })
 
     it('should mark agent conversation as failed', async () => {
@@ -1925,8 +2109,9 @@ describe('Enterprise Search Utils', () => {
         orgId: 'org-1',
         agentKey: 'agent-1',
         status: 'Inprogress',
-        save: sinon.stub().rejects(new Error('DB error')),
+        save: sinon.stub().resolves(true),
       }
+      stubSessionWrite(new Error('DB error'))
       stubAppendMessages([{ _id: new mongoose.Types.ObjectId() }])
 
       try {
@@ -1935,80 +2120,6 @@ describe('Enterprise Search Utils', () => {
       } catch (error: any) {
         expect(error.message).to.equal('DB error')
       }
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // validateAgentConversationAccess
-  // -----------------------------------------------------------------------
-  describe('validateAgentConversationAccess', () => {
-    let validateAgentConversationAccess: any
-
-    before(() => {
-      validateAgentConversationAccess = require('../../../../src/modules/enterprise_search/utils/utils').validateAgentConversationAccess
-    })
-
-    it('should return conversation when found', async () => {
-      const mockConv = { _id: 'conv-1', agentKey: 'agent-1' }
-      sinon.stub(ChatSession, 'findOne').resolves(mockConv)
-
-      const result = await validateAgentConversationAccess(
-        VALID_OID, 'agent-1', VALID_OID, VALID_OID2
-      )
-
-      expect(result).to.deep.equal(mockConv)
-    })
-
-    it('should return null when conversation not found', async () => {
-      sinon.stub(ChatSession, 'findOne').resolves(null)
-
-      const result = await validateAgentConversationAccess(
-        VALID_OID, 'agent-1', VALID_OID, VALID_OID2
-      )
-
-      expect(result).to.be.null
-    })
-
-    it('should return null when the id cannot be cast, since it can match nothing', async () => {
-      sinon.stub(ChatSession, 'findOne').rejects(new mongoose.Error.CastError('ObjectId', 'not-an-id', '_id'))
-
-      const result = await validateAgentConversationAccess(
-        'not-an-id', 'agent-1', VALID_OID, VALID_OID2
-      )
-
-      expect(result).to.be.null
-    })
-
-    it('should pass any other lookup failure on instead of treating it as not found', async () => {
-      const outage = new Error('DB down')
-      sinon.stub(ChatSession, 'findOne').rejects(outage)
-
-      let thrown: unknown
-      try {
-        await validateAgentConversationAccess(VALID_OID, 'agent-1', VALID_OID, VALID_OID2)
-      } catch (error) {
-        thrown = error
-      }
-
-      expect(thrown).to.equal(outage)
-    })
-
-    it('should match the user and the write level in the same sharedWith entry', async () => {
-      const findOneStub = sinon.stub(ChatSession, 'findOne').resolves(null)
-
-      await validateAgentConversationAccess(VALID_OID, 'agent-1', VALID_OID, VALID_OID2, 'write')
-
-      const shared = findOneStub.firstCall.args[0]!.$or.find((b: any) => b.sharedWith)
-      expect(shared.sharedWith.$elemMatch).to.deep.equal({ userId: VALID_OID, accessLevel: 'write' })
-      expect(shared).to.not.have.property('sharedWith.accessLevel')
-    })
-
-    it('should scope the query to agent sessions only (defense-in-depth)', async () => {
-      const findOneStub = sinon.stub(ChatSession, 'findOne').resolves(null)
-
-      await validateAgentConversationAccess(VALID_OID, 'agent-1', VALID_OID, VALID_OID2)
-
-      expect(findOneStub.firstCall.args[0]).to.deep.include({ sessionType: 'agent', agentKey: 'agent-1' })
     })
   })
 
@@ -2023,12 +2134,15 @@ describe('Enterprise Search Utils', () => {
     })
 
     it('RO-5: only the owner matches; a share of any level never deletes (SS0)', async () => {
+      // Who may delete is the route guard's rule (`delete`: the owner alone by default), held for every share and
+      // stranger in conversation-access.parity.test.ts (A8). The helper deletes only the conversation that guard
+      // granted, in the caller's org, and never finds one by a share.
       const findOneStub = sinon.stub(ChatSession, 'findOne').resolves(null)
 
       await deleteAgentConversation(VALID_OID, 'agent-1', VALID_OID, VALID_OID2)
 
       const filter = findOneStub.firstCall.args[0] as Record<string, unknown>
-      expect(filter).to.deep.include({ sessionType: 'agent', agentKey: 'agent-1', userId: VALID_OID, isDeleted: false })
+      expect(filter).to.deep.include({ sessionType: 'agent', agentKey: 'agent-1', _id: VALID_OID, orgId: VALID_OID2, isDeleted: false })
       expect(JSON.stringify(filter)).to.not.include('sharedWith')
     })
 
@@ -2072,6 +2186,46 @@ describe('Enterprise Search Utils', () => {
 
       expect(result).to.not.be.null
       expect(mockConv.isDeleted).to.be.true
+    })
+
+    it('matches on the granted id and the agent state only, never on the caller as owner', async () => {
+      const findOneStub = sinon.stub(ChatSession, 'findOne').resolves(null)
+
+      await deleteAgentConversation(new mongoose.Types.ObjectId(VALID_OID), 'agent-1', 'caller-1', VALID_OID2)
+
+      const filter = findOneStub.firstCall.args[0] as unknown as Record<string, unknown>
+      expect(filter).to.deep.include({ sessionType: 'agent', agentKey: 'agent-1', isDeleted: false })
+      expect(filter).to.not.have.property('userId')
+    })
+
+    it('records who deleted it', async () => {
+      const mockConv: any = { _id: VALID_OID, isDeleted: false, save: sinon.stub() }
+      mockConv.save.resolves(mockConv)
+      sinon.stub(ChatSession, 'findOne').resolves(mockConv)
+
+      await deleteAgentConversation(VALID_OID, 'agent-1', 'caller-1', VALID_OID2)
+
+      expect(mockConv.deletedBy).to.equal('caller-1')
+    })
+
+    it('returns null when the id cannot be cast, since it can match nothing', async () => {
+      sinon.stub(ChatSession, 'findOne').rejects(new mongoose.Error.CastError('ObjectId', 'not-an-id', '_id'))
+
+      expect(await deleteAgentConversation('not-an-id', 'agent-1', VALID_OID, VALID_OID2)).to.be.null
+    })
+
+    it('passes any other lookup failure on instead of treating it as not found', async () => {
+      const outage = new Error('DB down')
+      sinon.stub(ChatSession, 'findOne').rejects(outage)
+
+      let thrown: unknown
+      try {
+        await deleteAgentConversation(VALID_OID, 'agent-1', VALID_OID, VALID_OID2)
+      } catch (error) {
+        thrown = error
+      }
+
+      expect(thrown).to.equal(outage)
     })
   })
 
@@ -2128,6 +2282,7 @@ describe('Enterprise Search Utils', () => {
         save: sinon.stub().resolves(true),
       }
       stubUpdateMessageById({ _id: messageId, sessionId, orgId: 'org-1', seq: 2 })
+      stubSessionWrite()
       sinon.stub(ChatSession, 'findById').resolves({
         _id: sessionId,
         toObject: () => ({ _id: sessionId, initiator: 'author-1', title: 'Test' }),
@@ -2157,6 +2312,7 @@ describe('Enterprise Search Utils', () => {
         save: sinon.stub().resolves(true),
       }
       const { findOneAndReplaceStub } = stubUpdateMessageById({ _id: messageId, sessionId, orgId: 'org-1', seq: 2 })
+      stubSessionWrite()
       sinon.stub(ChatSession, 'findById').resolves({
         _id: sessionId,
         toObject: () => ({ _id: sessionId, title: 'Test' }),
@@ -2831,7 +2987,7 @@ describe('Enterprise Search Utils - coverage', () => {
   })
 
   // -----------------------------------------------------------------------
-  // buildFilter / buildAgentConversationFilter - project access branch
+  // buildFilter - project access branch
   // -----------------------------------------------------------------------
   describe('buildFilter - project access', () => {
     it('does not add a project $or branch when accessibleProjectIds is omitted', () => {
@@ -2880,39 +3036,6 @@ describe('Enterprise Search Utils - coverage', () => {
       const req = createMockRequest({ query: { projectId: 'not-an-object-id' } })
       const result = buildFilter(req, VALID_OID2, VALID_OID)
       expect(result.projectId).to.be.undefined
-    })
-  })
-
-  describe('buildAgentConversationFilter - project access', () => {
-    it('adds the project access branch when accessibleProjectIds is non-empty', () => {
-      const projectId = new mongoose.Types.ObjectId()
-      const req = createMockRequest({ query: {} })
-      const result = buildAgentConversationFilter(
-        req,
-        VALID_OID2,
-        VALID_OID,
-        'agent-key',
-        undefined,
-        undefined,
-        [projectId],
-      )
-      const branch = result.$or.find((clause: any) => 'projectId' in clause)
-      expect(branch).to.exist
-      expect(branch.projectId.$in).to.deep.equal([projectId])
-      expect(branch.projectVisibility).to.equal('project')
-    })
-
-    it('only ORs the owner clause when accessibleProjectIds is empty/omitted', () => {
-      const req = createMockRequest({ query: {} })
-      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-key')
-      expect(result.$or).to.have.lengthOf(1)
-      expect(result.$or[0].userId).to.exist
-    })
-
-    it('applies ?projectId=unassigned to agent conversation filters too', () => {
-      const req = createMockRequest({ query: { projectId: 'unassigned' } })
-      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-key')
-      expect(result.projectId).to.deep.equal({ $exists: false })
     })
   })
 
@@ -3332,149 +3455,6 @@ describe('Enterprise Search Utils - coverage', () => {
   })
 
   // -----------------------------------------------------------------------
-  // buildAgentConversationFilter
-  // -----------------------------------------------------------------------
-  describe('buildAgentConversationFilter', () => {
-    it('should build basic filter with agentKey', () => {
-      const req = createMockRequest({ query: {} })
-      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-1')
-      expect(result.agentKey).to.equal('agent-1')
-      expect(result.isDeleted).to.be.false
-    })
-
-    it('should include conversationId when provided', () => {
-      const convId = new mongoose.Types.ObjectId().toString()
-      const req = createMockRequest({ query: {} })
-      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-1', convId)
-      expect(result._id).to.exist
-    })
-
-    it('should not include _id when conversationId not provided', () => {
-      const req = createMockRequest({ query: {} })
-      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-1')
-      expect(result._id).to.be.undefined
-    })
-
-    it('should add search filter when search query provided', () => {
-      const req = createMockRequest({ query: { search: 'find me' } })
-      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-1')
-      expect(result.$and).to.exist
-      // Title-only match when no contentMatchIds is supplied.
-      expect(result.$and[0].$or).to.have.lengthOf(1)
-    })
-
-    it('should OR in a contentMatchIds branch when provided', () => {
-      const req = createMockRequest({ query: { search: 'find me' } })
-      const contentMatchIds = [new mongoose.Types.ObjectId()]
-      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-1', undefined, contentMatchIds)
-      expect(result.$and[0].$or).to.have.lengthOf(2)
-      expect(result.$and[0].$or[1]).to.deep.equal({ _id: { $in: contentMatchIds } })
-    })
-
-    it('should always scope to agent sessions (sessionType: agent)', () => {
-      const req = createMockRequest({ query: {} })
-      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-1')
-      expect(result).to.have.property('sessionType', 'agent')
-    })
-
-    it('should throw for search too long', () => {
-      const req = createMockRequest({ query: { search: 'a'.repeat(1001) } })
-      expect(() => buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-1')).to.throw(BadRequestError)
-    })
-
-    it('should throw for search as array', () => {
-      const req = createMockRequest({ query: { search: ['a', 'b'] } })
-      expect(() => buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-1')).to.throw(BadRequestError)
-    })
-
-    it('should add date range filter with startDate', () => {
-      const req = createMockRequest({ query: { startDate: '2024-01-01' } })
-      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-1')
-      expect(result.createdAt.$gte).to.be.instanceOf(Date)
-    })
-
-    it('should add date range filter with endDate', () => {
-      const req = createMockRequest({ query: { endDate: '2024-12-31' } })
-      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-1')
-      expect(result.createdAt.$lte).to.be.instanceOf(Date)
-    })
-
-    it('should throw for invalid startDate in agent filter', () => {
-      const req = createMockRequest({ query: { startDate: 'bad-date' } })
-      expect(() => buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-1')).to.throw(BadRequestError)
-    })
-
-    it('should throw for invalid endDate in agent filter', () => {
-      const req = createMockRequest({ query: { endDate: 'bad-date' } })
-      expect(() => buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-1')).to.throw(BadRequestError)
-    })
-
-    it('should add shared filter for agent conversations', () => {
-      const req = createMockRequest({ query: { shared: 'true' } })
-      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-1')
-      expect(result.isShared).to.be.true
-    })
-
-    it('should add shared=false filter for agent conversations', () => {
-      const req = createMockRequest({ query: { shared: 'false' } })
-      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-1')
-      expect(result.isShared).to.be.false
-    })
-
-    it('should escape regex special chars in agent search', () => {
-      const req = createMockRequest({ query: { search: 'test.special+chars' } })
-      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-1')
-      const regex = result.$and[0].$or[0].title.$regex
-      expect(regex).to.include('\\.')
-      expect(regex).to.include('\\+')
-    })
-
-    it('should handle both startDate and endDate together', () => {
-      const req = createMockRequest({ query: { startDate: '2024-01-01', endDate: '2024-12-31' } })
-      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-1')
-      expect(result.createdAt.$gte).to.exist
-      expect(result.createdAt.$lte).to.exist
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // buildAgentSharedWithMeFilter
-  // -----------------------------------------------------------------------
-  describe('buildAgentSharedWithMeFilter', () => {
-    it('should build basic shared with me filter', () => {
-      const req = createMockRequest({ query: {} })
-      const result = buildAgentSharedWithMeFilter(req, VALID_OID2, VALID_OID, 'agent-1')
-      expect(result.agentKey).to.equal('agent-1')
-      expect(result.isDeleted).to.be.false
-      expect(result.isShared).to.be.true
-      expect(result['sharedWith.userId']).to.equal(VALID_OID)
-      expect(result.orgId.toString()).to.equal(VALID_OID2)
-    })
-
-    it('should add status filter when provided', () => {
-      const req = createMockRequest({ query: { status: 'complete' } })
-      const result = buildAgentSharedWithMeFilter(req, VALID_OID2, VALID_OID, 'agent-1')
-      expect(result.status).to.equal('complete')
-    })
-
-    it('should not add status filter when not provided', () => {
-      const req = createMockRequest({ query: {} })
-      const result = buildAgentSharedWithMeFilter(req, VALID_OID2, VALID_OID, 'agent-1')
-      expect(result.status).to.be.undefined
-    })
-
-
-
-
-    it('should scope shared-with-me to the caller org', () => {
-      const req = createMockRequest({ query: {} })
-      const result = buildAgentSharedWithMeFilter(req, VALID_OID2, VALID_OID, 'agent-1')
-      expect(result.orgId.toString()).to.equal(VALID_OID2)
-      expect(result.orgId.toString()).to.not.equal(VALID_OID)
-    })
-  })
-
-  // -----------------------------------------------------------------------
   // buildAgentConversationSortOptions
   // -----------------------------------------------------------------------
   describe('buildAgentConversationSortOptions', () => {
@@ -3533,10 +3513,10 @@ describe('Enterprise Search Utils - coverage', () => {
       expect(conv.conversationErrors[0].messageId).to.equal(msgId)
     })
 
-    it('should include stack when provided', () => {
+    it('should keep a given stack out of the stored error', () => {
       const conv: any = {}
       addErrorToConversation(conv, 'Error', 'test', undefined, 'stack trace')
-      expect(conv.conversationErrors[0].stack).to.equal('stack trace')
+      expect(conv.conversationErrors[0].stack).to.equal(undefined)
     })
 
     it('should include metadata when provided', () => {
@@ -3686,7 +3666,7 @@ describe('Enterprise Search Utils - coverage', () => {
         { _id: conversationId },
         [],
         [],
-        { store: 'mongo', session: fakeSession } as any,
+        fakeSession,
       )
 
       expect(chain.session.calledOnceWithExactly(fakeSession)).to.be.true
@@ -3799,7 +3779,7 @@ describe('AG-UI Protocol', () => {
       let capturedData: any = null
 
       handleRegenerationStreamData(
-        chunk, '', null, null, null, res, (d) => { capturedData = d },
+        chunk, '', null, null, null, 'req-1', res, (d) => { capturedData = d }, AGUI_PROTOCOL,
       )
 
       expect(capturedData).to.deep.equal(result)
@@ -3811,10 +3791,11 @@ describe('AG-UI Protocol', () => {
       const text = `event: RUN_FINISHED\ndata: ${JSON.stringify({ type: 'RUN_FINISHED', answer: 'direct' })}\n\n`
       const onComplete = sinon.stub()
 
-      handleRegenerationStreamData(Buffer.from(text), '', null, null, null, res, onComplete)
+      handleRegenerationStreamData(Buffer.from(text), '', null, null, null, 'req-1', res, onComplete, AGUI_PROTOCOL)
 
       expect(onComplete.called).to.be.false
-      expect(res.write.calledOnceWithExactly(text)).to.be.true
+      // Passed on through the relay, which keeps only a RUN_FINISHED's base fields.
+      expect(res.write.calledOnceWithExactly(`event: RUN_FINISHED\ndata: ${JSON.stringify({ type: 'RUN_FINISHED' })}\n\n`)).to.be.true
     })
 
     it("should forward, not capture, a sub-agent's RUN_FINISHED even when it carries a result", () => {
@@ -3822,10 +3803,11 @@ describe('AG-UI Protocol', () => {
       const text = `event: RUN_FINISHED\ndata: ${JSON.stringify({ type: 'RUN_FINISHED', runId: 'child', parentRunId: 'root', result: { answer: 'x' } })}\n\n`
       const onComplete = sinon.stub()
 
-      handleRegenerationStreamData(Buffer.from(text), '', null, null, null, res, onComplete)
+      handleRegenerationStreamData(Buffer.from(text), '', null, null, null, 'req-1', res, onComplete, AGUI_PROTOCOL)
 
       expect(onComplete.called).to.be.false
-      expect(res.write.calledOnceWithExactly(text)).to.be.true
+      // Passed on through the relay: the sub-agent's run ids stay, its result does not.
+      expect(res.write.calledOnceWithExactly(`event: RUN_FINISHED\ndata: ${JSON.stringify({ type: 'RUN_FINISHED', runId: 'child', parentRunId: 'root' })}\n\n`)).to.be.true
     })
 
     it('should neither capture nor forward a RUN_FINISHED whose data fails to parse', () => {
@@ -3833,7 +3815,7 @@ describe('AG-UI Protocol', () => {
       const chunk = Buffer.from('event: RUN_FINISHED\ndata: {invalid json}\n\n')
       const onComplete = sinon.stub()
 
-      handleRegenerationStreamData(chunk, '', null, null, null, res, onComplete)
+      handleRegenerationStreamData(chunk, '', null, null, null, 'req-1', res, onComplete, AGUI_PROTOCOL)
 
       expect(onComplete.called).to.be.false
       expect(res.write.called).to.be.false
@@ -3852,7 +3834,7 @@ describe('AG-UI Protocol', () => {
         `event: RUN_ERROR\ndata: ${JSON.stringify({ type: 'RUN_ERROR', message: 'boom' })}\n\n`,
       )
 
-      handleRegenerationStreamData(chunk, '', mockConv, 'm2', null, res, sinon.stub())
+      handleRegenerationStreamData(chunk, '', mockConv, 'm2', null, 'req-1', res, sinon.stub(), AGUI_PROTOCOL)
 
       expect(res.write.calledOnce).to.be.true
       expect(res.write.firstCall.args[0]).to.include('event: RUN_ERROR')
@@ -3873,7 +3855,7 @@ describe('AG-UI Protocol', () => {
       )
 
       handleRegenerationStreamData(
-        chunk, '', mockConv, null, null, res, sinon.stub(),
+        chunk, '', mockConv, null, null, 'req-1', res, sinon.stub(), AGUI_PROTOCOL,
         undefined, undefined, onAskUserQuestion,
       )
       await Promise.resolve()
@@ -3892,7 +3874,7 @@ describe('AG-UI Protocol', () => {
         `event: CUSTOM\ndata: ${JSON.stringify({ type: 'CUSTOM', name: 'artifact', value: {} })}\n\n`,
       )
 
-      handleRegenerationStreamData(chunk, '', mockConv, null, null, res, sinon.stub())
+      handleRegenerationStreamData(chunk, '', mockConv, null, null, 'req-1', res, sinon.stub(), AGUI_PROTOCOL)
 
       expect(res.write.calledOnce).to.be.true
       expect(findByIdAndUpdateStub.called).to.be.false
@@ -3901,25 +3883,14 @@ describe('AG-UI Protocol', () => {
     it('should not treat legacy complete/error/ask_user_question event names as agui frames', () => {
       const res = createMockResponse()
       const onComplete = sinon.stub()
-      const onUpstreamError = sinon.stub()
-      const onAskUserQuestion = sinon.stub()
-      const mockConv: any = { _id: 'c1' }
-      const legacy =
-        'event: complete\ndata: {"answer":"legacy"}\n\n' +
-        'event: error\ndata: {"error":"legacy"}\n\n' +
-        'event: ask_user_question\ndata: {"status":"success","toolData":{"question":"legacy"}}\n\n'
+      const chunk = Buffer.from('event: complete\ndata: {"answer":"legacy"}\n\n')
 
-      handleRegenerationStreamData(
-        Buffer.from(legacy), '', mockConv, 'm1', null, res, onComplete,
-        undefined, onUpstreamError, onAskUserQuestion,
-      )
+      handleRegenerationStreamData(chunk, '', null, null, null, 'req-1', res, onComplete, AGUI_PROTOCOL)
 
-      // No producer sends these names; they have no special handling and are forwarded unchanged.
+      // Under `agui` the legacy `complete` name is neither parsed as a completion nor, being no event the
+      // relay names, forwarded.
       expect(onComplete.called).to.be.false
-      expect(onUpstreamError.called).to.be.false
-      expect(onAskUserQuestion.called).to.be.false
-      expect(res.write.calledOnce).to.be.true
-      expect(res.write.firstCall.args[0]).to.equal(legacy)
+      expect(res.write.called).to.be.false
     })
   })
 
@@ -4048,6 +4019,37 @@ describe('chatSessions helpers', () => {
     expect(attached.messages[0].content).to.equal('hi')
   })
 
+  it('attachMessages shows the conversation as the conversation view gives it to the viewer, unless asked for it as stored', () => {
+    const viewers: Array<string | undefined> = []
+    useConversationExtensions({
+      views: {
+        displayTitle: (title) => title,
+        viewMessage: (message) => message,
+        viewConversation: (conversation, viewerId) => {
+          viewers.push(viewerId)
+          const rest = { ...(conversation as { internalNote?: string }) }
+          delete rest.internalNote
+          return rest as typeof conversation
+        },
+        viewRunFailures: (conversation) => conversation,
+        viewSources: (rows) => Promise.resolve(rows),
+        rowShownTo: () => Promise.resolve(true),
+        viewOthersRow: (view) => view,
+      },
+    })
+    try {
+      const session = { _id: new mongoose.Types.ObjectId(), title: 'Hello', internalNote: 'kept back' }
+      const viewed = attachMessages(session, [], 'viewer-1')
+      expect(viewed).to.not.have.property('internalNote')
+      expect(viewed.title).to.equal('Hello')
+      expect(viewers).to.deep.equal(['viewer-1'])
+      expect(attachMessages(session, [], 'viewer-1', { asStored: true }).internalNote).to.equal('kept back')
+      expect(viewers).to.have.length(1)
+    } finally {
+      useConversationExtensions(undefined)
+    }
+  })
+
   it('getMessages short-circuits to [] when limit <= 0 without hitting the DB', async () => {
     const findStub = sinon.stub(ChatSessionMessage, 'find')
     expect(await getMessages(new mongoose.Types.ObjectId(), { orgId: new mongoose.Types.ObjectId(), limit: 0 })).to.deep.equal([])
@@ -4086,49 +4088,68 @@ describe('chatSessions helpers', () => {
     const orgId = new mongoose.Types.ObjectId()
     const existing = { _id: messageId, sessionId, orgId, seq: 7, content: 'old' }
     sinon.stub(ChatSessionMessage, 'findOne').resolves(existing as any)
+    sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ rev: 4 } as any)
     const replaceStub = sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ ...existing, content: 'new' } as any)
     await updateMessageById(messageId, orgId, { messageType: 'bot_response', content: 'new' } as any)
     expect(replaceStub.firstCall.args[1]!.seq).to.equal(7)
     expect(replaceStub.firstCall.args[1]!.sessionId).to.equal(sessionId)
   })
 
-  it('updateUserQueryContent rewrites only the text of a user_query row', async () => {
-    const messageId = new mongoose.Types.ObjectId().toString()
-    const sessionId = new mongoose.Types.ObjectId().toString()
-    const orgId = new mongoose.Types.ObjectId().toString()
+  it('updateUserQueryContent rewrites only the text of a live user_query row, with a fresh change stamp', async () => {
+    const messageId = new mongoose.Types.ObjectId()
+    sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ rev: 7 } as any)
     const updateStub = sinon.stub(ChatSessionMessage, 'findOneAndUpdate').resolves({ _id: messageId } as any)
+    const sessionId = new mongoose.Types.ObjectId()
+    const orgId = new mongoose.Types.ObjectId()
     await updateUserQueryContent(messageId, 'Edited question', sessionId, orgId)
-    expect(updateStub.firstCall.args[0]).to.deep.equal({ _id: messageId, orgId, sessionId, messageType: 'user_query' })
-    expect(updateStub.firstCall.args[1]).to.deep.equal({ $set: { content: 'Edited question' } })
+    expect(updateStub.firstCall.args[0]).to.deep.equal({
+      _id: messageId,
+      orgId,
+      sessionId,
+      messageType: 'user_query',
+      removedAt: { $exists: false },
+    })
+    expect(updateStub.firstCall.args[1]).to.deep.equal({ $set: { content: 'Edited question', changeRev: 7 } })
   })
 
-  it('deleteMessagesById only deletes rows of the conversation it was given', async () => {
-    const ids = [new mongoose.Types.ObjectId().toString(), new mongoose.Types.ObjectId().toString()]
-    const sessionId = new mongoose.Types.ObjectId().toString()
-    const orgId = new mongoose.Types.ObjectId().toString()
-    const del = sinon.stub(ChatSessionMessage, 'deleteMany').resolves({ deletedCount: 2 } as any)
-    await deleteMessagesById(ids, orgId, null, sessionId)
-    expect(del.firstCall.args[0]).to.deep.equal({ _id: { $in: ids }, orgId, sessionId })
+  it('retireMessagesById only reaches rows of the conversation it was given', async () => {
+    const ids = [new mongoose.Types.ObjectId(), new mongoose.Types.ObjectId()]
+    const sessionId = new mongoose.Types.ObjectId()
+    const orgId = new mongoose.Types.ObjectId()
+    sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ rev: 1 } as any)
+    const read = sinon
+      .stub(ChatSessionMessage, 'findOne')
+      .callsFake(((filter: { _id: unknown }) => Promise.resolve({ _id: filter._id, messageType: 'tool_call' })) as any)
+    const retire = sinon.stub(ChatSessionMessage, 'updateOne').resolves({ matchedCount: 1 } as any)
+    expect(await retireMessagesById(ids, { sessionId, orgId })).to.equal(2)
+    for (const [i, id] of ids.entries()) {
+      expect(read.getCall(i).args[0]).to.deep.include({ _id: id, orgId, sessionId })
+      expect(retire.getCall(i).args[0]).to.deep.include({ _id: id, orgId, sessionId })
+    }
   })
 
   it('updateUserQueryContent leaves the files alone unless the edit replaced them', async () => {
+    sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ rev: 1 } as any)
     const updateStub = sinon.stub(ChatSessionMessage, 'findOneAndUpdate').resolves({} as any)
-    await updateUserQueryContent(new mongoose.Types.ObjectId().toString(), 'Edited question', new mongoose.Types.ObjectId().toString(), new mongoose.Types.ObjectId().toString())
-    expect(updateStub.firstCall.args[1]).to.deep.equal({ $set: { content: 'Edited question' } })
+    const sessionId = new mongoose.Types.ObjectId()
+    await updateUserQueryContent(new mongoose.Types.ObjectId(), 'Edited question', sessionId, new mongoose.Types.ObjectId())
+    expect(updateStub.firstCall.args[1]).to.deep.equal({ $set: { content: 'Edited question', changeRev: 1 } })
   })
 
   it('updateUserQueryContent replaces the files, and clears them for an empty list', async () => {
+    sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ rev: 1 } as any)
     const updateStub = sinon.stub(ChatSessionMessage, 'findOneAndUpdate').resolves({} as any)
-    const sessionId = new mongoose.Types.ObjectId().toString()
-    const orgId = new mongoose.Types.ObjectId().toString()
-    const files = [{ recordId: 'rec-1', recordName: 'a.pdf' }] as any
-    await updateUserQueryContent(new mongoose.Types.ObjectId().toString(), 'Edited question', sessionId, orgId, null, files)
-    await updateUserQueryContent(new mongoose.Types.ObjectId().toString(), 'Edited question', sessionId, orgId, null, [])
-    expect(updateStub.firstCall.args[1]).to.deep.equal({ $set: { content: 'Edited question', attachments: files } })
-    expect(updateStub.secondCall.args[1]).to.deep.equal({ $set: { content: 'Edited question', attachments: [] } })
+    const sessionId = new mongoose.Types.ObjectId()
+    const orgId = new mongoose.Types.ObjectId()
+    const files = [{ recordId: 'rec-1', recordName: 'a.pdf' }]
+    await updateUserQueryContent(new mongoose.Types.ObjectId(), 'Edited question', sessionId, orgId, null, files)
+    await updateUserQueryContent(new mongoose.Types.ObjectId(), 'Edited question', sessionId, orgId, null, [])
+    expect(updateStub.firstCall.args[1]).to.deep.equal({ $set: { content: 'Edited question', changeRev: 1, attachments: files } })
+    expect(updateStub.secondCall.args[1]).to.deep.equal({ $set: { content: 'Edited question', changeRev: 1, attachments: [] } })
   })
 
   it('updateUserQueryContent returns null when the row is not a user_query', async () => {
+    sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ rev: 1 } as any)
     sinon.stub(ChatSessionMessage, 'findOneAndUpdate').resolves(null as any)
     expect(await updateUserQueryContent(new mongoose.Types.ObjectId().toString(), 'Edited question', new mongoose.Types.ObjectId().toString(), new mongoose.Types.ObjectId().toString())).to.equal(null)
   })
@@ -4141,20 +4162,144 @@ describe('chatSessions helpers', () => {
     expect(insert.called).to.be.false
   })
 
+  /** `ChatSession.find` as the content search reads the caller's own chats: these `_id`s. */
+  const ownChats = (...ids: mongoose.Types.ObjectId[]): any => {
+    const chain: any = {
+      sort: sinon.stub().returnsThis(),
+      limit: sinon.stub().returnsThis(),
+      select: sinon.stub().returnsThis(),
+      lean: sinon.stub().returnsThis(),
+      exec: sinon.stub().resolves(ids.map((_id) => ({ _id }))),
+    }
+    answerMatches()
+    return { chain, find: sinon.stub(ChatSession, 'find').returns(chain) }
+  }
+
+  /** `ChatSessionMessage.find` as the content search reads the caller's own matching answers: these rows. */
+  const answerMatches = (rows: unknown[] = []): sinon.SinonStub => {
+    const chain: any = {
+      sort: sinon.stub().returnsThis(),
+      limit: sinon.stub().returnsThis(),
+      select: sinon.stub().returnsThis(),
+      lean: sinon.stub().returnsThis(),
+      exec: sinon.stub().resolves(rows),
+    }
+    return sinon.stub(ChatSessionMessage, 'find').returns(chain)
+  }
+
   it('findSessionIdsMatchingContent groups by sessionId and honours the cap', async () => {
     const sid = new mongoose.Types.ObjectId()
+    ownChats(sid)
     const agg = sinon.stub(ChatSessionMessage, 'aggregate').resolves([{ _id: sid }])
-    const ids = await findSessionIdsMatchingContent(VALID_OID2, 'hello', 10)
-    expect(ids).to.deep.equal([sid.toString()])
+    const ids = await findSessionIdsMatchingContent(VALID_OID2, 'hello', { ownerId: VALID_OID, limit: 10 })
+    expect(ids).to.deep.equal([sid])
     // One more than the cap is asked for, to tell whether the search was cut short.
     expect(agg.firstCall.args[0][2]).to.deep.equal({ $limit: 11 })
   })
 
   it('findSessionIdsMatchingContent returns only the capped ids when more sessions match', async () => {
     const rows = [1, 2, 3].map(() => ({ _id: new mongoose.Types.ObjectId() }))
+    ownChats(...rows.map((r) => r._id))
     sinon.stub(ChatSessionMessage, 'aggregate').resolves(rows)
-    const ids = await findSessionIdsMatchingContent(VALID_OID2, 'hello', 2)
-    expect(ids).to.deep.equal([rows[0]!._id.toString(), rows[1]!._id.toString()])
+    const ids = await findSessionIdsMatchingContent(VALID_OID2, 'hello', { ownerId: VALID_OID, limit: 2 })
+    expect(ids).to.deep.equal([rows[0]!._id, rows[1]!._id])
+  })
+
+  it('findSessionIdsMatchingContent matches only within the caller\'s own chats the filter accepts, newest first', async () => {
+    const accessible = new mongoose.Types.ObjectId()
+    const { chain, find } = ownChats(accessible)
+    const filter = { $and: [{ isArchived: false }] }
+    const agg = sinon.stub(ChatSessionMessage, 'aggregate').resolves([{ _id: accessible }])
+    const ids = await findSessionIdsMatchingContent(VALID_OID2, 'hello', { ownerId: VALID_OID, sessionFilter: filter })
+    expect(ids).to.deep.equal([accessible])
+    expect(find.firstCall.args[0]).to.deep.equal({
+      $and: [filter, { orgId: new mongoose.Types.ObjectId(VALID_OID2), userId: new mongoose.Types.ObjectId(VALID_OID) }],
+    })
+    expect(chain.sort.firstCall.args[0]).to.deep.equal({ lastActivityAt: -1, _id: -1 })
+    expect(chain.limit.firstCall.args[0]).to.equal(10000)
+    expect((agg.firstCall.args[0][0] as { $match: { sessionId: unknown } }).$match.sessionId).to.deep.equal({ $in: [accessible] })
+  })
+
+  it('findSessionIdsMatchingContent matches the caller\'s own questions and answers only, never tool output', async () => {
+    const own = new mongoose.Types.ObjectId()
+    ownChats(own)
+    const agg = sinon.stub(ChatSessionMessage, 'aggregate').resolves([])
+    await findSessionIdsMatchingContent(VALID_OID2, 'hello', { ownerId: VALID_OID })
+    const { $match } = agg.firstCall.args[0][0] as { $match: Record<string, unknown> }
+    const owner = new mongoose.Types.ObjectId(VALID_OID)
+    expect($match.authorUserId).to.deep.equal({ $in: [owner, null] })
+    expect($match.requestedBy).to.deep.equal({ $in: [owner, null] })
+    // Their words match here; their answers only through the reader check, below.
+    expect($match.messageType).to.deep.equal({ $nin: ['tool_call', 'bot_response', 'error'] })
+    const answers = (ChatSessionMessage.find as sinon.SinonStub).firstCall.args[0] as Record<string, unknown>
+    expect(answers.messageType).to.deep.equal({ $in: ['bot_response', 'error'] })
+    expect(answers.authorUserId).to.deep.equal({ $in: [owner, null] })
+  })
+
+  it('findSessionIdsMatchingContent matches an own answer only while the reader check still shows it to its asker', async () => {
+    const kept = new mongoose.Types.ObjectId()
+    const lost = new mongoose.Types.ObjectId()
+    const chats: any = {
+      sort: sinon.stub().returnsThis(),
+      limit: sinon.stub().returnsThis(),
+      select: sinon.stub().returnsThis(),
+      lean: sinon.stub().returnsThis(),
+      exec: sinon.stub().resolves([{ _id: kept }, { _id: lost }]),
+    }
+    sinon.stub(ChatSession, 'find').returns(chats)
+    sinon.stub(ChatSessionMessage, 'aggregate').resolves([])
+    const owner = VALID_OID
+    const row = (sessionId: mongoose.Types.ObjectId, record: string) => {
+      const content = `hello from ${record}`
+      const parts: unknown[] = []
+      const labelVer = new mongoose.Types.ObjectId().toString()
+      return {
+        _id: new mongoose.Types.ObjectId(),
+        sessionId,
+        messageType: 'bot_response',
+        requestedBy: new mongoose.Types.ObjectId(owner),
+        labelVer,
+        content,
+        parts,
+        provenance: {
+          v: 5, ver: labelVer, contentHash: labelContentHash(content, parts),
+          direct: { records: [record], vrids: [], nodes: [], saVrids: [], personal: [], agents: [], chat: [], projects: [], marks: [] },
+          parents: [], complete: true, tagset: 1, pub: false,
+        },
+      }
+    }
+    const rows = [row(kept, 'rec-open'), row(lost, 'rec-lost')]
+    answerMatches(rows)
+    configureVisibility({
+      labelRule: async () => true,
+      labels: async (_org, ids) => new Map(rows.filter((r) => ids.includes(String(r._id))).map((r) => [String(r._id), r as any])),
+      readable: async (_reader, ids) => ({
+        readable: new Set(ids.filter((id) => id === 'rec-open')),
+        asked: new Set(ids),
+        deleted: new Set<string>(),
+        failed: false,
+        validUntil: Date.now() + 30_000,
+      }),
+    })
+    try {
+      const ids = await findSessionIdsMatchingContent(VALID_OID2, 'hello', { ownerId: owner })
+      expect(ids.map(String)).to.deep.equal([String(kept)])
+    } finally {
+      resetVisibility()
+    }
+  })
+
+  it('findSessionIdsMatchingContent skips the message scan when the caller has no chat to match', async () => {
+    ownChats()
+    const agg = sinon.stub(ChatSessionMessage, 'aggregate')
+    expect(await findSessionIdsMatchingContent(VALID_OID2, 'hello', { ownerId: VALID_OID, sessionFilter: {} })).to.deep.equal([])
+    expect(agg.called).to.equal(false)
+  })
+
+  it('findSessionIdsMatchingContent matches nothing for a caller with no valid id', async () => {
+    const find = sinon.stub(ChatSession, 'find')
+    expect(await findSessionIdsMatchingContent(VALID_OID2, 'hello', { ownerId: '' })).to.deep.equal([])
+    expect(find.called).to.equal(false)
   })
 
   // -----------------------------------------------------------------------
@@ -4162,6 +4307,10 @@ describe('chatSessions helpers', () => {
   // (Phase 2/3 of the Stop Generation plan)
   // -----------------------------------------------------------------------
   describe('savePartialConversation', () => {
+    beforeEach(() => {
+      stubSessionWrite()
+    })
+
     it('strips model-authored artifact and download markers from the partial answer', async () => {
       const mockConversation: any = {
         _id: new mongoose.Types.ObjectId(),
@@ -4226,7 +4375,7 @@ describe('chatSessions helpers', () => {
       expect(insertedMessage.content).to.equal('partial answer text')
       expect(insertedMessage.status).to.equal('stopped')
       expect(mockConversation.status).to.equal(CONVERSATION_STATUS.STOPPED)
-      expect(mockConversation.save.calledOnce).to.be.true
+      expect((ChatSession.updateOne as unknown as sinon.SinonStub).calledOnce).to.be.true
     })
 
     it('replaces the target message in place when replaceMessageId is given (regenerate path)', async () => {
@@ -4271,16 +4420,17 @@ describe('chatSessions helpers', () => {
       // message replace was a no-op — the run still ended, we just couldn't
       // find the target message to patch.
       expect(mockConversation.status).to.equal(CONVERSATION_STATUS.STOPPED)
-      expect(mockConversation.save.calledOnce).to.be.true
+      expect((ChatSession.updateOne as unknown as sinon.SinonStub).calledOnce).to.be.true
     })
 
-    it('propagates and rethrows when conversation.save fails', async () => {
+    it('propagates and rethrows when the session write fails', async () => {
       const mockConversation: any = {
         _id: new mongoose.Types.ObjectId(),
         orgId: new mongoose.Types.ObjectId(),
         status: CONVERSATION_STATUS.INPROGRESS,
-        save: sinon.stub().rejects(new Error('DB down')),
+        save: sinon.stub().resolves(true),
       }
+      stubSessionWrite(new Error('DB down'))
       stubAppendMessages([{ _id: new mongoose.Types.ObjectId() }])
 
       try {

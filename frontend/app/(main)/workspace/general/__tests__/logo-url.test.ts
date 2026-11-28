@@ -5,10 +5,14 @@ import { OrgApi } from '../api';
 import { blobToDataUrl } from '@/lib/utils/blob-to-data-url';
 import { clearSessionCache } from '@/lib/api/session-cache';
 
-vi.mock('@/lib/api', () => ({
-  apiClient: { get: vi.fn() },
-  streamSSERequest: vi.fn(),
-}));
+vi.mock('@/lib/api', () => {
+  const apiClient = { get: vi.fn() };
+  return {
+    apiClient,
+    sharedGet: (url: string) => apiClient.get(url).then(({ data }: { data: unknown }) => data),
+    streamSSERequest: vi.fn(),
+  };
+});
 
 const mockedGet = vi.mocked(apiClient.get);
 const svg = '<svg xmlns="http://www.w3.org/2000/svg"><x:script xmlns:x="http://www.w3.org/2000/svg">alert(1)</x:script></svg>';

@@ -11,6 +11,7 @@ import { MongoService } from '../../src/libs/services/mongo.service';
 import { MongoNotificationRepository } from '../../src/libs/repositories/notification/mongo';
 import { Notifications } from '../../src/modules/notification/schema/notification.schema';
 import { describeNotificationContract } from './contract/notification.contract';
+import { describeNotificationDelivery } from './contract/notification-delivery.contract';
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -51,5 +52,16 @@ describe('MongoNotificationRepository against a real MongoDB', function () {
         { $set: { createdAt: at } },
       );
     },
+  });
+
+  describe('the notification consumer on MongoDB', () => {
+    describeNotificationDelivery({
+      repo: new MongoNotificationRepository(),
+      newId: () => String(new mongoose.Types.ObjectId()),
+      stored: async (orgId, userId) =>
+        (
+          await Notifications.find({ orgId, assignedTo: userId }, { _id: 0, type: 1, dedupeKey: 1 }).lean()
+        ).map(({ type, dedupeKey }) => ({ type, ...(dedupeKey !== undefined && { dedupeKey }) })),
+    });
   });
 });

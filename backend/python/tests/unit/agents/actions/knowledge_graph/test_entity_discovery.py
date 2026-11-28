@@ -17,6 +17,8 @@ from app.agents.actions.knowledge_graph.ops.entity_filters import (
     LIMITED_SCOPE_NOTE,
     RECORD_SCOPED_ENTITY_CACHE_KEY,
 )
+from app.modules.agents.context.named_sources import NAMED_SOURCES_KEY, NamedSources
+from app.modules.agents.privacy.ledger import LabelLedger, bind_ledger
 from app.modules.retrieval.entity_permissions import (
     EntityAccessContext,
     EntityAccessError,
@@ -633,6 +635,134 @@ class TestStrictAndExcludedScope:
         assert json.loads(text)["results"] == []
         graph.get_entity_access_context.assert_not_called()
         store.search_entities.assert_not_called()
+
+
+class _Shown(LabelLedger):
+    """A ledger that only keeps what a writer showed the model."""
+
+    labels = True
+
+    def __init__(self) -> None:
+        self.records: set[str] = set()
+        self.nodes: set[str] = set()
+
+    def shown(self, *, records=(), vrids=(), nodes=(), call_id=None) -> None:
+        self.records.update(records)
+        self.nodes.update(nodes)
+
+
+class TestTheAppsItNames:
+    """Each entity lists the apps its records are in. An app named for records the result does not show is a
+    source named by the tool, so the answer's label lists it; the shown records cover their own apps."""
+
+    @pytest.mark.asyncio
+    async def test_an_app_named_for_records_it_does_not_show_is_labelled(self, patched) -> None:
+        patched[0].return_value = replace(CONTEXT, app_names={**CONTEXT.app_names, "drive-9": "Team Drive"})
+        patched[1].return_value = [
+            *(_hit(f"t{i}", "topic", records=[_row(f"r{i}")]) for i in range(1, 4)),
+            _hit("c1", "category", records=[_row("r5", "drive-9")]),
+        ]
+        ledger = _Shown()
+
+        with bind_ledger(ledger):
+            _, text = await execute_search_entities(_state(), "legal")
+
+        listed = json.loads(text)["results"][3]
+        assert listed["apps"] == ["Team Drive"] and "records" not in listed
+        assert "drive-9" in ledger.nodes
+        assert ledger.records == {"r1", "r2", "r3"}
+        assert "conf-1" not in ledger.nodes
+
+
+class TestInATurnOthersRead:
+    """The run may name only the sources its prompts name: an entity lists the others without their names, and
+    the label needs no node for them."""
+
+    @staticmethod
+    def _limited(*named: str) -> dict:
+        return _state(**{NAMED_SOURCES_KEY: NamedSources(knowledge=tuple({"connectorId": c} for c in named), limited=True)})
+
+    @pytest.mark.asyncio
+    async def test_an_app_it_may_not_name_is_counted_not_named(self, patched) -> None:
+        patched[1].return_value = [
+            _hit("t1", "topic", records=[_row("r1"), _row("r2", "kb-1")]),
+            *(_hit(f"t{i}", "topic", records=[_row(f"r{i}")]) for i in range(2, 4)),
+            _hit("c1", "category", records=[_row("r5", "kb-1")]),
+        ]
+        ledger = _Shown()
+
+        with bind_ledger(ledger):
+            _, text = await execute_search_entities(self._limited("conf-1"), "legal")
+
+        results = json.loads(text)["results"]
+        assert results[0]["apps"] == ["Confluence"] and results[0]["otherSources"] == 1
+        assert "app" not in results[0]["records"][1]
+        assert "apps" not in results[3] and results[3]["otherSources"] == 1
+        assert "Team KB" not in text and "kb-1" not in text
+        assert "kb-1" not in ledger.nodes
+        assert ledger.records == {"r1", "r2", "r3"}
+
+    @pytest.mark.asyncio
+    async def test_a_collection_it_may_not_name_is_left_out_and_counted(self, patched) -> None:
+        # A collection is a record group: its own hit carries its name and id.
+        patched[1].return_value = [
+            _hit("kb-9", "record_group", records=[_row("r1", "kb-1")]),
+            _hit("t1", "topic", records=[_row("r2")]),
+        ]
+        state = self._limited("conf-1")
+        ledger = _Shown()
+
+        with bind_ledger(ledger):
+            ok, text = await execute_search_entities(state, "private notes")
+
+        payload = json.loads(text)
+        assert ok and [r["entityId"] for r in payload["results"]] == ["t1"]
+        assert "kb-9" not in text and "r1" not in text
+        assert payload["note"].startswith("1 other source not listed")
+        assert "kb-9" not in (state.get(ENTITY_ID_FILTER_KEY_CACHE_KEY) or {})
+        assert "kb-9" not in (state.get(RECORD_SCOPED_ENTITY_CACHE_KEY) or {})
+        assert ledger.records == {"r2"} and not ledger.nodes
+
+    @pytest.mark.asyncio
+    async def test_a_picked_collection_and_a_group_in_a_picked_app_are_listed(self, patched) -> None:
+        patched[1].return_value = [
+            _hit("kb-9", "record_group", records=[_row("r1", "kb-1")]),
+            _hit("g-1", "record_group", records=[_row("r2")]),
+            _hit("g-2", "record_group", records=[_row("r3", "slack-1")]),
+            _hit("g-3", "record_group"),
+        ]
+
+        _, text = await execute_search_entities(self._limited("kb-9", "conf-1"), "notes")
+
+        payload = json.loads(text)
+        assert [r["entityId"] for r in payload["results"]] == ["kb-9", "g-1"]
+        assert "g-2" not in text and "g-3" not in text
+        assert payload["note"].startswith("2 other sources not listed")
+
+    @pytest.mark.asyncio
+    async def test_when_it_may_name_no_hit_it_says_what_it_left_out(self, patched) -> None:
+        patched[1].return_value = [_hit("kb-9", "record_group", records=[_row("r1", "kb-1")])]
+
+        ok, text = await execute_search_entities(self._limited(), "private notes")
+
+        payload = json.loads(text)
+        assert ok and payload["results"] == [] and "kb-9" not in text
+        assert payload["note"].startswith("1 other source not listed")
+        assert "message" not in payload
+
+    @pytest.mark.asyncio
+    async def test_a_run_nobody_else_reads_names_them_as_before(self, patched) -> None:
+        patched[1].return_value = [
+            _hit("t1", "topic", records=[_row("r1"), _row("r2", "kb-1")]),
+            _hit("kb-9", "record_group", records=[_row("r3", "kb-1")]),
+        ]
+
+        _, text = await execute_search_entities(_state(), "legal")
+
+        payload = json.loads(text)
+        topic, collection = payload["results"]
+        assert topic["apps"] == ["Confluence", "Team KB"] and "otherSources" not in topic
+        assert collection["name"] == "name kb-9" and "note" not in payload
 
 
 @pytest.mark.asyncio

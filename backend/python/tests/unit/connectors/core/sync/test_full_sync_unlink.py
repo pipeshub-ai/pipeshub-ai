@@ -396,6 +396,8 @@ class TestWhatTheProcessorNotes:
         # Read by batch_upsert_user_groups once #4126 reuses the stored id.
         tx.get_user_group_by_external_id = AsyncMock(return_value=None)
         tx.get_edges_to_node = AsyncMock(return_value=[])
+        # Read for the people whose membership changes: their permission epochs move with it.
+        tx.get_nodes_by_field_in = AsyncMock(return_value=[])
         tx.batch_create_edges = AsyncMock()
         tx.replace_edges_to = AsyncMock()
         tx.delete_edges_to = AsyncMock()

@@ -1,6 +1,6 @@
 'use client';
 
-import { extractApiErrorMessage } from './api-error';
+import { extractApiErrorCode, extractApiErrorDetails, extractApiErrorMessage } from './api-error';
 
 /**
  * What a person reads when a streamed request (chat, agent chat) fails. The
@@ -32,19 +32,24 @@ export class StreamError extends Error {
   readonly code?: string;
   /** Which rule refused it, when the code covers several (`error.reasonCode`, e.g. `active_runs_user`). */
   readonly reasonCode?: string;
+  readonly details?: Record<string, unknown>;
+  /** The message is the server's own words, not one of the lines above. */
+  readonly serverText: boolean;
 
-  constructor(message: string, status?: number, code?: string, reasonCode?: string) {
+  constructor(
+    message: string,
+    status?: number,
+    code?: string,
+    extra: { reasonCode?: string; details?: Record<string, unknown>; serverText?: boolean } = {},
+  ) {
     super(message);
     this.name = 'StreamError';
     this.status = status;
     if (code !== undefined) this.code = code;
-    if (reasonCode !== undefined) this.reasonCode = reasonCode;
+    if (extra.reasonCode !== undefined) this.reasonCode = extra.reasonCode;
+    this.details = extra.details;
+    this.serverText = extra.serverText ?? false;
   }
-}
-
-function errorCode(body: unknown): string | undefined {
-  const code = (body as { error?: { code?: unknown } } | null)?.error?.code;
-  return typeof code === 'string' && code.length > 0 ? code : undefined;
 }
 
 function reasonCodeOf(body: unknown): string | undefined {
@@ -57,6 +62,16 @@ export class StreamIdleError extends StreamError {
   constructor(message: string) {
     super(message);
     this.name = 'StreamIdleError';
+  }
+}
+
+/**
+ * The connection ended before the answer did. Nothing says the answer failed: the server goes on with a run whose
+ * reader is gone. `started` is false when not even the response came, so the request may never have arrived.
+ */
+export class StreamDroppedError extends StreamError {
+  constructor(message: string, readonly started: boolean) {
+    super(message);
   }
 }
 
@@ -96,17 +111,19 @@ export async function streamHttpError(
     // Not JSON (a proxy's HTML page, an empty body): fall back on the status.
   }
   const { status } = response;
-  const code = errorCode(body);
-  if (status === 401) return new StreamError(messages.sessionExpired, status, code);
+  const code = extractApiErrorCode(body);
+  const details = extractApiErrorDetails(body);
+  const fail = (message: string, reasonCode?: string) => new StreamError(message, status, code, { details, reasonCode });
+  if (status === 401) return fail(messages.sessionExpired);
   if (status === 429 || status === 503 || status === 504) {
-    return new StreamError(busyStreamMessage(retryAfterSeconds(response)), status, code, reasonCodeOf(body));
+    return fail(busyStreamMessage(retryAfterSeconds(response)), reasonCodeOf(body));
   }
   if (status >= 400 && status < 500) {
     const serverMessage = readableServerMessage(body);
-    if (serverMessage) return new StreamError(serverMessage, status, code);
-    if (status === 403) return new StreamError(messages.forbidden, status, code);
+    if (serverMessage) return new StreamError(serverMessage, status, code, { details, serverText: true });
+    if (status === 403) return fail(messages.forbidden);
   }
-  return new StreamError(messages.unavailable, status, code);
+  return fail(messages.unavailable);
 }
 
 /**
@@ -120,5 +137,5 @@ export function streamFailure(
   messages: StreamErrorMessages = STREAM_ERROR_MESSAGES,
 ): StreamError {
   if (error instanceof StreamError) return error;
-  return new StreamError(responseStarted ? messages.interrupted : messages.offline);
+  return new StreamDroppedError(responseStarted ? messages.interrupted : messages.offline, responseStarted);
 }

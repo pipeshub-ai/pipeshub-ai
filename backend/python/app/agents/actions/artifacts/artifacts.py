@@ -33,6 +33,8 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
+from app.models.entities import RecordType
+from app.modules.agents.context.told_files import told_files_in
 from app.modules.agents.qna.chat_state import ChatState
 from app.sandbox.artifact_upload import infer_artifact_type
 from app.services.artifact_registry import (
@@ -52,6 +54,19 @@ logger = logging.getLogger(__name__)
 
 def _result(success: bool, payload: dict[str, Any]) -> tuple[bool, str]:
     return success, json.dumps(payload, default=str)
+
+
+def _is_artifact(record: Any) -> bool:  # noqa: ANN401
+    record_type = getattr(record, "record_type", None)
+    return getattr(record_type, "value", record_type) == RecordType.ARTIFACT.value
+
+
+async def _opens_every_version(graph_provider: Any, actor: Actor, record: Any) -> bool:  # noqa: ANN401
+    """Whether `actor` opens every version of the artifact `record` through their own edge (its owner), not version
+    by version through the chat's check."""
+    from app.services.artifact_registry.access import AccessPolicy
+
+    return await AccessPolicy(graph_provider).opens_every_version(actor, str(getattr(record, "id", "") or ""))
 
 
 # Ceiling on artifact text returned to the model in one call. Generous enough
@@ -130,7 +145,7 @@ class ArtifactManager:
 
     def _record_actor(self) -> Actor:
         """Who knowledge records are read as: the run's user, whose access the agent has."""
-        return Actor(org_id=self.chat_state.get("org_id", ""), user_id=self.chat_state.get("user_id", ""))
+        return Actor.from_state(self.chat_state)
 
     def _provenance(self, task_id: str) -> Any:  # noqa: ANN401 - ArtifactProvenance
         """What the content can carry: the records this request showed the model (SS0)."""
@@ -586,7 +601,10 @@ class ArtifactManager:
         # A signed URL needs no bearer token, so this is the only permission
         # check between the caller and the bytes.
         try:
-            await TieredRecordAuthorizer(graph_provider).authorize(self._record_actor(), record)
+            served = await TieredRecordAuthorizer(graph_provider).authorize(
+                self._record_actor(), record,
+                conversation_id=(self.chat_state or {}).get("conversation_id"),
+            )
         except RecordNotFoundError:
             return _result(False, {"success": False, "error": f"Record {record_id!r} was deleted, so it can no longer be downloaded"})
         except RecordAccessDeniedError:
@@ -603,12 +621,22 @@ class ArtifactManager:
             return _result(False, {"success": False, "error": "Failed to check access to this record"})
         if outside:
             return not_found
+        from app.modules.agents.privacy.ledger import note_shown
+
+        # The link and the file name both come from this record.
+        note_shown(records=[record_id])
 
         if record.origin == OriginTypes.UPLOAD:
             if not record.external_record_id:
                 return _result(False, {"success": False, "error": "This record has no downloadable content"})
+            # A signed URL serves the current object to whoever holds it, and that object takes every later version
+            # of a chat file. Someone else's file gets the signed-in link instead, which serves each viewer a version
+            # they may open when it is opened.
             try:
-                url = await blob_store.get_download_url(org_id, record.external_record_id)
+                signed = not _is_artifact(record) or (
+                    served is None and await _opens_every_version(graph_provider, self._record_actor(), record)
+                )
+                url = await blob_store.get_download_url(org_id, record.external_record_id) if signed else None
             except Exception:
                 logger.exception("[get_record_download_url] signed URL failed for %s", record_id)
                 return _result(False, {"success": False, "error": "Failed to generate a download URL"})
@@ -676,7 +704,7 @@ class ArtifactManager:
             return _result(False, {"success": False, "error": "Artifact storage is unavailable in this context"})
         try:
             artifacts: list[ArtifactMetadata] = await registry.list_for_conversation(
-                actor=self._actor(), conversation_id=conversation_id,
+                actor=self._actor(), conversation_id=conversation_id, told=told_files_in(self.chat_state),
             )
         except Exception:
             logger.exception("[list_artifacts] failed for conversation=%s", conversation_id)

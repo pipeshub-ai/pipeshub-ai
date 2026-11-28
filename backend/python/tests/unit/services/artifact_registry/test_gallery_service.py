@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.modules.authz.chat_content_access import NoChatContentAccess
 from app.services.artifact_registry.access import ArtifactNotFoundError
 from app.services.artifact_registry.gallery import (
     ArtifactGalleryService,
@@ -13,7 +14,8 @@ from app.services.artifact_registry.models import Actor
 
 
 def _service(graph=None) -> ArtifactGalleryService:
-    return ArtifactGalleryService(graph or AsyncMock())
+    # Listing as the graph's own permissions grant it, whichever edition is installed.
+    return ArtifactGalleryService(graph or AsyncMock(), NoChatContentAccess())
 
 
 def _actor() -> Actor:

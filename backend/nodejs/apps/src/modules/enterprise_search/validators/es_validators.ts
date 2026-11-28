@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z, ZodRawShape } from 'zod';
 import { sessionRepositorySchema } from '../../agent-harness/domain/repository';
 import { runGatesSchema } from '../../agent-harness/domain/run-gates';
 import { contract } from '../../agent-harness/contracts/zod-contract';
@@ -48,6 +48,18 @@ const objectId = (label: string) =>
   z.string().regex(OBJECT_ID_REGEX, { message: `Invalid ${label} format` });
 
 const appOrKbIdSchema = z.string().check(guidCheck('Must be a valid UUID'));
+
+/** The same request schema with more `body` fields; the schema itself when there are none. */
+export function withBodyFields(
+  schema: z.ZodObject,
+  fields: ZodRawShape,
+): z.ZodObject {
+  if (Object.keys(fields).length === 0) {
+    return schema;
+  }
+  const body = (schema.shape as ZodRawShape).body as z.ZodObject;
+  return schema.extend({ body: body.extend(fields) });
+}
 
 /** Common pagination preprocessor: coerce string -> number with bounds. */
 const pageSchema = z.preprocess(
@@ -101,7 +113,7 @@ const appliedFilterNodeSchema = z.object({
   mentioned: z.boolean().optional(),
 });
 
-const appliedFiltersSchema = z
+export const appliedFiltersSchema = z
   .object({
     apps: z.array(appliedFilterNodeSchema).optional(),
     kb: z.array(appliedFilterNodeSchema).optional(),
@@ -388,7 +400,7 @@ export const enterpriseSearchStreamCreateSchema = z.object({
 });
 
 /**
- * The Slack bot's own fields on the assistant's internal chat routes, which the agent routes take unvalidated: who is
+ * The Slack bot's own fields on its internal stream routes, the assistant's and an agent's alike: who is
  * behind its service credential (the caller context), the thread the turn came from (ADR-OWD-09 D-SLACK-ASK), and the
  * Agent mode's request for the agent harness. Without them the validation dropped each one before the route read it.
  */
@@ -696,6 +708,21 @@ export const agentAddMessageParamsSchema = z.object({
   }),
   body: agentAddMessageBodySchema,
 });
+
+/**
+ * Internal (scoped-token) agent stream routes, with the Slack bot's own fields. Slack forwards the caller's
+ * identity to the AI backend (ai-chat-payload.ts::assignCallerContextToAiPayload), and the agent harness posts the
+ * run's end in the thread the turn came from; the public schemas strip those keys on purpose, so only these variants
+ * keep them. These routes once took the bot's body unvalidated, so a field missing here is one the bot's turns lose.
+ */
+export const agentInternalStreamCreateSchema = agentStreamCreateSchema.extend({
+  body: agentStreamCreateBodySchema.extend(slackTurnFieldsSchema),
+});
+
+export const agentInternalAddMessageParamsSchema =
+  agentAddMessageParamsSchema.extend({
+    body: agentAddMessageBodySchema.extend(slackTurnFieldsSchema),
+  });
 
 // ---------------------------------------------------------------------------
 // Agent non-streaming: create + add message (`chatMode` defaults to `quick`)

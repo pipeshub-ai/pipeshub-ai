@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useRef, useState } from 'react';
-import { Flex, Text, Box } from '@radix-ui/themes';
+import React from 'react';
+import { Badge, Flex, Tabs } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import type { ResponseTab } from '@/chat/types';
 
@@ -10,8 +10,13 @@ interface ResponseTabsProps {
   onTabChange: (tab: ResponseTab) => void;
   sourcesCount?: number;
   citationCount?: number;
-  /** Unique per answer: names each tab and the panel it controls (`responseTabIds`). */
-  idBase: string;
+  /**
+   * Unique per answer: names each tab and the panel it controls (`responseTabIds`). Without it the panels are the
+   * caller's own, unnamed, and no tab names one.
+   */
+  idBase?: string;
+  /** Below 1024px in a chat: the row spans the column with the triggers spread across it. */
+  spread?: boolean;
 }
 
 /** The ids a tab and its panel share, so the answer's content can say which tab labels it. */
@@ -20,104 +25,26 @@ export const responseTabIds = (idBase: string, tab: ResponseTab) => ({
   panel: `${idBase}-panel`,
 });
 
-interface TabItemProps {
-  id: string;
-  panelId: string;
-  label: string;
-  count?: number;
-  isActive: boolean;
-  isDisabled?: boolean;
-  onClick: () => void;
-  onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => void;
-  buttonRef: (node: HTMLButtonElement | null) => void;
-}
-
-const RESET: React.CSSProperties = { border: 0, background: 'none', font: 'inherit', margin: 0 };
-
-function TabItem({ id, panelId, label, count, isActive, isDisabled, onClick, onKeyDown, buttonRef }: TabItemProps) {
-  const [isHovered, setIsHovered] = useState(false);
-
+/** A tab's label and, once there is one, its count. */
+function TabLabel({ label, count }: { label: string; count?: number }) {
   return (
-    <button
-      ref={buttonRef}
-      type="button"
-      role="tab"
-      id={id}
-      aria-selected={isActive}
-      aria-controls={isActive ? panelId : undefined}
-      aria-disabled={isDisabled || undefined}
-      tabIndex={isActive ? 0 : -1}
-      onClick={isDisabled ? undefined : onClick}
-      onKeyDown={onKeyDown}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      style={{
-        ...RESET,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        position: 'relative',
-        padding: 'var(--space-4) var(--space-4)',
-        height: 'var(--space-7)',
-        cursor: isDisabled ? 'not-allowed' : 'pointer',
-        opacity: isDisabled ? 0.5 : 1,
-        flexShrink: 0,
-        whiteSpace: 'nowrap',
-      }}
-    >
-      <Flex align="center" gap="2">
-        <Text
-          size="2"
-          weight={isActive ? 'medium' : 'regular'}
-          style={{
-            color: isActive
-              ? 'var(--slate-12)'
-              : isDisabled
-                ? 'var(--slate-8)'
-                : isHovered
-                  ? 'var(--slate-11)'
-                  : 'var(--slate-a11)',
-            transition: 'color 0.15s ease',
-          }}
-        >
-          {label}
-        </Text>
-        {count !== undefined && count > 0 && (
-          <Text
-            size="1"
-            style={{
-              color: 'var(--accent-11)',
-              backgroundColor: 'var(--accent-3)',
-              padding: '0 var(--space-1)', /* was: 0 6px, delta: -2px side */
-              borderRadius: 'var(--radius-2)',
-              fontWeight: 500,
-            }}
-          >
-            {count}
-          </Text>
-        )}
-      </Flex>
-
-      {/* Active indicator */}
-      {isActive && (
-        <Box
-          style={{
-            position: 'absolute',
-            bottom: 0,
-            left: 0,
-            right: 0,
-            height: '2px',
-            backgroundColor: 'var(--accent-10)',
-          }}
-        />
+    <Flex as="span" align="center" gap="2" style={{ display: 'inline-flex' }}>
+      <span>{label}</span>
+      {count !== undefined && count > 0 && (
+        <Badge size="1" variant="soft" radius="small">
+          {count}
+        </Badge>
       )}
-    </button>
+    </Flex>
   );
 }
 
 /**
- * An answer's Answer / Sources / Citation tabs (QA-CLASSIC-FU-1): a WAI-ARIA tab list. Each tab is a button with
- * `aria-selected`; one tab stop, the arrow keys, Home and End move among the tabs that have something to show.
+ * An answer's own Answer, Sources and Citations tabs, where the chat has no column beside it for them: a WAI-ARIA
+ * tab list (Radix Tabs), so they take one tab stop and the arrow keys, Home and End move among the tabs that have
+ * something to show. The panel is the answer's own, drawn by the caller; with `idBase` the active tab names it and it
+ * names the tab back (`responseTabIds`). `spread`, as the design's narrow chat has them; otherwise the row hugs its
+ * triggers.
  */
 export function ResponseTabs({
   activeTab,
@@ -125,64 +52,32 @@ export function ResponseTabs({
   sourcesCount,
   citationCount,
   idBase,
+  spread = false,
 }: ResponseTabsProps) {
   const { t } = useTranslation();
-  const buttons = useRef<Partial<Record<ResponseTab, HTMLButtonElement | null>>>({});
-  const tabs: Array<{ tab: ResponseTab; label: string; count?: number; disabled: boolean }> = [
-    { tab: 'answer', label: t('chat.answer'), disabled: false },
-    { tab: 'sources', label: t('chat.sources'), count: sourcesCount, disabled: !sourcesCount },
-    { tab: 'citation', label: t('chat.citation'), count: citationCount, disabled: !citationCount },
-  ];
-  const enabled = tabs.filter((entry) => !entry.disabled).map((entry) => entry.tab);
-
-  const onKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
-    const at = Math.max(0, enabled.indexOf(activeTab));
-    const next =
-      event.key === 'ArrowRight'
-        ? enabled[(at + 1) % enabled.length]
-        : event.key === 'ArrowLeft'
-          ? enabled[(at - 1 + enabled.length) % enabled.length]
-          : event.key === 'Home'
-            ? enabled[0]
-            : event.key === 'End'
-              ? enabled[enabled.length - 1]
-              : undefined;
-    if (!next) return;
-    event.preventDefault();
-    onTabChange(next);
-    buttons.current[next]?.focus();
+  const trigger = (tab: ResponseTab) => {
+    if (!idBase) return { 'aria-controls': undefined };
+    const ids = responseTabIds(idBase, tab);
+    return { id: ids.tab, 'aria-controls': tab === activeTab ? ids.panel : undefined };
   };
-
   return (
-    <Flex
-      align="center"
-      role="tablist"
-      aria-label={t('chat.responseTabs')}
-      className="response-tabs-scroll"
-      style={{
-        borderBottom: '1px solid var(--slate-a6)',
-        overflowX: 'auto',
-      }}
-    >
-      {tabs.map((entry) => {
-        const ids = responseTabIds(idBase, entry.tab);
-        return (
-          <TabItem
-            key={entry.tab}
-            id={ids.tab}
-            panelId={ids.panel}
-            label={entry.label}
-            count={entry.count}
-            isActive={activeTab === entry.tab}
-            isDisabled={entry.disabled}
-            onClick={() => onTabChange(entry.tab)}
-            onKeyDown={onKeyDown}
-            buttonRef={(node) => {
-              buttons.current[entry.tab] = node;
-            }}
-          />
-        );
-      })}
-    </Flex>
+    // 8px under the row, so with the answer's own 16px it sits 24px below the tabs, as the design's does.
+    <Tabs.Root value={activeTab} onValueChange={(value) => onTabChange(value as ResponseTab)} style={{ marginBottom: 'var(--space-2)' }}>
+      <Tabs.List
+        aria-label={t('chat.responseTabs')}
+        className="response-tabs-scroll"
+        style={{ width: spread ? '100%' : 'fit-content', justifyContent: spread ? 'space-between' : undefined }}
+      >
+        <Tabs.Trigger value="answer" {...trigger('answer')}>
+          {t('chat.answer')}
+        </Tabs.Trigger>
+        <Tabs.Trigger value="sources" disabled={!sourcesCount} {...trigger('sources')}>
+          <TabLabel label={t('chat.sources')} count={sourcesCount} />
+        </Tabs.Trigger>
+        <Tabs.Trigger value="citation" disabled={!citationCount} {...trigger('citation')}>
+          <TabLabel label={t('chat.citations')} count={citationCount} />
+        </Tabs.Trigger>
+      </Tabs.List>
+    </Tabs.Root>
   );
 }

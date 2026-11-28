@@ -31,6 +31,7 @@ import type {
   RunTranscript,
   UserTurn,
 } from '../../../../modules/agent-harness/ports/conversation-writer';
+import { isAnswerRow } from './answer-rows';
 import { appendAccountedPg, lockAccounted } from '../history-source/pg';
 import { hasValidIds, sessionIs } from '../chat-session-repository/pg';
 import { runFailureFields } from './mongo';
@@ -107,7 +108,7 @@ export class PgHarnessConversationWriter implements ConversationWriter<Tx> {
       answerId,
       tx,
     );
-    return found?.messageType === 'bot_response';
+    return found != null && isAnswerRow(found.messageType);
   }
 
   async retractLastAnswer(
@@ -124,7 +125,7 @@ export class PgHarnessConversationWriter implements ConversationWriter<Tx> {
         tx,
       )
     ).map((row) => row.dto);
-    const answerAt = tail.findIndex((m) => m.messageType === 'bot_response');
+    const answerAt = tail.findIndex((m) => isAnswerRow(m.messageType));
     if (answerAt < 0 || tail[answerAt]?._id !== answerId) return null;
     const question = tail
       .slice(answerAt + 1)
@@ -260,6 +261,8 @@ export class PgHarnessConversationWriter implements ConversationWriter<Tx> {
           ? { senderId: run.actorId }
           : {}),
         ...(label !== undefined ? { label } : {}),
+        // Its run was given what earlier turns' tools returned: shown to its asker alone.
+        ...(run.earlierResults === true ? { earlierResults: true } : {}),
       });
     }
     const change = classifiedFailureChange(data);

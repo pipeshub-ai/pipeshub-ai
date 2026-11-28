@@ -148,6 +148,7 @@ export function ArchivedChatView({
                 citationMaps={pair.citationMaps}
                 isStreaming={false}
                 isLastMessage={false}
+                canSend={false}
               />
             ))}
           </Flex>

@@ -124,6 +124,8 @@ def build_hooks(
         tool_registry=registry,
         transport_registry=None,
         model_name=model_name(run),
+        # The message the run answers, which the edition's egress hooks read on both loops.
+        query=run.query,
         error_tracker=tracker,
         repeated_reads=repeated_reads,
         reduce_history=False,

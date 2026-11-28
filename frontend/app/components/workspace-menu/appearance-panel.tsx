@@ -27,7 +27,12 @@ export function AppearancePanel({ isOpen, onBack }: AppearancePanelProps) {
   ];
 
   return (
-    <SubPanel isOpen={isOpen} title={t('workspaceMenu.appearance')} onBack={onBack}>
+    <SubPanel
+      isOpen={isOpen}
+      title={t('workspaceMenu.appearance')}
+      onBack={onBack}
+      choiceGroupLabel={t('workspaceMenu.appearance')}
+    >
       {APPEARANCE_OPTIONS.map((opt) => (
         <SubPanelItem
           key={opt.value}

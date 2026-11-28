@@ -186,7 +186,7 @@ and the agent stays. That flow is kept. On top of it:
 - **In the web chat** the reply stops on a card: Allow or Deny, and "Don't ask again for this
   tool" (saves the answer as the person's rule). The answer carries on the same reply, the way
   the ask-user card does:
-  - the saved call runs exactly as asked, once (answerable for 15 minutes);
+  - the saved call runs exactly as asked, once (answerable for 60 minutes);
   - its result becomes the result of the call the model made, so the model continues from it
     instead of calling the tool again;
   - answering the same card twice shows what happened and runs nothing;
@@ -1071,6 +1071,25 @@ the next task.
     dialog, server missing from my list, nothing offered that a member can't do, service
     account link;
   - `chat-response-stream-error.test.tsx`: card instead of text; other errors unchanged.
+
+### UX-7 — a missing connection no longer stops a normal agent's chat
+- **What:** an agent that is not a service account now runs with the toolsets and MCP servers
+  the person has connected and leaves the rest out, instead of refusing the whole question.
+  - `app/modules/agents/readiness.py` checks toolsets and MCP servers in one place and returns
+    one `UnavailableTool` per missing one (`kind`, `instanceId`, `displayName`, `problem`,
+    `authMode`, `sharedCredential`, `userCanConnect`; no credentials). `GET
+    /agent/{id}/readiness` returns them as `unavailableTools`, with `serviceAccount`; `canSend`
+    is false only for a service-account agent missing one.
+  - The chat route passes the items to the run, which offers each one to the model as a stub
+    (`app/agents/agent_loop/not_connected_tools.py`: a name and one line, no schema). A call runs
+    nothing, answers "not connected", and leaves no step; the completion carries only the called
+    ones as `unavailableTools`, each marked `needed`, so the saved answer offers exactly those.
+    (Before 26 Nov 2026 a `tools_unavailable` event and a prompt section named every one.)
+  - A service-account agent still stops, with `details.items` (and the old `details.servers`
+    for MCP) and a message that asks an admin to connect them.
+- **Why:** an unconnected Gmail blocked even questions that needed no tool.
+- **Security:** credentials are still read only as the sender (normal agents), the agent key
+  (service accounts) or the configured shared slot; every run re-checks.
 
 ### RUN-10 + UX-7 (part) — one reason code for every MCP failure; failed calls look failed
 - **What:**
@@ -2474,7 +2493,7 @@ the second swaps the package and rewrites `client.py` on `mcp.Client`.
     - an MCP tool is found by its path (`/mcp/{instanceId}/{tool}`), always by instance id
       and the server's own tool name, never by the per-request namespaced name;
     - Block denies with a reason the model can relay;
-    - Ask saves the exact call (`tool-approvals/pending/{id}`, 15 min, bound to org, user and
+    - Ask saves the exact call (`tool-approvals/pending/{id}`, 60 min, bound to org, user and
       conversation) and leaves it pending (`ask_later`) with the card's details;
     - one pending approval per request; later asks in the run are denied with "another action
       is already waiting".
@@ -3697,7 +3716,7 @@ Every screen below was rendered from the real components (a scratch harness rout
 **Chat:**
 - **The card.**
   - The tool's name is the heading: its title, else its name made readable ("createJiraIssue" → "Create Jira Issue"; the raw name is on hover). Next to it are the server as a chip and "Deletes data" for a deleting tool.
-  - Then "Needs your approval · expires in 15 min" (a countdown).
+  - Then "Needs your approval · expires in 60 min" (a countdown).
   - The call's details are a key/value grid, with Show all for long values.
   - Allow (red for a deleting tool) and Deny, with "Don't ask again for this tool" beside them.
   - The reply's "Waiting for your approval…" line is hidden while the card is shown; anything the model wrote before it stays.

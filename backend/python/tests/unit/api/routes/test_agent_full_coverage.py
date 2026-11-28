@@ -8,6 +8,9 @@ import pytest
 from fastapi import HTTPException
 
 from tests.support.bound_org import bind_test_org
+from tests.support.edition import (
+    org_wide_service_account_agents,  # noqa: F401 - fixture
+)
 
 
 @pytest.fixture(autouse=True)
@@ -436,13 +439,13 @@ class TestIsWebSearchEnabled:
 
 
 # ============================================================================
-# _resolve_service_account_caller_identity — lines 258-276
+# _build_agent_capability_context — lines 637-698
 # ============================================================================
 
 
 class TestResolveServiceAccountCallerIdentity:
     @pytest.mark.asyncio
-    async def test_explicit_caller_fields(self):
+    async def test_explicit_caller_fields(self) -> None:
         from app.api.routes.agent import _resolve_service_account_caller_identity
         chat_query = MagicMock()
         chat_query.callerDisplayName = "Alice"
@@ -457,7 +460,7 @@ class TestResolveServiceAccountCallerIdentity:
         assert result["fullName"] == "Alice"
 
     @pytest.mark.asyncio
-    async def test_lookup_from_user_doc(self):
+    async def test_lookup_from_user_doc(self) -> None:
         from app.api.routes.agent import _resolve_service_account_caller_identity
         chat_query = MagicMock()
         chat_query.callerDisplayName = None
@@ -475,7 +478,7 @@ class TestResolveServiceAccountCallerIdentity:
         assert result["fullName"] == "Bob"
 
     @pytest.mark.asyncio
-    async def test_lookup_fails_returns_unchanged(self):
+    async def test_lookup_fails_returns_unchanged(self) -> None:
         from app.api.routes.agent import _resolve_service_account_caller_identity
         chat_query = MagicMock()
         chat_query.callerDisplayName = None
@@ -490,7 +493,7 @@ class TestResolveServiceAccountCallerIdentity:
         assert result is enriched
 
     @pytest.mark.asyncio
-    async def test_no_user_id_skips_lookup(self):
+    async def test_no_user_id_skips_lookup(self) -> None:
         from app.api.routes.agent import _resolve_service_account_caller_identity
         chat_query = MagicMock()
         chat_query.callerDisplayName = None
@@ -503,14 +506,9 @@ class TestResolveServiceAccountCallerIdentity:
         assert result is enriched
 
 
-# ============================================================================
-# _enrich_user_info_for_service_account_agent_chat — lines 772, 780, 786-790
-# ============================================================================
-
-
 class TestEnrichUserInfoForServiceAccountChat:
     @pytest.mark.asyncio
-    async def test_missing_created_by(self):
+    async def test_missing_created_by(self) -> None:
         from app.api.routes.agent import (
             _enrich_user_info_for_service_account_agent_chat,
         )
@@ -522,7 +520,7 @@ class TestEnrichUserInfoForServiceAccountChat:
         assert "createdBy" in exc_info.value.detail
 
     @pytest.mark.asyncio
-    async def test_creator_doc_not_found(self):
+    async def test_creator_doc_not_found(self) -> None:
         from app.api.routes.agent import (
             _enrich_user_info_for_service_account_agent_chat,
         )
@@ -536,7 +534,7 @@ class TestEnrichUserInfoForServiceAccountChat:
         assert "creator" in exc_info.value.detail.lower()
 
     @pytest.mark.asyncio
-    async def test_creator_doc_no_user_id(self):
+    async def test_creator_doc_no_user_id(self) -> None:
         from app.api.routes.agent import (
             _enrich_user_info_for_service_account_agent_chat,
         )
@@ -550,7 +548,7 @@ class TestEnrichUserInfoForServiceAccountChat:
         assert "userId" in exc_info.value.detail
 
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.agent import (
             _enrich_user_info_for_service_account_agent_chat,
         )
@@ -566,7 +564,7 @@ class TestEnrichUserInfoForServiceAccountChat:
         assert result["userId"] == "u1"
 
     @pytest.mark.asyncio
-    async def test_rejects_caller_from_another_org(self):
+    async def test_rejects_caller_from_another_org(self) -> None:
         from app.api.routes.agent import (
             AgentNotFoundError,
             _enrich_user_info_for_service_account_agent_chat,
@@ -581,7 +579,7 @@ class TestEnrichUserInfoForServiceAccountChat:
             )
 
     @pytest.mark.asyncio
-    async def test_rejects_creator_missing_org(self):
+    async def test_rejects_creator_missing_org(self) -> None:
         from app.api.routes.agent import (
             AgentNotFoundError,
             _enrich_user_info_for_service_account_agent_chat,
@@ -594,11 +592,6 @@ class TestEnrichUserInfoForServiceAccountChat:
             await _enrich_user_info_for_service_account_agent_chat(
                 {"createdBy": "ck1"}, gp, MagicMock(), "o1"
             )
-
-
-# ============================================================================
-# _build_agent_capability_context — lines 637-698
-# ============================================================================
 
 
 class TestBuildAgentCapabilityContext:
@@ -807,6 +800,7 @@ class TestGetAssistantAgent:
 # ============================================================================
 
 
+@pytest.mark.usefixtures("org_wide_service_account_agents")
 class TestUpdateAgentServiceAccountGuards:
     @pytest.mark.asyncio
     async def test_no_reasoning_model(self):

@@ -12,6 +12,11 @@ from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailable
 VIEWER = {"orgId": "org-1", "userId": "viewer"}
 
 
+def _without_time(out: dict) -> dict:
+    assert isinstance(out.pop("validUntil"), int)
+    return out
+
+
 def _request(body: dict) -> MagicMock:
     request = MagicMock()
     request.json = AsyncMock(return_value=body)
@@ -21,16 +26,17 @@ def _request(body: dict) -> MagicMock:
 @pytest.mark.asyncio
 async def test_returns_only_records_the_token_viewer_may_read() -> None:
     graph = AsyncMock()
-    with patch("app.api.routes.chatbot.accessible_node_ids", AsyncMock(return_value={"a"})) as check:
+    graph.get_nodes_by_field_in = AsyncMock(return_value=[{"id": "b", "isDeleted": False}])
+    with patch("app.api.routes.chatbot.readable_for_reader", AsyncMock(return_value={"a": "Plans"})) as check:
         out = await check_viewer_record_access(_request({"recordIds": ["a", "b", "a"]}), graph, VIEWER)
-    check.assert_awaited_once_with(graph, {"a", "b"}, "viewer", "org-1")
-    assert out == {"accessible": ["a"], "accessibleUrls": [], "unmatchedUrls": []}
+    check.assert_awaited_once_with(graph, {"a", "b"}, "viewer", "org-1", timeout=2.0)
+    assert _without_time(out) == {"accessible": ["a"], "names": {"a": "Plans"}, "accessibleUrls": [], "unmatchedUrls": [], "deleted": []}
 
 
 @pytest.mark.asyncio
 async def test_check_that_cannot_answer_is_a_503_not_an_empty_or_full_answer() -> None:
     with patch(
-        "app.api.routes.chatbot.accessible_node_ids",
+        "app.api.routes.chatbot.readable_for_reader",
         AsyncMock(side_effect=PermissionVerificationUnavailableError("down")),
     ):
         with pytest.raises(HTTPException) as err:
@@ -52,26 +58,28 @@ def _rows(*pairs: tuple[str, str]) -> list[dict]:
 @pytest.mark.asyncio
 async def test_urls_map_to_records_and_are_readable_only_when_every_record_is() -> None:
     graph = AsyncMock()
+    graph.get_nodes_by_field_in = AsyncMock(return_value=[{"id": "a", "isDeleted": False}])
     graph.get_records_by_weburls = AsyncMock(
         return_value=_rows(("r1", "u1"), ("r2", "u2"), ("r3", "u2"))
     )
-    with patch("app.api.routes.chatbot.accessible_node_ids", AsyncMock(return_value={"r1", "r2"})) as check:
+    with patch("app.api.routes.chatbot.readable_for_reader", AsyncMock(return_value={"r1": "R1", "r2": "R2"})) as check:
         out = await check_viewer_record_access(
             _request({"recordIds": ["a"], "webUrls": ["u1", "u2", "gone", "u1"]}), graph, VIEWER
         )
     graph.get_records_by_weburls.assert_awaited_once_with(["u1", "u2", "gone"], "org-1", per_address=50, include_deleted=True)
-    check.assert_awaited_once_with(graph, {"a", "r1", "r2", "r3"}, "viewer", "org-1")
+    check.assert_awaited_once_with(graph, {"a", "r1", "r2", "r3"}, "viewer", "org-1", timeout=2.0)
     # u2 has an unreadable record at its address, "gone" resolves to nothing.
-    assert out == {"accessible": [], "accessibleUrls": ["u1"], "unmatchedUrls": ["gone"]}
+    # Records found only by address are not named: they were not asked for.
+    assert _without_time(out) == {"accessible": [], "names": {}, "accessibleUrls": ["u1"], "unmatchedUrls": ["gone"], "deleted": []}
 
 
 @pytest.mark.asyncio
 async def test_no_urls_means_no_url_lookup() -> None:
     graph = AsyncMock()
-    with patch("app.api.routes.chatbot.accessible_node_ids", AsyncMock(return_value={"a"})):
+    with patch("app.api.routes.chatbot.readable_for_reader", AsyncMock(return_value={"a": "Plans"})):
         out = await check_viewer_record_access(_request({"recordIds": ["a"]}), graph, VIEWER)
     graph.get_records_by_weburls.assert_not_awaited()
-    assert out == {"accessible": ["a"], "accessibleUrls": [], "unmatchedUrls": []}
+    assert _without_time(out) == {"accessible": ["a"], "names": {"a": "Plans"}, "accessibleUrls": [], "unmatchedUrls": [], "deleted": []}
 
 
 @pytest.mark.asyncio
@@ -81,7 +89,7 @@ async def test_address_with_a_full_page_of_records_is_not_readable() -> None:
         return_value=_rows(*[(f"r{i}", "full") for i in range(50)], ("s1", "few"))
     )
     everything = {f"r{i}" for i in range(50)} | {"s1"}
-    with patch("app.api.routes.chatbot.accessible_node_ids", AsyncMock(return_value=everything)):
+    with patch("app.api.routes.chatbot.readable_for_reader", AsyncMock(return_value=dict.fromkeys(everything, ""))):
         out = await check_viewer_record_access(_request({"webUrls": ["full", "few"]}), graph, VIEWER)
     assert out["accessibleUrls"] == ["few"]
 
@@ -99,7 +107,7 @@ async def test_failed_url_lookup_is_a_503() -> None:
 async def test_an_address_with_no_record_is_unmatched_not_unreadable() -> None:
     graph = AsyncMock()
     graph.get_records_by_weburls = AsyncMock(return_value=_rows(("r1", "known")))
-    with patch("app.api.routes.chatbot.accessible_node_ids", AsyncMock(return_value=set())):
+    with patch("app.api.routes.chatbot.readable_for_reader", AsyncMock(return_value={})):
         out = await check_viewer_record_access(_request({"webUrls": ["known", "https://example.com/page"]}), graph, VIEWER)
     assert out["accessibleUrls"] == []
     assert out["unmatchedUrls"] == ["https://example.com/page"]
@@ -110,7 +118,7 @@ async def test_a_deleted_records_address_is_unreadable_like_its_id() -> None:
     graph = AsyncMock()
     # The graph returns the deleted record at its address; deleted nodes are never accessible.
     graph.get_records_by_weburls = AsyncMock(return_value=_rows(("gone-record", "https://wiki/page")))
-    with patch("app.api.routes.chatbot.accessible_node_ids", AsyncMock(return_value=set())):
+    with patch("app.api.routes.chatbot.readable_for_reader", AsyncMock(return_value={})):
         out = await check_viewer_record_access(_request({"webUrls": ["https://wiki/page"]}), graph, VIEWER)
     assert out["accessibleUrls"] == []
     assert out["unmatchedUrls"] == []

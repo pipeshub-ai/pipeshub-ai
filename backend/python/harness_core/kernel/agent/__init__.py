@@ -358,11 +358,14 @@ class Agent:
                 await emitter.emit(derived)
 
     async def _discard_streamed_attempt(self, turn_index: int, reasoning_open: bool) -> bool:
-        """Close a model call that raised mid-stream with `discarded: True`.
+        """Close a model call that raised mid-stream with `discarded: True`,
+        or take back one whose reply a POST_MODEL hook overruled after it
+        ended (`ModelResponseContext.discard_text`).
 
-        None of what it streamed reaches the conversation history, so
-        consumers drop this attempt's text and reasoning rather than leave a
-        fragment on screen, or show it twice when the call is retried.
+        The user never sees what it streamed: a failed call is not in the
+        conversation history and may be retried, an overruled reply is
+        replaced by the next turn. So consumers drop this call's text and
+        reasoning rather than leave a fragment on screen, or show it twice.
         Returns whether every consumer was told."""
         discarded = {"turn_index": turn_index, "discarded": True}
         try:
@@ -370,8 +373,8 @@ class Agent:
                 await self.emit(EventType.REASONING_MESSAGE_END, discarded)
             await self.emit(EventType.TEXT_MESSAGE_END, discarded)
         except Exception:
-            # The model call's own error is the one the caller must see.
-            logger.warning("Could not discard the failed model call's streamed output", exc_info=True)
+            # The model call's own error, or the run itself, is what the caller must see.
+            logger.warning("Could not discard the model call's streamed output", exc_info=True)
             return False
         return True
 
@@ -995,6 +998,9 @@ class Agent:
             # truncated branch above: inject the message and `continue`
             # instead of treating this as a successful terminal turn.
             if post_model_ctx.recovery_message is not None:
+                # On the last turn nothing replaces the reply: it stays, as the run's answer.
+                if post_model_ctx.discard_text and self._streaming and turn_index + 1 < self.max_turns:
+                    await self._discard_streamed_attempt(turn_index, reasoning_open=False)
                 await context.add(post_model_ctx.recovery_message)  # pyright: ignore[reportOptionalMemberAccess]
                 turn = AgentTurn(messages=[response_msg], tool_calls=[], tool_results=[])
                 self._scope.turns.append(turn)  # pyright: ignore[reportOptionalMemberAccess]

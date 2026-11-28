@@ -36,15 +36,14 @@ vi.mock('@/app/(main)/workspace/ai-accounts/api', () => ({
 }));
 vi.mock('../api', async () => {
   const actual = await vi.importActual<typeof import('../api')>('../api');
-  return {
-    ...actual,
-    ChatApi: {
-      ...actual.ChatApi,
-      getSessionSandbox: (...a: unknown[]) => api.getSessionSandbox(...a),
-      setSessionCodingEngine: (...a: unknown[]) => api.setSessionCodingEngine(...a),
-      streamMessage: (...a: unknown[]) => api.streamMessage(...a),
-    },
-  };
+  // The chat's stream code is loaded through the chat extension's config while the real module loads, so it holds
+  // the real ChatApi: the stand-ins go on that one object, which both see.
+  Object.assign(actual.ChatApi, {
+    getSessionSandbox: (...a: unknown[]) => api.getSessionSandbox(...a),
+    setSessionCodingEngine: (...a: unknown[]) => api.setSessionCodingEngine(...a),
+    streamMessage: (...a: unknown[]) => api.streamMessage(...a),
+  });
+  return actual;
 });
 
 import { builtinReason, findBuiltin, type BuiltinContext } from '../builtin-commands';

@@ -34,9 +34,15 @@ import {
   storageTypes,
 } from '../constants/constants';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
-import { RENAMED_SIGN_IN_METHODS } from '../../../edition';
 import {
+  COLLECTION_NEEDS_CONSENT,
+  RENAMED_SIGN_IN_METHODS,
+} from '../../../edition';
+import {
+  isCollecting,
+  isTelemetryEnabled,
   normalizeOrgId,
+  setCollectionConsent,
   setMetricCollectionEnabled,
 } from '../../../libs/services/telemetry/telemetry-impl';
 import { TelemetryService } from '../../../libs/services/telemetry/telemetry-runtime';
@@ -2923,15 +2929,29 @@ export const toggleMetricsCollection =
       const enabled = !(
         enableMetricCollection === false || enableMetricCollection === 'false'
       );
-      setMetricCollectionEnabled(normalizeOrgId(req.user?.orgId), enabled);
-
-      if (!enabled) {
-        await TelemetryService.current()?.flush();
+      if (!COLLECTION_NEEDS_CONSENT) {
+        // Recording does not wait for consent: every toggle sets this org's gauge, and an opt-out ships what was
+        // gathered, the opt-out included, before the push stops.
+        setMetricCollectionEnabled(normalizeOrgId(req.user?.orgId), enabled);
+        if (!enabled) {
+          await TelemetryService.current()?.flush();
+        }
+      } else if (!enabled) {
+        // Opting out sends nothing: stop recording and drop what was gathered, where recording waits for consent.
+        setCollectionConsent(false);
+        if (!isCollecting()) TelemetryService.current()?.discardCollected();
       }
 
       if (enableMetricCollection !== metricsCollection.enableMetricCollection) {
         metricsCollection.enableMetricCollection = enableMetricCollection;
         await setMetricsCollectionConfig(keyValueStoreService, metricsCollection);
+      }
+
+      if (COLLECTION_NEEDS_CONSENT && enabled) {
+        // Consent first: the gauge is dropped while consent is still off. The same single series as the one the
+        // service writes at start-up, so a restart followed by an opt-in leaves one series, not two.
+        setCollectionConsent(true);
+        setMetricCollectionEnabled('', true);
       }
 
       res
@@ -2949,7 +2969,20 @@ export const getMetricsCollection =
       const metricsCollection = await getMetricsCollectionConfig(
         keyValueStoreService,
       );
-      res.status(200).json(metricsCollection).end();
+      if (!COLLECTION_NEEDS_CONSENT) {
+        res.status(200).json(metricsCollection).end();
+        return;
+      }
+      // The page shows Data Collection only while telemetry can run, so whatever
+      // is collected can always be seen and switched off.
+      const telemetryEnabled = isTelemetryEnabled();
+      if (!telemetryEnabled) {
+        metricsCollection.enableMetricCollection = 'false';
+      }
+      res
+        .status(200)
+        .json({ ...metricsCollection, telemetryEnabled })
+        .end();
     } catch (error: any) {
       next(error);
     }

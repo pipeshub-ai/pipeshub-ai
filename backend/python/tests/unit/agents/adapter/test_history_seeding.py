@@ -14,7 +14,10 @@ from __future__ import annotations
 
 from app.agent_loop_lib.core.messages import AssistantMessage, ToolMessage, UserMessage
 from app.agents.agent_loop.context import AgentContext
-from app.agents.agent_loop.factory import PipesHubAgentFactory, _convert_conversation_turn
+from app.agents.agent_loop.factory import (
+    PipesHubAgentFactory,
+    _convert_conversation_turn,
+)
 
 
 def _make_context(**overrides: object) -> AgentContext:
@@ -316,6 +319,100 @@ class TestSeedConversationHistory:
         assert messages[6].text == "Filed it as JIRA-7."
         assert not any("Tool approval:" in str(m.content) or waiting in str(m.content) for m in messages)
 
+    async def test_an_approval_answered_after_someone_else_wrote_leaves_their_rows_as_they_are(self) -> None:
+        """In a room Dana's turn stops on a card, Bob asks and is answered, then Dana answers the card. Her
+        turn gets the result in place and loses its waiting words; Bob's question and answer stay as they
+        are; her answer stands between his reply and the one that carries her turn on, so no reply follows
+        another; and no call id appears twice."""
+        agent = _FakeAgent()
+        waiting = "Waiting for your approval to run create_issue on Jira."
+        previous_conversations = [
+            {"role": "user_query", "content": "file a bug", "authorRef": "participant_1"},
+            {"role": "bot_response", "content": waiting, "askedByRef": "participant_1", "tool_results": [
+                {"tool_name": "search", "result": "no duplicates", "status": "success", "tool_id": "c0", "args": {}},
+                {"tool_name": "mcp_jira_create_issue", "result": waiting, "status": "error", "tool_id": "c1", "args": {}},
+            ]},
+            {"role": "user_query", "content": "what is 2 + 2?", "authorRef": "participant_2"},
+            {"role": "bot_response", "content": "4.", "askedByRef": "participant_2"},
+            {"role": "user_query", "content": "Tool approval: allow", "authorRef": "participant_1"},
+            {"role": "bot_response", "content": "Filed it as JIRA-7.", "askedByRef": "participant_1", "tool_results": [
+                {"tool_name": "mcp_jira_create_issue", "result": "created JIRA-7", "status": "success", "tool_id": "c1", "args": {}},
+                {"tool_name": "mcp_jira_add_label", "result": "labelled", "status": "success", "tool_id": "c3", "args": {}},
+            ]},
+        ]
+
+        await PipesHubAgentFactory._seed_conversation_history(agent, previous_conversations, _make_context())
+
+        messages = await agent.context.messages()
+        shape = [
+            (type(m).__name__, [c.id for c in m.tool_calls or []] if isinstance(m, AssistantMessage) else getattr(m, "tool_call_id", None))
+            for m in messages
+        ]
+        assert shape == [
+            ("UserMessage", None),
+            ("AssistantMessage", ["c0", "c1"]), ("ToolMessage", "c0"), ("ToolMessage", "c1"),
+            ("UserMessage", None), ("AssistantMessage", []),
+            ("UserMessage", None),
+            ("AssistantMessage", ["c3"]), ("ToolMessage", "c3"),
+            ("AssistantMessage", []),
+        ]
+        assert (messages[3].content, messages[3].is_error) == ("created JIRA-7", False)
+        assert (messages[4].content, messages[5].text) == ("what is 2 + 2?", "4.")
+        assert "Tool approval: allow" in messages[6].content and messages[9].text == "Filed it as JIRA-7."
+        assert not any(waiting in str(m.content) for m in messages)
+
+    async def test_two_peoples_cards_answered_in_turn_each_get_their_own_result(self) -> None:
+        """Dana's turn and then Bob's stop on cards; Dana answers, then Bob. Folding Dana's turn takes its
+        waiting words out from before Bob's rows, so Bob's result has moved up when his answer folds: it
+        still lands on his call, and each turn keeps its own result."""
+        agent = _FakeAgent()
+        waiting = "Waiting for your approval to run create_issue on Jira."
+        previous_conversations = [
+            {"role": "user_query", "content": "file a bug", "authorRef": "participant_1"},
+            {"role": "bot_response", "content": waiting, "askedByRef": "participant_1", "tool_results": [
+                {"tool_name": "mcp_jira_create_issue", "result": waiting, "status": "error", "tool_id": "d1", "args": {}},
+            ]},
+            {"role": "user_query", "content": "close the old one", "authorRef": "participant_2"},
+            {"role": "bot_response", "content": waiting, "askedByRef": "participant_2", "tool_results": [
+                {"tool_name": "mcp_jira_close_issue", "result": waiting, "status": "error", "tool_id": "b1", "args": {}},
+            ]},
+            {"role": "user_query", "content": "Tool approval: allow", "authorRef": "participant_1"},
+            {"role": "bot_response", "content": "Filed it as JIRA-7.", "askedByRef": "participant_1", "tool_results": [
+                {"tool_name": "mcp_jira_create_issue", "result": "created JIRA-7", "status": "success", "tool_id": "d1", "args": {}},
+            ]},
+            {"role": "user_query", "content": "Tool approval: allow", "authorRef": "participant_2"},
+            {"role": "bot_response", "content": "Closed JIRA-3.", "askedByRef": "participant_2", "tool_results": [
+                {"tool_name": "mcp_jira_close_issue", "result": "closed JIRA-3", "status": "success", "tool_id": "b1", "args": {}},
+            ]},
+        ]
+
+        await PipesHubAgentFactory._seed_conversation_history(agent, previous_conversations, _make_context())
+
+        messages = await agent.context.messages()
+        results = {m.tool_call_id: m.content for m in messages if isinstance(m, ToolMessage)}
+        assert results == {"d1": "created JIRA-7", "b1": "closed JIRA-3"}
+        calls = [c.id for m in messages if isinstance(m, AssistantMessage) for c in m.tool_calls or []]
+        assert calls == ["d1", "b1"]
+        texts = [m.text if isinstance(m, AssistantMessage) else m.content for m in messages if not isinstance(m, ToolMessage)]
+        assert "close the old one" in texts and "Filed it as JIRA-7." in texts and "Closed JIRA-3." in texts
+        assert not any(waiting in str(m.content) for m in messages)
+
+    async def test_an_approval_answered_right_after_its_own_turn_folds_as_before(self) -> None:
+        """Bob sees Dana's rows as blanks: her answer still follows her own reply, which folds away as in a solo chat."""
+        agent = _FakeAgent()
+        previous_conversations = [
+            {"role": "user_query", "content": "file a bug", "authorRef": "participant_1"},
+            {"role": "bot_response", "content": "", "askedByRef": "participant_1"},
+            {"role": "user_query", "content": "Tool approval: allow", "authorRef": "participant_1"},
+            {"role": "bot_response", "content": "", "askedByRef": "participant_1"},
+        ]
+
+        await PipesHubAgentFactory._seed_conversation_history(agent, previous_conversations, _make_context())
+
+        messages = await agent.context.messages()
+        assert not any("Tool approval:" in str(m.content) for m in messages)
+        assert [type(m).__name__ for m in messages][:1] == ["UserMessage"]
+
     async def test_an_id_repeated_outside_an_answer_is_a_different_call(self) -> None:
         """Some providers number call ids per response: the same id in two ordinary turns is two calls."""
         agent = _FakeAgent()
@@ -450,3 +547,9 @@ class TestUnansweredTurnsAreClosed:
         line = records[0].getMessage()
         assert "failed=1" in line and "turns=3" in line
         assert "secret" not in line
+
+
+def test_solo_ignores_author_ref() -> None:
+    turn = {"role": "user_query", "content": "hi", "authorRef": "participant_1"}
+    (msg,) = _convert_conversation_turn(turn)
+    assert msg.content == "hi"

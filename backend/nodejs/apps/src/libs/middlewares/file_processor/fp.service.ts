@@ -2,7 +2,6 @@ import multer from 'multer';
 import { createMulter, isUploadLimit } from '../../utils/multer.utils';
 import {
   CustomMulterFile,
-  FileBufferInfo,
   FileProcessorConfiguration,
   IFileUploadService,
   RejectedFileInfo,
@@ -160,7 +159,10 @@ export class FileProcessorService implements IFileUploadService {
       this.configuration.maxFileSize,
     );
     const storage = this.configuration.partialUpload
-      ? createCappedMemoryStorage(this.configuration.maxFileSize, maxRequestBytes)
+      ? createCappedMemoryStorage(
+          this.configuration.maxFileSize,
+          maxRequestBytes,
+        )
       : multer.memoryStorage();
 
     this.multerUpload = createMulter({
@@ -224,7 +226,9 @@ export class FileProcessorService implements IFileUploadService {
   }
 
   /** What to tell the person when multer (or our storage) refuses the whole upload. */
-  uploadErrorMessage(err: { code?: string; message?: string } | null | undefined): string {
+  uploadErrorMessage(
+    err: { code?: string; message?: string } | null | undefined,
+  ): string {
     const mb = Math.round(this.configuration.maxFileSize / (1024 * 1024));
     switch (err?.code) {
       case 'LIMIT_FILE_SIZE':
@@ -258,6 +262,8 @@ export class FileProcessorService implements IFileUploadService {
         return extension
           ? `PipesHub can't read .${extension} files. Convert it to a supported format such as PDF, DOCX or TXT and upload it again.`
           : "PipesHub can't read this type of file. Convert it to a supported format such as PDF, DOCX or TXT and upload it again.";
+      case FileRejectionReason.EMPTY_FILE:
+        return 'This file is empty. Add some content to it and upload it again.';
       default:
         return "This file couldn't be uploaded. Try uploading it again.";
     }
@@ -354,7 +360,9 @@ export class FileProcessorService implements IFileUploadService {
         try {
           this.processFileMetadata(req, files);
         } catch (metadataError) {
-          logger.error('File metadata processing failed', { error: metadataError });
+          logger.error('File metadata processing failed', {
+            error: metadataError,
+          });
           return next(metadataError);
         }
 
@@ -560,6 +568,11 @@ export class FileProcessorService implements IFileUploadService {
             );
             return false;
           }
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the same guard as the size check above
+          if (this.configuration.rejectEmptyFiles && (file.size ?? 0) === 0) {
+            this.recordRejection(req, file, FileRejectionReason.EMPTY_FILE);
+            return false;
+          }
           if ((file.size ?? 0) > this.configuration.maxFileSize) {
             this.recordRejection(
               req,
@@ -595,7 +608,7 @@ export class FileProcessorService implements IFileUploadService {
               size: file.size,
               lastModified: lastModified,
               filePath: filePath,
-            } as FileBufferInfo;
+            };
           })
           .filter(Boolean);
         logger.debug('Processed multiple buffer files', {
@@ -624,7 +637,7 @@ export class FileProcessorService implements IFileUploadService {
             size: file.size,
             lastModified: lastModified,
             filePath: filePath,
-          } as FileBufferInfo;
+          };
           logger.debug('Processed single buffer file');
         }
       } else {

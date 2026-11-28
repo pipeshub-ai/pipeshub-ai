@@ -8,6 +8,8 @@ import {
   resolvePreviewMimeAfterStream,
 } from '@/app/components/file-preview/utils';
 import { openRecordContent, PartyLeftError, SessionEndedError, type Pending, type Variant } from '@/lib/record-content';
+import { isGoneError, isProcessedError } from '@/lib/api/api-error';
+import { i18n } from '@/lib/i18n';
 import { useChatStore, type ChatPreviewFile } from './store';
 
 /** A record to show in the house source preview: a cited document, a palette result, a job's file. */
@@ -111,8 +113,11 @@ export async function loadRecordPreview(target: RecordPreviewTarget, store: Prev
     setPreviewMode('sidebar');
 
     // Details first, so a record that cannot be drawn skips the stream. This call also mints the grant
-    // that lets a connector record's retained copy be reused.
-    const { details: recordDetails, grant } = await KnowledgeBaseApi.getRecordDetailsForOpen(target.recordId);
+    // that lets a connector record's retained copy be reused. A 403 or 404 is said in the preview itself (below),
+    // not by the app-wide "not found" toast: a source someone else's answer cites may not be yours.
+    const { details: recordDetails, grant } = await KnowledgeBaseApi.getRecordDetailsForOpen(target.recordId, {
+      suppressErrorToast: isGoneError,
+    });
     if (!isCurrent()) return;
     const record = recordDetails?.record;
     if (!record) {
@@ -193,7 +198,13 @@ export async function loadRecordPreview(target: RecordPreviewTarget, store: Prev
       name: target.recordName,
       url: '',
       type: target.mimeType || '',
-      error: error instanceof Error ? error.message : 'Failed to load file',
+      // A 404 or 403: the record is gone, or not the viewer's to open.
+      error:
+        isProcessedError(error) && isGoneError(error)
+          ? i18n.t('chat.cannotOpenSource')
+          : error instanceof Error
+            ? error.message
+            : 'Failed to load file',
       isLoading: false,
     });
   }

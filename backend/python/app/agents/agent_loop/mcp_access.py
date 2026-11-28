@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from app.agents.agent_loop.mcp_liveness import mcp_liveness
 from app.harness.credentials.sources import owner_scoped
 from app.harness.credentials.tool_credentials import REF_KEY, scope_of
+from app.modules.agents.chat_extension import get_chat_extension
 from harness_core.credentials.errors import CredentialRefused
 
 if TYPE_CHECKING:
@@ -56,10 +57,12 @@ class ResolvedMCPServer:
 
 
 class MCPAccessResolver:
-    """Joins `context.mcp_servers` with `context.mcp_server_configs`."""
+    """Joins `context.mcp_servers` with `context.mcp_server_configs`, keeping the servers
+    `ChatExtension.mcp_server_allowed` lets this run use."""
 
     @staticmethod
     async def resolve(context: "AgentContext") -> list[ResolvedMCPServer]:
+        extension = get_chat_extension()
         resolved: list[ResolvedMCPServer] = []
         for mcp_server in context.mcp_servers:
             instance_id = mcp_server.get("instanceId")
@@ -77,6 +80,9 @@ class MCPAccessResolver:
                 logger.debug(
                     "MCPAccessResolver: no resolved config for instance %s, skipping", instance_id,
                 )
+                continue
+            if not extension.mcp_server_allowed(context, config["instance"]):
+                logger.debug("MCPAccessResolver: instance %s is not allowed in this run, skipping", instance_id)
                 continue
 
             auth: dict[str, Any]

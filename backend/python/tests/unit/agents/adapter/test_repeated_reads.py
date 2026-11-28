@@ -65,9 +65,9 @@ def _call(n: int, name: str = "mcp_linear_list_issues", **arguments: Any) -> Too
     return ToolCall(id=f"c{n}", name=name, arguments=arguments or {"team": "ENG"})
 
 
-async def _run(*calls: ToolCall) -> tuple[_Server, list[ToolMessage]]:
-    """One reply in which the model makes `calls`, one per turn, then answers."""
-    context = make_context()
+async def _run(*calls: ToolCall, query: str = "list my issues") -> tuple[_Server, list[ToolMessage]]:
+    """One reply to `query` in which the model makes `calls`, one per turn, then answers."""
+    context = make_context(query=query)
     mcp = _Server()
     registry = ToolRegistry()
     registry.register_tool(_adapter(context, mcp, "list_issues", read_only=True))
@@ -84,7 +84,7 @@ async def _run(*calls: ToolCall) -> tuple[_Server, list[ToolMessage]]:
         loop=ReActLoop(), max_turns=len(calls) + 2,
     )
     agent = Agent(spec, runtime)
-    await agent.run(Goal(description="list my issues"))
+    await agent.run(Goal(description=query))
     results = [m for m in await agent.context.messages() if isinstance(m, ToolMessage)]
     return mcp, results
 
@@ -109,7 +109,7 @@ class TestTheSameReadOverAndOver:
 
     async def test_a_write_that_succeeded_starts_the_count_again(self) -> None:
         write = _call(3, "mcp_linear_save_issue", title="Bug")
-        mcp, _ = await _run(_call(1), _call(2), write, _call(4))
+        mcp, _ = await _run(_call(1), _call(2), write, _call(4), query="list my issues, then file one called Bug")
         assert [c[0] for c in mcp.calls] == ["list_issues", "list_issues", "save_issue", "list_issues"]
 
     async def test_an_older_result_can_be_read_again(self) -> None:
@@ -120,7 +120,7 @@ class TestTheSameReadOverAndOver:
 
     async def test_writes_arent_guarded(self) -> None:
         writes = [_call(n, "mcp_linear_save_issue", title="Bug") for n in (1, 2, 3)]
-        mcp, _ = await _run(*writes)
+        mcp, _ = await _run(*writes, query="file an issue called Bug")
         assert len(mcp.calls) == 3
 
 

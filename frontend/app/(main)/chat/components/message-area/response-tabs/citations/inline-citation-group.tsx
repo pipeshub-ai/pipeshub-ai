@@ -1,10 +1,11 @@
 'use client';
 
-import React, { useState } from 'react';
-import { Flex, Text } from '@radix-ui/themes';
+import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { CitationNumberCircle } from './citation-number-circle';
-import { CitationSourceLinkRow } from './citation-source-link-row';
+import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
+import { DemoSourceBadge } from '@/app/(main)/workspace/connectors/demo-data/components';
+import { CITATION_CHIP_TEXT, CITATION_NUMBER_CHIP, CitationNumberCircle, GROUP_CHIP_MIN_WIDTH } from './citation-number-circle';
+import { CITATION_PILL_FRAME, citationLabel } from './inline-citation-badge';
 import type { CitationData, CitationCallbacks } from './types';
 
 export interface InlineCitationGroupItem {
@@ -19,79 +20,55 @@ export interface InlineCitationGroupItem {
 interface InlineCitationGroupProps {
   /** Consecutive citations pointing at the same record (length >= 2) */
   items: InlineCitationGroupItem[];
-  /** Interaction callbacks forwarded to each circle's popover */
+  /** Interaction callbacks forwarded to each number's popover */
   callbacks?: CitationCallbacks;
 }
 
-/** Circles shown before the rest collapse into a "+N" chip. */
+/** Numbers shown before the rest collapse into a "+N" button. */
 export const INLINE_CITATION_GROUP_VISIBLE = 2;
 
 /**
- * Inline pill used when consecutive `[N]` markers all point at the same record:
- * shows the connector icon + filename once, followed by one compact numbered
- * circle per citation. Past two circles the rest collapse into a "+N" chip
- * that expands the group in place.
+ * The pill used when consecutive `[N]` markers all point at the same record:
+ * the source's mark and name once, then one button per citation. Past two the
+ * rest collapse into a "+N" button that reveals them in place.
  */
 function InlineCitationGroupImpl({ items, callbacks }: InlineCitationGroupProps) {
   const { t } = useTranslation();
-  const [isHovered, setIsHovered] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const chipsRef = useRef<HTMLSpanElement | null>(null);
+  const focusRevealedRef = useRef(false);
+
+  // After "+N", focus moves to the first number it revealed.
+  useEffect(() => {
+    if (!expanded || !focusRevealedRef.current) return;
+    focusRevealedRef.current = false;
+    const revealed = chipsRef.current?.querySelectorAll<HTMLButtonElement>('button')[INLINE_CITATION_GROUP_VISIBLE];
+    revealed?.focus();
+  }, [expanded]);
 
   const first = items[0]?.citation;
   if (!first) return null;
 
-  const connector = first.connector || '';
-  const fileNameWithoutExt = first.recordName
-    ? first.recordName.replace(/\.[^/.]+$/, '')
-    : '';
-
-  const truncatedName =
-    fileNameWithoutExt.length > 24
-      ? fileNameWithoutExt.slice(0, 24) + '…'
-      : fileNameWithoutExt;
-
+  const { full, shown } = citationLabel(first.recordName);
   const visibleItems = expanded ? items : items.slice(0, INLINE_CITATION_GROUP_VISIBLE);
   const hiddenCount = items.length - visibleItems.length;
 
   return (
-    <Flex
-      as="span"
-      align="center"
-      gap="1"
-      wrap="wrap"
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
+    <span
+      role="group"
+      aria-label={full}
       style={{
-        display: 'inline-flex',
-        background: isHovered ? 'var(--accent-3)' : 'var(--olive-2)',
-        border: `0.667px solid ${isHovered ? 'var(--accent-8)' : 'var(--olive-3)'}`,
-        padding: '2px var(--space-1)',
-        borderRadius: 'var(--radius-1)',
-        verticalAlign: 'middle',
-        marginLeft: 'var(--space-1)',
-        marginRight: '2px',
-        transition: 'all 0.15s ease',
-        minHeight: 'var(--space-5)',
-        rowGap: '2px',
-        columnGap: 'var(--space-1)',
+        ...CITATION_PILL_FRAME,
+        background: 'var(--surface-subtle)',
+        border: `${CITATION_PILL_FRAME.borderWidth} solid var(--border-subtle)`,
       }}
     >
-      <CitationSourceLinkRow
-        citation={first}
-        connector={connector}
-        truncatedName={truncatedName}
-      />
-
-      <Flex
-        as="span"
-        align="center"
-        gap="1"
-        wrap="wrap"
-        style={{
-          display: 'inline-flex',
-          gap: '3px',
-        }}
-      >
+      <span aria-hidden style={{ display: 'inline-flex', flexShrink: 0 }}>
+        <ConnectorIcon type={first.connector || ''} size={14} />
+      </span>
+      <span aria-hidden style={CITATION_CHIP_TEXT}>{shown}</span>
+      <DemoSourceBadge connectorId={first.connectorId} />
+      <span ref={chipsRef} style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--space-1)' }}>
         {visibleItems.map((item, idx) => (
           <CitationNumberCircle
             key={item.occurrenceKey ?? `cite-circle-${item.chunkIndex}-${idx}`}
@@ -104,40 +81,30 @@ function InlineCitationGroupImpl({ items, callbacks }: InlineCitationGroupProps)
         {hiddenCount > 0 && (
           <button
             type="button"
-            className="citation-overflow-chip"
+            className="citation-pill citation-overflow-chip"
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
+              focusRevealedRef.current = true;
               setExpanded(true);
             }}
             aria-label={t('chat.showMoreCitations', { count: hiddenCount })}
-            title={t('chat.showMoreCitations', { count: hiddenCount })}
             style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              minWidth: '16px',
-              height: '16px',
-              padding: '0 4px',
+              ...CITATION_NUMBER_CHIP,
+              minWidth: GROUP_CHIP_MIN_WIDTH,
               margin: 0,
-              position: 'relative',
-              borderRadius: '999px',
-              background: 'var(--olive-3)',
-              border: '1px solid var(--olive-6)',
-              color: 'var(--olive-11)',
               cursor: 'pointer',
-              font: 'inherit',
-              lineHeight: 1,
-              flexShrink: 0,
+              fontFamily: 'inherit',
+              background: 'var(--fill-muted)',
+              borderColor: 'var(--border-default)',
+              color: 'var(--text-secondary)',
             }}
           >
-            <Text size="1" weight="bold" style={{ color: 'inherit', fontSize: '10px', lineHeight: 1 }}>
-              +{hiddenCount}
-            </Text>
+            +{hiddenCount}
           </button>
         )}
-      </Flex>
-    </Flex>
+      </span>
+    </span>
   );
 }
 

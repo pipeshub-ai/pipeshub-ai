@@ -48,10 +48,22 @@ const getAllGroupsValidationSchema = z.object({
   headers: z.object({}),
 });
 
+// Same limit as a team name, so the two forms accept the same names.
+export const GROUP_NAME_MAX_LENGTH = 100;
+
+const groupNameSchema = z
+  .string()
+  .trim()
+  .min(1, 'name is required')
+  .max(
+    GROUP_NAME_MAX_LENGTH,
+    `Name must be at most ${GROUP_NAME_MAX_LENGTH} characters.`,
+  );
+
 const groupValidationSchema = z.object({
   body: z.object({
     type: z.string().min(1, 'type is required'),
-    name: z.string().min(1, 'name is required'),
+    name: groupNameSchema,
   }),
   query: z.object({}),
   params: z.object({}),
@@ -60,7 +72,7 @@ const groupValidationSchema = z.object({
 
 const updateGroupValidationSchema = z.object({
   body: z.object({
-    name: z.string().min(1, 'name is required'),
+    name: groupNameSchema,
   }),
   query: z.object({}),
   params: UserGroupIdUrlParams,

@@ -105,6 +105,12 @@ export interface ConversationChatMessages {
   sender_id: string | null;
   label: unknown;
   harness: unknown;
+  label_ver: string | null;
+  provenance: unknown;
+  label_history: Generated<unknown>;
+  consent: unknown;
+  consent_to: Generated<unknown>;
+  share_requests: Generated<unknown>;
 }
 
 export interface ConversationChatSessionMembers {
@@ -638,6 +644,7 @@ export interface PlatformNotifications {
   version: Generated<number>;
   updated_at: Date;
   visible_at: Date | null;
+  dedupe_key: string | null;
 }
 
 export interface PlatformOutbox {

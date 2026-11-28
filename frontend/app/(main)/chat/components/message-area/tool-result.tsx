@@ -15,6 +15,7 @@ import { useCopyText } from '@/lib/hooks/use-copy-text';
 import type { MessagePart } from '../../types';
 import { looksLikeJson, safeHref, toolResultView, type ToolResultView } from '../../tool-result-view';
 import { redactedArgs, redactText } from '../../approval-preview';
+import { waitingWords } from '../../tool-approval';
 import { extractSqlQuery, isMcpTool, isSkillTool, isWebTool } from '../../utils/tool-display';
 import { CodeBlock } from './answer-content';
 
@@ -453,6 +454,7 @@ export function ToolResult({ part, status, rawBehindSummary = false }: ToolResul
 /** A built-in or toolset tool: the server's summary, or the raw text when there is none. Web tools
  * also list what they found (every search result, the page read), each linked. */
 function BuiltinToolResult({ part, status, rawBehindSummary }: ToolResultProps) {
+  const { t } = useTranslation();
   const view = useMemo(
     () => (status === 'completed' && isWebTool(part.toolName) ? toolResultView(part.resultView) : null),
     [status, part.toolName, part.resultView],
@@ -463,7 +465,9 @@ function BuiltinToolResult({ part, status, rawBehindSummary }: ToolResultProps) 
   // A failed call is worded by the card's failure line (`toolFailureText`).
   const rawShown = Boolean(part.resultPreview) && !isSkillTool(part.toolName);
   if (status === 'failed' || !(part.resultSummary || rawShown)) return null;
-  const preview = redactText(part.resultPreview ?? '').text;
+  const shown = redactText(part.resultPreview ?? '').text;
+  // A built-in tool waiting on its card is named in words, as its card names it.
+  const preview = status === 'awaiting_approval' ? waitingWords(shown, t) : shown;
   return (
     <Box data-testid="tool-result">
       <ResultLabel status={status} />

@@ -24,7 +24,8 @@ export function PlusMenuTriggerIcon({
   color,
   showFilterBadge,
 }: {
-  color: string;
+  /** Omitted, the glyph takes the button's own colour (Radix paints a disabled trigger). */
+  color?: string;
   showFilterBadge: boolean;
 }) {
   return (
@@ -372,6 +373,8 @@ export interface PlusMenuButtonProps extends PlusMenuCapabilities {
   disabled?: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Extra trigger styles from the toolbar (its touch target, the first control's optical pull). */
+  triggerStyle?: React.CSSProperties;
 }
 
 /**
@@ -396,6 +399,7 @@ export function PlusMenuButton({
   disabled,
   open,
   onOpenChange,
+  triggerStyle,
   ...capabilities
 }: PlusMenuButtonProps) {
   const { t } = useTranslation();
@@ -429,6 +433,7 @@ export function PlusMenuButton({
             backgroundColor: open ? 'var(--olive-3)' : undefined,
             borderRadius: 'var(--radius-2)',
             cursor: disabled ? 'default' : 'pointer',
+            ...triggerStyle,
           }}
         >
           <PlusMenuTriggerIcon

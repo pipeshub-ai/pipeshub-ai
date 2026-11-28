@@ -7553,11 +7553,13 @@ class TestAgentScopedToolsets:
 
         request = _make_request()
         agent_doc = {"_key": "a1", "can_edit": True, "isServiceAccount": True}
+        # An editor of the agent who is also an org admin: a build that keeps these credentials
+        # admin-only asks, any other doesn't.
         with patch(
             "app.api.routes.toolsets._resolve_agent_with_permission",
             new_callable=AsyncMock,
             return_value=agent_doc,
-        ):
+        ), patch("app.api.routes.toolsets._check_user_is_admin", new_callable=AsyncMock, return_value=True):
             result = await _require_agent_edit_access("a1", request)
         assert result is agent_doc
 

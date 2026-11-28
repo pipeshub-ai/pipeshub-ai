@@ -210,6 +210,7 @@ class CodingSandbox:
             connector_name=Connectors.CODING_SANDBOX,
             source_tool=source_tool,
             provenance=provenance,
+            run_id=self.chat_state.get("run_id"),
         )
 
     def _schedule_artifact_upload(

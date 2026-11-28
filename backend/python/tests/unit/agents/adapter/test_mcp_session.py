@@ -1030,3 +1030,44 @@ class TestATurnTakesItsToolsFromTheCache:
 
         assert server.auth["connectedAt"] == 123
         assert server.auth["oauthTokens"]["accessToken"] == "fresh-token-1"
+
+
+class TestAServersInstructionsStayWithTheSignInTheyWereSentTo:
+    """A server can say its tool list is the same for everyone while its instructions greet each
+    sign-in by name: the list may be shared, the instructions never are."""
+
+    @pytest.fixture
+    def signed_in(self, client_manager_factory: _FakeClientManagerFactory, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+        who = {"user": ""}
+
+        async def _listing(self: _FakeClientManager) -> ToolListing:
+            self.listings += 1
+            return ToolListing(tools=list(_TOOLS), instructions=f"Connected as {who['user']}.", public=True)
+
+        monkeypatch.setattr(_FakeClientManager, "fetch_tool_listing_in_session", _listing)
+        return who
+
+    async def test_another_users_turn_never_gets_the_instructions_one_user_was_sent(
+        self, client_manager_factory: _FakeClientManagerFactory, signed_in: dict[str, str],
+    ) -> None:
+        store = _Store()
+        signed_in["user"] = "dana"
+        _, _, danas = await _turn(store, _server(owner_id="dana"))
+        signed_in["user"] = "bob"
+        _, _, bobs = await _turn(store, _server(owner_id="bob"))
+
+        assert danas == "Connected as dana."
+        assert bobs == "Connected as bob."
+        assert not any("dana" in str(value) for key, value in store.values.items() if "/bob" in key or "/_public" in key)
+
+    async def test_a_tool_change_forgets_the_entry_the_turn_wrote(
+        self, client_manager_factory: _FakeClientManagerFactory, signed_in: dict[str, str],
+    ) -> None:
+        store = _Store()
+        signed_in["user"] = "dana"
+        session_manager, _, _ = await _turn(store, _server(owner_id="dana"))
+        client_manager_factory.built[0].tools_changed = True
+
+        await session_manager.aclose_all()
+
+        assert store.pointers() == []

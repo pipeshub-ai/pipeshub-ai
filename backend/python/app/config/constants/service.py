@@ -97,6 +97,9 @@ class TokenScopes(Enum):
     PRINCIPAL_ERASE = "principal:erase"
     # query -> connectors: write a brand-new caller's graph user before its userAdded event arrives.
     USER_NODE_ENSURE = "entity:user:ensure"
+    # connectors -> Node: may the answer that made a file be shown outside its chat, before its owner grants it.
+    # Never accepted by the Python services.
+    ARTIFACT_SHARE_CHECK = "artifact:share-check"
 
 
 class OAuthScopes(str, Enum):

@@ -1,6 +1,6 @@
 """`TieredRecordAuthorizer` — cheapest-first, no bypass.
 
-Three tiers, each a real check:
+Four tiers, each a real check:
 
 0. The record is live. A record in the trash keeps its permission edges so it
    can be restored, and tier 2 would otherwise grant access from the edge alone.
@@ -10,6 +10,11 @@ Three tiers, each a real check:
    connector and collection records by the permission model, and artifacts
    and chat attachments (records outside every App) by a grant on the record
    itself. Every id of a call is decided in one check (SYNC4 S8).
+3. Chat content (a chat attachment or artifact tier 2 did not grant): the
+   installed `ChatContentAccess` decides. When it says graph edges do not
+   grant chat content, tier 2 counts nothing on a chat attachment or
+   artifact, so this tier decides for its uploader too. Only `authorize`
+   asks it; `readable` and `decide` answer from tiers 0-2.
 
 A direct user-to-record edge is not accepted on its own: it would skip the
 STRICT/RESTRICTED rule and the connector gate, and these bytes leave the
@@ -22,11 +27,17 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Literal
 
+from app.config.constants.arangodb import RecordTypes
 from app.harness.contracts.generated.pipeshub.citation_source import (
     PipeshubLiveSource,
     PipeshubRecordSource,
 )
 from app.models.citation_source import indexed_copy_connectors
+from app.modules.authz.chat_content_access import (
+    ChatContentAccess,
+    get_chat_content_access,
+    is_chat_content,
+)
 from app.services.artifact_registry.access import ArtifactNotFoundError
 from app.services.graph_db.common.record_visibility import is_live_record
 
@@ -50,6 +61,11 @@ logger = logging.getLogger(__name__)
 __all__ = ["SourceStatus", "TieredRecordAuthorizer"]
 
 
+def _is_artifact(record: object) -> bool:
+    record_type = record.get("recordType") if isinstance(record, dict) else getattr(record, "record_type", None)
+    return getattr(record_type, "value", record_type) == RecordTypes.ARTIFACT.value
+
+
 class TieredRecordAuthorizer:
     """The authorization gate for the record-content kernel.
 
@@ -57,12 +73,18 @@ class TieredRecordAuthorizer:
     beyond the injected graph_provider.
     """
 
-    def __init__(self, graph_provider: Any) -> None:
+    def __init__(self, graph_provider: Any, chat_access: ChatContentAccess | None = None) -> None:
         self._graph = graph_provider
+        self._chat_access = chat_access
 
-    async def authorize(self, actor: Any, record: Any) -> None:
-        """Authorize `actor` to read `record`. Raises `RecordAccessDeniedError`
-        on denial; returns `None` on success.
+    async def authorize(
+        self, actor: Any, record: Any, *, conversation_id: str | None = None, version: int | None = None,
+    ) -> int | None:
+        """Authorize `actor` to read `record`, of an artifact `version`. Raises
+        `RecordAccessDeniedError` on denial. Returns the version to read: `version`
+        as asked (None: the current one), or, of an artifact whose current version
+        the chat-content tier refuses, the newest the actor may open when none was
+        asked.
 
         Raises `RecordNotFoundError` for a record in the trash, and
         `RecordContentUnavailableError` when the graph could not answer the
@@ -70,15 +92,35 @@ class TieredRecordAuthorizer:
         """
         if not is_live_record(record):
             raise RecordNotFoundError(f"Record {_record_id(record)} was deleted")
+        access = self._chat_access or get_chat_content_access()
         try:
             permitted = await self.permits(actor, record)
         except GRAPH_CALLER_BUGS:
             raise
         except Exception as exc:
             raise graph_did_not_answer(f"Could not check access to record {_record_id(record)}") from exc
-        if permitted:
-            return
+        # Tier 2 counts on chat content only where graph edges grant it (`ChatContentAccess`).
+        if permitted and (access.graph_grants_chat_content or not is_chat_content(record)):
+            return version
         record_id = _record_id(record)
+
+        # Tier 3 — chat content the permission model did not grant; never another org's.
+        if _same_org(actor, record):
+            lookup = {
+                "user_id": actor.user_id,
+                "org_id": actor.org_id,
+                "record": record,
+                "conversation_id": conversation_id,
+                "acl_version": getattr(actor, "acl_version", None),
+            }
+            if await access.can_read_chat_content(self._graph, **lookup, version=version):
+                return version
+            if version is None and _is_artifact(record):
+                # The current version is not theirs: the newest one that is.
+                readable = await access.readable_chat_versions(self._graph, **lookup)
+                if readable:
+                    return readable[-1]
+
         logger.warning(
             "access_denied actor=%s record=%s",
             actor.user_id,

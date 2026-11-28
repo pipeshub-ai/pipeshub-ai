@@ -269,7 +269,7 @@ class TestHowLongItLasts:
 class TestAPublicList:
     async def test_an_admins_server_that_says_public_serves_everyone(self) -> None:
         store = _ConfigService()
-        await _write(store, _instance(), "u1", _catalog("search"), public=True, auth={"connectedAt": 1})
+        await _write(store, _instance(), "u1", _catalog("search", instructions=None), public=True, auth={"connectedAt": 1})
 
         hit = await _read(store, _instance(), "u2", {"connectedAt": 2})
         assert hit is not None and hit.owner_key == "_public"
@@ -284,7 +284,7 @@ class TestAPublicList:
 
     async def test_a_server_that_turns_private_stops_serving_the_public_list(self) -> None:
         store = _ConfigService()
-        await _write(store, _instance(), "u1", _catalog("search"), public=True)
+        await _write(store, _instance(), "u1", _catalog("search", instructions=None), public=True)
         await _write(store, _instance(), "u1", _catalog("search", "private_tool"))
 
         assert await _read(store, _instance(), "u2") is None
@@ -292,10 +292,76 @@ class TestAPublicList:
 
     async def test_a_server_that_then_says_not_to_cache_stops_serving_the_public_list(self) -> None:
         store = _ConfigService()
-        await _write(store, _instance(), "u1", _catalog("search"), public=True)
+        await _write(store, _instance(), "u1", _catalog("search", instructions=None), public=True)
 
         assert await _write(store, _instance(), "u1", _catalog("search"), server_ttl_seconds=0.5) is None
         assert await _read(store, _instance(), "u2") is None
+
+
+DANAS_NOTES = "Connected as dana@example.com. Open deals: Acme renewal 1.2M."
+
+
+def _public_entry_holding(store: _ConfigService, catalog: tool_cache.CachedCatalog) -> None:
+    """A `_public` pointer at a blob that carries one sign-in's instructions, as entries were
+    written before instructions were kept per sign-in."""
+    catalog_digest, now = tool_cache.digest(catalog), time.time()
+    store.values[get_mcp_tool_catalog_blob_path(catalog_digest)] = catalog.model_copy(
+        update={"stored_at": now},
+    ).model_dump(by_alias=True)
+    store.values[get_mcp_tool_catalog_pointer_path("inst-1", "_public")] = tool_cache.CatalogPointer(
+        digest=catalog_digest, target=tool_cache.target_fingerprint(instance_config_from_dict(_instance())),
+        credential_stamp=1, discovered_at=now, expires_at=now + 3600, tool_count=len(catalog.tools),
+    ).model_dump(by_alias=True)
+
+
+class TestInstructionsStayWithTheirSignIn:
+    """A server's instructions come from each sign-in's own session and can be written for that
+    user, so a list the server calls the same for everyone never carries them to another user."""
+
+    async def test_another_sign_in_never_reads_the_instructions_one_sign_in_was_sent(self) -> None:
+        store = _ConfigService()
+        await _write(store, _instance(), "dana", _catalog("search", instructions=DANAS_NOTES), public=True,
+                     auth={"connectedAt": 1})
+
+        assert await _read(store, _instance(), "bob", {"connectedAt": 2}) is None
+        assert get_mcp_tool_catalog_pointer_path("inst-1", "_public") not in store.values
+        own = await _read(store, _instance(), "dana", {"connectedAt": 1})
+        assert own is not None and own.owner_key == "dana" and own.catalog.instructions == DANAS_NOTES
+
+    async def test_a_public_entry_that_holds_instructions_is_never_served(self) -> None:
+        store = _ConfigService()
+        _public_entry_holding(store, _catalog("search", instructions=DANAS_NOTES))
+
+        assert await _read(store, _instance(), "bob", {"connectedAt": 2}) is None
+
+    async def test_each_sign_in_reads_its_own_instructions_beside_a_list_kept_for_everyone(self) -> None:
+        store = _ConfigService()
+        await _write(store, _instance(), "carol", _catalog("search", instructions=None), public=True)
+        await _write(store, _instance(), "dana", _catalog("search", instructions=DANAS_NOTES), public=True)
+
+        dana, carol, bob = [await _read(store, _instance(), who) for who in ("dana", "carol", "bob")]
+        assert (dana.owner_key, dana.catalog.instructions) == ("dana", DANAS_NOTES)
+        assert (carol.owner_key, carol.catalog.instructions) == ("_public", None)
+        assert (bob.owner_key, bob.catalog.instructions) == ("_public", None)
+
+    async def test_a_sign_in_whose_list_is_kept_for_everyone_drops_its_own_entry(self) -> None:
+        """Its own entry is read first, so one left from when the list was private would hide
+        the tools the server lists now."""
+        store = _ConfigService()
+        await _write(store, _instance(), "u1", _catalog("search"))
+        await _write(store, _instance(), "u1", _catalog("search", "lookup", instructions=None), public=True)
+
+        hit = await _read(store, _instance(), "u1")
+        assert hit.owner_key == "_public" and [t.name for t in hit.catalog.tools] == ["search", "lookup"]
+        assert get_mcp_tool_catalog_pointer_path("inst-1", "u1") not in store.values
+
+    async def test_the_key_written_says_where_a_listing_is_kept(self) -> None:
+        instance = _instance()
+        assert tool_cache.entry_owner(instance, "u1", _catalog("search", instructions=None), public=True) == "_public"
+        assert tool_cache.entry_owner(instance, "u1", _catalog("search", instructions=DANAS_NOTES), public=True) == "u1"
+        assert tool_cache.entry_owner(instance, "u1", _catalog("search", instructions=None), public=False) == "u1"
+        personal = _instance(scope="personal")
+        assert tool_cache.entry_owner(personal, "u1", _catalog("search", instructions=None), public=True) == "u1"
 
 
 class TestAStoreThatFails:

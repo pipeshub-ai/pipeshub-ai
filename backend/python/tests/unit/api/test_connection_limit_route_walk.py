@@ -69,6 +69,7 @@ NOT_LIMITED: dict[Key, str] = {
     ("chatbot", "POST", "/chat/records/access"): "service token only; carries no limit",
     # Not reads of a record's content.
     ("agent", "GET", "/{agent_id}/run-definition"): "an agent's settings; a limited token never starts a durable run",
+    ("agent", "GET", "/{agent_id}/readiness"): "which of the agent's actions and MCP servers the caller can use; reads no record",
     ("connectors", "POST", "/api/v1/record/buffer/convert"): "converts a buffer the caller posts; reads no stored record",
     ("connectors", "POST", "/api/v1/records/{record_id}/reindex"): "a write: queues indexing",
     ("connectors", "POST", "/api/v1/record-groups/{record_group_id}/reindex"): "a write: queues indexing",

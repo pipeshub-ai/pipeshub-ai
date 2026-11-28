@@ -175,6 +175,14 @@ export function messageRow(d: NeutralDoc): Row | null {
     harness: shapeHarnessFields(d),
     created_at: d.createdAt,
     updated_at: d.updatedAt ?? d.createdAt,
+    // Copied whole: a label is never rebuilt field by field.
+    label_ver: str(d.labelVer),
+    provenance: obj(d.provenance),
+    label_history: arr(d.labelHistory),
+    // How the answer is shared, copied whole like its label.
+    consent: obj(d.consent),
+    consent_to: arr(d.consentTo),
+    share_requests: arr(d.shareRequests),
   };
 }
 

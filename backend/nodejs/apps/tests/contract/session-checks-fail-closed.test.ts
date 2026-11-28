@@ -11,6 +11,19 @@ import { findSessionRefusal, findSessionRefusals } from '../../src/libs/utils/us
 import { UserAccountController } from '../../src/modules/auth/controller/userAccount.controller';
 import { AuthMiddleware } from '../../src/libs/middlewares/auth.middleware';
 import { NotificationService } from '../../src/modules/notification/service/notification.service';
+import { createFakeRedisProvider } from '../helpers/fake-redis-provider';
+
+/** Starts the socket server as one API process does with no Redis server: Socket.IO's own adapter, nothing to connect. */
+function initializeAlone(service: { initialize(server: http.Server): void }, server: http.Server): void {
+  const mode = process.env.REDIS_MODE;
+  process.env.REDIS_MODE = 'inprocess';
+  try {
+    service.initialize(server);
+  } finally {
+    if (mode === undefined) delete process.env.REDIS_MODE;
+    else process.env.REDIS_MODE = mode;
+  }
+}
 import { createOAuthRedirectMiddleware } from '../../src/modules/oauth_provider/middlewares/oauth.redirect.middleware';
 import { DesktopProxySocketGateway } from '../../src/modules/desktop_proxy/socket/desktop-proxy.gateway';
 import { UserActivities } from '../../src/modules/auth/schema/userActivities.schema';
@@ -106,10 +119,10 @@ describe('every shared session check fails closed when the activity read fails',
   it('notification handshake: error, retryable (not force_logout)', async () => {
     stubWorld();
     const tokenService = { verifyToken: sinon.stub().resolves(claims()) };
-    const service = new NotificationService(tokenService as never) as any;
+    const service = new NotificationService(tokenService as never, createFakeRedisProvider()) as any;
     service.sessionRefusal = findSessionRefusal;
     const server = http.createServer();
-    service.initialize(server);
+    initializeAlone(service, server);
     try {
       const mw = service.io._nsps.get('/')._fns[0];
       const socket: any = { handshake: { auth: { token: 'Bearer t' } }, data: {} };

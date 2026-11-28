@@ -123,6 +123,15 @@ import {
 import { controlPlaneEventBroker } from '../../agent-harness/adapters/messaging/control-plane-event-broker';
 import { harnessRedisProvider } from '../../agent-harness/adapters/redis/harness-redis';
 import { configurationCipher } from '../../agent-harness/adapters/configuration/encrypted-config-document-store';
+import { ProjectServiceAccessAdapter } from '../../projects/services/project-access.adapter';
+import { resolveCallerTeamIds } from '../../projects/utils/team-membership';
+import { MongoUserDirectory } from '../../user_management/services/user-directory.service';
+import { CONVERSATION_TYPES } from '../services/conversation/conversation.types';
+import { IConversationGuards } from '../services/conversation/http/conversation-guards';
+import { DefaultConversationGuards } from '../services/conversation/http/default-conversation-guards';
+import { MongoConversationHistory } from '../services/conversation/persistence/message-history';
+import { ConversationTurnDeps } from '../services/conversation/turn/turn-deps';
+import { configureVisibility } from '../services/conversation/privacy/visibility';
 
 const loggerConfig = {
   service: 'Enterprise Search Service',
@@ -152,6 +161,10 @@ export class EnterpriseSearchAgentContainer {
       .bind<AppConfig>('AppConfig')
       .toDynamicValue(() => appConfig) // Always fetch latest reference
       .inTransientScope();
+    // The reader check asks the query service which records a reader may open.
+    configureVisibility({
+      appConfig: () => container.get<AppConfig>('AppConfig'),
+    });
     // Initialize and bind services
     await this.initializeServices(container, appConfig);
 
@@ -195,6 +208,21 @@ export class EnterpriseSearchAgentContainer {
       container
         .bind<AuthMiddleware>('AuthMiddleware')
         .toConstantValue(authMiddleware);
+      container
+        .bind<IConversationGuards>(CONVERSATION_TYPES.ConversationGuards)
+        .toConstantValue(
+          new DefaultConversationGuards({
+            projects: new ProjectServiceAccessAdapter(),
+            teamIdsOf: (req) => resolveCallerTeamIds(req, appConfig),
+          }),
+        );
+      container
+        .bind<ConversationTurnDeps>(CONVERSATION_TYPES.ConversationTurnDeps)
+        .toConstantValue({
+          feed: new MongoConversationHistory(),
+          users: new MongoUserDirectory(),
+          appConfig,
+        });
       // The Redis the workers stream token deltas to (REPORT 6.2.4); only
       // touched when the deployment asked for the harness.
       const configurationManagerConfig =

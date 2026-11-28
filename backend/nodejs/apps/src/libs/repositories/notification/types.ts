@@ -28,14 +28,28 @@ export interface NotificationRow {
   deletedBy?: string;
   /** When set, the notification is not visible before this instant. */
   visibleAt?: Date;
+  /** Per recipient: `insertNew` stores one notification per `(assignedTo, dedupeKey)`. */
+  dedupeKey?: string;
   createdAt: Date;
   updatedAt?: Date;
+}
+
+/** What `insertNew` did with its rows. */
+export interface InsertNewResult {
+  /** The rows it stored, in input order. */
+  inserted: NotificationRow[];
+  /** Rows not stored because they were delivered before: their `dedupeKey` or `_id` was taken (see `insertNew`). */
+  duplicates: number;
+  /** Why the store refused the other rows it did not store. A store that writes all or nothing throws instead. */
+  refused: string[];
 }
 
 /** Whose notifications a call reads or changes. */
 export interface NotificationScope {
   orgId: string;
   userId: string;
+  /** Chat notices (`chat.*`) are neither read nor changed: a token without `conversation:read`. */
+  hideChatNotices?: boolean;
 }
 
 /** A notification to store; ids are strings. */
@@ -57,6 +71,14 @@ export interface NotificationRepository {
    * nothing is written and the existing row is returned. A row without `_id` gets a new one.
    */
   insertMany(rows: NewNotification[]): Promise<NotificationRow[]>;
+  /**
+   * Stores the rows in one write, except a row that was delivered before: its recipient already has a notification with
+   * its `dedupeKey` inside the retention window (a deleted or scheduled one too), the org already has a notification with
+   * the `_id` it names, or an earlier row of the call stores the same key or id. A row with neither is always stored.
+   */
+  insertNew(rows: readonly NewNotification[]): Promise<InsertNewResult>;
+  /** Removes these notifications of the org outright, not as a soft delete, which frees their `dedupeKey`. Returns how many. */
+  deleteByIds(orgId: string, ids: readonly string[]): Promise<number>;
   /**
    * Whether the notification with this id exists for this user in this org. Ungated: neither the retention window, the delete flag nor `visibleAt` hides it (a read-back asks
    * "was it stored", not "is it in the inbox"). An id or user that is not a valid id, or another org's or user's notification, is false.

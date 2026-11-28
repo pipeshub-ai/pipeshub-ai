@@ -7,7 +7,6 @@ results as markdown.
 """
 from __future__ import annotations
 
-import asyncio
 import time
 from decimal import Decimal
 from typing import Any, Callable, Collection, Dict, List, Optional, TYPE_CHECKING
@@ -32,6 +31,7 @@ if TYPE_CHECKING:
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.core.address_policy import connector_public_only
 from app.connectors.core.registry.connector_builder import ConnectorScope
+from app.core.org_context import spawn_in_request
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 logger = create_logger("execute_query")
@@ -749,6 +749,59 @@ async def _connector_is_public_only(graph_provider: IGraphDBProvider | None, con
     return await connector_public_only(graph_provider, connector_id)
 
 
+def schedule_result_csv(
+    result: dict[str, Any],
+    *,
+    columns: list[str] | None,
+    rows: list[tuple] | None,
+    blob_store: Optional["BlobStorage"],
+    graph_provider: IGraphDBProvider,
+    config_service: "ConfigurationService",
+    org_id: str | None,
+    user_id: str | None,
+    conversation_id: str | None,
+    run_id: str | None,
+) -> None:
+    """Save a query's full result rows as a CSV file of the conversation, in the background, when
+    all prerequisites are met. `user_id` owns the file; `run_id` is the turn that read the rows."""
+    resolved_blob_store = blob_store
+    if not conversation_id:
+        logger.warning("Cannot register background CSV export task: conversation_id is missing")
+    if not org_id:
+        logger.warning("Cannot register background CSV export task: org_id is missing")
+    if not resolved_blob_store:
+        from app.modules.transformers.blob_storage import BlobStorage
+
+        resolved_blob_store = BlobStorage(
+            logger=logger,
+            config_service=config_service,
+            graph_provider=graph_provider,
+        )
+    if (
+        result.get("ok")
+        and columns
+        and rows
+        and conversation_id
+        and resolved_blob_store
+        and org_id
+    ):
+        from app.sandbox.artifact_upload import save_query_result_csv
+
+        task = spawn_in_request(save_query_result_csv(
+            blob_store=resolved_blob_store,
+            graph_provider=graph_provider,
+            org_id=org_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            columns=columns,
+            rows=rows,
+            file_name=f"query_result_{int(time.time())}{'_first_%d_rows' % SQL_MAX_ROWS if result.get('rows_cut_at') else ''}.csv",
+            source_tool="sql.execute_sql_query",
+            run_id=run_id,
+        ))
+        register_task(conversation_id, task)
+
+
 def create_execute_query_tool(
     config_service: "ConfigurationService",
     graph_provider: Optional["IGraphDBProvider"] = None,
@@ -756,6 +809,7 @@ def create_execute_query_tool(
     conversation_id: Optional[str] = None,
     blob_store: Optional["BlobStorage"] = None,
     user_id: str | None = None,
+    run_id: str | None = None,
     *,
     allowed_connector_ids: Collection[str],
     artifact_owner_user_id: str | None = None,
@@ -772,6 +826,8 @@ def create_execute_query_tool(
         user_id: Whose connector access is checked, and the CSV export's owner
             unless ``artifact_owner_user_id`` is given; without either the
             export has no artifact record and so no download link on local storage
+        run_id: Node-minted runId of the turn; stamped on the CSV artifact so
+            later reads can be checked against the turn that produced it
         allowed_connector_ids: The only connector instance IDs the tool may
             query. The query runs with the connector's stored credentials, so
             any other ID (or none) is rejected before a client is built.
@@ -855,6 +911,10 @@ def create_execute_query_tool(
         try:
             if not await _connector_is_accessible(graph_provider, connector_id, user_id or "", org_id or ""):
                 return {"ok": False, "error": f"Connector {connector_id!r} is not available to you."}
+            from app.modules.agents.privacy.ledger import note_shown
+
+            # Live rows read with the connector's own credentials: whoever may reach the connector may see them.
+            note_shown(nodes=[connector_id])
 
             result = await _execute_query_impl(
                 query=query,
@@ -870,45 +930,26 @@ def create_execute_query_tool(
             else:
                 logger.warning(f"🔍 [execute_sql_query_tool] Error in result: {result.get('error')}")
 
-            # Fire background CSV export task when all prerequisites are met
             raw_columns = result.pop("raw_columns", None)
             raw_rows = result.pop("raw_rows", None)
-            resolved_blob_store = blob_store
-            if not conversation_id:
-                logger.warning("Cannot register background CSV export task: conversation_id is missing")
-            if not org_id:
-                logger.warning("Cannot register background CSV export task: org_id is missing")
-            if not resolved_blob_store:
-                from app.modules.transformers.blob_storage import BlobStorage
+            from app.modules.agents.sql_extension import get_sql_extension
 
-                resolved_blob_store = BlobStorage(
-                    logger=logger,
-                    config_service=config_service,
-                    graph_provider=graph_provider,
-                )
-            if (
-                result.get("ok")
-                and raw_columns
-                and raw_rows
-                and conversation_id
-                and resolved_blob_store
-                and org_id
-            ):
-                from app.sandbox.artifact_upload import save_query_result_csv
+            await get_sql_extension().keep_query_result(
+                result,
+                columns=raw_columns,
+                rows=raw_rows,
+                source_name=source_name,
+                blob_store=blob_store,
+                graph_provider=graph_provider,
+                config_service=config_service,
+                org_id=org_id,
+                user_id=user_id,
+                artifact_owner_user_id=artifact_owner_user_id,
+                conversation_id=conversation_id,
+                run_id=run_id,
+                logger=logger,
+            )
 
-                task = asyncio.create_task(save_query_result_csv(
-                    blob_store=resolved_blob_store,
-                    graph_provider=graph_provider,
-                    org_id=org_id,
-                    user_id=artifact_owner_user_id or user_id,
-                    conversation_id=conversation_id,
-                    columns=raw_columns,
-                    rows=raw_rows,
-                    file_name=f"query_result_{int(time.time())}{'_first_%d_rows' % SQL_MAX_ROWS if result.get('rows_cut_at') else ''}.csv",
-                    source_tool="sql.execute_sql_query",
-                ))
-                register_task(conversation_id, task)
-            
             return result
         except Exception as e:
             logger.exception("execute_sql_query_tool failed")

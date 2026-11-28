@@ -39,6 +39,14 @@ _MAX_RESPONSE_BYTES = 25_000
 _MAX_READ_HINT_IDS = 8
 _TRUNCATION_LINE = "... (output truncated — use page= to continue)"
 PREPARING = "This source is still being prepared, so nothing can be listed yet. Try again in a moment."
+
+
+def unnamed_sources_note(count: int) -> str:
+    """What a listing says in place of the sources the run may not name (`nameable_source_ids`)."""
+    return (
+        f"{count} other source{'s' if count != 1 else ''} not listed: other people read this answer. "
+        "A search without source_ids covers them."
+    )
 # Kept out of the system prompt: only a turn that lists records needs it. A real
 # id from the listing as the example is what gets a small model to cite at all.
 CITE_NOTE = (
