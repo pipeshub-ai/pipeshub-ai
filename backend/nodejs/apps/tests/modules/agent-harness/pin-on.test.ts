@@ -6,6 +6,7 @@
  * CPD-3's resolver and the control plane's in-memory heads.
  */
 import { transportError } from '../../../src/modules/agent-harness/transport/errors';
+import { HarnessRunConfigUnavailableError } from '../../../src/modules/agent-harness/domain/errors';
 import { expect } from 'chai';
 import { releaseLayers } from '../../../src/modules/agent-harness/domain/pin-shadow';
 import fc from 'fast-check';
@@ -286,6 +287,14 @@ describe('CPD-5 CONTROL_PLANE_PIN=on (PIN-22, CPD5-50, CPD5-51, CPD5-54)', () =>
     expect(failing).to.include({ name: 'HarnessRunConfigUnavailableError', code: 'RUN_CONFIG_UNAVAILABLE' });
     // Typed on the wire, so the UI words it (CPD6-37): 503, retryable, never the generic unavailable.
     expect(transportError(failing)).to.include({ code: 'HTTP_AGENT_HARNESS_RUN_CONFIG_UNAVAILABLE', statusCode: 503 });
+  });
+
+  it('a turn refused while a store the pin reads is out says so in words a person understands', () => {
+    for (const cause of [undefined, "The turn's route could not be resolved"]) {
+      const answered = transportError(new HarnessRunConfigUnavailableError(cause)) as { code: string; statusCode: number; message: string };
+      expect(answered).to.include({ code: 'HTTP_AGENT_HARNESS_RUN_CONFIG_UNAVAILABLE', statusCode: 503 });
+      expect(answered.message).to.equal("Your organization's settings could not be loaded, so nothing started. Wait a moment, then send again.");
+    }
   });
 
   it('CPD10-44: with the policy store as the record no run is admitted without a worker reading its pin; nothing is withheld', async () => {

@@ -64,9 +64,10 @@ export function transportError(error: unknown): unknown {
     );
   }
   if (error instanceof HarnessRunConfigUnavailableError) {
+    // Its message names the turn's internals (a route, a pin, a store): the person who sent it is told what they can do.
     return new HttpError(
       harnessWireCode(error.code),
-      error.message,
+      ERROR_CODES[error.code].nextAction.text,
       ERROR_CODES[error.code].status,
     );
   }
