@@ -920,3 +920,15 @@ def test_normalise_leaves_field_labels_that_match_a_name():
         "column kernel.settings.owner type=name",
         "policy t p cmd=r permissive=true roles=<bootstrap-superuser>,pipeshub_app using=(owner = CURRENT_USER) check=-",
         "column t.c type=text notnull=false identity= generated= default=owner"}
+
+
+def test_normalise_finds_expression_fields_only_outside_quoted_names():
+    from db import surface
+    name = '"Platform default=Admin"'
+    lines = [f"database owner={name}", f"member {name} -> x admin=true",
+             f'column t.c type=text notnull=false identity= generated= default={name}',
+             f'policy t p cmd=r permissive=true roles={name} using=(owner = {name}) check=-']
+    assert surface.normalise(lines, "postgres", name) == {
+        "database owner=<bootstrap-superuser>", "member <bootstrap-superuser> -> x admin=true",
+        f"column t.c type=text notnull=false identity= generated= default={name}",
+        f"policy t p cmd=r permissive=true roles=<bootstrap-superuser> using=(owner = {name}) check=-"}

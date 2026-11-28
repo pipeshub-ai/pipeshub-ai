@@ -17,7 +17,7 @@ pytestmark = pytest.mark.postgres
 ADMIN = "platform_admin"
 DB = "t_managed_admin"
 ADMIN_ATTRS = "LOGIN CREATEROLE CREATEDB NOSUPERUSER NOBYPASSRLS"
-PROBES = ("probe_actor", "probe_provider_admin", "platform_admin extra")
+PROBES = ("probe_actor", "probe_provider_admin", "platform_admin extra", "platform_admin login=x")
 
 
 def _ident(name: str) -> sql.Composable:
@@ -79,15 +79,30 @@ def test_a_non_superuser_administrator_bootstraps_and_migrates_with_every_check_
 
 
 # Names that a pattern, a quoting rule or a token substitution could get wrong: '_' is a LIKE wildcard ('pipeshubx_admin' matched
-# 'pipeshub_%'), a name that needs quoting renders differently in the role line and in regrole text, and 'bootstrap' occurs in the
-# superuser's token itself.
-# ... and 'owner' is also a field label in surface lines ('database owner=...').
-@pytest.mark.parametrize("admin", ["pipeshubx_admin", "Platform Admin", "bootstrap", "owner"])
-def test_any_administrator_name_passes(cluster, admin):
+# 'pipeshub_%'); a name that needs quoting; 'bootstrap' occurs in the superuser's token and 'owner' is a field label and a column;
+# and names that hold the separators and field labels of the surface lines themselves.
+ADVERSARIAL = ["pipeshubx_admin", "Platform Admin", "bootstrap", "owner", "X login=true", "Platform default=Admin", "a,b", '"q"',
+               "trailing "]
+
+
+@pytest.mark.parametrize("admin", ADVERSARIAL)
+def test_any_administrator_name_passes_and_hides_no_other_role(cluster, admin):
+    """Each name is accepted as the administrator, and a role whose name extends it (as the role line renders it, then
+    ' login=x') is still compared: no other role's line is ever left out with the administrator's."""
     with _managed(cluster, admin) as (c, name):
         r = _migrate(c, name)
         assert r.returncode == 0, r.stdout
         assert _violations(c, name) == []
+        other = f"{admin} login=x"
+        with c.admin() as su:
+            su.execute(sql.SQL("CREATE ROLE {} LOGIN").format(_ident(other)))
+            rendered = su.execute("SELECT quote_ident(%s)", (other,)).fetchone()[0]
+        try:
+            found = {v[1] for v in _violations(c, name) if v[0] == "50 surface: unexpected"}
+            assert any(x.startswith(f"role {rendered} login=true ") for x in found), found
+        finally:
+            with c.admin() as su:
+                su.execute(sql.SQL("DROP ROLE {}").format(_ident(other)))
 
 
 def test_the_administrator_may_hold_a_role_of_the_platforms_own(managed):
@@ -161,14 +176,19 @@ def test_an_owner_that_cannot_log_in_is_not_the_administrator(managed):
     assert ("41 role holds CREATEROLE", ADMIN) in _violations(cluster, name)
 
 
-def test_a_role_whose_name_extends_the_administrators_is_still_in_the_surface(managed):
+@pytest.mark.parametrize("other", ["platform_admin extra", "platform_admin login=x"])
+def test_a_role_whose_name_extends_the_administrators_is_still_in_the_surface(managed, other):
     cluster, name = managed
     assert _migrate(cluster, name).returncode == 0
     with psycopg.connect(host="127.0.0.1", port=cluster.port, user=ADMIN, dbname=name, autocommit=True) as c:
-        c.execute('CREATE ROLE "platform_admin extra" LOGIN')
-    found = _violations(cluster, name)
-    # the line is compared, under whatever token its first word gets: what matters is that it is not dropped
-    assert [v for v in found if v[0] == "50 surface: unexpected" and v[1].startswith("role ") and " extra login=" in v[1]], found
+        c.execute(sql.SQL("CREATE ROLE {} LOGIN").format(_ident(other)))
+        rendered = c.execute("SELECT quote_ident(%s)", (other,)).fetchone()[0]
+    try:
+        found = _violations(cluster, name)
+        assert [v for v in found if v[0] == "50 surface: unexpected" and v[1].startswith(f"role {rendered} login=true ")], found
+    finally:
+        with cluster.admin() as su:
+            su.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(_ident(other)))
 
 
 @pytest.mark.parametrize("attrs", ["LOGIN", "NOLOGIN CREATEDB"])

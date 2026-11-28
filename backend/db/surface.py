@@ -64,12 +64,16 @@ _SYSFUNC_ORDER = '(p.oid::regprocedure::text) COLLATE "C"'
 _SYSFUNC_FROM = f"FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace JOIN pg_language l ON l.oid = p.prolang WHERE {_SYS} AND p.oid < 16384"
 SYSFUNC_ROWS = f"SELECT {_SYSFUNC_ROW} {_SYSFUNC_FROM} ORDER BY {_SYSFUNC_ORDER}"
 
+# Every role name is rendered as an identifier (quote_ident, as regrole renders it): a name that holds a space, '=', ',' or a quote is
+# quoted, so no name can look like the separators or the fields around it, and a line names exactly one role in each position.
+_ROLE_LINE = """quote_ident(r.rolname) || ' login=' || r.rolcanlogin || ' super=' || r.rolsuper || ' inherit=' || r.rolinherit
+        || ' createrole=' || r.rolcreaterole || ' createdb=' || r.rolcreatedb || ' replication=' || r.rolreplication || ' bypassrls=' || r.rolbypassrls
+        || ' connlimit=' || r.rolconnlimit
+        || ' valid_until=' || CASE WHEN r.rolvaliduntil IS NULL OR r.rolvaliduntil = 'infinity' THEN '-' ELSE r.rolvaliduntil::text END"""
+
 QUERIES = [
-    ("role", f"""SELECT r.rolname || ' login=' || r.rolcanlogin || ' super=' || r.rolsuper || ' inherit=' || r.rolinherit || ' createrole=' || r.rolcreaterole
-        || ' createdb=' || r.rolcreatedb || ' replication=' || r.rolreplication || ' bypassrls=' || r.rolbypassrls || ' connlimit=' || r.rolconnlimit
-        || ' valid_until=' || CASE WHEN r.rolvaliduntil IS NULL OR r.rolvaliduntil = 'infinity' THEN '-' ELSE r.rolvaliduntil::text END
-        FROM pg_roles r WHERE r.oid IN {_ROLES_OK}"""),
-    ("rolesetting", """SELECT COALESCE(r.rolname, '-') || ' ' || COALESCE(d.datname, '-') || ' ' || c FROM pg_db_role_setting s
+    ("role", f"""SELECT {_ROLE_LINE} FROM pg_roles r WHERE r.oid IN {_ROLES_OK}"""),
+    ("rolesetting", """SELECT COALESCE(quote_ident(r.rolname), '-') || ' ' || COALESCE(d.datname, '-') || ' ' || c FROM pg_db_role_setting s
         LEFT JOIN pg_roles r ON r.oid = s.setrole LEFT JOIN pg_database d ON d.oid = s.setdatabase, unnest(s.setconfig) c
         WHERE r.oid IS NULL OR r.oid IN """ + _ROLES_OK),
     ("member", f"""SELECT m.member::regrole || ' -> ' || m.roleid::regrole || ' inherit=' || m.inherit_option || ' set=' || m.set_option || ' admin=' || m.admin_option
@@ -232,20 +236,18 @@ def live_lines(conn: psycopg.Connection) -> list[str]:
                 out.append(f"{kind}@{version} {line}" if kind == "sysfuncs" else f"{kind} {line}")
     if _managed(conn):                           # a known exception on managed platforms: reported in kernel.rls_warnings, not compared
         out = [x for x in out if not x.startswith("lofunctions ")]
-    superuser = conn.execute("SELECT rolname FROM pg_roles WHERE oid = 10").fetchone()[0]
+    superuser = conn.execute("SELECT quote_ident(rolname) FROM pg_roles WHERE oid = 10").fetchone()[0]
     admin = bootstrap_admin(conn)
     if admin is None:
         return sorted(normalise(out, superuser))
     # A managed platform's administrator stands where the bootstrap superuser does. Its own role line, the ADMIN-only memberships
     # PostgreSQL 16+ gives it on every role it created, and its memberships and the role lines of the platform roles it holds
-    # (_PLATFORM_ROLE) are left to the semantic checks; every other line naming it is compared under the superuser's token. A role
-    # line is matched up to its first field ("role <name> login="), so a longer name that starts with a listed one stays. The lines
-    # to leave out are rendered by the queries that render them in the surface, so a name that needs quoting matches too.
-    raw, rendered = admin
-    members = {"member " + line for (line,) in conn.execute(_ADMIN_MEMBERS)}
-    roles = (raw, *(r for (r,) in conn.execute(_PLATFORM_ROLES)))
-    out = [x for x in out if x not in members and not x.startswith(tuple(f"role {r} login=" for r in roles))]
-    return sorted(normalise(out, superuser, raw, rendered))
+    # (_PLATFORM_ROLE) are left to the semantic checks; every other line naming it is compared under the superuser's token. The
+    # lines to leave out are chosen in SQL by role oid and rendered by the same expressions as the surface's own lines, then removed
+    # as whole lines: no text prefix decides which role a line belongs to.
+    left_out = {line for (line,) in conn.execute(_ADMIN_LINES)}
+    out = [x for x in out if x not in left_out]
+    return sorted(normalise(out, superuser, admin))
 
 
 # A platform role: not ours, and either a predefined role or a NOLOGIN group with none of the attributes checks 22 and 41 are about
@@ -260,41 +262,58 @@ _ADMIN_MEMBERS = f"""SELECT m.member::regrole || ' -> ' || m.roleid::regrole || 
     WHERE m.member = kernel.bootstrap_admin()
       AND ((m.admin_option AND NOT m.inherit_option AND NOT m.set_option) OR ({_PLATFORM_ROLE}))"""
 
-# The platform roles the administrator holds (with INHERIT or SET: not one it merely created), as the role query renders them. A role
-# the administrator only created, or one that can log in or holds an attribute, still shows in the surface.
-_PLATFORM_ROLES = f"""SELECT r.rolname FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid, kernel.settings s
+# The platform roles the administrator holds (with INHERIT or SET: not one it merely created). A role the administrator only created,
+# or one that can log in or holds an attribute, still shows in the surface.
+_PLATFORM_ROLES = f"""SELECT r.oid FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid, kernel.settings s
     WHERE m.member = kernel.bootstrap_admin() AND (m.inherit_option OR m.set_option) AND NOT starts_with(r.rolname::text, 'pg_')
       AND {_PLATFORM_ROLE}"""
+
+# The whole lines left to the semantic checks: the role lines of the administrator and of the platform roles it holds, chosen by oid,
+# and the administrator's memberships above, rendered exactly as the "role" and "member" queries render them.
+_ADMIN_LINES = f"""SELECT 'role ' || {_ROLE_LINE} FROM pg_roles r WHERE r.oid = kernel.bootstrap_admin() OR r.oid IN ({_PLATFORM_ROLES})
+    UNION ALL SELECT 'member ' || x.line FROM ({_ADMIN_MEMBERS}) x(line)"""
 
 
 # Role names are values: a whole token after the start, a space, '=' or ',', and before a space, ',' or the end, never followed by
 # '=' (a field label such as owner= or admin=) or preceded by '.' (a column, table.owner). Expression fields (a policy's using= and
-# check=, a column's default=) come last in their lines and hold SQL, not role values, so the replacement stops before them.
+# check=, a column's default=) come last in their lines and hold SQL, not role values, so the replacement stops at the first one found
+# outside a quoted identifier (a quoted name may hold " default=").
 _EXPRESSION = re.compile(r" (?:using|check|default)=")
 
 
+def _head_len(line: str) -> int:
+    """Where the first expression field starts, outside double quotes (a doubled quote inside an identifier toggles twice)."""
+    quoted = False
+    for i, ch in enumerate(line):
+        if ch == '"':
+            quoted = not quoted
+        elif ch == " " and not quoted and _EXPRESSION.match(line, i):
+            return i
+    return len(line)
+
+
 def normalise(lines: Iterable[str], superuser: str, *also: str) -> set[str]:
-    """Replace the bootstrap superuser's name (whatever the deployment calls it), and each name in ``also``, by a fixed token where
-    it is a role value, in one pass: a token written for one name is never read again for another (an administrator called
-    ``bootstrap``), and a field label or a column that happens to share the name is left alone (an administrator called ``owner``)."""
+    """Replace the bootstrap superuser's name and each name in ``also``, as identifiers render them (quoted when needed), by a fixed
+    token where it is a role value, in one pass: a token written for one name is never read again for another (an administrator
+    called ``bootstrap``), and a field label or a column that happens to share the name is left alone (an administrator called
+    ``owner``)."""
     names = sorted({superuser, *also}, key=len, reverse=True)
     token = re.compile(r'(?:^|(?<=[ =,]))(?:' + "|".join(re.escape(n) for n in names) + r')(?=[ ,]|$)')
 
     def one(line: str) -> str:
-        m = _EXPRESSION.search(line)
-        head, tail = (line[:m.start()], line[m.start():]) if m else (line, "")
-        return token.sub(BOOTSTRAP_SUPERUSER, head) + tail
+        n = _head_len(line)
+        return token.sub(BOOTSTRAP_SUPERUSER, line[:n]) + line[n:]
 
     return {one(x) for x in lines}
 
 
-def bootstrap_admin(conn: psycopg.Connection) -> tuple[str, str] | None:
-    """The database owner when it is a managed platform's administrator rather than a superuser (``kernel.bootstrap_admin()``),
-    as ``(rolname, regrole text)``: the role query renders the first, every other query the second (quoted when the name needs it)."""
+def bootstrap_admin(conn: psycopg.Connection) -> str | None:
+    """The database owner when it is a managed platform's administrator rather than a superuser (``kernel.bootstrap_admin()``), as
+    every surface query renders a role (quote_ident: quoted when the name needs it)."""
     if not conn.execute("SELECT to_regprocedure('kernel.bootstrap_admin()') IS NOT NULL").fetchone()[0]:
         return None
-    row = conn.execute("SELECT r.rolname, r.oid::regrole::text FROM pg_roles r WHERE r.oid = kernel.bootstrap_admin()").fetchone()
-    return (row[0], row[1]) if row else None
+    return conn.execute("SELECT quote_ident(r.rolname) FROM pg_roles r WHERE r.oid = kernel.bootstrap_admin()").fetchone()[0] \
+        if conn.execute("SELECT kernel.bootstrap_admin() IS NOT NULL").fetchone()[0] else None
 
 
 def _managed(conn: psycopg.Connection) -> bool:
@@ -384,8 +403,11 @@ def violations(conn: psycopg.Connection, extra: Iterable[str] = ()) -> list[tupl
         expected = {x for x in expected if not x.startswith("lofunctions ")}
     live = set(live_lines(conn))
     for role in _window_roles(conn) | _migration_roles(conn):
-        live = {x for x in live if not x.startswith(f"role {role} login=")}
-        expected = {x for x in expected if not x.startswith(f"role {role} login=")}
+        # quoted as the role query renders it, so "role <name> login=" names exactly this role (a longer name differs at its first
+        # character after the identifier)
+        name = conn.execute("SELECT quote_ident(%s)", (role,)).fetchone()[0]
+        live = {x for x in live if not x.startswith(f"role {name} login=")}
+        expected = {x for x in expected if not x.startswith(f"role {name} login=")}
     return diff(live, expected)
 
 
