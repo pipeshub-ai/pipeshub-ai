@@ -135,6 +135,14 @@ class _World:
                 f"OR PARSE_IDENTIFIER(e._to).key IN @ids REMOVE e IN {collection}", {"ids": ids})
 
 
+def _real_neo4j_horizon() -> Any:  # noqa: ANN401
+    from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+    return Neo4jProvider._reap_horizon_ms
+
+
+_NEO4J_HORIZON = _real_neo4j_horizon()      # before the fixture below sets a millisecond
+
+
 @pytest.fixture(params=["neo4j", "arango"])
 async def graph(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Any]:
     try:
@@ -1079,3 +1087,24 @@ async def test_a_trashed_grant_s_collaborator_loses_the_app_and_its_org_wide_rec
             await g.http_client.execute_aql("FOR d IN organizations FILTER d._key == @o REMOVE d IN organizations", {"o": w.org})
             await g.http_client.execute_aql("FOR e IN belongsTo FILTER e._to == @o REMOVE e IN belongsTo", {"o": f"organizations/{w.org}"})
             await g.http_client.execute_aql("FOR e IN permission FILTER e._from == @o REMOVE e IN permission", {"o": f"organizations/{w.org}"})
+
+
+async def test_on_neo4j_without_a_transaction_timeout_an_unjustified_membership_is_removed_after_the_grace(
+        world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With no transaction timeout configured the horizon is NEO4J_REAP_HORIZON_SECONDS, not never: a flagged membership no grant keeps (ext-own-gone,
+    marked by the world's first pass) stays while its mark is younger than the grace and goes once it is older, so it stops opening the App's
+    org-wide grants."""
+    w, g = world, world.graph
+    if not hasattr(g, "client"):
+        pytest.skip("ArangoDB has no transaction timeout: its horizon is always ARANGO_REAP_HORIZON_SECONDS")
+    from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+    monkeypatch.setattr(type(g), "_reap_horizon_ms", _NEO4J_HORIZON)      # the real one, not the fixture's millisecond
+    monkeypatch.setattr(g.client, "_transaction_timeout", 0)
+    assert isinstance(g, Neo4jProvider)
+    monkeypatch.setenv("NEO4J_REAP_HORIZON_SECONDS", "600")
+    await g.reap_stale_external_app_relations(w.sid(APP))
+    assert "ext-own-gone" in await _edges_to_app(w)      # marked well under 600 s ago: kept
+    monkeypatch.setenv("NEO4J_REAP_HORIZON_SECONDS", "0.05")
+    await asyncio.sleep(0.1)
+    await g.reap_stale_external_app_relations(w.sid(APP))
+    assert "ext-own-gone" not in await _edges_to_app(w)

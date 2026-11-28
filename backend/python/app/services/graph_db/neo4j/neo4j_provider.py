@@ -1166,6 +1166,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 raise Exception("Failed to connect to Neo4j")
 
             self.logger.info("✅ Neo4j provider connected successfully")
+            timeout = getattr(self.client, "_transaction_timeout", 0)
+            log_event(self.logger, "graph.reaper.horizon", horizon_ms=self._reap_horizon_ms(),
+                      source="transaction_timeout" if isinstance(timeout, (int, float)) and timeout > 0 else "NEO4J_REAP_HORIZON_SECONDS")
             return True
 
         except Exception as e:
@@ -19697,9 +19700,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     def _reap_horizon_ms(self) -> int:
         """How old a reaper's mark must be before the edge is removed: the transaction timeout this provider opens its transactions with
-        (NEO4J_TRANSACTION_TIMEOUT), so no transaction open at the mark is still open; 0 (never remove) when none is configured."""
+        (NEO4J_TRANSACTION_TIMEOUT), so no transaction open at the mark is still open. Without one, NEO4J_REAP_HORIZON_SECONDS (default 600):
+        the app's lock, not the horizon, keeps a grant open at the second pass, so the horizon is a grace, and never removing would keep a
+        stale membership opening the app's org-wide grants (design note of the external-collaborator reaper). 0 or less there: never remove."""
         timeout = getattr(self.client, "_transaction_timeout", 0)
-        return int(timeout * 1000) if isinstance(timeout, (int, float)) and timeout > 0 else 0
+        if isinstance(timeout, (int, float)) and timeout > 0:
+            return int(timeout * 1000)
+        seconds = env_seconds("NEO4J_REAP_HORIZON_SECONDS", 600.0)
+        return int(seconds * 1000) if seconds > 0 else 0
 
     async def check_connector_name_exists(
         self,
