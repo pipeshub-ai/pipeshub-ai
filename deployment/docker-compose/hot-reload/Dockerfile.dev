@@ -156,6 +156,15 @@ COPY --from=python-deps /usr/local/bin /usr/local/bin
 COPY --from=python-deps /root/.cache/huggingface /root/.cache/huggingface
 COPY --from=python-deps /root/nltk_data /root/nltk_data
 
+# Docling models, as in the production Dockerfile: one read-only copy outside the HF cache volume.
+ARG BUNDLE_TABLEFORMER_FAST=0
+ENV PIPESHUB_DOCLING_MODELS_DIR=/opt/docling-models
+COPY deployment/bake-docling-models.py backend/python/app/config/constants/docling_models.py /tmp/bake/
+RUN python /tmp/bake/bake-docling-models.py "${PIPESHUB_DOCLING_MODELS_DIR}" \
+        $([ "${BUNDLE_TABLEFORMER_FAST}" = "1" ] && echo --with-tableformer-fast) && \
+    chmod -R a+rX "${PIPESHUB_DOCLING_MODELS_DIR}" && \
+    rm -rf /tmp/bake /root/.cache/huggingface/xet /root/.cache/huggingface/.agent_harnesses.json
+
 # Copy Node.js backend (WITH devDependencies: nodemon, ts-node, typescript)
 COPY --from=nodejs-backend /app/backend/ ./backend/
 
