@@ -473,7 +473,8 @@ class FakeZammadPeople:
         self.calls: list[tuple[str, dict[str, str]]] = []
         # The token's own user, and whether the token may list everyone (ticket.agent or admin.user)
         # or, per UserPolicy::Scope, only its own record.
-        self.me = 1
+        # Not one of the agents a test adds, unless the test says so.
+        self.me = 900
         self.lists_everyone = True
         # user id -> HTTP status answered instead of GET /users/{id}
         self.user_read_status: dict[int, int] = {}

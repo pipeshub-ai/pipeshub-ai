@@ -40,6 +40,7 @@ USER_COUNT = 150
 class World:
     def __init__(self) -> None:
         self.zammad = FakeZammadPeople({SUPPORT: "Support"})
+        self.zammad.me = 1  # the token's own account is one of the listed users
         self.directory = FakeDirectory()
         with patch("app.connectors.sources.zammad.connector.ZammadApp"):
             self.connector = ZammadConnector(
@@ -173,14 +174,35 @@ async def test_a_user_list_that_gets_no_answer_withdraws_nobody(world: World) ->
     assert world.linked() == EVERYONE
 
 
-async def test_a_token_shown_only_its_own_record_withdraws_nobody(world: World) -> None:
-    """UserPolicy::Scope: without ticket.agent or admin.user the list holds the caller alone."""
+@pytest.mark.parametrize("roles_status", [None, 403], ids=["roles-read", "roles-refused"])
+async def test_a_token_shown_only_its_own_record_withdraws_nobody(world: World, roles_status: int | None) -> None:
+    """UserPolicy::Scope: without ticket.agent or admin.user the list holds the caller alone. That says nothing of
+    anyone else, so links, group members and role members all stay as stored, and the sync does not count as done."""
+    groups_before = {gid: set(m) for gid, m in world.directory.group_members.items()}
+    roles_before = {rid: set(m) for rid, m in world.directory.role_members.items()}
+    assert len(groups_before[str(SUPPORT)]) == USER_COUNT
     world.zammad.lists_everyone = False
+    if roles_status:
+        world.zammad.roles_page_status[1] = roles_status
 
-    await world.sync()
+    parts = await world.sync_incomplete()
 
+    assert "the user list (interrupted)" in parts
     assert world.linked() == EVERYONE
     assert world.directory.withdrawals == []
+    assert world.directory.group_members == groups_before
+    assert world.directory.role_members == roles_before
+
+
+async def test_a_token_whose_own_account_cannot_be_read_withdraws_nobody(world: World) -> None:
+    world.zammad.lists_everyone = False
+    world.zammad.path_status["/api/v1/users/me"] = 503
+    groups_before = {gid: set(m) for gid, m in world.directory.group_members.items()}
+
+    await world.sync_incomplete()
+
+    assert world.linked() == EVERYONE
+    assert world.directory.group_members == groups_before
 
 
 async def test_a_failed_read_of_the_links_withdraws_nobody_and_fails_the_sync(world: World) -> None:

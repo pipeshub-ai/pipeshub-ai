@@ -692,6 +692,10 @@ class ZammadConnector(BaseConnector):
             users, user_email_map = await self._fetch_users(roles if roles_read is ReadOutcome.COMPLETE else None)
             if self._users_read is ReadOutcome.REFUSED:
                 sign_in_unconfirmed = not await self._stop_if_signed_out() or sign_in_unconfirmed
+            elif self._users_read is ReadOutcome.COMPLETE and not await self._user_list_shows_others():
+                # A list that may hold only the token's own record says nothing of anyone else: links,
+                # group members and role members all stay as stored, as after a read cut short.
+                self._users_read = ReadOutcome.INTERRUPTED
             if sign_in_unconfirmed:
                 self._incomplete.append("the check that Zammad still accepts the access token")
             if users:
@@ -916,6 +920,33 @@ class ZammadConnector(BaseConnector):
         self.logger.info(f"📥 Fetched {len(users)} users from Zammad")
         return users, user_email_map
 
+    async def _user_list_shows_others(self) -> bool:
+        """Whether the complete user list read this sync speaks for anyone but the token's own account.
+
+        UserPolicy::Scope lists only the caller's own record to a token without ticket.agent or
+        admin.user ("any listings will return users own information only",
+        https://docs.zammad.org/en/latest/api/user.html; ``scope.where(id: user.id)`` in
+        app/policies/user_policy/scope.rb), and everyone to one with either (``scope.all``).
+        """
+        if len(self._listed_user_ids) != 1:
+            # A full listing also holds Zammad's seeded user 1 ("-", db/seeds/user_nr_1.rb), which no token
+            # signs in as; and every listing holds the caller, so none is empty.
+            return True
+        me = await (await self._get_fresh_datasource()).get_current_user()
+        if not (me.success and isinstance(me.data, dict) and me.data.get("id") is not None):
+            self.logger.warning(
+                f"Could not read the token's own Zammad account (HTTP {me.status_code}: {me.error or me.message}); "
+                "group and role members and linked accounts stay as stored this sync"
+            )
+            return False
+        if self._listed_user_ids <= {str(me.data["id"])}:
+            self.logger.warning(
+                "The Zammad user list holds only the token's own account, so group and role members and linked "
+                "accounts stay as stored this sync. Give the connector's token the ticket.agent or admin.user permission."
+            )
+            return False
+        return True
+
     async def _withdraw_departed_users(self, users: list[AppUser]) -> None:
         """After a complete user read, a linked account that left Zammad loses the connector and its own grants.
 
@@ -940,16 +971,6 @@ class ZammadConnector(BaseConnector):
         if not candidates:
             return
         datasource = await self._get_fresh_datasource()
-        # UserPolicy::Scope lists only the caller's own record to a token without ticket.agent or
-        # admin.user ("any listings will return users own information only",
-        # https://docs.zammad.org/en/latest/api/user.html): such a listing says nothing of the others.
-        me = await datasource.get_current_user()
-        my_id = str(me.data.get("id")) if me.success and isinstance(me.data, dict) else None
-        if my_id is None or not self._listed_user_ids - {my_id}:
-            self.logger.warning("The user list holds only the token's own account; nobody loses access this sync")
-            if my_id is None:
-                self._incomplete.append("the token's own account")
-            return
         gone = []
         for link in candidates:
             if link.source_user_id in self._listed_user_ids:
@@ -963,7 +984,10 @@ class ZammadConnector(BaseConnector):
             ):
                 gone.append(link)
             elif not response.success:
-                self.logger.warning(f"Could not read Zammad user {link.source_user_id}; they keep access this sync")
+                self.logger.warning(
+                    f"Could not read Zammad user {link.source_user_id} (HTTP {response.status_code}: "
+                    f"{response.error or response.message}); they keep access this sync"
+                )
                 self._incomplete.append(f"user {link.source_user_id}")
         if not gone:
             return
