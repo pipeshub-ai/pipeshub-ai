@@ -199,6 +199,35 @@ class TestCatchesMistakes(unittest.TestCase):
         self.assertTrue(any("stop running" in p for p in dropped), dropped)
         self.assertEqual(run(workflow=WORKFLOW + step(core.format("")) * 2)[0], [])
 
+    def _with_a_simulator_shard(self, minutes: float):
+        workflow = (
+            '        shard: ${{ fromJSON(... && \'["dispatch"]\' || '
+            '\'["connectors-1","connectors-2","connectors-3","core"]\') }}\n'
+            + WORKFLOW.split("}}\n", 1)[1] + '      CONN_SHARD_3: "delta_sim"\n'
+        )
+        pytest_ini = PYTEST_INI.replace(
+            "    cleanup:", "    delta_sim: Delta connector against the Delta simulator\n    cleanup:"
+        )
+        return workflow, pytest_ini, {**MINUTES, "delta_sim": minutes}
+
+    def test_a_small_simulator_shard_is_left_out_of_the_average(self) -> None:
+        workflow, pytest_ini, minutes = self._with_a_simulator_shard(5.0)
+        # Counted in the average, the 5-minute shard makes the balanced live shards look lopsided.
+        counted, _ = balance.check(workflow, pytest_ini, minutes)
+        self.assertTrue(any("the average shard" in p for p in counted), counted)
+        problems, report = balance.check(workflow, pytest_ini, minutes, simulator_shards=frozenset({"connectors-3"}))
+        self.assertEqual(problems, [], "\n".join(report))
+        self.assertTrue(any("connectors-3" in line and "simulator shard" in line for line in report), report)
+
+    def test_a_simulator_shard_over_its_ceiling_is_reported(self) -> None:
+        workflow, pytest_ini, minutes = self._with_a_simulator_shard(balance.SIM_SHARD_MAX_MINUTES + 1)
+        problems, _ = balance.check(workflow, pytest_ini, minutes, simulator_shards=frozenset({"connectors-3"}))
+        self.assertTrue(any("is a simulator shard" in p for p in problems), problems)
+
+    def test_the_simulator_shards_come_from_sim_tiers(self) -> None:
+        self.assertEqual(balance.sim_shards(), frozenset(json.loads(balance.SIM_TIERS.read_text())["sim_shards"]))
+        self.assertEqual(balance.sim_shards(Path("/nonexistent/sim_tiers.json")), frozenset())
+
     def test_an_unmeasured_suite_is_named_but_allowed(self) -> None:
         # beta has no measured time; the two shards still weigh the same without it.
         problems, report = run(minutes={"alpha": 30.0, "gamma": 30.0})
@@ -216,8 +245,94 @@ class TestThisRepo(unittest.TestCase):
             balance.PYTEST_INI.read_text(encoding="utf-8"),
             measured["minutes"],
             measured.get("_core_minutes"),
+            balance.sim_shards(),
         )
         self.assertEqual(problems, [], "\n".join(report + problems))
+
+    def _problems_with(self, old: str, new: str, count: int = 1) -> list[str]:
+        text = balance.WORKFLOW.read_text(encoding="utf-8")
+        self.assertGreaterEqual(text.count(old), count, old)
+        measured = json.loads(balance.DURATIONS.read_text(encoding="utf-8"))
+        problems, _ = balance.check(
+            text.replace(old, new, count), balance.PYTEST_INI.read_text(encoding="utf-8"),
+            measured["minutes"], measured.get("_core_minutes"), balance.sim_shards(),
+        )
+        return problems
+
+    def test_core_that_stops_excluding_a_shard_is_caught_in_either_step(self) -> None:
+        for count in (2, 1):  # both test steps, or one
+            with self.subTest(steps=count):
+                problems = self._problems_with(" and not ($CONN_SHARD_5)", "", count)
+                self.assertTrue(any("core expression selects" in p and "connectors-5" in p for p in problems), problems)
+
+    def test_core_that_also_selects_core_cases_of_simulator_suites_is_caught(self) -> None:
+        """A test of zammad_sim is also marked sim_core and integration: core must leave it out with those too."""
+        problems = self._problems_with(
+            ' and not demo and not ai_agents" ;;', ' and not demo and not ai_agents or (sim_core and not demo)" ;;', 2,
+        )
+        self.assertTrue(any("core expression selects 'zammad_sim'" in p for p in problems), problems)
+
+    def test_a_shard_missing_from_the_full_run_or_it_all_list_is_caught(self) -> None:
+        nightly = self._problems_with('"connectors-5","connectors-6","core","demo","ai_agents"]', '"connectors-6","core","demo","ai_agents"]')
+        self.assertTrue(any("full-run list" in p and "connectors-5" in p for p in nightly), nightly)
+        it_all = self._problems_with('"connectors-5","connectors-6","core","demo"]', '"connectors-6","core","demo"]')
+        self.assertTrue(any("it-all list" in p and "connectors-5" in p for p in it_all), it_all)
+
+    def test_a_case_statement_spelled_with_braces_is_still_read(self) -> None:
+        text = balance.WORKFLOW.read_text(encoding="utf-8")
+        last = text.rindex('case "$SHARD" in')
+        braced = text[:last] + 'case "${SHARD}" in' + text[last + len('case "$SHARD" in'):]
+        measured = json.loads(balance.DURATIONS.read_text(encoding="utf-8"))
+        ini = balance.PYTEST_INI.read_text(encoding="utf-8")
+        self.assertEqual(balance.check(braced, ini, measured["minutes"], None, balance.sim_shards())[0], [])
+        # ...and its core is still checked: drop that step's exclusion of connectors-6.
+        core_end = braced.rindex(" and not ($CONN_SHARD_6)")
+        broken = braced[:core_end] + braced[core_end + len(" and not ($CONN_SHARD_6)"):]
+        problems = balance.check(broken, ini, measured["minutes"], None, balance.sim_shards())[0]
+        self.assertTrue(any("Test step 2's core expression selects 'zammad_sim'" in p for p in problems), problems)
+
+    def test_a_step_this_check_cannot_read_is_reported(self) -> None:
+        text = balance.WORKFLOW.read_text(encoding="utf-8")
+        last = text.rindex('case "$SHARD" in')
+        hidden = text[:last] + "case $SHARD in" + text[last + len('case "$SHARD" in'):]
+        measured = json.loads(balance.DURATIONS.read_text(encoding="utf-8"))
+        problems = balance.check(
+            hidden, balance.PYTEST_INI.read_text(encoding="utf-8"), measured["minutes"], None, balance.sim_shards(),
+        )[0]
+        self.assertTrue(any("sit outside a `case" in p for p in problems), problems)
+
+    def test_a_core_line_with_many_shards_is_still_read_exactly(self) -> None:
+        """The core expression names every shard; past a dozen names the old check gave up and reported false
+        problems (cifs, snowflake and demo 'in core'). Here with ten more shards than the repo has today."""
+        many = " ".join(f"and not ($CONN_SHARD_{n})" for n in range(1, 17))
+        core = f"integration {many} and not zendesk and not storage and not cifs and not snowflake and not demo and not ai_agents"
+        for name in ("cifs", "snowflake", "demo", "ai_agents"):
+            self.assertTrue(balance._always_excludes(core, name), name)
+        self.assertFalse(balance._always_excludes(core.replace(" and not cifs", ""), "cifs"))
+        self.assertFalse(balance._always_excludes("integration and (not cifs or demo)", "cifs"))
+
+    def test_a_test_step_without_a_shard_line_is_caught(self) -> None:
+        text = balance.WORKFLOW.read_text(encoding="utf-8")
+        line = '            connectors-6) MARKERS="$CONN_SHARD_6" ;;\n'
+        last = text.rindex(line)
+        mutated = text[:last] + text[last + len(line):]
+        measured = json.loads(balance.DURATIONS.read_text(encoding="utf-8"))
+        problems, _ = balance.check(
+            mutated, balance.PYTEST_INI.read_text(encoding="utf-8"), measured["minutes"], None, balance.sim_shards(),
+        )
+        self.assertTrue(any("Test step 2 has no `connectors-6)" in p for p in problems), problems)
+
+    def test_a_shard_line_with_text_after_its_quote_is_caught(self) -> None:
+        """`MARKERS="$CONN_SHARD_6"extra` gives the shell the marker `zammad_simextra`, so that job selects nothing."""
+        text = balance.WORKFLOW.read_text(encoding="utf-8")
+        line = '            connectors-6) MARKERS="$CONN_SHARD_6" ;;\n'
+        last = text.rindex(line)
+        mutated = text[:last] + line.replace('" ;;', '"extra ;;') + text[last + len(line):]
+        measured = json.loads(balance.DURATIONS.read_text(encoding="utf-8"))
+        problems, _ = balance.check(
+            mutated, balance.PYTEST_INI.read_text(encoding="utf-8"), measured["minutes"], None, balance.sim_shards(),
+        )
+        self.assertTrue(any("Test step 2 has no `connectors-6)" in p for p in problems), problems)
 
     def test_the_shard_holding_nextcloud_starts_its_containers(self) -> None:
         """nextcloud and bookstack need the selfhosted-sources compose profile."""

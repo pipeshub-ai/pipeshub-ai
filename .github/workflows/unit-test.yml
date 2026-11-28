@@ -33,6 +33,8 @@ on:
       - 'deployment/helm/pipeshub-ai/templates/deployment.yaml'
       - 'deployment/helm/pipeshub-ai/values.yaml'
       - 'deployment/process_monitor.sh'
+      # The simulator shards' fake model, whose answers a Python unit test parses with the app's schemas.
+      - 'integration-tests/fake_model/**'
       - 'deployment/docker-compose/docker-compose.integration.redis-cluster.yml'
       - 'scripts/pr_changes.py'
       - '.github/actions/pr-changes/**'

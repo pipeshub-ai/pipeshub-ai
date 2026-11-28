@@ -1,0 +1,32 @@
+# The fake model for the simulator shards (integration-tests/fake_model/server.py). An override, used after the
+# stack's own file:
+#
+#   docker compose -f docker-compose.integration.neo4j.yml -f docker-compose.integration.fake-model.yml up -d
+#
+# Simulator suites check what a connector syncs and who may read it, not what a model answers, so their shards run
+# on this stand-in instead of a paid provider: it speaks Ollama's API (and the OpenAI-compatible routes), answers a
+# structured request with a valid instance of its schema and embeds text by hashing it. The integration helper
+# configures it as the org's model with TEST_AI_MODEL_PROVIDER=ollama and TEST_OLLAMA_ENDPOINT=http://fakellm:11434
+# (scripts/sim_shard_env.py prints those for a simulator shard). OLLAMA_API_URL names it to the app as the
+# deployment's own Ollama, which the model egress check allows even where private addresses are blocked
+# (backend/python/app/utils/model_egress.py).
+services:
+  fakellm:
+    image: python:3.12.11-alpine3.22@sha256:efcdfa6a6b2fd2afb9c7dfa9a5b288a6f68338b5cfdebe6b637d986067d85757
+    restart: always
+    command: ["python", "-I", "/srv/server.py", "--port", "11434"]
+    volumes:
+      - ../../integration-tests/fake_model:/srv:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:11434/api/version')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    mem_limit: 128m
+
+  pipeshub-ai:
+    environment:
+      - OLLAMA_API_URL=http://fakellm:11434
+    depends_on:
+      fakellm:
+        condition: service_healthy

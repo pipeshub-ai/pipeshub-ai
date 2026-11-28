@@ -133,6 +133,11 @@ class TestDecisions(unittest.TestCase):
         checks = runs("frontend/app/(main)/knowledge-base/sort-fields.json")
         self.assertTrue({"frontend", "python_unit"} <= checks)
 
+    def test_a_change_to_the_fake_model_runs_the_python_unit_tests(self) -> None:
+        # tests/unit/utils/test_structured_output_fake_ollama.py is the only check that its answers still parse as
+        # the app's schemas; a pull request that changes only the fake must not skip it.
+        self.assertIn("python_unit", runs("integration-tests/fake_model/server.py"))
+
     def test_a_workflow_change_runs_its_own_checks_and_the_actions_scan(self) -> None:
         checks = runs(".github/workflows/unit-test.yml")
         self.assertTrue({"node_unit", "python_unit", "redis_cluster", "codeql_actions"} <= checks)
@@ -166,6 +171,15 @@ class TestNothingTheOldTriggersCoveredIsDropped(unittest.TestCase):
                 self.assertTrue(
                     runs(_example(glob)) & {"node_unit", "python_unit", "redis_cluster", "sandbox_live"}
                 )
+
+    def test_every_python_unit_glob_starts_the_unit_test_workflow(self) -> None:
+        """The converse of test_unit_test_triggers: a file the rules send to python_unit must also be one the
+        workflow's own paths filter starts on, or that pull request runs no Python unit job at all."""
+        globs = self._paths("unit-test.yml")
+        for glob in pc.CHECKS["python_unit"]:
+            with self.subTest(glob=glob):
+                example = _example(glob)
+                self.assertTrue(any(pc.matches(example, (path,)) for path in globs), f"{example} starts no run")
 
     def test_sandbox_live_runs_on_sandbox_changes_only(self) -> None:
         for path in (

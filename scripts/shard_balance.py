@@ -27,10 +27,17 @@ REPO = Path(__file__).resolve().parent.parent
 WORKFLOW = REPO / ".github/workflows/integration-tests.yml"
 PYTEST_INI = REPO / "integration-tests/pytest.ini"
 DURATIONS = REPO / "scripts/shard_durations.json"
+SIM_TIERS = REPO / "integration-tests/sim_tiers.json"
 
 # How far the longest shard may sit above the average before this fails. The
 # nightly ends when the slowest shard ends, so drift here is wasted wall clock.
 MAX_OVER_MEAN = 1.35
+
+# Simulator shards (integration-tests/sim_tiers.json) hold only simulator suites, so the live suites can never move
+# onto them to even things out: counting them in the average would fail the live shards for a small simulator shard
+# nobody touched. They are left out of the average and held to their own ceiling instead: both graph legs of a shard
+# (the measured minutes are summed across both) plus about 30 minutes of stack start-up must fit the job's 300.
+SIM_SHARD_MAX_MINUTES = 250.0
 
 # CIFS is not registered yet, and Snowflake needs a live account the repository
 # does not hold, so both stay out of nightly shards and core.
@@ -53,7 +60,7 @@ _MATRIX_ANY_SHARD = re.compile(r'"([\w-]+)"')
 # The matrix line's single-quoted JSON lists; the last is the default (full-run) one.
 _MATRIX_LIST = re.compile(r"'(\[[^']*\])'")
 # One per test step (Neo4j, ArangoDB): the shell `case` that picks the markers.
-_SHARD_CASE_BLOCK = re.compile(r'case "\$SHARD" in\n(.*?)\n[ \t]*esac', re.DOTALL)
+_SHARD_CASE_BLOCK = re.compile(r'case "\$\{?SHARD\}?" in\n(.*?)\n[ \t]*esac', re.DOTALL)
 _IDENT = re.compile(r"[A-Za-z_$][\w$]*")
 _Marker = tuple
 
@@ -153,15 +160,27 @@ def _eval_marker(tree: _Marker, env: dict[str, bool]) -> bool:
     return left or right if kind == "or" else left and right
 
 
+def _terms(tree: _Marker, kind: str) -> list[_Marker]:
+    """The operands of a chain of ``kind`` ("and" or "or") at the top of ``tree``."""
+    if tree[0] == kind:
+        return _terms(tree[1], kind) + _terms(tree[2], kind)
+    return [tree]
+
+
 def _always_excludes(expression: str, name: str) -> bool:
     """True when no marker assignment that includes ``name`` can match."""
     try:
         tree = _parse_marker_expr(expression)
     except ValueError:
         return False
+    # The shape every core line has: "a and not (b or name ...) and not c ...". A top-level "not" over a disjunction
+    # that names ``name`` is false whenever ``name`` is set, so the whole conjunction is, however many names it holds.
+    for term in _terms(tree, "and"):
+        if term[0] == "not" and ("id", name) in _terms(term[1], "or"):
+            return True
     others = sorted(_marker_names(tree) - {name})
-    # A core line names a handful of markers. Past this, fail closed.
-    if len(others) > 12:
+    # Any other shape: enumerate the assignments. Past this many names, fail closed.
+    if len(others) > 16:
         return False
     for mask in range(1 << len(others)):
         env = {var: bool(mask & (1 << index)) for index, var in enumerate(others)}
@@ -188,6 +207,75 @@ def matrix_solo_shards(workflow_text: str) -> set[str]:
     if not lists:
         return set()
     return set(_MATRIX_ANY_SHARD.findall(lists[-1])) & set(SOLO_SHARDS)
+
+
+_IT_ALL_LIST = re.compile(r"'it-all'\)\s*&&\s*'(\[[^']*\])'")
+# Through `;;`, as for the solo shards: `MARKERS="$CONN_SHARD_6"extra` is the marker "...extra" to the shell.
+_CASE_SHARD_LINE = re.compile(r'^[ \t]*(connectors-\d+)\)[ \t]+MARKERS="\$CONN_SHARD_(\d+)"[ \t]*;;', re.MULTILINE)
+_SHARD_VARIABLE = re.compile(r"\$CONN_SHARD_(\d+)")
+
+
+def _expand_shards(expression: str, shards: dict[str, list[str]]) -> str:
+    """``$CONN_SHARD_N`` replaced by that shard's markers, as the shell will."""
+    lists = {shard.rsplit("-", 1)[-1]: names for shard, names in shards.items()}
+    return _SHARD_VARIABLE.sub(
+        lambda match: "(" + (" or ".join(lists.get(match.group(1), [])) or "__no_marker__") + ")", expression
+    )
+
+
+def _core_selects(expression: str, marker: str, shards: dict[str, list[str]]) -> bool:
+    """Whether a core expression can select a test of ``marker``'s suite, with any other markers it carries
+    (``sim_core``, ``integration``, ...). Fails closed: an expression this cannot read selects it."""
+    return not _always_excludes(_expand_shards(expression, shards), marker)
+
+
+def _wiring_problems(workflow_text: str, shards: dict[str, list[str]]) -> list[str]:
+    """What every CONN_SHARD needs besides its line, or its tests run twice or not at all on some event.
+
+    - Both test steps' ``core`` expressions leave its suites out; otherwise core runs them a second time.
+    - A test step that maps connector shards maps it too; otherwise that job stops on "Unknown shard".
+    - The full-run list (the nightly, a full dispatch) and the it-all list run its job; otherwise its suites run on
+      no nightly, or on no it-all pull request, while core still leaves them out.
+    """
+    problems: list[str] = []
+    steps = [block for block in _SHARD_CASE_BLOCK.findall(workflow_text) if _CORE_MARKER_LINE.search(block)]
+    # Counted only once some step is read as a case block, the form the workflow uses: then a core line outside
+    # one is a step this check cannot see (a case statement spelled another way).
+    unread = len(_CORE_MARKER_LINE.findall(workflow_text)) - len(steps) if steps else 0
+    if unread > 0:
+        problems.append(
+            f"{unread} core line(s) sit outside a `case \"$SHARD\" in ... esac` block this check can read, so their "
+            f"step goes unchecked. Write the step's case statement in that form."
+        )
+    for index, block in enumerate(steps, start=1):
+        core = _CORE_MARKER_LINE.search(block).group(1)
+        for shard, names in sorted(shards.items()):
+            for name in names:
+                if _core_selects(core, name, shards):
+                    problems.append(
+                        f"Test step {index}'s core expression selects '{name}' ({shard}), so core runs that suite "
+                        f"a second time. Exclude its CONN_SHARD there."
+                    )
+        mapped = {shard: number for shard, number in _CASE_SHARD_LINE.findall(block)}
+        if mapped:
+            for shard in sorted(shards):
+                if mapped.get(shard) != shard.rsplit("-", 1)[-1]:
+                    problems.append(
+                        f"Test step {index} has no `{shard}) MARKERS=\"$CONN_SHARD_{shard.rsplit('-', 1)[-1]}\"` line, "
+                        f"so that job stops on 'Unknown shard'."
+                    )
+    line = _MATRIX_LINE.search(workflow_text)
+    text = line.group(0) if line else ""
+    lists = _MATRIX_LIST.findall(text)
+    full = set(json.loads(lists[-1])) if lists else set()
+    it_all = _IT_ALL_LIST.search(text)
+    labelled = set(json.loads(it_all.group(1))) if it_all else set()
+    for shard in sorted(shards):
+        if lists and shard not in full:
+            problems.append(f"'{shard}' is not in the matrix's full-run list, so the nightly never runs its suites.")
+        if it_all and shard not in labelled:
+            problems.append(f"'{shard}' is not in the it-all list, so an it-all pull request never runs its suites.")
+    return problems
 
 
 def _solo_shard_problems(workflow_text: str, core_expressions: list[str]) -> list[str]:
@@ -267,11 +355,19 @@ def connector_markers(markers: dict[str, str]) -> set[str]:
     }
 
 
+def sim_shards(path: Path = SIM_TIERS) -> frozenset[str]:
+    """The simulator shards named in integration-tests/sim_tiers.json (none when the file is absent)."""
+    if not path.is_file():
+        return frozenset()
+    return frozenset(json.loads(path.read_text(encoding="utf-8"))["sim_shards"])
+
+
 def check(
     workflow_text: str,
     pytest_ini_text: str,
     durations: dict[str, float],
     core_minutes: float | None = None,
+    simulator_shards: frozenset[str] = frozenset(),
 ) -> tuple[list[str], list[str]]:
     """Return (problems, report lines). Problems empty means the split is sound."""
     problems: list[str] = []
@@ -335,6 +431,7 @@ def check(
             )
 
     problems.extend(_solo_shard_problems(workflow_text, core_expressions))
+    problems.extend(_wiring_problems(workflow_text, shards))
 
     for name in sorted(connectors - set(seen) - held):
         problems.append(
@@ -349,11 +446,16 @@ def check(
         shard: sum(durations.get(name, 0.0) for name in names)
         for shard, names in sorted(shards.items())
     }
-    mean = sum(totals.values()) / len(totals)
+    live = {shard: total for shard, total in totals.items() if shard not in simulator_shards}
+    mean = sum(live.values()) / len(live) if live else 0.0
 
     report.append(f"{len(seen)} connector suites across {len(shards)} shards, "
-                  f"{sum(totals.values()):.0f} min total, {mean:.0f} min average:")
+                  f"{sum(totals.values()):.0f} min total, {mean:.0f} min average of the live shards:")
     for shard, total in sorted(totals.items(), key=lambda item: -item[1]):
+        if shard in simulator_shards:
+            report.append(f"  {shard:14s} {total:6.1f} min  (simulator shard, at most {SIM_SHARD_MAX_MINUTES:.0f})  "
+                          f"{len(shards[shard])} suites")
+            continue
         share = total / mean if mean else 1.0
         report.append(f"  {shard:14s} {total:6.1f} min  ({share:.2f}x average)  "
                       f"{len(shards[shard])} suites")
@@ -362,8 +464,15 @@ def check(
     if unmeasured:
         report.append(f"  no measured time yet (counted as 0): {', '.join(unmeasured)}")
 
+    for shard in sorted(simulator_shards & set(totals)):
+        if totals[shard] > SIM_SHARD_MAX_MINUTES:
+            problems.append(
+                f"{shard} is a simulator shard with {totals[shard]:.0f} min of suites, over its "
+                f"{SIM_SHARD_MAX_MINUTES:.0f}: with stack start-up it would pass the job's 300-minute timeout. "
+                f"Add another simulator shard (integration-tests/sim_tiers.json) and move suites to it."
+            )
     if mean:
-        worst, worst_total = max(totals.items(), key=lambda item: item[1])
+        worst, worst_total = max(live.items(), key=lambda item: item[1])
         if worst_total / mean > MAX_OVER_MEAN:
             problems.append(
                 f"{worst} is {worst_total / mean:.2f}x the average shard "
@@ -386,6 +495,7 @@ def main() -> int:
         PYTEST_INI.read_text(encoding="utf-8"),
         measured["minutes"],
         measured.get("_core_minutes"),
+        sim_shards(),
     )
     print("\n".join(report))
     for problem in problems:

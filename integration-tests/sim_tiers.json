@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "sim_shards": ["connectors-6"],
+  "suites": {
+    "zammad_sim": {"pr": "all", "nightly": "all"}
+  }
+}

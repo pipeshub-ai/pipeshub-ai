@@ -45,7 +45,8 @@ SHIPPED = ("docker-compose.yml", "docker-compose.monitoring.yml", "docker-compos
 # service the base file hardens (test_no_compose_file_opens_a_hole), but they are not held to the full baseline.
 NOT_SHIPPED = ("docker-compose.build.neo4j.yml", "docker-compose.prod-legacy.yml", "docker-compose.sandbox-legacy.yml",
                "docker-compose.integration.arango.yml", "docker-compose.integration.neo4j.yml",
-               "docker-compose.integration.bookstack-sim.yml", "docker-compose.integration.graph-db.yml",
+               "docker-compose.integration.bookstack-sim.yml", "docker-compose.integration.fake-model.yml",
+               "docker-compose.integration.graph-db.yml",
                "docker-compose.integration.kv.yml", "docker-compose.integration.messaging.yml",
                "docker-compose.integration.redis-cluster.yml", "docker-compose.integration.salesforce-sim.yml",
                "docker-compose.integration.servicenow-sim.yml", "docker-compose.integration.sharepoint-sim.yml",

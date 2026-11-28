@@ -99,6 +99,9 @@ CHECKS: dict[str, tuple[str, ...]] = {
         "deployment/helm/pipeshub-ai/values.yaml",
         "deployment/process_monitor.sh",
         ".github/workflows/unit-test.yml",
+        # The simulator shards' fake model: tests/unit/utils/test_structured_output_fake_ollama.py runs the app's
+        # structured calls against it, the only check that its answers still parse as the app's schemas.
+        "integration-tests/fake_model/**",
     ),
     # main.yml
     "frontend": ("frontend/**", ".github/workflows/main.yml"),
@@ -278,7 +281,7 @@ CODEQL_LANGUAGES = {
 
 IT_WORKFLOW = ".github/workflows/integration-tests.yml"
 
-# The connector shards' markers, as CONN_SHARD_1 .. CONN_SHARD_5 in
+# The connector shards' markers, as CONN_SHARD_1 .. CONN_SHARD_6 in
 # integration-tests.yml list them (test_pr_changes.py checks the two agree).
 CONNECTOR_SHARDS = {
     "connectors-1": (
@@ -287,11 +290,12 @@ CONNECTOR_SHARDS = {
     ),
     "connectors-2": (
         "jira", "azure_files", "smb", "zendesk", "outlook", "gmail_workspace", "gmail_individual", "servicenow",
-        "zammad_sim",
     ),
     "connectors-3": ("notion", "confluence", "gcs", "zammad", "sharepoint_sim", "postgres", "salesforce"),
     "connectors-4": ("google_drive_individual", "gitlab", "azure_blob", "rss", "github_teams", "linear", "servicenow_sim"),
     "connectors-5": ("google_drive_workspace", "s3"),
+    # The simulator shard: simulator suites only, on the fake model (integration-tests/sim_tiers.json).
+    "connectors-6": ("zammad_sim",),
 }
 # The shards a pull request can run, in the workflow's order. Each one waits for
 # an approval and then takes about three hours, so these rules save the most.
