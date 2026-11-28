@@ -135,6 +135,18 @@ describe('ChatKbFiltersMigration', () => {
       expect(logger.info.calledWith(sinon.match(/KB-apps migration confirmed complete/))).to.equal(true);
     });
 
+    it('reads the KB-apps flag as the bare ciphertext the store hands back now', async () => {
+      const logger = makeLogger();
+      const kv = makeKvStore(null, 'encrypted-value');
+      setupKbAppsReady();
+
+      const m = new ChatKbFiltersMigration(logger as any, kv as any, 'aes-256-gcm', 'a'.repeat(64));
+      await m.run();
+
+      expect(mockEncService.decrypt.calledWith('encrypted-value')).to.equal(true);
+      expect(logger.info.calledWith(sinon.match(/KB-apps migration confirmed complete/))).to.equal(true);
+    });
+
     it('returns early when KB-apps migration not ready within retry window', async () => {
       const logger = makeLogger();
       const kv = makeKvStore(null, null);

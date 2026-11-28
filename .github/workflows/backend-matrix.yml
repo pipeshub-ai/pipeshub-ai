@@ -389,12 +389,22 @@ jobs:
             services: arango-graph-it
             tests: tests/integration/gitlab_simulated
             select: arango
+          # The kv legs also run the Node key-value service against the same stores (tests/integration/kv/test_kv_cross_language.py);
+          # the etcd leg carries its PostgreSQL case too (a migrated database, started below).
           - suite: kv
             backend: etcd
             compose: docker-compose.integration.kv.yml
             services: etcd-kv-it
             tests: tests/integration/kv
-            select: etcd
+            select: etcd or postgres
+            kv_postgres: true
+          - suite: kv
+            backend: redis
+            compose: docker-compose.integration.kv.yml
+            services: redis-kv-it
+            tests: tests/integration/kv
+            select: redis
+            redis_port: '6390'
 
     env:
       # 'true' when this pull request changes code this suite covers
@@ -418,7 +428,7 @@ jobs:
       ARANGO_TEST_URL: http://localhost:18529
       ARANGO_TEST_PASSWORD: ensure-it-pass
       REDIS_IT_HOST: localhost
-      REDIS_IT_PORT: '6389'
+      REDIS_IT_PORT: ${{ matrix.redis_port || '6389' }}
       QDRANT_IT_HOST: localhost
       QDRANT_IT_PORT: '6343'
       KAFKA_IT_BOOTSTRAP: localhost:29192
@@ -456,6 +466,34 @@ jobs:
         run: |
           requirements/install.sh dev --project . --editable
           df -h /
+
+      - name: Set up Node.js (the kv suite's Node side)
+        if: env.SUITE_RUNS == 'true' && matrix.suite == 'kv'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: 'npm'
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
+
+      - name: Install the Node API's dependencies (the kv suite's Node side)
+        if: env.SUITE_RUNS == 'true' && matrix.suite == 'kv'
+        working-directory: backend/nodejs/apps
+        run: npm ci --ignore-scripts
+
+      - name: Start and migrate PostgreSQL (the kv suite's PostgreSQL case)
+        if: env.SUITE_RUNS == 'true' && matrix.kv_postgres
+        env:
+          IMAGE: pgvector/pgvector:0.8.7-pg17-bookworm@sha256:b513c48566e4777cd3370451400000c78eda6a08131d68f4c31d4a76f27bd8fd
+        run: |
+          set -euo pipefail
+          docker run -d --name pg-kv-it -p 127.0.0.1:5442:5432 -e POSTGRES_HOST_AUTH_METHOD=trust "$IMAGE"
+          for _ in $(seq 1 60); do pg_isready -h 127.0.0.1 -p 5442 -U postgres && break; sleep 1; done
+          python -m venv "$RUNNER_TEMP/migrate-venv"
+          "$RUNNER_TEMP/migrate-venv/bin/pip" install --require-hashes --no-deps -r backend/db/requirements.lock
+          # an assignment, not eval "$(...)": a failing helper fails the step instead of leaving the variables empty
+          vars=$(PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" PG_ADMIN_URL=postgresql://postgres@127.0.0.1:5442/postgres scripts/prepare_pg_test_db.sh pipeshub_kv)
+          eval "$vars"
+          for v in PG_CORE_URL PG_NODE_URL PG_POOLER PG_RUNTIME_SERVICE; do test -n "${!v}"; echo "$v=${!v}" >> "$GITHUB_ENV"; done
 
       - name: Start ${{ matrix.backend }}
         if: env.SUITE_RUNS == 'true'

@@ -146,6 +146,25 @@ describe('ServiceAccountKindBackfillMigration', () => {
     expect(kvStore.set.called).to.equal(false);
   });
 
+  it('reads its state as the bare ciphertext the store hands back now', async () => {
+    stubCursor(accounts);
+    const kvStore = makeKvStore(
+      JSON.parse(
+        seal({
+          version: SERVICE_ACCOUNT_KIND_STATE_VERSION,
+          done: true,
+          userIds: [String(first), String(second)],
+          disabledUserIds: [],
+        }),
+      ),
+    );
+
+    const result = await run(kvStore);
+
+    expect(result.skipped).to.equal(true);
+    expect(kvStore.set.called).to.equal(false);
+  });
+
   it('stages again when an account appears after done', async () => {
     // `done` says the accounts staged then were marked, not that the answer
     // has not moved. A rolling upgrade can finish the backfill in a new pod

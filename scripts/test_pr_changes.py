@@ -89,12 +89,20 @@ class TestDecisions(unittest.TestCase):
                 self.assertIn("matrix_graph", runs(f"deployment/docker-compose/docker-compose.integration.{name}.yml"))
 
     def test_node_storage_runs_the_storage_legs_only(self) -> None:
-        for path in (
-            "backend/nodejs/apps/src/modules/storage/storage.service.ts",
-            "backend/nodejs/apps/src/libs/services/keyValueStore.service.ts",
-        ):
+        self.assertEqual(runs("backend/nodejs/apps/src/modules/storage/storage.service.ts") & MATRIX, {"matrix_storage"})
+
+    def test_the_node_key_value_service_runs_the_storage_and_kv_legs(self) -> None:
+        # the kv suite reads and writes through the Node service too (tests/integration/kv/test_kv_cross_language.py)
+        for path in ("backend/nodejs/apps/src/libs/services/keyValueStore.service.ts",
+                     "backend/nodejs/apps/src/libs/keyValueStore/providers/RedisDistributedKeyValueStore.ts"):
             with self.subTest(path=path):
-                self.assertEqual(runs(path) & MATRIX, {"matrix_storage"})
+                self.assertEqual(runs(path) & MATRIX, {"matrix_storage", "matrix_kv"})
+
+    def test_the_node_manifest_runs_the_kv_leg(self) -> None:
+        # the kv suite installs the Node packages and runs the Node driver, so a manifest-only change runs it as the lock does
+        for path in ("backend/nodejs/apps/package.json", "backend/nodejs/apps/package-lock.json"):
+            with self.subTest(path=path):
+                self.assertEqual(runs(path) & MATRIX, {"matrix_storage", "matrix_kv"})
 
     def test_node_code_outside_storage_runs_no_matrix_leg(self) -> None:
         self.assertEqual(runs("backend/nodejs/apps/src/modules/enterprise_search/controller/es_controller.ts") & MATRIX, set())

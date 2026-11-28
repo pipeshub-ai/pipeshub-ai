@@ -10,6 +10,17 @@ import {
 import { ConfigurationManagerConfig } from '../../modules/configuration_manager/config/config';
 import { KvValueCodec, kvValueCodec } from '../../edition';
 
+// An encrypted value (`iv:ciphertext:tag`, hex) as the Python services kept it until they stored it as its own text: JSON-encoded,
+// with the quotes. Read as the text inside, which is what this service keeps and what its callers decrypt.
+const QUOTED_CIPHERTEXT = /^"[0-9a-f]{24}:[0-9a-f]*:[0-9a-f]{32}"$/;
+const CIPHERTEXT = /^[0-9a-f]{24}:[0-9a-f]*:[0-9a-f]{32}$/;
+
+function readable<T>(stored: T | null): T | null {
+  return typeof stored === 'string' && QUOTED_CIPHERTEXT.test(stored)
+    ? (stored.slice(1, -1) as T)
+    : stored;
+}
+
 export class KeyValueStoreService implements IKVStoreConnection {
   private static instance: KeyValueStoreService;
   private store!: DistributedKeyValueStore<any>;
@@ -233,7 +244,7 @@ export class KeyValueStoreService implements IKVStoreConnection {
    */
   async get<T>(key: string): Promise<T | null> {
     await this.ensureConnection();
-    const kept = (await this.store.getKey(key)) as T | null;
+    const kept = readable<T>((await this.store.getKey(key)) as T | null);
     return this.decode<T>(key, kept);
   }
 
@@ -267,11 +278,8 @@ export class KeyValueStoreService implements IKVStoreConnection {
     callback: (value: T | null) => void,
   ): Promise<void> {
     await this.ensureConnection();
-    await this.store.watchKey(
-      key,
-      this.valueCodec()
-        ? (value: T | null) => callback(this.decode<T>(key, value))
-        : callback,
+    await this.store.watchKey(key, (value: T | null) =>
+      callback(this.decode<T>(key, readable(value))),
     );
   }
 
@@ -298,14 +306,14 @@ export class KeyValueStoreService implements IKVStoreConnection {
     newValue: T,
   ): Promise<boolean> {
     await this.ensureConnection();
-    let expected: T | null = expectedValue;
+    const encoded = this.encode(key, newValue);
+    let success: boolean;
     if (
       this.valueCodec() &&
       (typeof expectedValue === 'string' || expectedValue === null)
     ) {
       // The caller compares against the string it read (decoded); the store compares what it keeps: swap in the kept string
-      // when it decodes to exactly the one expected, so the store's own compare stays the atomic step. Anything other than a
-      // string is not encoded, so the store compares it as given.
+      // when it reads as exactly the one expected (quotes off, then the codec), so the store's own compare stays the atomic step.
       let kept: T | null;
       try {
         kept = (await this.store.getKey(key)) as T | null;
@@ -316,14 +324,39 @@ export class KeyValueStoreService implements IKVStoreConnection {
         });
         return false;
       }
-      if (this.decode<T>(key, kept) !== expectedValue) return false;
-      expected = kept;
+      if (this.decode<T>(key, readable(kept)) !== expectedValue) return false;
+      // the entry keeps the form it had: a value replacing a quoted ciphertext is written quoted, as its earlier readers expect
+      const quoted = typeof kept === 'string' && kept !== readable(kept);
+      const next =
+        quoted && typeof encoded === 'string' && CIPHERTEXT.test(encoded)
+          ? (JSON.stringify(encoded) as T)
+          : encoded;
+      success = await this.store.compareAndSet(key, kept, next);
+    } else {
+      success = await this.store.compareAndSet(key, expectedValue, encoded);
+      if (!success && typeof expectedValue === 'string') {
+        // The caller expects what `get` returned; the store may keep it in the older quoted form. One retry against the kept form
+        // when it reads as the expected value: the store's compare is still the atomic check.
+        let kept: T | null;
+        try {
+          kept = (await this.store.getKey(key)) as T | null;
+        } catch (error) {
+          // the store's own compare already answered false: a failure of the read after it keeps that answer
+          this.logger.warn('compare-and-set read failed', {
+            error: (error as Error).message,
+          });
+          return false;
+        }
+        if (kept !== expectedValue && readable(kept) === expectedValue) {
+          // the entry keeps the form it had: a ciphertext replacing a quoted one is written quoted, as its earlier readers expect
+          const next =
+            typeof encoded === 'string' && CIPHERTEXT.test(encoded)
+              ? (JSON.stringify(encoded) as T)
+              : encoded;
+          success = await this.store.compareAndSet(key, kept, next);
+        }
+      }
     }
-    const success = await this.store.compareAndSet(
-      key,
-      expected,
-      this.encode(key, newValue),
-    );
     if (success) {
       await this.publishCacheInvalidation(key);
     }

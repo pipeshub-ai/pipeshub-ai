@@ -37,6 +37,12 @@ def is_unencrypted_key(key: str) -> bool:
 T = TypeVar("T")
 
 
+class _Ciphertext(str):
+    """An encrypted value: kept in the store as its own text (``iv:ciphertext:tag``), not JSON-encoded, which is how Node keeps
+    the values it encrypts. Every reader takes that text: this store's reader falls back to the text when it is not JSON, and
+    Node's decrypts it as it reads it."""
+
+
 class _DatetimeSafeEncoder(json.JSONEncoder):
     """JSON encoder that safely handles datetime objects by converting them to ISO format strings."""
     def default(self, obj: Any) -> Any:  # noqa: ANN401
@@ -98,6 +104,8 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         """Create the appropriate key-value store based on configuration."""
 
         def serialize(value: Union[str, int, float, bool, Dict, list, None]) -> bytes:
+            if isinstance(value, _Ciphertext):
+                return value.encode("utf-8")
             if value is None:
                 return b""
             if isinstance(value, (str, int, float, bool)):
@@ -200,7 +208,7 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
 
         if encrypt_value:
             # Encrypt the value
-            store_value = self.cipher.encrypt(key, value_json)
+            store_value = _Ciphertext(self.cipher.encrypt(key, value_json))
         else:
             # The underlying store serializes what it is given (Redis and
             # PostgreSQL json.dumps it, etcd writes a str as-is and json.dumps
