@@ -127,6 +127,11 @@ from app.connectors.core.base.connector.connector_service import (
     dispose_connector,
 )
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
+from app.connectors.core.base.data_processor.permission_sync_gate import (
+    PERSONAL_CAP_CHECK_FAILED,
+    PersonalConnectorCapReachedError,
+    PersonalConnectorCapUnavailableError,
+)
 from app.connectors.core.base.connector.stream_purpose import streaming_for_indexing
 from app.services.rate_budget import account_scope
 from app.connectors.core.base.error.stream_errors import not_downloadable, to_internal_service_error, to_stream_error
@@ -272,6 +277,8 @@ NAME_TAKEN = "That name is already used by another connector. Pick a different n
 
 
 def _setup_failure_message(exc: ValueError) -> str:
+    if isinstance(exc, PersonalConnectorCapReachedError):
+        return str(exc)
     text = str(exc)
     if "already exists" in text:
         return NAME_TAKEN
@@ -5320,6 +5327,12 @@ async def create_connector_instance(
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=_setup_failure_message(e)
+            ) from e
+        except PersonalConnectorCapUnavailableError as e:
+            logger.error("create_connector_instance could not check the personal connector cap: %s", e, exc_info=True)
+            raise HTTPException(
+                status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
+                detail=PERSONAL_CAP_CHECK_FAILED
             ) from e
         except ConnectorInstanceNotDeletedError as e:
             # The instance write failed part way and its node could not be removed (logged by the registry).
