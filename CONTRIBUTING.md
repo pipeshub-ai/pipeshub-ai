@@ -362,6 +362,41 @@ runs the full suite on a reviewed commit using *Run workflow* on
 `integration-tests.yml` with that commit's hash (see
 [integration-tests/README.md](integration-tests/README.md)).
 
+### Heavy CI and `ci:` labels
+
+The fast checks (lint and type checks, unit tests, the edition guard, contract and OpenAPI validation, workflow
+lint, supply chain and dependency review) need no `ci:` label. The heavy suites run on a pull request only when
+it carries one of these labels. They still run on their nightly or weekly schedule, from *Run
+workflow*, and (where the workflow has a push trigger) on every push to `main`.
+
+| Label | Runs |
+| --- | --- |
+| `ci:full` | Every heavy workflow below |
+| `ci:db` | pg-runtime, node-pg-runtime, pg-stores, pgvector-provider, db-migrations, docstore-migrate, permission-conformance, postgres-image, backend-matrix, storage-backends |
+| `ci:harness` | Agent harness infrastructure, harness E2E and the harness fault suite |
+| `ci:e2e` | E2E smoke, Published Hub and ARM64 first-run, integration and SDK tests, the Helm install, desktop and native bundle builds |
+| `ci:security` | CodeQL |
+| (only `ci:full`) | Graph explorer tests |
+
+Adding a label starts its workflows on the current commit, and a push re-runs them while a label that starts
+them is still on the pull request. Where CI removes the label once its run starts, add it again to re-run.
+The workflows' own labels still start them too (`harness-fault`; `it-all`, `it-arango`, `it-neo4j`,
+`it-both` and `it-parallel` on the integration tests). Other labels do not re-run anything and do not cancel a
+running suite. Add the label that matches what you changed, or `ci:full` for a
+change that crosses areas, before asking for a merge. A maintainer adds labels on pull requests from forks.
+On a pull request from a fork a label does not start the full integration suite, which needs repository
+secrets: it still runs only the helper tests, and a maintainer runs the suite on the reviewed commit with
+*Run workflow* on `integration-tests.yml`, as described above.
+**Which checks gate a merge.** The checks listed in `.github/required-checks.txt` (job check names, as branch
+protection matches them) gate a merge: they run on every pull request with no label and no path filter. The heavy `ci:` suites are advisory on a pull request, so
+don't make a heavy job a required check; a check that runs only when someone adds a label can't gate every
+merge. A reviewer who needs a heavy suite adds its label and reads the run that label (or a push while it is
+on) started, where the suite's heavy jobs actually ran. A later run on the same commit whose heavy jobs were
+skipped, for example after an unrelated label, does not replace that suite's result. The cheap jobs a heavy
+workflow runs on every event (the chart lint, the integration helper tests) report a real result each time. The nightly and `main` runs are authoritative.
+`scripts/test_ci_label_gate.py` checks that every heavy job carries the same gate, and that every listed check
+runs on every pull request and is not a heavy suite.
+
 ## Contributor License Agreement
 
 Before we can merge your first pull request, you need to sign our [Contributor License Agreement](CLA.md) (CLA). You keep the copyright to your work; the CLA gives PipesHub a license to use and distribute it.
