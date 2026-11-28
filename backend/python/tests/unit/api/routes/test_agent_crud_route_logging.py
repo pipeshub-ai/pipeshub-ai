@@ -162,8 +162,15 @@ _OUTAGES = [
 
 @pytest.mark.parametrize(("method", "path", "body", "failing"), _OUTAGES, ids=[f"{m} {p}" for m, p, _, _ in _OUTAGES])
 def test_a_graph_outage_is_one_classed_text_free_line(
-    graph: InMemoryGraph, caplog, method: str, path: str, body: dict | None, failing: str,
+    graph: InMemoryGraph, caplog, monkeypatch: pytest.MonkeyPatch, method: str, path: str, body: dict | None,
+    failing: str,
 ) -> None:
+    if "-usage/" in path:
+        # The usage lookups are admin-only: the caller is an admin, so the outage still reaches the store.
+        async def is_admin(*_args: object) -> bool:
+            return True
+
+        monkeypatch.setattr("app.edition_config.check_user_is_admin", is_admin)
     graph.fail(failing, ConnectionError(SENTINEL))
 
     response = _client(graph).request(method, BASE + path, headers=as_user("alice"), json=body)
