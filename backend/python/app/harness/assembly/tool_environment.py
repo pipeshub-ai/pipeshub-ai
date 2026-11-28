@@ -404,6 +404,9 @@ async def _identity(
     except AgentNotFoundError as exc:
         raise RunRefused("agent_not_found", str(exc)) from exc
     except HTTPException as exc:
+        # A failed read (5xx) is not a refusal: it fails this attempt, so the run is assembled again.
+        if exc.status_code >= 500:
+            raise
         raise _refused("identity_unavailable", exc) from exc
     return enriched
 

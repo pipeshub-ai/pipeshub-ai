@@ -8,6 +8,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.harness.assembly.assembler import PipesHubRuntimeAssembler
 from app.harness.assembly.chat import build_chat_environment
@@ -90,12 +91,13 @@ async def test_an_actor_who_is_not_a_live_person_is_refused(
 
 
 @pytest.mark.asyncio
-async def test_an_actor_who_cannot_be_read_refuses_the_run() -> None:
+async def test_an_actor_who_cannot_be_read_fails_the_attempt_and_is_not_refused() -> None:
+    # A refusal settles the run for good; a failed read must leave it to be assembled again.
     graph = _graph()
     graph.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("graph down"))
-    with pytest.raises(RunRefused) as refused:
+    with pytest.raises(HTTPException) as failed:
         await _identity(_run(), agent_doc(isServiceAccount=True), graph, logging.getLogger("t"))
-    assert refused.value.error_type == "identity_unavailable"
+    assert failed.value.status_code == 503
 
 
 @pytest.mark.asyncio
@@ -159,8 +161,8 @@ async def test_every_agent_uses_the_persons_credentials(agent: dict[str, Any]) -
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "actor",
-    [{**ACTOR, "kind": "service"}, {**ACTOR, "isActive": False}, None, RuntimeError("graph down")],
-    ids=["service", "removed", "no-record", "read-failed"],
+    [{**ACTOR, "kind": "service"}, {**ACTOR, "isActive": False}, {**ACTOR, "isDisabled": True}, None],
+    ids=["service", "removed", "disabled", "no-record"],
 )
 async def test_the_built_in_assistant_is_refused_an_actor_who_is_not_a_live_person(actor: object) -> None:
     services = w.Services()
@@ -171,3 +173,14 @@ async def test_the_built_in_assistant_is_refused_an_actor_who_is_not_a_live_pers
     with pytest.raises(RunRefused) as refused:
         await build_chat_environment(run, services, MagicMock())
     assert refused.value.error_type == "identity_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_the_built_in_assistant_fails_the_attempt_when_the_actor_cannot_be_read() -> None:
+    # A refusal settles the run for good; a failed read must leave it to be assembled again.
+    services = w.Services()
+    services.graph.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("graph down"))
+    run = RunContext.from_claim(claim(pinned_spec(tool_ids=[]))).model_copy(update={"chat": MagicMock(), "agent": None})
+    with pytest.raises(HTTPException) as failed:
+        await build_chat_environment(run, services, MagicMock())
+    assert failed.value.status_code == 503
