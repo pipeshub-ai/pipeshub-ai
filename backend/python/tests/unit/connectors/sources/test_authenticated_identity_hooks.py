@@ -481,6 +481,29 @@ class TestConfluenceDataCenter:
         conn._get_fresh_datasource.return_value.get_user_v1.assert_awaited_once_with(username="dev")
         assert _registered(conn) == ("dev@corp.com", "8a7f808a")
 
+    @pytest.mark.parametrize("detail_status", [500, 503, None], ids=["500", "503", "no_answer"])
+    async def test_a_profile_read_that_failed_registers_nothing(self, detail_status: int | None) -> None:
+        """/user/current names the account but not its email; the profile call that carries it did not answer.
+        The email is unknown, not hidden: no id is passed, so the link stays as it is."""
+        conn = self._conn(
+            _json_response(200, {"userKey": "8a7f808a", "username": "dev"}),
+            _json_response(detail_status, {}) if detail_status else None,
+        )
+
+        await ConfluenceDataCenterConnector._register_authenticated_identity(conn)
+
+        conn.register_authenticated_source_user.assert_not_awaited()
+
+    async def test_a_profile_that_shows_no_email_registers_the_account_without_one(self) -> None:
+        conn = self._conn(
+            _json_response(200, {"userKey": "8a7f808a", "username": "dev"}),
+            _json_response(200, {"name": "dev"}),
+        )
+
+        await ConfluenceDataCenterConnector._register_authenticated_identity(conn)
+
+        assert _registered(conn) == (None, "8a7f808a")
+
 
 class TestJiraCloud:
     """Cloud reads the account once at init; run_sync hands the cached pair over."""

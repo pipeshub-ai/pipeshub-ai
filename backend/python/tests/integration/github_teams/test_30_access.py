@@ -60,7 +60,8 @@ async def test_visibility_changes_follow_github(world, org) -> None:
     repo.visibility = "public"
     await world.sync()
     assert (await world.diff()).clean()
-    assert await world.visible_to("carol@acme.com")
+    # public on GitHub, yet carol has no GitHub account: she reads nothing
+    assert await world.visible_to("carol@acme.com") == set()
     repo.visibility = "private"
     await world.sync()
     diff = await world.diff()

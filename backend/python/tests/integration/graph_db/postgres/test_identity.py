@@ -469,10 +469,9 @@ async def test_a_user_withdrawn_with_their_grants_reads_nothing_even_through_the
     assert targets == {"records/elsewhere", f"teams/all_{w.org}"}
 
 
-async def test_opening_the_app_to_the_org_team_first_takes_the_grants_left_on_unlinked_users(w: World) -> None:
-    """``open_app_to_org_team``: an org user the connector does not link loses the grants still naming them before
-    the All team passes the gate (they would read through it otherwise); a linked user keeps theirs; a grant left
-    on an unlinked user after the gate opened goes with the next call."""
+async def test_withdrawing_the_org_team_from_the_app_leaves_unlinked_users_nothing(w: World) -> None:
+    """An All-team edge an earlier release opened for content a source shows to anyone: while it stands, a user with no
+    account in the source reads the ORG grant and any grant left on them; once withdrawn, only a linked user reads."""
     import logging
     from unittest.mock import AsyncMock, MagicMock
 
@@ -483,9 +482,11 @@ async def test_opening_the_app_to_the_org_team_first_takes_the_grants_left_on_un
 
     await member(w, "m", userId="um", email="m@x.com", isActive=True)
     await member(w, "s", userId="us", email="s@x.com", isActive=True)
-    await w.nodes("records", rec("hers"), rec("left"))
+    await w.nodes("organizations", {"_key": w.org})
+    await w.nodes("records", rec("hers"), rec("left"), rec("public"))
     await w.edge("permission", ("users", "m"), ("records", "hers"), type="USER", role="READER")
     await w.edge("permission", ("users", "s"), ("records", "left"), type="USER", role="READER")
+    await w.edge("permission", ("organizations", w.org), ("records", "public"), type="ORG", role="READER")
     await w.nodes("teams", {"_key": f"all_{w.org}"})
     for who in ("m", "s"):
         await w.member(who, f"all_{w.org}", coll="teams")
@@ -494,18 +495,49 @@ async def test_opening_the_app_to_the_org_team_first_takes_the_grants_left_on_un
     processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
     await processor.on_new_app_users([app_user("m@x.com", "m")])
 
-    await processor.open_app_to_org_team(APP)
-    assert await w.allowed("m", "hers") == {"hers"}
-    assert await w.allowed("s", "left") == set()                           # through the team, but the stale grant went
-    assert await w.p.get_edge(f"all_{w.org}", "teams", APP, "apps", "userAppRelation")
+    await processor.ensure_team_app_edge(APP)                               # as an earlier release left it
+    assert await w.allowed("s", "left", "public") == {"left", "public"}
 
-    await w.edge("permission", ("users", "s"), ("records", "left"), type="USER", role="READER")
-    await processor.open_app_to_org_team(APP)                                # already open: the stale grant still goes
-    assert await w.allowed("s", "left") == set()
-    assert await w.allowed("m", "hers") == {"hers"}
     await processor.withdraw_team_app_edge(APP)
     assert not await w.p.get_edge(f"all_{w.org}", "teams", APP, "apps", "userAppRelation")
-    assert await w.allowed("m", "hers") == {"hers"}
+    assert await w.allowed("s", "hers", "left", "public") == set()
+    assert await w.allowed("m", "hers", "left", "public") == {"hers", "public"}
+    await processor.withdraw_team_app_edge(APP)                               # nothing left to withdraw: no error
+    assert await w.allowed("m", "hers", "public") == {"hers", "public"}
+
+
+async def test_the_configuring_user_reads_through_the_source_account_only_while_it_is_linked(w: World) -> None:
+    """The user who configured a connector reads what its source account reads (``authenticatedAs``), and the link
+    passes the gate on its own: after the account is withdrawn with its grants, the ORG grant still reaches the
+    configuring user, who has no account of their own. Removing the link, as the Jira Cloud sync does once the account
+    is ineligible, leaves them nothing."""
+    import logging
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.connectors.core.base.data_processor.data_source_entities_processor import (
+        DataSourceEntitiesProcessor,
+    )
+    from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+
+    await w.nodes("organizations", {"_key": w.org})
+    await member(w, "admin", userId="u-admin", email="admin@x.com", isActive=True)
+    await member(w, "sa", userId="u-sa", email="sa@x.com", isActive=False)
+    await w.nodes("records", rec("own"), rec("public"))
+    await w.edge("permission", ("users", "sa"), ("records", "own"), type="USER", role="READER")
+    await w.edge("permission", ("organizations", w.org), ("records", "public"), type="ORG", role="READER")
+    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), MagicMock())
+    processor.org_id = w.org
+    processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
+    await processor.on_new_app_users([app_user("sa@x.com", "sa")])
+    assert await w.allowed("admin", "own", "public") == set()
+
+    await processor.link_authenticator_to_source_user(APP, "u-admin", "sa@x.com", "src-sa", Connectors.JIRA)
+    assert await w.allowed("admin", "own", "public") == {"own", "public"}
+    assert await processor.get_linked_source_user_id(APP, "u-admin") == "src-sa"      # the account the link points at
+    await processor.withdraw_app_user_access(APP, [app_user("sa@x.com", "sa")], drop_grants=True)
+    assert await w.allowed("admin", "own", "public") == {"public"}         # the link alone passes the gate
+    await processor.unlink_authenticator(APP)
+    assert await w.allowed("admin", "own", "public") == set()
 
 
 async def test_a_link_written_in_an_open_transaction_is_read_inside_it(w: World) -> None:

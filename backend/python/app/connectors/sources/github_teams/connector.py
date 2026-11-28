@@ -281,6 +281,14 @@ class GitHubTeamsConnector(BaseConnector):
 
     async def init(self) -> bool:
         """Initialise the GitHub client, data source, and creator identity."""
+        # Earlier releases let the org's All team through the gate for public repos; nobody without a GitHub account
+        # reads them. First and graph only, so an init that keeps failing cannot keep that edge; a failure is logged,
+        # not raised, so init still reports what GitHub answered, and every sync withdraws it again.
+        try:
+            await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
+        except Exception as e:
+            self.logger.warning("Could not withdraw the org's All team from connector %s; the sync tries again: %s",
+                                self.connector_id, e)
         try:
             self.external_client = await GitHubClient.build_from_services(
                 logger=self.logger,
@@ -397,15 +405,35 @@ class GitHubTeamsConnector(BaseConnector):
             return
         if isinstance(source_user_id, int):
             email = self.users.resolved_email(source_user_id) or email
+        if not (isinstance(email, str) and email.strip()):
+            # GET /user carries only the public profile email, and this run's user sync may not have bound the
+            # account (a failed lookup is retried next sync): an email not found is unknown, not hidden, so the
+            # account is not registered. But an id other than the one the link points at means the credentials
+            # moved: that link goes, and the new account is linked once a sync binds its email.
+            if source_user_id is not None:
+                await self._unlink_an_earlier_account(str(source_user_id))
+            return
         await self.register_authenticated_source_user(
             email.strip() if isinstance(email, str) else None,
             str(source_user_id) if source_user_id is not None else None,
         )
 
+    async def _unlink_an_earlier_account(self, source_user_id: str) -> None:
+        """Remove the configuring user's link when it points at another GitHub account than ``source_user_id``. The
+        same account, no link, or a read that fails leaves it as it is."""
+        try:
+            linked = await self.data_entities_processor.get_linked_source_user_id(self.connector_id, self.created_by)
+            if linked is not None and linked != source_user_id:
+                await self.data_entities_processor.unlink_authenticator(self.connector_id)
+        except Exception as e:
+            self.logger.warning("Could not check which GitHub account connector %s is linked to: %s", self.connector_id, e)
+
     @reports_failed_sync("GitHub")
     async def run_sync(self) -> None:
         """Run a full GitHub sync (users -> repos -> issues/PRs/code)."""
         try:
+            # Again here, raising: init only logs a failed withdrawal, so its error stays the one GitHub caused.
+            await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
             self.record_sync_point.org_id = self.data_entities_processor.org_id
             await self.repos.timestamps.cancel()
             await self.runtime.refresh_token_if_needed()

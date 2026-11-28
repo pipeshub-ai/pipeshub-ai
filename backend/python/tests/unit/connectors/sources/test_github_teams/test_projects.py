@@ -456,8 +456,7 @@ class TestRecordGroupHierarchy:
 
 
 class TestTeamAppEdge:
-    """A public repo's ORG grant is reachable only through the "All" team's
-    edge to the App, so the edge is created exactly when such a grant exists."""
+    """No repo lets the org's All team through the connector gate."""
 
     def _sync(self, *repos: SimpleNamespace) -> tuple[object, ProjectsSync]:
         c = make_mock_connector()
@@ -473,45 +472,26 @@ class TestTeamAppEdge:
         repo.visibility = visibility
         return repo
 
-    async def test_private_and_internal_repos_create_no_edge(self) -> None:
-        c, sync = self._sync(self._repo(1, "private"), self._repo(2, "internal"))
-        c.users.org_member_emails = lambda: {"alice@corp.com"}
-
-        await sync.sync_all_repos()
-
-        c.data_entities_processor.ensure_team_app_edge.assert_not_awaited()
-
-    async def test_each_public_repo_ensures_the_edge(self) -> None:
+    async def test_no_repo_lets_the_org_team_through(self) -> None:
+        """A public repo's ORG grant reaches only linked GitHub accounts: people without an account in GitHub
+        read nothing through it, so no repo, public or not, opens the gate to the org's All team."""
         c, sync = self._sync(
-            self._repo(1, "private"), self._repo(2, "public"), self._repo(3, "public"),
+            self._repo(1, "private"), self._repo(2, "internal"), self._repo(3, "public"), self._repo(4, "public"),
         )
+        c.users.org_member_emails = lambda: {"alice@corp.com"}
+        sync._sync_repo_members = AsyncMock(side_effect=[
+            [], [], [], CollaboratorsUnavailable("forbidden", status_code=403),
+        ])
 
         await sync.sync_all_repos()
 
-        assert c.data_entities_processor.ensure_team_app_edge.await_count == 2
-        c.data_entities_processor.ensure_team_app_edge.assert_awaited_with(c.connector_id)
-
-    async def test_edge_precedes_the_public_repos_record_groups(self) -> None:
-        c, sync = self._sync(self._repo(555, "public"))
-        order: list[str] = []
-        c.data_entities_processor.ensure_team_app_edge.side_effect = lambda *_: order.append("edge")
-        c.data_entities_processor.on_new_record_groups.side_effect = (
-            lambda pairs: order.extend(f"group:{rg.external_group_id}" for rg, _ in pairs)
-        )
-
-        await sync.sync_all_repos()
-
-        assert order.index("edge") < order.index("group:555")
-
-    async def test_public_repo_on_403_still_creates_the_edge(self) -> None:
-        c, sync = self._sync(self._repo(1, "public"))
-        sync._sync_repo_members = AsyncMock(
-            side_effect=CollaboratorsUnavailable("forbidden", status_code=403),
-        )
-
-        await sync.sync_all_repos()
-
-        c.data_entities_processor.ensure_team_app_edge.assert_awaited_once()
+        c.data_entities_processor.ensure_team_app_edge.assert_not_called()
+        written = {
+            rg.external_group_id: perms
+            for call in c.data_entities_processor.on_new_record_groups.call_args_list
+            for rg, perms in call.args[0]
+        }
+        assert any(p.entity_type == EntityType.ORG for p in written["3"])
 
 
 class TestSyncAllReposAndResolution:

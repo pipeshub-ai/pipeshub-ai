@@ -12459,34 +12459,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         return len(result or [])
 
-    async def remove_unlinked_user_access_to_connector(
-        self,
-        connector_id: str,
-        transaction: str | None = None,
-    ) -> int:
-        """Delete every user's own PERMISSION edges to the connector's records, record groups, user groups and roles
-        when the user has no USER_APP_RELATION edge to the connector, checked in the same query."""
-        query = """
-        FOR perm IN permission
-            FILTER IS_SAME_COLLECTION(@users, perm._from)
-            FILTER PARSE_IDENTIFIER(perm._to).collection IN @targets
-            LET target = DOCUMENT(perm._to)
-            FILTER target != null AND target.connectorId == @connector_id
-            FILTER LENGTH(FOR rel IN @@relation FILTER rel._from == perm._from AND rel._to == @app LIMIT 1 RETURN 1) == 0
-            REMOVE perm IN permission
-            RETURN 1
-        """
-        result = await self.http_client.execute_aql(
-            query=query,
-            bind_vars={"users": CollectionNames.USERS.value, "connector_id": connector_id,
-                       "app": f"{CollectionNames.APPS.value}/{connector_id}",
-                       "@relation": CollectionNames.USER_APP_RELATION.value,
-                       "targets": [CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value,
-                                   CollectionNames.GROUPS.value, CollectionNames.ROLES.value]},
-            txn_id=transaction,
-        )
-        return len(result or [])
-
     async def get_user_granted_records(
         self,
         connector_id: str,

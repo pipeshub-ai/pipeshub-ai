@@ -470,11 +470,13 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             data = response.json() or {}
             source_user_id = data.get("userKey") or data.get("key")
             email = (data.get("email") or "").strip()
-            if not email and data.get("username"):
-                # Data Center usually omits email on /user/current; the profile call carries it
-                detail = await datasource.get_user_v1(username=data["username"])
-                if detail and detail.status == HttpStatusCode.SUCCESS.value:
-                    email = ((detail.json() or {}).get("email") or "").strip()
+            if not email:
+                # Data Center usually omits email on /user/current; the profile call carries it. Without an answer
+                # to it the email is unknown, not hidden: no id is passed, so the link is left as it is.
+                detail = await datasource.get_user_v1(username=data["username"]) if data.get("username") else None
+                if not detail or detail.status != HttpStatusCode.SUCCESS.value:
+                    return
+                email = ((detail.json() or {}).get("email") or "").strip()
         except Exception as e:
             self.logger.debug("Could not read the authenticated Confluence account: %s", e)
             return

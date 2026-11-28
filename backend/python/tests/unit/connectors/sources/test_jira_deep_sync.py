@@ -55,9 +55,8 @@ def _make_mock_deps():
     dep = MagicMock()
     dep.org_id = "org-jira-1"
     dep.on_new_app_users = AsyncMock()
-    dep.open_app_to_org_team = AsyncMock(return_value=True)
     dep.withdraw_team_app_edge = AsyncMock()
-    dep.org_team_app_edge_exists = AsyncMock(return_value=False)
+    dep.unlink_authenticator = AsyncMock()
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
@@ -2097,6 +2096,20 @@ class TestCacheAuthenticatedProfile:
             _resp(200, {"emailAddress": "a@b.com", "timeZone": "UTC"})
         )
         assert connector._jql_timezone is not None
+
+    def test_an_answer_hiding_the_email_does_not_keep_an_earlier_accounts(self) -> None:
+        """The id and the email come from the same answer: B's hidden email is hidden, not A's left from before, so
+        the link is not written to A's email under B's id."""
+        connector = _make_connector()
+        connector._cache_authenticated_jira_profile(_resp(200, {"accountId": "acc-a", "emailAddress": "a@b.com"}))
+        connector._cache_authenticated_jira_profile(_resp(200, {"accountId": "acc-b"}))
+        assert (connector._authenticated_jira_account_id, connector._authenticated_jira_email) == ("acc-b", None)
+
+    def test_a_failed_answer_keeps_what_was_read(self) -> None:
+        connector = _make_connector()
+        connector._cache_authenticated_jira_profile(_resp(200, {"accountId": "acc-a", "emailAddress": "a@b.com"}))
+        connector._cache_authenticated_jira_profile(_resp(503, {}))
+        assert (connector._authenticated_jira_account_id, connector._authenticated_jira_email) == ("acc-a", "a@b.com")
 
 
 class TestMapBoundedEmpty:
