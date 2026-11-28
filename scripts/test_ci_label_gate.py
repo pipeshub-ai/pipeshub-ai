@@ -46,14 +46,16 @@ HEAVY = {
     "codeql.yml": "ci:security",
     "graph-explorer-tests.yml": "ci:full",
 }
-# Jobs of a heavy workflow that run without the gate, keyed by the workflow's `name:` so a copy under another file
-# name is covered too. "events": a cheap job that a non-heavy path needs on every push (the helper tests, the chart
-# lint) or that the gated jobs need; it carries LABEL_EVENTS, so an unrelated label's run does no work. "needs X":
-# a job that depends on X and so skips with it.
+# Jobs of a heavy workflow that run without the gate: cheap jobs its gated jobs need, or a light job for forks.
+# Keyed by the workflow's `name:`, so a copy of the workflow under another file name is covered too. They run on
+# every event, an unrelated label included, so each run reports a real result rather than a skip (LABEL_EVENTS).
 UNGATED = {
-    "Integration Tests": {"changes": "events", "setup": "events", "it-fork": "needs changes"},
-    "Helm chart": {"check": "events"},
+    "Integration Tests": {"changes", "setup", "it-fork"},
+    "Helm chart": {"check"},
 }
+# The heavy-event predicate a cheap ungated job must not carry: skipping it on a label event would record a skip
+# that replaces its last real result on the commit.
+LABEL_EVENTS = "github.event.action != 'labeled' && github.event.action != 'unlabeled'"
 _PR_CHECK = "github.event_name != 'pull_request'"
 # A hand-written workflow whose labels are removed once they fire, so it starts on `labeled` only.
 ONE_SHOT = "# ci: labels are one-shot here"
@@ -110,14 +112,6 @@ def group_key(allowed: list[str], acted_on: list[str]) -> str:
     )
 
 
-def label_events(acted_on: list[str]) -> str:
-    """LABEL_EVENTS: anything but a label event, or a label the workflow's gate acts on."""
-    return (
-        f"{_PR_CHECK} || (github.event.action != 'labeled' && github.event.action != 'unlabeled') || "
-        f"contains(fromJSON('{_arr(acted_on)}'), github.event.label.name)"
-    )
-
-
 def _merge(into: list[str], labels: list[str]) -> list[str]:
     return into + [label for label in labels if label not in into]
 
@@ -171,7 +165,7 @@ def gate_problems(name: str, text: str, area: str | None = None) -> list[str]:
         f"{name}: no {trigger} trigger, so main is not covered without a label"
         for trigger in ("schedule", "workflow_dispatch") if trigger not in on
     ]
-    ungated = UNGATED.get(workflow.get("name"), {})
+    ungated = UNGATED.get(workflow.get("name"), set())
     allowed: list[str] = []
     acted_on: list[str] = []
     union_allowed: list[str] = []
@@ -214,16 +208,10 @@ def gate_problems(name: str, text: str, area: str | None = None) -> list[str]:
     # A generated copy may add a start label of its own for its other jobs; its generator's tests cover that.
     if unread and not generated:
         problems.append(f"{name}: labels its jobs read are not in the gate, so adding or removing them skips the run: {unread}")
-    for job_id, kind in ungated.items():
+    for job_id in ungated:
         job = (workflow.get("jobs") or {}).get(job_id) or {}
-        if kind == "events" and not generated:
-            cond = " ".join(str(job.get("if", "")).split())
-            if cond != label_events(union_acted):
-                problems.append(f"{name}:{job_id}: must run only on events the gate acts on (LABEL_EVENTS), so an unrelated label runs nothing")
-        elif kind.startswith("needs "):
-            needs = job.get("needs") or []
-            if kind[len("needs "):] not in (needs if isinstance(needs, list) else [needs]):
-                problems.append(f"{name}:{job_id}: must {kind}, so it skips on an unrelated label")
+        if LABEL_EVENTS in " ".join(str(job.get("if", "")).split()):
+            problems.append(f"{name}:{job_id}: an ungated job must run on every event, not skip on a label event (LABEL_EVENTS)")
     concurrency = workflow.get("concurrency")
     group = str(concurrency.get("group") or "") if isinstance(concurrency, dict) else ""
     if not group and not generated:
@@ -247,39 +235,42 @@ def listed_checks(text: str) -> list[str]:
 def required_check_problems(listed: list[str], workflows: dict[str, str]) -> list[str]:
     """A required check must report on every pull request, with no label.
 
-    `workflows` maps file name to text; each listed name is a workflow `name:`, and every workflow of that name
-    must start on opened, synchronize and reopened (pull_request or pull_request_target), with no paths filter
-    and no job behind a label. Heavy suites are opt-in, so none may be listed, nor any `*-result` job.
+    Branch protection matches check-run names, so each line is a job's check name: its `name:`, or its id when it
+    has none. Matrix jobs and names built from an expression report under other names and never match. Every job
+    with that name, in any workflow (copies included), must be in a workflow that starts on opened, synchronize
+    and reopened (pull_request or pull_request_target) with no paths filter, and must not run only with a label.
+    Heavy suites are opt-in, so no heavy workflow's job and no `*-result` may be listed.
     """
     problems = []
-    by_name: dict[str, list[tuple[str, dict]]] = {}
+    jobs_by_check: dict[str, list[tuple[str, dict, dict]]] = {}
     heavy: set[str] = set()
     for file, text in workflows.items():
         workflow = yaml.safe_load(text) or {}
-        by_name.setdefault(str(workflow.get("name")), []).append((file, workflow))
-        if '"ci:full"' in text:
-            heavy.add(str(workflow.get("name")))
-            for job_id, job in (workflow.get("jobs") or {}).items():
-                if _ALLOWED.search(" ".join(str((job or {}).get("if", "")).split())):
-                    heavy |= {str(job_id), str((job or {}).get("name", job_id))}
-    for name in listed:
-        if name in heavy or name.endswith("-result"):
-            problems.append(f"required-checks.txt: {name} is a heavy suite, which runs only on request")
+        for job_id, raw in (workflow.get("jobs") or {}).items():
+            job = raw or {}
+            check = str(job.get("name", job_id))
+            if "${{" in check or (job.get("strategy") or {}).get("matrix"):
+                continue
+            jobs_by_check.setdefault(check, []).append((file, workflow, job))
+            if '"ci:full"' in text:
+                heavy.add(check)
+    for check in listed:
+        if check in heavy or check.endswith("-result"):
+            problems.append(f"required-checks.txt: {check} is a job of a heavy suite, which runs only on request")
             continue
-        if name not in by_name:
-            problems.append(f"required-checks.txt: no workflow is named {name}")
+        if check not in jobs_by_check:
+            problems.append(f"required-checks.txt: no job reports a check named {check} (use the job's name:, or its id)")
             continue
-        for file, workflow in by_name[name]:
+        for file, workflow, job in jobs_by_check[check]:
             on = workflow.get(True, workflow.get("on")) or {}
             triggers = [on[t] or {} for t in ("pull_request", "pull_request_target") if isinstance(on, dict) and t in on]
             if not any(_EVERY_PR <= set(t.get("types") or _EVERY_PR) for t in triggers):
-                problems.append(f"required-checks.txt: {name} ({file}) does not start on every pull request push")
+                problems.append(f"required-checks.txt: {check} ({file}) does not start on every pull request push")
             if any("paths" in t or "paths-ignore" in t for t in triggers):
-                problems.append(f"required-checks.txt: {name} ({file}) has a paths filter, so it stays pending on other changes")
-            for job_id, job in (workflow.get("jobs") or {}).items():
-                cond = str((job or {}).get("if", ""))
-                if "label.name" in cond or "labels.*.name" in cond:
-                    problems.append(f"required-checks.txt: {name} ({file}) job {job_id} runs only with a label")
+                problems.append(f"required-checks.txt: {check} ({file}) has a paths filter, so it stays pending on other changes")
+            cond = str(job.get("if", ""))
+            if "label.name" in cond or "labels.*.name" in cond:
+                problems.append(f"required-checks.txt: {check} ({file}) runs only with a label")
     return problems
 
 
@@ -291,46 +282,40 @@ class CiLabelGateTest(unittest.TestCase):
         self.assertEqual(required_check_problems(listed, workflows), [])
 
     def test_a_check_that_can_stay_pending_is_not_required(self) -> None:
-        fast = "name: fast\non:\n  pull_request:\njobs:\n  lint:\n    runs-on: ubuntu-latest\n"
-        self.assertEqual(required_check_problems(["fast"], {"f.yml": fast}), [])
+        fast = "name: Fast checks\non:\n  pull_request:\njobs:\n  lint:\n    name: Lint\n    runs-on: ubuntu-latest\n"
+        self.assertEqual(required_check_problems(["Lint"], {"f.yml": fast}), [])
+        # Branch protection matches the job's check name, not the workflow's name.
+        self.assertTrue(required_check_problems(["Fast checks"], {"f.yml": fast}))
+        by_id = fast.replace("    name: Lint\n", "")
+        self.assertEqual(required_check_problems(["lint"], {"f.yml": by_id}), [])
+        matrix = fast.replace("    runs-on:", "    strategy:\n      matrix:\n        os: [a, b]\n    runs-on:")
+        self.assertTrue(required_check_problems(["Lint"], {"f.yml": matrix}))
         heavy = self._workflow({"stores": ["ci:full", "ci:db"]}, name="pg-stores")
-        cases = {
-            "pg-stores": {"x.yml": heavy},
-            "stores": {"x.yml": heavy},
-            "pg-stores-result": {"x.yml": heavy},
-            "missing": {"f.yml": fast},
-        }
-        for listed, flows in cases.items():
-            self.assertTrue(required_check_problems([listed], flows), listed)
+        for listed in ("stores", "pg-stores-result"):
+            self.assertTrue(required_check_problems([listed], {"x.yml": heavy}), listed)
         for bad in (
             fast.replace("  pull_request:\n", "  pull_request:\n    types: [labeled]\n"),
             fast.replace("  pull_request:\n", "  pull_request:\n    paths: ['docs/**']\n"),
             fast.replace("    runs-on:", "    if: github.event.label.name == 'run-checks'\n    runs-on:"),
-            # Another workflow of the same name (a copy) that only a label starts.
         ):
-            self.assertTrue(required_check_problems(["fast"], {"f.yml": bad}), bad)
+            self.assertTrue(required_check_problems(["Lint"], {"f.yml": bad}), bad)
+        # A copy of the job, under another file, that only a label starts.
         copy = fast.replace("  pull_request:\n", "  pull_request:\n    types: [labeled]\n")
-        self.assertTrue(required_check_problems(["fast"], {"f.yml": fast, "f-copy.yml": copy}))
+        self.assertTrue(required_check_problems(["Lint"], {"f.yml": fast, "f-copy.yml": copy}))
         target = fast.replace("pull_request:", "pull_request_target:\n    types: [opened, synchronize, reopened]")
-        self.assertEqual(required_check_problems(["fast"], {"f.yml": target}), [])
-        self.assertEqual(listed_checks("# comment\n\nfast\n"), ["fast"])
+        self.assertEqual(required_check_problems(["Lint"], {"f.yml": target}), [])
+        self.assertEqual(listed_checks("# comment\n\nLint\n"), ["Lint"])
 
-    def test_a_prerequisite_job_skips_on_an_unrelated_label(self) -> None:
+    def test_an_ungated_job_never_skips_on_a_label_event(self) -> None:
         allowed = ["ci:full", "ci:e2e"]
         text = self._workflow({"install": allowed}, name="Helm chart").replace(
-            "jobs:\n", f"jobs:\n  check:\n    if: >-\n      {label_events(allowed)}\n    runs-on: ubuntu-latest\n", 1
+            "jobs:\n", "jobs:\n  check:\n    runs-on: ubuntu-latest\n", 1
         )
         self.assertEqual(gate_problems("x.yml", text), [])
-        bare = text.replace(f"    if: >-\n      {label_events(allowed)}\n", "", 1)
-        self.assertTrue(any("LABEL_EVENTS" in p for p in gate_problems("x.yml", bare)))
-        helper = self._workflow({"integration-tests": allowed}, name="Integration Tests").replace(
-            "jobs:\n",
-            f"jobs:\n  changes:\n    if: {label_events(allowed)}\n    runs-on: ubuntu-latest\n"
-            f"  setup:\n    if: {label_events(allowed)}\n    runs-on: ubuntu-latest\n"
-            "  it-fork:\n    needs: changes\n    runs-on: ubuntu-latest\n", 1,
+        skipping = text.replace(
+            "  check:\n", f"  check:\n    if: {_PR_CHECK} || ({LABEL_EVENTS}) || contains(fromJSON('{_arr(allowed)}'), github.event.label.name)\n", 1
         )
-        self.assertEqual(gate_problems("x.yml", helper), [])
-        self.assertTrue(any("needs changes" in p for p in gate_problems("x.yml", helper.replace("    needs: changes\n", ""))))
+        self.assertTrue(any("must run on every event" in p for p in gate_problems("x.yml", skipping)))
 
     def test_heavy_workflows_are_gated(self) -> None:
         problems = []

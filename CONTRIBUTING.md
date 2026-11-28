@@ -387,12 +387,13 @@ change that crosses areas, before asking for a merge. A maintainer adds labels o
 On a pull request from a fork a label does not start the full integration suite, which needs repository
 secrets: it still runs only the helper tests, and a maintainer runs the suite on the reviewed commit with
 *Run workflow* on `integration-tests.yml`, as described above.
-**Which checks gate a merge.** The checks listed in `.github/required-checks.txt` gate a merge: they run on
-every pull request with no label and no path filter. The heavy `ci:` suites are advisory on a pull request, so
+**Which checks gate a merge.** The checks listed in `.github/required-checks.txt` (job check names, as branch
+protection matches them) gate a merge: they run on every pull request with no label and no path filter. The heavy `ci:` suites are advisory on a pull request, so
 don't make a heavy job a required check; a check that runs only when someone adds a label can't gate every
 merge. A reviewer who needs a heavy suite adds its label and reads the run that label (or a push while it is
-on) started, where the suite's jobs actually ran. A later run on the same commit whose suite jobs were skipped,
-for example after an unrelated label, does not replace it. The nightly and `main` runs are authoritative.
+on) started, where the suite's heavy jobs actually ran. A later run on the same commit whose heavy jobs were
+skipped, for example after an unrelated label, does not replace that suite's result. The cheap jobs a heavy
+workflow runs on every event (the chart lint, the integration helper tests) report a real result each time. The nightly and `main` runs are authoritative.
 `scripts/test_ci_label_gate.py` checks that every heavy job carries the same gate, and that every listed check
 runs on every pull request and is not a heavy suite.
 
