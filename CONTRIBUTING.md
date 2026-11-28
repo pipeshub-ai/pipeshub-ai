@@ -364,9 +364,9 @@ runs the full suite on a reviewed commit using *Run workflow* on
 
 ### Heavy CI and `ci:` labels
 
-Every pull request runs the fast checks: lint and type checks, unit tests, the edition guard, contract and
-OpenAPI validation, workflow lint, supply chain and dependency review. The heavy suites run on a pull request
-only when it carries one of these labels. They still run on their nightly or weekly schedule, from *Run
+The fast checks (lint and type checks, unit tests, the edition guard, contract and OpenAPI validation, workflow
+lint, supply chain and dependency review) need no `ci:` label. The heavy suites run on a pull request only when
+it carries one of these labels. They still run on their nightly or weekly schedule, from *Run
 workflow*, and (where the workflow has a push trigger) on every push to `main`.
 
 | Label | Runs |
@@ -378,8 +378,9 @@ workflow*, and (where the workflow has a push trigger) on every push to `main`.
 | `ci:security` | CodeQL |
 | (only `ci:full`) | Graph explorer tests |
 
-Adding a label starts its workflows on the current commit; while it stays on the pull request, each push re-runs
-them. The workflows' own labels still start them too (`harness-fault`; `it-all`, `it-arango`, `it-neo4j`,
+Adding a label starts its workflows on the current commit, and a push re-runs them while a label that starts
+them is still on the pull request. Where CI removes the label once its run starts, add it again to re-run.
+The workflows' own labels still start them too (`harness-fault`; `it-all`, `it-arango`, `it-neo4j`,
 `it-both` and `it-parallel` on the integration tests). Other labels do not re-run anything and do not cancel a
 running suite. Add the label that matches what you changed, or `ci:full` for a
 change that crosses areas, before asking for a merge. A maintainer adds labels on pull requests from forks.
