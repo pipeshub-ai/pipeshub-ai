@@ -1,3 +1,8 @@
+# Copyright (c) 2026 PipesHub Inc.
+# Licensed under the PipesHub Enterprise License. See the LICENSE file in this
+# ee folder. Free for development, testing and evaluation. Production use needs
+# a PipesHub licence key.
+
 """SharePoint Online: reading who may see what from SharePoint and Entra ID.
 
 Site, library, list, page and file grants; SharePoint site groups and Entra groups with their
