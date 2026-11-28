@@ -3152,7 +3152,8 @@
         "title": "Edition",
         "name": "Community Edition",
         "description": "Open Source und selbst gehostet. Die Enterprise Edition bietet zusätzlich Mandantenfähigkeit, SSO, SCIM-Provisionierung, Audit-Protokolle und mehr."
-      }
+      },
+      "dataCollectionActive": "Nutzungsdaten werden erfasst und an den konfigurierten Metrikserver gesendet. Schalten Sie dies aus, um es zu beenden."
     },
     "mcpAccess": {
       "title": "MCP-Zugriff",

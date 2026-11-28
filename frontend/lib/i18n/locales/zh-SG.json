@@ -3308,7 +3308,8 @@
         "title": "版本",
         "name": "社区版",
         "description": "开源、自行部署。企业版另有多租户、SSO、SCIM 预配、审计日志等功能。"
-      }
+      },
+      "dataCollectionActive": "正在收集使用数据并发送到已配置的指标服务器。关闭此项即可停止。"
     },
     "mcpAccess": {
       "title": "MCP 访问",

@@ -3195,7 +3195,8 @@
         "title": "Edición",
         "name": "Community Edition",
         "description": "De código abierto y autoalojada. Enterprise Edition añade multitenencia, SSO, aprovisionamiento SCIM, registros de auditoría y más."
-      }
+      },
+      "dataCollectionActive": "Se están recopilando datos de uso y se envían al servidor de métricas configurado. Desactívalo para detenerlo."
     },
     "mcpAccess": {
       "title": "Acceso MCP",

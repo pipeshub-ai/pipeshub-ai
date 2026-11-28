@@ -3308,7 +3308,8 @@
         "title": "版本",
         "name": "社群版",
         "description": "開源、自行部署。企業版另有多租戶、SSO、SCIM 佈建、稽核記錄等功能。"
-      }
+      },
+      "dataCollectionActive": "正在收集使用資料並傳送到已設定的指標伺服器。關閉此項即可停止。"
     },
     "mcpAccess": {
       "title": "MCP 存取",

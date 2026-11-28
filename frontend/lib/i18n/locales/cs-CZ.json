@@ -3456,7 +3456,8 @@
         "title": "Edice",
         "name": "Edice Community",
         "description": "Open source a na vlastním serveru. Edice Enterprise přidává multitenanci, SSO, SCIM provisioning, protokoly auditu a další."
-      }
+      },
+      "dataCollectionActive": "Data o využití se shromažďují a odesílají na nakonfigurovaný server metrik. Vypnutím tohoto přepínače to zastavíte."
     },
     "mcpAccess": {
       "title": "Přístup MCP",

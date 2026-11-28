@@ -22915,6 +22915,14 @@ components:
         Configuration for application telemetry and metrics collection.
         Metrics are collected anonymously and pushed to a remote server for analytics.
       properties:
+        telemetryEnabled:
+          type: boolean
+          readOnly: true
+          description: |
+            Whether telemetry can run on this deployment (`TELEMETRY_COLLECTION_FLAG`). Answered by
+            `GET /configurationManager/metricsCollection` only; when `false`, nothing is collected
+            and `enableMetricCollection` is answered `"false"`.
+          example: true
         enableMetricCollection:
           type: string
           description: |
@@ -82169,9 +82177,14 @@ paths:
         - Server URL configuration
         - Instance identification
 
-        The stored object is returned decrypted and as it is: every value is a string (the
-        write routes store the switch and the interval in their string form), and `{}` is
-        returned when nothing has been stored. The query string is not read.
+        The stored object is returned decrypted, every stored value a string (the write routes
+        store the switch and the interval in their string form), with `telemetryEnabled` added:
+        whether telemetry can run on this deployment (`TELEMETRY_COLLECTION_FLAG`). When it is
+        `false`, `enableMetricCollection` is answered `"false"` whatever is stored (also when
+        nothing is), since nothing is collected. With nothing stored, the answer is
+        `{"telemetryEnabled": true}` while telemetry can run, and
+        `{"enableMetricCollection": "false", "telemetryEnabled": false}` when it cannot. The query
+        string is not read.
 
         **Admin Access Required:** This endpoint requires administrator privileges.
       operationId: getMetricsCollection
@@ -82191,6 +82204,7 @@ paths:
                 serverUrl: "https://metrics-collector.example.com/collect-metrics"
                 apiKey: "54523f794e23d96e"
                 appVersion: "1.0.0"
+                telemetryEnabled: true
         '400':
           $ref: '#/components/responses/XssRejected'
         '401':

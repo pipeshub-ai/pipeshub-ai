@@ -3308,7 +3308,8 @@
         "title": "에디션",
         "name": "Community Edition",
         "description": "오픈 소스이며 직접 호스팅합니다. Enterprise Edition은 멀티 테넌시, SSO, SCIM 프로비저닝, 감사 로그 등을 더합니다."
-      }
+      },
+      "dataCollectionActive": "사용 데이터가 수집되어 구성된 메트릭 서버로 전송되고 있습니다. 중지하려면 이 옵션을 끄세요."
     },
     "mcpAccess": {
       "title": "MCP 액세스",

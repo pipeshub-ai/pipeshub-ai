@@ -3143,7 +3143,8 @@
         "title": "Edition",
         "name": "Community Edition",
         "description": "Open source and self-hosted. Enterprise Edition adds multi-tenancy, SSO, SCIM provisioning, audit logs and more."
-      }
+      },
+      "dataCollectionActive": "Usage data is being collected and sent to the configured metrics server. Turn this off to stop it."
     },
     "mcpAccess": {
       "title": "MCP access",

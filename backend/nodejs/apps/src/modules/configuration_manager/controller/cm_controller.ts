@@ -36,6 +36,7 @@ import {
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { RENAMED_SIGN_IN_METHODS } from '../../../edition';
 import {
+  isTelemetryEnabled,
   normalizeOrgId,
   setMetricCollectionEnabled,
 } from '../../../libs/services/telemetry/telemetry-impl';
@@ -2949,7 +2950,16 @@ export const getMetricsCollection =
       const metricsCollection = await getMetricsCollectionConfig(
         keyValueStoreService,
       );
-      res.status(200).json(metricsCollection).end();
+      // The page shows Data Collection only while telemetry can run on this deployment, so whatever is
+      // collected can always be seen and switched off; with it off, nothing is.
+      const telemetryEnabled = isTelemetryEnabled();
+      if (!telemetryEnabled) {
+        metricsCollection.enableMetricCollection = 'false';
+      }
+      res
+        .status(200)
+        .json({ ...metricsCollection, telemetryEnabled })
+        .end();
     } catch (error: any) {
       next(error);
     }
