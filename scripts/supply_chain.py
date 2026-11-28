@@ -509,17 +509,23 @@ def _node_locks(repo: Path) -> list[tuple[str, dict]]:
             for p in _walk(repo, names=("package-lock.json",))]
 
 
+# npm-package-arg reads a file: target as a URL relative to the lock: a leading ~ is the home directory, and
+# `.`/`..` segments, percent escapes, backslashes, `?`, `#` and drive letters change the path it opens. A target of
+# plain segments, none starting with a dot, means the same path to npm and to this check.
+_VENDORED_TARGET = re.compile(r"[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*(?:/[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*)*")
+
+
 def _vendored_tarball_problem(repo: Path, lock_dir: Path, target: str, integrity: str) -> str | None:
     """Why a `file:` lock entry is not a tarball vendored inside the repository whose bytes match its sha512, or None."""
-    rel = Path(target)
-    path = repo / lock_dir / rel
-    if rel.is_absolute() or ".." in rel.parts or not path.resolve().is_relative_to(repo.resolve()):
+    path = repo / lock_dir / target
+    if not _VENDORED_TARGET.fullmatch(target) or not path.resolve().is_relative_to(repo.resolve()):
         return f"file:{target} is not a path inside the repository"
     if not path.is_file():
         return f"file:{target} is not a vendored tarball in the repository"
     digest = "sha512-" + base64.b64encode(hashlib.sha512(path.read_bytes()).digest()).decode()
-    if digest not in integrity.split():
-        return f"file:{target} does not match the sha512 integrity in the lock"
+    # npm accepts the file if it matches any listed hash, so only the file's own hash may be listed.
+    if integrity != digest:
+        return f"file:{target}: the lock's integrity is not exactly the sha512 of the file"
     return None
 
 
