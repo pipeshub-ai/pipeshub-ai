@@ -54954,26 +54954,6 @@ paths:
                           type: string
                           format: objectId
                           description: Subdocument identifier auto-assigned by MongoDB.
-                  warnings:
-                    type: array
-                    description: Present only when the level stored is lower than the one requested; by default a share stores the level requested.
-                    items:
-                      type: object
-                      additionalProperties: false
-                      required:
-                        - code
-                        - requested
-                        - applied
-                      properties:
-                        code:
-                          type: string
-                          enum: [ACCESS_LEVEL_DOWNGRADED]
-                        requested:
-                          type: string
-                          enum: [write]
-                        applied:
-                          type: string
-                          enum: [read]
                   meta:
                     type: object
                     additionalProperties: false
