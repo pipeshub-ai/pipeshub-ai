@@ -33,8 +33,10 @@ DURATIONS = REPO / "scripts/shard_durations.json"
 MAX_OVER_MEAN = 1.35
 
 # CIFS is not registered yet, and Snowflake needs a live account the repository
-# does not hold, so both stay out of nightly shards and core.
-HELD_OUT_CONNECTORS = frozenset({"cifs", "snowflake"})
+# does not hold, so both stay out of nightly shards and core. So does the Jira
+# Cloud simulator suite: one graph leg of it takes hours longer than a shard
+# holds, and a marker runs on one shard only.
+HELD_OUT_CONNECTORS = frozenset({"cifs", "snowflake", "jira_cloud_sim"})
 
 # Suites with a job of their own, named after their marker. "demo" must start on
 # a stack no other suite has touched; "ai_agents" costs model calls, so its job

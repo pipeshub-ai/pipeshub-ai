@@ -555,6 +555,9 @@ jobs:
       # only.
       # Rebalance with scripts/shard_balance.py when a suite grows, and keep
       # CONNECTOR_SHARDS in scripts/pr_changes.py the same as these lines.
+      # jira_cloud_sim is in no shard and core leaves it out: one graph leg of
+      # it is longer than a whole shard (HELD_OUT_CONNECTORS in
+      # scripts/shard_balance.py).
       CONN_SHARD_1: "nextcloud or bookstack or bookstack_sim or mariadb or minio or web or local_fs or local_fs_sim or github or sharepoint"
       CONN_SHARD_2: "jira or azure_files or smb or zendesk or outlook or gmail_workspace or gmail_individual or servicenow or zammad_sim"
       CONN_SHARD_3: "notion or confluence or gcs or zammad or sharepoint_sim or postgres or salesforce"
@@ -986,7 +989,7 @@ jobs:
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
             connectors-4) MARKERS="$CONN_SHARD_4" ;;
             connectors-5) MARKERS="$CONN_SHARD_5" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not ($CONN_SHARD_5) and not zendesk and not storage and not cifs and not snowflake and not demo and not ai_agents" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not ($CONN_SHARD_5) and not zendesk and not storage and not cifs and not snowflake and not jira_cloud_sim and not demo and not ai_agents" ;;
             demo)         MARKERS="demo" ;;
             ai_agents)    MARKERS="ai_agents" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
@@ -1192,7 +1195,7 @@ jobs:
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
             connectors-4) MARKERS="$CONN_SHARD_4" ;;
             connectors-5) MARKERS="$CONN_SHARD_5" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not ($CONN_SHARD_5) and not zendesk and not storage and not cifs and not snowflake and not demo and not ai_agents" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not ($CONN_SHARD_5) and not zendesk and not storage and not cifs and not snowflake and not jira_cloud_sim and not demo and not ai_agents" ;;
             demo)         MARKERS="demo" ;;
             ai_agents)    MARKERS="ai_agents" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;

@@ -1,0 +1,36 @@
+# Jira Cloud simulator for the jira_cloud_sim suite (integration-tests/connectors/jira/jira_cloud_sim_*_test.py).
+# An override, used after the stack's own file:
+#
+#   docker compose -f docker-compose.integration.neo4j.yml -f docker-compose.integration.jira-cloud-sim.yml up -d
+#
+# The Jira Cloud connector sends its API token only to an Atlassian site, so the stack allows the simulator's alias as
+# one (PIPESHUB_ATLASSIAN_ALLOWED_SITE_HOSTS, a server-wide opt-in meant for a test double). The world is the simulator's
+# generated Jira: small, with a pinned seed, so every run starts from the same projects, people, groups, schemes and
+# issues; the tests change it through the vendor's own write API and the control API
+# (POST /_sim/jira/mutate, /_sim/jira/switches, /_sim/jira/clock/advance) on the published port
+# (integration-tests/connectors/jira_cloud_sim.env).
+services:
+  jira-cloud-sim:
+    image: ${JIRA_CLOUD_SIM_IMAGE:-pipeshub/connectors-simulator:it}
+    restart: always
+    command: ["jira"]
+    environment:
+      CONNSIM_SOURCES: jira
+      # The world lives in one process's memory.
+      CONNSIM_WORKERS: "1"
+      CONNSIM_JIRA_ISSUES: "80"
+      CONNSIM_PEOPLE: "24"
+      CONNSIM_SEED: "11"
+      # Custom fields of every type (the enrichment tests).
+      CONNSIM_JIRA_FIELDS: small
+    networks:
+      default:
+        aliases:
+          - jira-cloud-sim.internal
+    # 8102, the simulator's own port.
+    ports:
+      - "127.0.0.1:8102:80"
+    mem_limit: 1g
+  pipeshub-ai:
+    environment:
+      - PIPESHUB_ATLASSIAN_ALLOWED_SITE_HOSTS=jira-sim.internal,jira-cloud-sim.internal

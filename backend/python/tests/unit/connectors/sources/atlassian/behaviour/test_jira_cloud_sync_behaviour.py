@@ -1726,10 +1726,11 @@ class TestUnfinishedUserRead:
         graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
         assert sorted(site_db.kept_records) == stored, "the project's stored records are noted as seen"
 
-    @pytest.mark.parametrize(("status", "kept"), [(500, True), (400, False), (404, False)])
-    async def test_a_full_sync_whose_issue_search_fails_keeps_the_records_only_when_the_read_may_pass(
-        self, api, site_db, checkpoints, search, status, kept
+    @pytest.mark.parametrize("status", [500, 400, 404])
+    async def test_a_full_sync_whose_issue_search_fails_keeps_the_records(
+        self, api, site_db, checkpoints, search, status
     ) -> None:
+        """A 400 is "the search request is invalid"; neither it nor a 404 says the project has no issue."""
         self._stub_bo_everywhere(api)
         self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
         search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
@@ -1747,7 +1748,7 @@ class TestUnfinishedUserRead:
             await run_full_sync(connector, site_db)
 
         assert connector.full_sync_coverage().complete is True
-        assert (sorted(site_db.kept_records) == stored) if kept else (site_db.kept_records == [])
+        assert sorted(site_db.kept_records) == stored
 
     def test_the_connector_class_keeps_its_registration(self) -> None:
         # The helpers live in the same module; the builder decorator must still land on the connector.
