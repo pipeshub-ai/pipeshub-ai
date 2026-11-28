@@ -432,6 +432,10 @@ class ZammadConnector(BaseConnector):
         self._user_access: dict[int, UserAccess] = {}
         # How the last _fetch_users read ended; run_sync reads it straight after.
         self._users_read = ReadOutcome.COMPLETE
+        # Ids of every row the last _fetch_users listed, written or not (inactive, no email, system users).
+        self._listed_user_ids: set[str] = set()
+        # The token that listing used: whose own record a scoped listing holds.
+        self._users_listed_with: object = None
         # Parts of the current sync that could not be read or written (see ZammadSyncIncompleteError).
         self._incomplete: list[str] = []
         # Ids of the groups listed as inactive; their tickets leave PipesHub like a filtered-out group's.
@@ -464,6 +468,18 @@ class ZammadConnector(BaseConnector):
     def _token_in_use(self) -> object:
         get_client = getattr(self.external_client, "get_client", None)
         return getattr(get_client(), "token", None) if callable(get_client) else None
+
+    async def _token_replaced(self, started_with: object, read: str, page: int) -> bool:
+        """Whether the stored token changed since a paged read started: pages read with two tokens are two
+        accounts' views, so the read is unfinished and what it decides stays as stored. Asks the stored config,
+        since a token saved elsewhere reaches the client only on that read; a failed read counts as replaced."""
+        if await self._still_holds(started_with):
+            return False
+        self.logger.warning(
+            f"The Zammad access token was replaced while the {read} was read (page {page}); group and role "
+            "members and linked accounts stay as stored until the next sync reads them with the new one"
+        )
+        return True
 
     async def _still_holds(self, token: object) -> bool:
         """Whether ``token`` is still the one stored. A token saved while a request was refused only reaches
@@ -690,6 +706,10 @@ class ZammadConnector(BaseConnector):
             users, user_email_map = await self._fetch_users(roles if roles_read is ReadOutcome.COMPLETE else None)
             if self._users_read is ReadOutcome.REFUSED:
                 sign_in_unconfirmed = not await self._stop_if_signed_out() or sign_in_unconfirmed
+            elif self._users_read is ReadOutcome.COMPLETE and not await self._user_list_shows_others():
+                # A list that may hold only the token's own record says nothing of anyone else: links,
+                # group members and role members all stay as stored, as after a read cut short.
+                self._users_read = ReadOutcome.INTERRUPTED
             if sign_in_unconfirmed:
                 self._incomplete.append("the check that Zammad still accepts the access token")
             if users:
@@ -697,6 +717,8 @@ class ZammadConnector(BaseConnector):
                 self.logger.info(f"✅ Synced {len(users)} users")
             if self._users_read is not ReadOutcome.COMPLETE:
                 self._incomplete.append(f"the user list ({self._users_read.value})")
+            else:
+                await self._withdraw_departed_users(users)
             if ReadOutcome.REFUSED in (self._users_read, roles_read):
                 self.run_state.note(
                     "Zammad refused the list of users or roles, so access is not up to date. Give the connector's "
@@ -818,8 +840,10 @@ class ZammadConnector(BaseConnector):
         # The connector instance outlives a sync: last sync's users must not linger.
         self._user_id_to_data = {}
         self._user_access = {}
+        self._listed_user_ids = set()
 
         datasource = await self._get_fresh_datasource()
+        self._users_listed_with = self._token_in_use()
         page = 1
         per_page = 100
         outcome = ReadOutcome.COMPLETE
@@ -827,6 +851,9 @@ class ZammadConnector(BaseConnector):
         while True:
             response = await datasource.list_users(page=page, per_page=per_page)
 
+            if await self._token_replaced(self._users_listed_with, "user list", page):
+                outcome = ReadOutcome.INTERRUPTED
+                break
             if not response.success:
                 outcome = read_failure(response.status_code)
                 self.logger.warning(
@@ -851,6 +878,8 @@ class ZammadConnector(BaseConnector):
                 firstname = user_data.get("firstname", "") or ""
                 lastname = user_data.get("lastname", "") or ""
                 full_name = f"{firstname} {lastname}".strip()
+                if user_id:
+                    self._listed_user_ids.add(str(user_id))
 
                 # Skip inactive users, users without email, or users without ID
                 if not active or not email or not user_id:
@@ -909,6 +938,93 @@ class ZammadConnector(BaseConnector):
         self.logger.info(f"📥 Fetched {len(users)} users from Zammad")
         return users, user_email_map
 
+    async def _user_list_shows_others(self) -> bool:
+        """Whether the complete user list read this sync speaks for anyone but the token's own account.
+
+        UserPolicy::Scope lists only the caller's own record to a token without ticket.agent or
+        admin.user ("any listings will return users own information only",
+        https://docs.zammad.org/en/latest/api/user.html; ``scope.where(id: user.id)`` in
+        app/policies/user_policy/scope.rb), and everyone to one with either (``scope.all``).
+        """
+        if len(self._listed_user_ids) != 1:
+            # A full listing also holds Zammad's seeded user 1 ("-", db/seeds/user_nr_1.rb), which no token
+            # signs in as; and every listing holds the caller, so none is empty.
+            return True
+        datasource = await self._get_fresh_datasource()
+        # /users/me answers for the token asked with: only the listing's own token says whose record it holds.
+        me = await datasource.get_current_user() if self._token_in_use() == self._users_listed_with else None
+        if me is None or self._token_in_use() != self._users_listed_with:
+            self.logger.warning(
+                "The Zammad access token was replaced after the user list was read; group and role members and "
+                "linked accounts stay as stored until the next sync reads them with the new one"
+            )
+            return False
+        if not (me.success and isinstance(me.data, dict) and me.data.get("id") is not None):
+            self.logger.warning(
+                f"Could not read the token's own Zammad account (HTTP {me.status_code}: {me.error or me.message}); "
+                "group and role members and linked accounts stay as stored this sync"
+            )
+            return False
+        if self._listed_user_ids <= {str(me.data["id"])}:
+            self.logger.warning("The Zammad user list holds only the token's own account")
+            self.run_state.note(
+                "Zammad lists only the token's own user, so who belongs to which group and role is not up to date. "
+                "Give the connector's token the ticket.agent or admin.user permission."
+            )
+            return False
+        return True
+
+    async def _withdraw_departed_users(self, users: list[AppUser]) -> None:
+        """After a complete user read, a linked account that left Zammad loses the connector and its own grants.
+
+        Left means listed inactive ("Inactive users aren't able to login anymore",
+        https://admin-docs.zammad.org/en/latest/manage/users/index.html), listed but no longer
+        written (no email, a system user), or not listed and then confirmed gone or inactive by
+        ``GET /users/{id}``. The listing pages by offset over ``id`` (users#index), so a user
+        deleted mid-read can push one still there off a page: absence alone withdraws nobody.
+        Without the link a published answer's organisation grant no longer reaches them, and
+        their group and role grants go with it.
+        """
+        if not self._listed_user_ids:
+            return  # Zammad always lists at least the token's own user
+        written = {u.source_user_id for u in users}
+        try:
+            links = await self.data_entities_processor.get_app_user_links(self.connector_id)
+        except Exception as e:
+            self.logger.error(f"Could not read the linked Zammad accounts; nobody loses access this sync: {e}")
+            self._incomplete.append("the linked accounts")
+            return
+        candidates = [link for link in links if link.source_user_id not in written]
+        if not candidates:
+            return
+        datasource = await self._get_fresh_datasource()
+        gone = []
+        for link in candidates:
+            if link.source_user_id in self._listed_user_ids:
+                gone.append(link)
+                continue
+            if not str(link.source_user_id).isdigit():
+                continue
+            response = await datasource.get_user(int(link.source_user_id))
+            if response.status_code == HttpStatusCode.NOT_FOUND.value or (
+                response.success and isinstance(response.data, dict) and response.data.get("active") is False
+            ):
+                gone.append(link)
+            elif not response.success:
+                self.logger.warning(
+                    f"Could not read Zammad user {link.source_user_id} (HTTP {response.status_code}: "
+                    f"{response.error or response.message}); they keep access this sync"
+                )
+                self._incomplete.append(f"user {link.source_user_id}")
+        if not gone:
+            return
+        self.logger.info(f"Withdrawing Zammad access from {len(gone)} account(s) that left Zammad")
+        try:
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone, drop_grants=True)
+        except Exception as e:
+            self.logger.error(f"Withdrawing Zammad access from accounts that left failed; the next sync retries: {e}")
+            self._incomplete.append("the withdrawal of accounts that left Zammad")
+
     async def _fetch_groups(
         self,
         user_email_map: dict[str, AppUser],
@@ -938,6 +1054,7 @@ class ZammadConnector(BaseConnector):
         user_groups: List[Tuple[AppUserGroup, List[AppUser]]] = []
 
         datasource = await self._get_fresh_datasource()
+        started_with = self._token_in_use()
         page = 1
         per_page = 100
         self._filter_excluded_group_ids = None
@@ -951,6 +1068,11 @@ class ZammadConnector(BaseConnector):
         while True:
             response = await datasource.list_groups(page=page, per_page=per_page)
 
+            if await self._token_replaced(started_with, "group list", page):
+                user_groups = []  # members collected so far were read for a list that is not one view
+                listing_complete = False
+                self._incomplete.append(f"the group list ({ReadOutcome.INTERRUPTED.value})")
+                break
             if not response.success:
                 listing_complete = False
                 outcome = read_failure(response.status_code)
@@ -1058,11 +1180,14 @@ class ZammadConnector(BaseConnector):
     async def _fetch_roles(self) -> tuple[list[dict[str, Any]], ReadOutcome]:
         """Every role, with its permission names (``expand``), and how far the read got."""
         datasource = await self._get_fresh_datasource()
+        started_with = self._token_in_use()
         roles: list[dict[str, Any]] = []
         page = 1
         per_page = 100
         while True:
             response = await datasource.list_roles(page=page, per_page=per_page, expand=True)
+            if await self._token_replaced(started_with, "role list", page):
+                return roles, ReadOutcome.INTERRUPTED
             if not response.success:
                 outcome = read_failure(response.status_code)
                 hint = ""
