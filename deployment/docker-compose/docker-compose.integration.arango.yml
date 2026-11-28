@@ -96,6 +96,8 @@ services:
       - ZAMMAD_FULL_TICKET_LISTING_INTERVAL_MS=${ZAMMAD_FULL_TICKET_LISTING_INTERVAL_MS:-0}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
       - TELEMETRY_COLLECTION_FLAG=${TELEMETRY_COLLECTION_FLAG:-}
+      # Air-gapped install: 1 turns telemetry and every model/price-list download off. Empty keeps the online behaviour.
+      - PIPESHUB_OFFLINE=${PIPESHUB_OFFLINE:-}
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
       # Security settings - allow override with custom secret
       - SECRET_KEY=${SECRET_KEY:?set SECRET_KEY to a random key, e.g. the output of openssl rand -base64 32 (install.sh generates one)}

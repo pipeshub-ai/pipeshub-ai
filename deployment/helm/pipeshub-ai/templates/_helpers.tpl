@@ -1383,6 +1383,10 @@ adds what is specific to its role after it (the main pod: Node and the agent har
             - name: TELEMETRY_COLLECTION_FLAG
               value: {{ .Values.telemetry.collection.enabled | quote }}
 {{- end }}
+{{- if eq (toString .Values.offline.enabled) "true" }}
+            - name: PIPESHUB_OFFLINE
+              value: "1"
+{{- end }}
             {{- if ne (toString .Values.config.maxConcurrentParsing) "" }}
             - name: MAX_CONCURRENT_PARSING
               value: {{ .Values.config.maxConcurrentParsing | quote }}

@@ -151,11 +151,29 @@ COPY --chown=1000:1000 --from=python-deps /root/.cache/huggingface /root/.cache/
 COPY --chown=1000:1000 --from=python-deps /root/.cache/fastembed /root/.cache/fastembed
 COPY --chown=1000:1000 --from=python-deps /root/nltk_data /root/nltk_data
 
-# Layout model for the pdfplumber PDF parser (tables, figures), so it needs no
-# download at runtime. Only its own cache dir is handed over: a chown of the
-# whole cache would copy every baked model into this layer.
-RUN python -c "from huggingface_hub import hf_hub_download; hf_hub_download('docling-project/docling-layout-heron-onnx', 'model.onnx', revision='40bde044036bb181c130ddf6c51792187268748f')" && \
-    chown -R 1000:1000 /root/.cache/huggingface/hub/models--docling-project--docling-layout-heron-onnx
+# Docling models (layout, TableFormer) and the heron table detector, baked once into a
+# read-only directory that no volume covers. The HF cache volume the Compose files mount
+# over /root/.cache/huggingface keeps the contents of the volume's first creation, so a
+# model baked there is hidden after an upgrade; /opt is not mounted. Docling loads from
+# here by path (PIPESHUB_DOCLING_MODELS_DIR) and the table detector opens its file directly,
+# so none of them contacts the Hub. Revisions and files:
+# backend/python/app/config/constants/docling_models.py. TableFormer "fast" (selected by
+# PDF_DOCLING_TABLE_MODE=fast) adds 145 MB: build with --build-arg BUNDLE_TABLEFORMER_FAST=1
+# to bake it too; otherwise that mode runs "accurate" and logs a warning.
+ARG BUNDLE_TABLEFORMER_FAST=0
+ENV PIPESHUB_DOCLING_MODELS_DIR=/opt/docling-models
+COPY deployment/bake-docling-models.py backend/python/app/config/constants/docling_models.py /tmp/bake/
+RUN python /tmp/bake/bake-docling-models.py "${PIPESHUB_DOCLING_MODELS_DIR}" \
+        $([ "${BUNDLE_TABLEFORMER_FAST}" = "1" ] && echo --with-tableformer-fast) && \
+    chmod -R a+rX "${PIPESHUB_DOCLING_MODELS_DIR}" && \
+    rm -rf /tmp/bake /root/.cache/huggingface/xet /root/.cache/huggingface/.agent_harnesses.json
+
+# The cl100k_base token table tiktoken would otherwise fetch on first use (an isolated
+# network cannot). Read-only, outside every volume, found through TIKTOKEN_CACHE_DIR.
+ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken
+COPY deployment/bake-tiktoken.py /tmp/bake-tiktoken.py
+RUN python /tmp/bake-tiktoken.py "${TIKTOKEN_CACHE_DIR}" && \
+    chmod -R a+rX "${TIKTOKEN_CACHE_DIR}" && rm /tmp/bake-tiktoken.py
 
 # Copy Playwright browser binaries
 COPY --chown=1000:1000 --from=python-deps /root/.cache/ms-playwright /root/.cache/ms-playwright
@@ -195,7 +213,7 @@ RUN chmod +x /app/process_monitor.sh && \
 # services create log and state files in, belong to the runtime user. The image
 # starts as root so the entrypoint can take over data from earlier root-running
 # releases; it drops to uid 1000 with no capabilities before any service starts.
-COPY --chmod=755 deployment/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY --chmod=755 deployment/docker-entrypoint.sh deployment/offline-env.sh /usr/local/bin/
 
 # A container logs to stdout and the platform keeps it (Compose's logging
 # driver, the kubelet). Node's file logs are opt-in to a declared, writable

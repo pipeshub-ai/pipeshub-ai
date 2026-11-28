@@ -63,6 +63,8 @@ VARIANTS=(
   "local-arangodb|${LOCAL[*]} --set neo4j.enabled=false --set arango.enabled=true --set arango.auth.rootPassword=ci-arango"
   "local-etcd|${LOCAL[*]} --set etcd.enabled=true --set config.kvStoreType=etcd"
   "local-redis-cluster-external|${LOCAL[*]} --set redis.enabled=false --set redis.external.enabled=true --set redis.mode=cluster --set redis.external.clusterEndpoints=redis-0:6379 --set celery.brokerUrl=redis://celery:6379/0"
+  "local-offline|${LOCAL[*]} --set offline.enabled=true --set parsing.enabled=true"
+  "local-offline-false|${LOCAL[*]} --set-string offline.enabled=false"
   "local-metrics|${LOCAL[*]}"
   "local-postgres-exporter|${LOCAL[*]} --set postgresExporter.enabled=true --set postgresExporter.dataSource=pg.example:5432/pipeshub?sslmode=require --set postgresExporter.passwordSecret.name=pg-monitor"
   "local-metrics-bind|${LOCAL[*]} --set metrics.bind=0.0.0.0"
@@ -145,6 +147,21 @@ expect() { # variant, grep -F pattern, "present" | "absent" [, only in the docum
     echo "ok $1: '$2' $3${4:+ in $4}"
   fi
 }
+# Offline: off by default; on, it reaches the app pods and the parsing pods.
+if [[ -f "$OUT/local-offline.yaml" ]]; then
+  expect local-neo4j-kafka 'PIPESHUB_OFFLINE' absent
+  # The string "false" is off too (--set-string, or a values file that quotes it).
+  if grep -qF 'PIPESHUB_OFFLINE' "$OUT/local-offline-false.yaml" 2>/dev/null; then
+    echo "!! offline.enabled=\"false\" must not set PIPESHUB_OFFLINE"; failed=1
+  fi
+  expect local-offline 'name: PIPESHUB_OFFLINE' present 'name: ci-pipeshub-ai-parsing'
+  # Two pods render the app image's env: the app Deployment and the parsing one.
+  if [[ "$(grep -cE '^ +- name: PIPESHUB_OFFLINE$' "$OUT/local-offline.yaml")" == 2 ]]; then
+    echo "ok local-offline: PIPESHUB_OFFLINE on both app-image pods"
+  else
+    echo "!! local-offline: expected PIPESHUB_OFFLINE on exactly 2 pods"; failed=1
+  fi
+fi
 # The security profile (ADR-OPS-07): default values render what the chart before the programme rendered, so a
 # `helm upgrade` changes nothing until the operator sets hardened=true (test_security_profile.py has the detail).
 if [[ -f "$OUT/compat-kafka-builtin-mongo.yaml" ]]; then

@@ -24,6 +24,7 @@ For the standard interactive install, see the [Deployment Guide in the main READ
 - [Runtime tuning (workers and query-service flags)](#runtime-tuning-workers-and-query-service-flags)
 - [Code sandbox capacity](#code-sandbox-capacity)
 - [Container outbound connectivity](#container-outbound-connectivity)
+- [Air-gapped installs](#air-gapped-installs)
 - [Developer / local build](#developer--local-build)
 - [Soak-testing adaptive concurrency](#soak-testing-adaptive-concurrency)
 
@@ -115,6 +116,35 @@ them at the prompts or via `PIPESHUB_GRAPH_DB` / `PIPESHUB_KV_STORE`.
 **Slim** uses no extra broker or KV-store containers (Redis handles both).  
 **Full** pre-bakes the [BAAI/bge-large-en-v1.5](https://huggingface.co/BAAI/bge-large-en-v1.5) embedding model so the first query does not stall waiting for a download.
 **Eval** is slim without the sandbox image pull and without the Slack bot process.
+
+### Models in the image
+
+Every image (slim and full, Compose and Helm) carries the models the PDF parsers use and
+loads them from the image, never from the Hugging Face Hub:
+
+| Model | Used by | Path in the image |
+|-------|---------|-------------------|
+| `docling-project/docling-layout-heron` (rev `8f39ad3`) | Docling PDF pipeline, layout (PyTorch weights) | `/opt/docling-models/docling-project--docling-layout-heron` |
+| `docling-project/docling-models` (rev `fc0f2d4`), TableFormer `accurate` | Docling PDF pipeline, table structure | `/opt/docling-models/docling-project--docling-models/model_artifacts/tableformer/accurate` |
+| `docling-project/docling-layout-heron-onnx` (rev `40bde04`) | pdfplumber table and figure detector | `/opt/docling-models/docling-project--docling-layout-heron-onnx` |
+
+`/opt/docling-models` is read-only and outside every volume: the `pipeshub_hf_cache` volume
+(`/root/.cache/huggingface`) cannot hide it after an upgrade, and Kubernetes needs no
+volume for it. `PIPESHUB_DOCLING_MODELS_DIR=/opt/docling-models` is set in the image; do not set it
+in your Compose or Helm values (an older image does not have the directory). Do not set
+Docling's own `DOCLING_ARTIFACTS_PATH`: once it is set, Docling stops downloading and
+fails on any file the directory lacks. Each model
+is stored once. The detector and Docling's layout stage use different serializations of the same
+heron model (ONNX and PyTorch weights) on purpose: Docling's own ONNX engine produced identical
+boxes but used 1.3 to 1.7 times the CPU per page, so Docling keeps the PyTorch weights.
+
+TableFormer `fast` (`PDF_DOCLING_TABLE_MODE=fast`) is not baked by default (145 MB). Without its
+weights the parser runs `accurate` and logs one warning; nothing is downloaded. To use `fast`, build with
+`--build-arg BUNDLE_TABLEFORMER_FAST=1`.
+
+The `pipeshub_hf_cache` volume still holds what is downloaded at runtime, such as an embedding
+model you choose in the UI. A model missing from the image (a from-source install) is
+downloaded as before, and the log says so once.
 
 ---
 
@@ -908,8 +938,11 @@ Delivery limits: the in-app notification is sent every time an alert fires; the 
 
 PipesHub starts and indexes documents **without** outbound internet when models are
 already cached locally. The default **slim** image downloads the embedding model
-on first use, so leave `HF_HUB_OFFLINE` unset there. Set `HF_HUB_OFFLINE=1` only
-on air-gapped hosts that already have the models (or use the full `latest` image).
+on first use, so leave `HF_HUB_OFFLINE` unset there. For a host with no internet at all,
+use `PIPESHUB_OFFLINE=1` instead of setting the Hugging Face variables by hand (see
+[Air-gapped installs](#air-gapped-installs)).
+The Docling and table-detector models are always in the image and are read by path, so
+`HF_HUB_OFFLINE` does not affect them.
 **Cloud LLMs** (Gemini, OpenAI,
 Anthropic, …) and **external connectors** (Google, Slack, Microsoft, …) require
 the **`pipeshub-ai` container** to reach the public internet — not just your
@@ -948,6 +981,52 @@ After changing Docker daemon settings, **restart Docker and bring the stack back
 sudo systemctl restart docker
 cd deployment/docker-compose && ./install.sh --stop && ./install.sh
 ```
+
+---
+
+## Air-gapped installs
+
+One switch, `PIPESHUB_OFFLINE=1` in `.env`, makes the existing images run on a network with
+no route to the internet. There is no separate image. On start the container sets, for
+every service, whichever of these you have not set yourself, and logs one line naming them:
+
+| Variable | Value | Effect |
+|----------|-------|--------|
+| `TELEMETRY_COLLECTION_FLAG` | `false` | No telemetry is collected or pushed (Node and Python). |
+| `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE`, `HF_DATASETS_OFFLINE` | `1` | Hugging Face libraries read the local cache only. |
+| `HF_HUB_DISABLE_TELEMETRY`, `DO_NOT_TRACK` | `1` | Libraries do not report usage. |
+| `LITELLM_LOCAL_MODEL_COST_MAP` | `True` | LiteLLM uses its bundled price list instead of fetching one. |
+
+An explicit value always wins, including `HF_HUB_OFFLINE=0` (for a Hub mirror). In the main `docker-compose.yml` all seven variables are passed through from `.env`; the other Compose files pass only `PIPESHUB_OFFLINE` (set the rest in the container environment there). The default (`PIPESHUB_OFFLINE` empty) changes nothing.
+
+What the images already carry, in every mode: the Docling models, the OpenAI `cl100k_base`
+token table used to count tokens (`/opt/tiktoken`, found through `TIKTOKEN_CACHE_DIR`), the
+dashboard's fonts and icons, and the API reference page's fonts.
+
+What you still have to provide:
+
+- **An embedding model.** Only the **full** image carries one (`BAAI/bge-large-en-v1.5`).
+  The slim image has none and cannot download it, so with `PIPESHUB_OFFLINE=1` and the built-in
+  embedding selected, the embedding service logs one error saying so and every embedding request
+  fails. Use the full image, or configure an embedding service reachable from your network.
+- **An LLM** reachable from the app container (for example a local Ollama or a gateway).
+- **Images** loaded into your registry or host before you disconnect (`docker load`, or a
+  mirror). The installer's pull and the Helm chart's image pulls need that registry.
+- **TableFormer `fast`.** `PDF_DOCLING_TABLE_MODE=fast` needs weights that are not baked by
+  default. Offline, a missing `fast` falls back to `accurate` with one warning; to run `fast`,
+  build with `--build-arg BUNDLE_TABLEFORMER_FAST=1`.
+- Connectors and cloud models need the network they talk to; the switch does not change them.
+
+**Check the `pipeshub_hf_cache` volume.** The volume mounted at `/root/.cache/huggingface`
+keeps what it held when it was first created, and Docker does not refresh it from a newer
+image. An install that started on the slim image has an empty volume that hides the full
+image's embedding model after you switch to full. Either recreate it
+(`docker compose down`, `docker volume rm <project>_pipeshub_hf_cache`, then up again, which
+loses any model you downloaded into it) or point the embedding configuration at a model you
+have placed in the volume.
+
+On Kubernetes set `offline.enabled: true` in the Helm values; it sets `PIPESHUB_OFFLINE=1`
+on the app and parsing pods.
 
 ---
 

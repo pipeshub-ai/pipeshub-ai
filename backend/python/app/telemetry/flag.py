@@ -10,6 +10,7 @@ consent in the KV store, which only matters once this flag is on.
 import os
 
 from app.edition import TELEMETRY_DEFAULT_ENABLED
+from app.offline import offline_enabled
 
 TELEMETRY_COLLECTION_FLAG = "TELEMETRY_COLLECTION_FLAG"
 
@@ -17,5 +18,6 @@ TELEMETRY_COLLECTION_FLAG = "TELEMETRY_COLLECTION_FLAG"
 def telemetry_enabled() -> bool:
     raw = os.getenv(TELEMETRY_COLLECTION_FLAG, "").strip()
     if not raw:
-        return TELEMETRY_DEFAULT_ENABLED
+        # An offline install has nowhere to push to; an explicit value still wins.
+        return False if offline_enabled() else TELEMETRY_DEFAULT_ENABLED
     return raw.lower() == "true"

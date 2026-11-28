@@ -98,6 +98,16 @@ CHECKS: dict[str, tuple[str, ...]] = {
         "deployment/helm/pipeshub-ai/templates/deployment.yaml",
         "deployment/helm/pipeshub-ai/values.yaml",
         "deployment/process_monitor.sh",
+        # test_docling_models_deploy.py reads every image, Compose file and chart template: a mount over the
+        # baked models can come from any of them. The bake script is what the image runs.
+        "Dockerfile",
+        "deployment/bake-docling-models.py",
+        f"{COMPOSE}/**",
+        "deployment/helm/pipeshub-ai/**",
+        "deployment/offline-env.sh",
+        "deployment/docker-entrypoint.sh",
+        "deployment/bake-tiktoken.py",
+        "deployment/docker-compose/hot-reload/Dockerfile.dev",
         ".github/workflows/unit-test.yml",
     ),
     # main.yml

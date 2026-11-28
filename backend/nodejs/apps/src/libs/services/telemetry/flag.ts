@@ -9,12 +9,21 @@ import { TELEMETRY_DEFAULT_ENABLED } from '../../../edition';
  */
 export const TELEMETRY_COLLECTION_FLAG = 'TELEMETRY_COLLECTION_FLAG';
 
+export function isOfflineMode(): boolean {
+  const raw = process.env.PIPESHUB_OFFLINE?.trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
 /** What start-up logs when the switch is off. */
 export const telemetryOffMessage = `Telemetry disabled (${TELEMETRY_COLLECTION_FLAG} is not 'true')`;
 
 export function isTelemetryEnabled(): boolean {
   const raw = process.env[TELEMETRY_COLLECTION_FLAG]?.trim();
   if (!raw) {
+    // An offline install has nowhere to push to; an explicit value still wins.
+    if (isOfflineMode()) {
+      return false;
+    }
     return TELEMETRY_DEFAULT_ENABLED;
   }
   return raw.toLowerCase() === 'true';

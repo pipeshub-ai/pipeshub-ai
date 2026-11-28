@@ -192,6 +192,14 @@ telemetry:
   collection:
     enabled: ""
 
+# Air-gapped install. true sets PIPESHUB_OFFLINE=1 on every pod that runs the
+# app image (the app pods and, when parsing.enabled, the parsing pods): no
+# telemetry, no Hugging Face or LiteLLM network calls. The slim image carries no
+# local embedding model, so use the full image or an embedding service reachable
+# from the cluster. Container images must come from a registry the cluster can reach.
+offline:
+  enabled: false
+
 # Express `trust proxy` (TRUST_PROXY): how many proxies in front of the app
 # may set X-Forwarded-For, or a comma-separated list of their CIDRs. Empty
 # means "1" when ingress.enabled, otherwise trust no proxy. Use "2" when an L7

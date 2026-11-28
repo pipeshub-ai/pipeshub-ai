@@ -70,6 +70,16 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - LOG_FORMAT=${LOG_FORMAT:-text}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3001}
+      # Air-gapped install: 1 turns telemetry and every model/price-list download off. Empty keeps the online behaviour.
+      - PIPESHUB_OFFLINE=${PIPESHUB_OFFLINE:-}
+      # Each switch on its own, so an explicit value in .env beats the offline default.
+      - TELEMETRY_COLLECTION_FLAG=${TELEMETRY_COLLECTION_FLAG:-}
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-}
+      - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-}
+      - HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE:-}
+      - HF_HUB_DISABLE_TELEMETRY=${HF_HUB_DISABLE_TELEMETRY:-}
+      - LITELLM_LOCAL_MODEL_COST_MAP=${LITELLM_LOCAL_MODEL_COST_MAP:-}
+      - DO_NOT_TRACK=${DO_NOT_TRACK:-}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
       # Security settings - allow override with custom secret

@@ -2,8 +2,9 @@
 
     python -m app.modules.parsers.pdf.docling_models
 
-The image carries no Docling model: Docling downloads its layout and table models the first time a complex PDF is
-parsed, which an install with no route out cannot do. Run this once with a route out, against the volume the install
+The image bakes Docling's models (``app.config.constants.docling_models``); a from-source install or a custom image
+without them downloads the layout and table models the first time a complex PDF is parsed, which an install with no
+route out cannot do. Run this once with a route out, against the volume the install
 mounts at HF_HOME (Compose: ``pipeshub_hf_cache``), then start the install with ``HF_HUB_OFFLINE=1``. It builds the
 same converter the parser uses, so the cache holds exactly what the service will look for, whatever models a Docling
 upgrade picks. Prints each model repository now in the cache; exits 1 when the pipeline could not be built.

@@ -269,6 +269,7 @@ jobs:
           CHANGED_FILES=$(git diff --diff-filter=d --name-only "$MERGE_BASE" -- \
             'deployment/docker-compose/**' \
             'deployment/docker-entrypoint.sh' \
+            'deployment/offline-env.sh' \
             'deployment/process_monitor.sh' \
             '.github/workflows/main.yml' || true)
 
@@ -307,6 +308,10 @@ jobs:
       - name: Release tooling unit tests
         if: steps.changes.outputs.changed == 'true'
         run: bash deployment/docker-compose/tests/release_tooling_test.sh
+
+      - name: Offline switch tests
+        if: steps.changes.outputs.changed == 'true'
+        run: bash deployment/docker-compose/tests/offline_env_test.sh
 
       - name: Entrypoint ownership pass tests
         if: steps.changes.outputs.changed == 'true'

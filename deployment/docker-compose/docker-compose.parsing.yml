@@ -38,6 +38,8 @@ services:
     stop_grace_period: ${PARSING_STOP_GRACE_PERIOD:-120s}
     environment:
       - PIPESHUB_ROLE=parsing
+      # Air-gapped install: 1 turns telemetry and every model/price-list download off. Empty keeps the online behaviour.
+      - PIPESHUB_OFFLINE=${PIPESHUB_OFFLINE:-}
       - PARSING_SERVICE_PORT=8092
       # Requests in the route beyond this get 429 at once; empty = not limited by count.
       - PARSING_MAX_CONCURRENT=${PARSING_MAX_CONCURRENT:-}
