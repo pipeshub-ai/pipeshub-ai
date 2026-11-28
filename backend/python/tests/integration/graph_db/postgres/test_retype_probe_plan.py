@@ -27,6 +27,9 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.integration
 
 USERS, RECORDS, BATCH = 20, 5000, 1000
+UNTOUCHED = """SELECT count(*) AS n, md5(string_agg(concat_ws('|', from_coll, from_id, to_coll, to_id, ekey, doc::text), ',' ORDER BY from_coll, from_id, to_coll, to_id, ekey))
+    AS sum FROM graph.edges WHERE org_id = $1 AND coll = 'permission' AND NOT (from_coll = 'users' AND from_id = ANY($2::text[]) AND to_coll = 'records'
+    AND to_id = ANY($3::text[]))"""      # every grant that is not a pair of the batch: other holders, other records, a batch user on another record
 SITES = ("pipeshub:graph.batch_create_edges_retype_probe ", "pipeshub:graph.batch_create_edges_retype ")
 
 
@@ -45,6 +48,10 @@ async def granted(pg_db) -> AsyncIterator[str]:
         await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
             SELECT $1, 'permission', 'users', 'u' || u, 'records', 'r' || r, 'GROUP', '{"type": "GROUP", "role": "READER"}'::jsonb
             FROM generate_series(0, $2::int - 1) u, generate_series(0, $3::int - 1) r""", org, USERS, RECORDS), write=True)
+        # other holders on the batch's records, which the keyed read reaches and must leave alone
+        await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
+            SELECT $1, 'permission', 'groups', 'g' || g, 'records', 'r' || r, 'GROUP', '{"type": "GROUP", "role": "OWNER"}'::jsonb
+            FROM generate_series(0, 4) g, generate_series(0, $2::int - 1) r""", org, BATCH), write=True)
         admin = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
         try:
             await admin.execute("ANALYZE graph.edges")
@@ -72,13 +79,17 @@ async def test_the_retype_statements_read_by_key_within_the_batch_targets_grants
         # the grants the keyed reads may touch: every grant on a target of the batch
         reach = await pg_db.run(lambda tx: tx.fetchval("""SELECT count(*) FROM graph.edges WHERE org_id = $1 AND coll = 'permission'
             AND to_id = ANY($2::text[])""", org, targets))
+        users = [f"u{u}" for u in range(USERS)]
+        before = await pg_db.run(lambda tx: tx.fetchrow(UNTOUCHED, org, users, targets))
         await pg_provider.batch_create_edges([{"from_collection": "users", "from_id": u, "to_collection": "records", "to_id": r, "type": "USER",
                                                "role": "WRITER"} for u, r in pairs], "permission")
         monkeypatch.setattr(uow.Tx, "_run", real)
         assert set(ran) == set(SITES)
         kinds = await pg_db.run(lambda tx: tx.fetch("""SELECT ekey, count(*) AS n FROM graph.edges WHERE org_id = $1 AND coll = 'permission'
             AND to_id = ANY($2::text[]) GROUP BY ekey""", org, targets))
-        assert {r["ekey"]: r["n"] for r in kinds} == {"USER": len(pairs)}       # the batch's pairs were retyped: one grant each, the new type
+        assert {r["ekey"]: r["n"] for r in kinds} == {"USER": len(pairs), "GROUP": 5 * BATCH}   # the batch's pairs retyped; the groups' grants kept
+        after = await pg_db.run(lambda tx: tx.fetchrow(UNTOUCHED, org, users, targets))
+        assert dict(after) == dict(before) and before["n"] == USERS * (RECORDS - BATCH) + 5 * BATCH, (dict(before), dict(after))
 
         async def plans(tx) -> dict[str, Any]:
             out = {}
