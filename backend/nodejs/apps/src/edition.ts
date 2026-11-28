@@ -55,6 +55,15 @@ export function kvKeyBindsOrg(_key: string): boolean {
 export const EXTRA_AI_PUBLIC_CONFIG_KEYS: readonly string[] = [];
 
 /**
+ * Schema branches of the edition's own migration locations (`EXTRA_MIGRATION_LOCATIONS` in backend/python/app/edition.py)
+ * that this process reads under `DOC_STORE=postgres`, with the epoch its code needs: it waits for them at start-up as it
+ * waits for the shipped branches (`schemaRequirements`, libs/repositories/doc-store.ts).
+ */
+export const EDITION_SCHEMA_REQUIREMENTS: Readonly<
+  Record<string, { requires: number; code: number }>
+> = {};
+
+/**
  * Collections this edition stores besides this build's, for a move of the document store to PostgreSQL
  * (docstore-migrate, ADR-DOCMIG-01): every collection is copied, listed as not copied, or held, and preflight refuses
  * a move while a held one holds documents. `held` names the PostgreSQL tables its data lives in (none when the edition
