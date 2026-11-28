@@ -14,15 +14,17 @@ parse request carries them (``encode_stored_tables``), and the parsing service o
 from __future__ import annotations
 
 import asyncio
+import datetime
 import hashlib
 import json
+from collections import Counter
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Optional
 
 from app.models.blocks import BlockType
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Sequence
+    from collections.abc import Awaitable, Callable, Mapping, Sequence
     from logging import Logger
 
     from app.models.blocks import BlocksContainer
@@ -45,6 +47,20 @@ def row_digest(header: Optional[Sequence[str]], cells: Sequence[str]) -> str:
             sha.update(len(raw).to_bytes(8, "big"))
             sha.update(raw)
     return sha.hexdigest()[:32]
+
+
+def dict_row_digest(row: Mapping[object, object]) -> str:
+    """The digest of a row given as one dict per row (CSV, Excel): its keys are the table's header (an Excel header can be a
+    number or a date), its values the cells."""
+    return row_digest([_cell_text(key) for key in row], [_cell_text(value) for value in row.values()])
+
+
+def _cell_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (datetime.date, datetime.time)):
+        return value.isoformat()
+    return str(value)
 
 
 def with_row_digest(data: dict, digests: Sequence[Optional[str]], i: int) -> dict:
@@ -86,6 +102,30 @@ def row_texts_of(container: Optional[BlocksContainer]) -> list[StoredTable]:
         if isinstance(digest, str) and isinstance(text, str) and text.strip():
             tables.setdefault(block.parent_index, {}).setdefault(digest, []).append(text)
     return list(tables.values())
+
+
+def best_stored_table(tables: Sequence[StoredTable], candidates: Sequence[Sequence[str]]) -> Optional[StoredTable]:
+    """The stored table that can give a table the most texts, *candidates* being its rows' digests under each header reading;
+    ``None`` when none can, or when two tie (neither is surely this table). Only one stored table is used, so a row equal to one
+    of another table never takes that table's wording."""
+    best, best_shared, tied = None, 0, False
+    for digests in candidates:
+        counts = Counter(digests)
+        for table in tables:
+            # A repeated row counts as many times as both versions hold it, never more than the stored table can give.
+            shared = sum(min(n, len(table.get(digest, ()))) for digest, n in counts.items())
+            if shared > best_shared:
+                best, best_shared, tied = table, shared, False
+            elif shared and shared == best_shared and table is not best:
+                tied = True
+    return None if tied else best
+
+
+def kept_texts(table: Optional[StoredTable], digests: Sequence[str]) -> list[Optional[str]]:
+    """Each row's stored text in *table* (``None`` where it has none). A repeated row takes the stored texts of its repeats in
+    order, one each; a repeat more than were stored has none."""
+    left = {digest: iter(texts) for digest, texts in (table or {}).items()}
+    return [next(left.get(digest, iter(())), None) for digest in digests]
 
 
 class PreviousRows:

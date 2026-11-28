@@ -158,8 +158,10 @@ class TestNoResume:
         assert current_attempt() is None or not current_attempt().resume
 
     async def test_an_update_of_a_record_with_a_stale_marker_gets_a_new_vrid_and_cleans_the_old(self) -> None:
-        # The interrupted run's points are removed the way an abandoned vrid's are.
-        ep, _processor, _gp, event = _setup({"embedDeliveryId": "d0"}, event_type="updateRecord")
+        # The interrupted run's points are removed the way an abandoned vrid's are. PPTX is not reconciled block by block,
+        # so its update moves to a new vrid (a reconciled type keeps its vrid and diffs against it instead).
+        ep, processor, _gp, event = _setup({"embedDeliveryId": "d0"}, mime=MimeTypes.PPTX.value, event_type="updateRecord")
+        processor.process_pptx_document = MagicMock(side_effect=_mock_processor_gen)
 
         await _drain(ep.on_event(event))
 

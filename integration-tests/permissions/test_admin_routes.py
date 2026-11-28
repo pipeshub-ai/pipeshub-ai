@@ -19,6 +19,7 @@ so a new admin route cannot skip this suite.
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from collections.abc import Iterator
 from typing import Any
@@ -184,3 +185,68 @@ class TestTheAdminGetsThrough:
             f"The admin was refused on {route.id}: HTTP {status}. " + _error_excerpt(status, text)
         )
 
+
+
+
+# A personal access token carries the admin's signature but is not the admin in person, so it
+# must not change how the org signs in or reset a password.
+_PAT_REFUSED_ROUTES = (
+    ("GET", "/api/v1/orgAuthConfig/authMethods"),
+    ("GET", "/api/v1/orgAuthConfig/signInRemoval"),
+    ("POST", "/api/v1/orgAuthConfig"),
+    ("POST", "/api/v1/orgAuthConfig/updateAuthMethod"),
+    ("GET", "/api/v1/userAccount/password/status"),
+    ("POST", "/api/v1/userAccount/password/setup/email"),
+    ("POST", "/api/v1/userAccount/password/reset"),
+    ("POST", "/api/v1/userAccount/logout/manual"),
+)
+
+
+@pytest.fixture(scope="module")
+def admin_session(request: pytest.FixtureRequest) -> SessionClient:
+    """The admin's password session. Unlike the shared fixture it fails, not skips, without credentials."""
+    missing = [v for v in ("PIPESHUB_TEST_USER_EMAIL", "PIPESHUB_TEST_USER_PASSWORD") if not os.getenv(v)]
+    assert not missing, f"These routes must be checked on every run; set {', '.join(missing)}"
+    return request.getfixturevalue("user_session_client")
+
+
+@pytest.fixture(scope="module")
+def admin_pat(admin_session: SessionClient) -> Iterator[str]:
+    user_session_client = admin_session
+    base = user_session_client.base_url
+    headers = {"Authorization": f"Bearer {user_session_client.token}"}
+    resp = requests.post(
+        f"{base}/api/v1/personal-access-tokens",
+        json={"name": f"it-admin-pat-{uuid.uuid4().hex[:8]}", "expiryDays": 30},
+        headers=headers,
+        timeout=user_session_client.timeout_seconds,
+    )
+    assert resp.status_code == 201, f"minting a PAT: HTTP {resp.status_code}"
+    token_id = resp.json()["token"]["id"]
+    try:
+        yield resp.json()["token"]["accessToken"]
+    finally:
+        requests.delete(
+            f"{base}/api/v1/personal-access-tokens/{token_id}",
+            headers=headers,
+            timeout=user_session_client.timeout_seconds,
+        )
+
+
+class TestAnAdminPatCannotChangeSignIn:
+    @pytest.mark.parametrize("method,path", _PAT_REFUSED_ROUTES, ids=lambda v: v)
+    def test_a_pat_is_refused(
+        self, method: str, path: str, admin_pat: str, admin_session: SessionClient
+    ) -> None:
+        user_session_client = admin_session
+        resp = requests.request(
+            method,
+            f"{user_session_client.base_url}{path}",
+            headers={"Authorization": f"Bearer {admin_pat}"},
+            json={} if method == "POST" else None,
+            timeout=user_session_client.timeout_seconds,
+        )
+        assert resp.status_code == 403 and "interactive user session" in resp.text, (
+            f"A personal access token calling {method} {path} got HTTP {resp.status_code}, "
+            f"not the 403 session-only refusal. Reply starts: {resp.text[:200]!r}"
+        )

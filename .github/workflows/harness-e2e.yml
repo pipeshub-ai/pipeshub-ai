@@ -13,6 +13,8 @@ name: Harness E2E
 # because the runner is self-hosted (as e2e-smoke.yml).
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    # Heavy: on a pull request its jobs run only with the ci:full or ci:harness label (CONTRIBUTING.md).
     branches: [main]
     paths:
       - 'backend/nodejs/apps/src/modules/agent-harness/**'
@@ -51,13 +53,17 @@ permissions:
   contents: read
 
 concurrency:
-  group: harness-e2e-${{ github.event.pull_request.number || github.run_id }}
+  group: harness-e2e-${{ github.event_name == 'pull_request' && format('pr-{0}-{1}', github.event.pull_request.number, (contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:harness')))) && 'heavy' || format('other-{0}', github.run_id)) || format('{0}-{1}-{2}', github.event_name, github.ref, github.run_id) }}
   cancel-in-progress: true
 
 jobs:
   e2e:
     name: ${{ matrix.lane == 'harness' && 'es-pr' || 'es-engine-nightly' }} (run.sh ${{ matrix.lane }})
     if: >-
+      (github.event_name != 'pull_request' ||
+       (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)) ||
+       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:harness')) &&
+        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)))) &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
       && github.event.schedule != '0 2 * * 6' && github.event.inputs.lane != 'matrix'
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
@@ -167,8 +173,11 @@ jobs:
   es-matrix:
     name: es-matrix (${{ github.event.schedule == '0 2 * * 6' && 'weekly' || 'nightly' }})
     if: >-
-      github.event_name == 'schedule'
-      || (github.event_name == 'workflow_dispatch' && (github.event.inputs.lane == 'matrix' || github.event.inputs.lane == 'all'))
+      (github.event_name != 'pull_request' ||
+       (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)) ||
+       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:harness')) &&
+        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)))) &&
+      (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.lane == 'matrix' || github.event.inputs.lane == 'all')))
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
     timeout-minutes: ${{ github.event.schedule == '0 2 * * 6' && 360 || 120 }}
     env:

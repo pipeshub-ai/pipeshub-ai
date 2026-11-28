@@ -11,6 +11,7 @@ import {
   endServerSession as endSessionOnServer,
   forgetRefreshToken,
   keepRefreshToken,
+  markOf,
   markSignedIn,
   readLegacyTokens,
   rememberRefreshToken,
@@ -106,7 +107,8 @@ export const useAuthStore = create<AuthStore>()(
         }),
 
       logout: () => {
-        clearSignedInMark();
+        const accessToken = useAuthStore.getState().accessToken;
+        clearSignedInMark(accessToken ? markOf(accessToken) : undefined);
         clearLegacyTokens();
         forgetRefreshToken();
         clearElectronDesktopCredential();
@@ -152,10 +154,10 @@ async function migrateLegacyTokens(legacy: { accessToken: string | null; refresh
   return legacyAccessTokenUsable(legacy.accessToken) ? legacy.accessToken : null;
 }
 
-async function restoreFromCredential(): Promise<string | null> {
+async function restoreFromCredential(mark: string | null): Promise<string | null> {
   const answer = await requestAccessToken();
   if (answer.outcome === 'issued') return answer.accessToken;
-  if (answer.outcome === 'refused') clearSignedInMark();
+  if (answer.outcome === 'refused') clearSignedInMark(mark);
   return null;
 }
 
@@ -180,7 +182,7 @@ export function restoreSession(): Promise<void> {
   }
   const attempt = (async () => {
     try {
-      const accessToken = hasLegacy ? await migrateLegacyTokens(legacy) : await restoreFromCredential();
+      const accessToken = hasLegacy ? await migrateLegacyTokens(legacy) : await restoreFromCredential(mark);
       // Signed in meanwhile (this page or another tab) wins over the restore. So does a sign-out (or another account's
       // sign-in) in another tab while the refresh was out (R48MIGFIX-3): storing its token would mark this browser
       // signed in as the person who just left.

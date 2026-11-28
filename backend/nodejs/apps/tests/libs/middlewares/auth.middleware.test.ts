@@ -223,6 +223,7 @@ describe('AuthMiddleware', () => {
       sinon
         .stub(Users, 'findOne')
         .returns(createMockQuery({ _id: 'user1', orgId: 'org1', isDisabled: true }))
+      sinon.stub(UserActivities, 'findOne').returns(createMockQuery(null))
       tokenService = { verifyToken: sinon.stub(), verifyScopedToken: sinon.stub() } as any
       authMiddleware = new AuthMiddleware(logger as unknown as Logger, tokenService as unknown as AuthTokenService)
       tokenService.verifyToken.resolves({
@@ -248,6 +249,7 @@ describe('AuthMiddleware', () => {
       sinon
         .stub(Users, 'findOne')
         .returns(createMockQuery({ _id: 'user1', orgId: 'org1', kind: 'service' }))
+      sinon.stub(UserActivities, 'findOne').returns(createMockQuery(null))
       tokenService = { verifyToken: sinon.stub(), verifyScopedToken: sinon.stub() } as any
       authMiddleware = new AuthMiddleware(logger as unknown as Logger, tokenService as unknown as AuthTokenService)
       tokenService.verifyToken.resolves({
@@ -418,7 +420,7 @@ describe('AuthMiddleware', () => {
       expect(error).to.be.instanceOf(UnauthorizedError)
     })
 
-    it('should still authenticate if UserActivities.findOne throws (non-fatal)', async () => {
+    it('should refuse (next(error), not a pass) if UserActivities.findOne throws', async () => {
       const decoded = {
         userId: 'user1',
         orgId: 'org1',
@@ -437,9 +439,11 @@ describe('AuthMiddleware', () => {
 
       await authMiddleware.authenticate(req, res, next)
 
-      // Should still proceed since activity check failure is caught
+      // A failed read must not read as "no logout recorded": that would revive ended sessions.
       expect(next.calledOnce).to.be.true
-      expect(next.firstCall.args).to.have.length(0)
+      const error = next.firstCall.args[0]
+      expect(error).to.be.instanceOf(Error)
+      expect(error).to.not.be.instanceOf(UnauthorizedError)
     })
 
     it('should skip activity check when userId or orgId are missing', async () => {
@@ -1560,7 +1564,7 @@ describe('AuthMiddleware', () => {
       expect(next.firstCall.args).to.have.length(0)
     })
 
-    it('should still authenticate if UserActivities lookup throws for PASSWORD_RESET scope', async () => {
+    it('should refuse (next(error), not a pass) if UserActivities lookup throws for PASSWORD_RESET scope', async () => {
       const decoded = {
         userId: 'user1',
         orgId: 'org1',
@@ -1580,9 +1584,9 @@ describe('AuthMiddleware', () => {
 
       await middleware(req, res, next)
 
-      // Non-fatal: should still call next without error
+      // A used reset link must not work while the password-change lookup fails.
       expect(next.calledOnce).to.be.true
-      expect(next.firstCall.args).to.have.length(0)
+      expect(next.firstCall.args[0]).to.be.instanceOf(Error)
     })
   })
 })

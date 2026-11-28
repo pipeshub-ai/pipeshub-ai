@@ -3491,7 +3491,14 @@
         "createError": "Failed to create connector",
         "createSuccess": "कनेक्टर इंस्टेंस '{{name}}' सफलतापूर्वक बनाया गया",
         "authSaveError": "Failed to save auth configuration",
-        "configSaveError": "Failed to save configuration"
+        "configSaveError": "Failed to save configuration",
+        "syncTurningOn": "{{name}} के लिए सिंक चालू किया जा रहा है",
+        "syncTurningOnDescription": "{{source}} से कनेक्शन जाँचा जा रहा है। इसमें कुछ सेकंड लग सकते हैं।",
+        "syncTurningOff": "{{name}} के लिए सिंक बंद किया जा रहा है",
+        "syncTurnedOn": "{{name}} के लिए सिंक चालू है",
+        "syncTurnedOff": "{{name}} के लिए सिंक बंद है",
+        "syncToggleFailed": "{{name}} का सिंक नहीं बदला जा सका",
+        "syncToggleFailedDescription": "फिर से कोशिश करें। अगर यह बार-बार विफल हो, तो कनेक्टर की सेटिंग जाँचें।"
       },
       "tabs": {
         "authenticate": "प्रमाणित करें",
@@ -3791,7 +3798,9 @@
         "removing": "यह कनेक्टर हटाया जा रहा है।",
         "configureFirst": "सिंक सक्षम करने से पहले कॉन्फ़िगरेशन पूरा करें।",
         "authenticateFirst": "सिंक सक्षम करने से पहले इस कनेक्टर को प्रमाणित करें।",
-        "selected": "{{field}} चयनित"
+        "selected": "{{field}} चयनित",
+        "turningOn": "चालू हो रहा है…",
+        "turningOff": "बंद हो रहा है…"
       },
       "instanceStatus": {
         "setup": {
@@ -7195,6 +7204,9 @@
     "appLimited_other": "{{appName}} केवल {{count}} आइटम देख सकता है जिन्हें इसके निर्माता ने चुना है, और केवल वे जिन्हें आप देख सकते हैं।"
   },
   "errorToast": {
+    "reconnecting": "फिर से कनेक्ट हो रहा है…",
+    "reconnectingDescription": "हम अभी आपका सत्र जाँच नहीं पा रहे हैं। आप साइन इन रहेंगे। हम कुछ मिनट तक फिर से कोशिश करेंगे, फिर तब जब आप वापस आएँगे या दोबारा कनेक्ट होंगे।",
+    "sessionUnavailable": "हम अभी आपका सत्र जाँच नहीं पा रहे हैं। फिर से कनेक्ट हो रहा है…",
     "accessDenied": "पहुँच अस्वीकृत",
     "invalidRequest": "अमान्य अनुरोध",
     "notFound": "नहीं मिला",

@@ -56,12 +56,13 @@ async def full_sync(connector: SlackConnector, store: FakeSlackStore, checkpoint
     seen: dict[str, set[str]] = {RECORDS: set(), GROUPS: set()}
     write_records, write_groups = store.on_new_records, store.on_new_record_groups
 
-    async def on_new_records(records_with_permissions) -> None:
-        await write_records(records_with_permissions)
-        for record, _ in records_with_permissions:
+    async def on_new_records(records_with_permissions) -> list:
+        saved = await write_records(records_with_permissions)
+        for record in saved:  # the processor notes a record seen when it saves it
             seen[RECORDS].add(record.id)
             if record.record_group_id:
                 seen[GROUPS].add(record.record_group_id)
+        return saved
 
     async def on_new_record_groups(groups) -> None:
         await write_groups(groups)
@@ -221,9 +222,10 @@ class TestLinksOutsideTheWindow:
         written: set[str] = set()
         write_records = store.on_new_records
 
-        async def on_new_records(records_with_permissions) -> None:
-            await write_records(records_with_permissions)
+        async def on_new_records(records_with_permissions) -> list:
+            saved = await write_records(records_with_permissions)
             written.update(r.external_record_id for r, _ in records_with_permissions)
+            return saved
 
         store.on_new_records = on_new_records
         try:
@@ -578,7 +580,8 @@ class TestUnreadableChannels:
         self, workspace, store, checkpoints,
     ) -> None:
         """A and B were one burst; now B ends page 1 and A starts page 2, both read, and page
-        3 is refused. Each is rewritten on its own, so the stored A+B burst is obsolete."""
+        3 is refused. Each is rewritten on its own, so the stored A+B burst is obsolete and
+        is deleted by the same sync."""
         older, q, a, b, e = (ts_minutes_ago(m) for m in (150, 80, 60, 59, 10))
         workspace.post(GENERAL, older, BOB, "long ago")
         workspace.post(GENERAL, q, BOB, "earlier")
@@ -599,7 +602,9 @@ class TestUnreadableChannels:
         result = await full_sync(connector, store, checkpoints)
 
         assert result.complete
-        assert result.unlinked == {gone, a_and_b}
+        assert result.unlinked == {gone}
+        assert a_and_b in store.deleted
+        assert a_and_b not in store.records
         assert {a, b, older} <= set(store.records)
 
     async def test_an_unreadable_channel_with_nothing_stored_keeps_nothing_of_other_channels(
@@ -1037,3 +1042,46 @@ class TestGoneFromSlack:
         assert SECRET not in connector._kept_channel_ids
         assert result.complete
         assert result.unlinked == secret_ids | {SECRET}
+
+
+class TestRegroupKeepsWhatItCannotReplace:
+    """A full sync that re-reads a burst but saves only part of what it holds keeps the stored
+    burst, and its links, out of the unlink."""
+
+    @staticmethod
+    async def stored_burst(workspace, store, checkpoints, count: int) -> tuple[SlackConnector, list[str], str, str]:
+        stamps = [ts_minutes_ago(m) for m in range(10, 10 - count, -1)]
+        url = "https://example.com/burst-plan"
+        workspace.post(GENERAL, stamps[0], ALICE, f"plan: {url}")
+        for ts in stamps[1:]:
+            workspace.post(GENERAL, ts, BOB, f"message {ts}")
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+        (burst,) = [r.external_record_id for r in store.messages()
+                    if r.external_record_group_id == GENERAL and r.start_ts == stamps[0] and r.end_ts == stamps[-1]]
+        return connector, stamps, burst, link_id(url)
+
+    async def test_a_burst_kept_for_a_message_saved_nowhere_keeps_its_links(self, workspace, store, checkpoints) -> None:
+        """A+B+C; read two a page, newest first: the B,C page is left unwritten, then A is saved alone."""
+        connector, (a, b, c), burst, link = await self.stored_burst(workspace, store, checkpoints, 3)
+        workspace.page_size["conversations.history"] = 2
+        store.leaves_unwritten = lambda r: getattr(r, "start_ts", None) == b
+
+        result = await full_sync(connector, store, checkpoints)
+
+        assert result.complete
+        assert burst in store.records
+        assert not {burst, link} & result.unlinked
+
+    async def test_a_burst_not_overwritten_by_a_shorter_one_keeps_its_links(self, workspace, store, checkpoints) -> None:
+        """A+B+C+D; read two a page, newest first: the C,D page is left unwritten, so A+B, under
+        the same id, does not replace it."""
+        connector, (a, b, c, d), burst, link = await self.stored_burst(workspace, store, checkpoints, 4)
+        workspace.page_size["conversations.history"] = 2
+        store.leaves_unwritten = lambda r: getattr(r, "start_ts", None) == c
+
+        result = await full_sync(connector, store, checkpoints)
+
+        assert result.complete
+        assert (store.records[burst].start_ts, store.records[burst].end_ts) == (a, d)
+        assert not {burst, link} & result.unlinked

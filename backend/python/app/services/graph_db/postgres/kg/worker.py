@@ -57,6 +57,8 @@ class KgWorker:
         self._verify_states: dict[tuple[str, str], net.VerifyState] = {}      # each enforced connector's turn and verify in progress (net)
         self._verify_task: asyncio.Task | None = None
         self._due: dict[tuple[str, str], float] = {}        # when a connector may next be taken to enforce (bootstrap)
+        self._turns: dict[tuple[str, str], asyncio.Task] = {}     # the connectors' bootstrap turns in flight, which may outlast a pass (bootstrap)
+        self._boot_task: asyncio.Task | None = None
         self.passes = 0                                    # loop iterations done (tests wait on it)
 
     def _on_demote(self, payload: str) -> None:
@@ -100,12 +102,13 @@ class KgWorker:
                 logger.exception("connector stats counts failed for an org; retrying")
             if self._stop.is_set():
                 break
-            try:
-                rows += await bootstrap.bring_to_enforce(self._db, org, self._due, self._stop)
-            except Exception:
-                logger.exception("kg bootstrap failed for an org; retrying")
-            if self._stop.is_set():
-                break
+            if self._boot_task is None:                   # a started worker brings its connectors to enforce in a loop of its own (_bootstrap_loop)
+                try:
+                    rows += await bootstrap.bring_to_enforce(self._db, org, self._due, self._stop, self._turns)
+                except Exception:
+                    logger.exception("kg bootstrap failed for an org; retrying")
+                if self._stop.is_set():
+                    break
             try:
                 with bind(_ctx(org)):
                     async with self._db.uow() as tx:
@@ -170,6 +173,28 @@ class KgWorker:
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(self._stop.wait(), net.verify_rest(time.monotonic() - t0))
 
+    async def _bootstrap_loop(self) -> None:
+        """The connectors' turns (``bootstrap.bring_to_enforce``), in a task of their own: a drain of the pass that waits for the lock of a connector whose verify is in flight
+        must not hold up the turns of the others."""
+        while not self._stop.is_set():
+            made = 0
+            try:
+                orgs = await self._orgs()
+            except Exception:
+                LOOP_FAILED.inc("bootstrap")
+                logger.exception("kg bootstrap iteration failed; continuing")
+                orgs = []
+            for org in orgs:
+                if self._stop.is_set():
+                    break
+                try:                                       # as in run_once: one org's failure holds up no other org
+                    made += await bootstrap.bring_to_enforce(self._db, org, self._due, self._stop, self._turns)
+                except Exception:
+                    LOOP_FAILED.inc("bootstrap")
+                    logger.exception("kg bootstrap failed for an org; retrying")
+            if not made:
+                await self._pause(self._poll)
+
     def _died(self, task: asyncio.Task) -> None:
         if not task.cancelled() and task.exception() is not None:
             logger.error("kg worker task ended", exc_info=task.exception())
@@ -183,24 +208,30 @@ class KgWorker:
         self._task = spawn_detached(self._loop(), name="kg-worker")
         self._task.add_done_callback(self._died)
         self._verify_task = spawn_detached(self._verify_loop(), name="kg-verify")       # apart from the drain: a slow verify never holds a projection
+        self._boot_task = spawn_detached(self._bootstrap_loop(), name="kg-bootstrap")
+        self._boot_task.add_done_callback(self._died)
 
     async def stop(self) -> None:
         self._stop.set()
         self._wake.set()
         for ln in self._listeners:
             await ln.stop()
-        for t in (*self._demotes, self._verify_task):
+        for t in (*self._demotes, self._verify_task, self._boot_task):      # the bootstrap loop only waits on its turns: they end (or are cut) below
             if t is not None:
                 t.cancel()
-        await asyncio.gather(*(t for t in (*self._demotes, self._verify_task) if t is not None), return_exceptions=True)
+        await asyncio.gather(*(t for t in (*self._demotes, self._verify_task, self._boot_task) if t is not None), return_exceptions=True)
         await net.shutdown()
-        if self._task is not None:
-            done, _ = await asyncio.wait({self._task}, timeout=STOP_TIMEOUT_S)      # a batch or a verify in flight ends by itself; past the limit it is cut
-            if not done:
-                logger.warning("kg worker did not stop within %.0f s: cancelling its pass in flight (what it had not committed is redone at the next start)", STOP_TIMEOUT_S)
-                self._task.cancel()
+        inflight = [t for t in (self._task, *self._turns.values()) if t is not None]     # the pass, and the turns it carried over from earlier passes
+        if inflight:
+            await asyncio.wait(inflight, timeout=STOP_TIMEOUT_S)      # a batch or a verify in flight ends by itself; past the limit it is cut
+        left = [t for t in (self._task, *self._turns.values()) if t is not None and not t.done()]
+        if left:
+            logger.warning("kg worker did not stop within %.0f s: cancelling its pass and turns in flight (what they had not committed is redone at the next start)", STOP_TIMEOUT_S)
+            for t in left:
+                t.cancel()
+            for t in left:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await self._task
+                    await t
 
 
 def start_for(graph_provider: object, logger: logging.Logger) -> KgWorker | None:

@@ -9,6 +9,7 @@ from psycopg import errors as pg
 
 from db import bootstrap_roles, surface
 from db.lib import vetted
+from db.locations import extra_locations
 
 from .conftest import run_migrate
 from .rls_fixture import ORG_A, ORG_B, ORG_P
@@ -48,7 +49,8 @@ def extension_dir(tmp_path: Path, body: str, sql: str = "", extra: list | None =
             pass
     ''').replace("RUNS", repr(tuple(runs))).replace("AFTER", after))
     ed = tmp_path / "edition.py"
-    ed.write_text(f"EXTRA_MIGRATION_LOCATIONS = {[str(d)]!r}\n")
+    # beside the running edition's own modules, which a database migrated by this build already holds
+    ed.write_text(f"EXTRA_MIGRATION_LOCATIONS = {[*extra_locations(), str(d)]!r}\n")
     return {"PIPESHUB_EDITION_FILE": str(ed)}
 
 

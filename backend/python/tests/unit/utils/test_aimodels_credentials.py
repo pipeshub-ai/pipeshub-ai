@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-from unittest.mock import MagicMock, patch
+from typing import TYPE_CHECKING, Never
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -391,6 +391,286 @@ async def test_llm_health_check_drops_annotations_from_the_body() -> None:
         with pytest.raises(RuntimeError):
             await health._check_one_llm(body, "m", MagicMock())
     assert "_note" not in build.call_args.kwargs["config"]
+@pytest.mark.parametrize("is_default", [True, False])
+@pytest.mark.asyncio
+async def test_bulk_embedding_check_drops_annotations_from_the_body(is_default) -> None:
+    import app.api.routes.health as health
+
+    body = {"provider": "openAI", "isDefault": is_default, "_note": True, "configuration": {"model": "m", "apiKey": "k"}}
+    request = MagicMock()
+    request.app.container.retrieval_service = AsyncMock(return_value=MagicMock())
+    with patch.object(health, "get_embedding_model", return_value=MagicMock()) as build:
+        await health.initialize_embedding_model(request, [body])
+    assert "_note" not in build.call_args.args[1]
+    assert body["_note"] is True
+
+
+@pytest.mark.asyncio
+async def test_decision_health_check_drops_annotations_from_the_body() -> None:
+    import app.api.routes.health as health
+
+    body = {"provider": "openAI", "_note": True, "configuration": {"model": "m", "apiKey": "k"}}
+    with patch.object(health, "get_decision_model", side_effect=RuntimeError("stop")) as build:
+        await health.perform_decision_health_check(body, MagicMock())
+    assert "_note" not in build.call_args.kwargs["config"]
+
+
+# --- Bedrock: the server's own AWS identity -------------------------------
+
+_KEYS_REQUIRED = "Enter an AWS access key and secret for this model."
+
+
+def _bedrock(configuration: dict, *, allow_ambient: bool) -> MagicMock:
+    from app.utils.aimodels import _create_bedrock_client
+
+    with patch("boto3.Session") as session:
+        try:
+            _create_bedrock_client(configuration, allow_ambient=allow_ambient)
+        finally:
+            made = session
+    return made
+
+
+def test_bedrock_both_keys_are_used() -> None:
+    made = _bedrock(
+        {"region": "us-east-1", "awsAccessKeyId": " AK ", "awsAccessSecretKey": " SK "},
+        allow_ambient=False,
+    )
+    made.assert_called_once_with(
+        aws_access_key_id="AK", aws_secret_access_key="SK", region_name="us-east-1",
+    )
+
+
+@pytest.mark.parametrize("present", ["awsAccessKeyId", "awsAccessSecretKey"])
+@pytest.mark.parametrize("blank", [None, "", "   "])
+def test_bedrock_one_key_only_is_refused_when_server_identity_is_refused(present, blank) -> None:
+    other = "awsAccessSecretKey" if present == "awsAccessKeyId" else "awsAccessKeyId"
+    with patch("boto3.Session") as session, pytest.raises(ValueError, match=_KEYS_REQUIRED):
+        from app.utils.aimodels import _create_bedrock_client
+
+        _create_bedrock_client({"region": "r", present: "x", other: blank}, allow_ambient=False)
+    session.assert_not_called()
+
+
+@pytest.mark.parametrize("present", ["awsAccessKeyId", "awsAccessSecretKey"])
+def test_bedrock_one_key_only_uses_the_server_identity_with_a_warning(present, caplog) -> None:
+    import logging
+
+    other = "awsAccessSecretKey" if present == "awsAccessKeyId" else "awsAccessKeyId"
+    config = {"region": "r", present: "only-one-value", other: ""}
+    with caplog.at_level(logging.WARNING):
+        made = _bedrock(config, allow_ambient=True)
+    assert made.call_args.kwargs == {"region_name": "r"}
+    assert "Only one of" in caplog.text
+    assert "only-one-value" not in caplog.text
+
+
+def test_bedrock_no_keys_ambient_allowed_uses_default_chain() -> None:
+    assert _bedrock({"region": "eu-west-1"}, allow_ambient=True).call_args.kwargs == {
+        "region_name": "eu-west-1"
+    }
+
+
+def test_bedrock_no_keys_ambient_refused_raises() -> None:
+    with patch("boto3.Session") as session, pytest.raises(ValueError, match=_KEYS_REQUIRED):
+        from app.utils.aimodels import _create_bedrock_client
+
+        _create_bedrock_client({"region": "r"}, allow_ambient=False)
+    session.assert_not_called()
+
+
+def test_bedrock_allow_ambient_has_no_default() -> None:
+    from app.utils.aimodels import _create_bedrock_client
+
+    with pytest.raises(TypeError):
+        _create_bedrock_client({"region": "r"})
+
+
+def test_ambient_credentials_allowed_by_default() -> None:
+    from app.edition_services import ambient_cloud_credentials_allowed
+
+    assert ambient_cloud_credentials_allowed({"configuration": {}}) is True
+
+
+def test_bedrock_chat_builder_asks_the_edition(monkeypatch) -> None:
+    from app.utils.aimodels import _get_generator_model_impl
+
+    seen = {}
+    monkeypatch.setattr(
+        "app.utils.aimodels._ambient_cloud_credentials_allowed",
+        lambda config: seen.setdefault("config", config) and False,
+    )
+    entry = {"provider": "bedrock", "configuration": {"model": "m", "region": "r"}}
+    with patch("boto3.Session") as session, pytest.raises(ValueError, match=_KEYS_REQUIRED):
+        _get_generator_model_impl("bedrock", entry)
+    assert seen["config"] is entry
+    session.assert_not_called()
+
+
+def test_bedrock_embedding_builder_asks_the_edition(monkeypatch) -> None:
+    monkeypatch.setattr("app.utils.aimodels._ambient_cloud_credentials_allowed", lambda config: False)
+    entry = {"provider": "bedrock", "configuration": {"model": "m", "region": "r"}}
+    with patch("boto3.Session") as session, pytest.raises(ValueError, match=_KEYS_REQUIRED):
+        get_embedding_model("bedrock", entry)
+    session.assert_not_called()
+
+
+def test_bedrock_discovery_listing_is_unstamped(monkeypatch) -> None:
+    from app.services.ai_models.discovery.strategies import list_bedrock_pages
+
+    seen = []
+    monkeypatch.setattr(
+        "app.utils.aimodels._ambient_cloud_credentials_allowed",
+        lambda config: seen.append(config) or False,
+    )
+    with patch("boto3.Session") as session, pytest.raises(ValueError, match=_KEYS_REQUIRED):
+        list_bedrock_pages({"region": "r"})
+    assert seen == [{"provider": "bedrock", "configuration": {"region": "r"}}]
+    session.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_bedrock_multimodal_provider_rules() -> None:
+    from app.exceptions.indexing_exceptions import EmbeddingError
+    from app.services.embeddings.multimodal.bedrock_provider import (
+        BedrockMultimodalProvider,
+    )
+
+    def build(**kw: object) -> BedrockMultimodalProvider:
+        return BedrockMultimodalProvider(model_name="m", region_name="r", **kw)
+
+    with patch("boto3.client") as client:
+        for kw in (
+            {},
+            {"aws_access_key_id": "AK"},
+            {"aws_secret_access_key": " "},
+        ):
+            with pytest.raises(EmbeddingError, match=_KEYS_REQUIRED):
+                await build(**kw).embed_images(["x"])
+        client.assert_not_called()
+
+        client.return_value.invoke_model.side_effect = RuntimeError("stop")
+        await build(allow_ambient=True).embed_images(["x"])
+        assert client.call_args.kwargs == {"service_name": "bedrock-runtime"}
+        await build(aws_access_key_id="AK", allow_ambient=True).embed_images(["x"])
+        assert client.call_args.kwargs == {"service_name": "bedrock-runtime"}
+        await build(aws_access_key_id="AK", aws_secret_access_key="SK").embed_images(["x"])
+        assert client.call_args.kwargs["aws_access_key_id"] == "AK"
+
+
+@pytest.mark.asyncio
+async def test_health_probe_reads_the_real_secret_field_name() -> None:
+    from app.api.routes.health import _probe_image_embedding
+
+    captured = {}
+
+    class Boom(Exception):
+        pass
+
+    def create(config) -> Never:
+        captured["config"] = config
+        raise Boom
+
+    from app.api.routes.health import _ImageEmbeddingSettingsError
+
+    with patch(
+        "app.services.embeddings.multimodal.factory.MultimodalEmbeddingFactory.create", create
+    ), pytest.raises(_ImageEmbeddingSettingsError):
+        await _probe_image_embedding(
+            {"provider": "bedrock", "configuration": {"awsAccessKeyId": "AK", "awsAccessSecretKey": "SK"}},
+            "m", 1024, MagicMock(),
+        )
+    assert captured["config"].aws_secret_access_key == "SK"
+
+
+@pytest.mark.asyncio
+async def test_missing_credentials_reach_the_admin_as_a_clear_400() -> None:
+    import json
+
+    from app.api.routes.health import _model_setup_failed_response
+    from app.utils.aimodels import CredentialsRequiredError
+
+    response = await _model_setup_failed_response(
+        "chat model", {"provider": "bedrock"}, "m", CredentialsRequiredError(_KEYS_REQUIRED),
+    )
+    assert response.status_code == 400
+    assert json.loads(response.body)["message"] == _KEYS_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_health_image_probe_reports_missing_bedrock_keys_as_credentials_required() -> None:
+    import json
+
+    from app.api.routes.health import (
+        _model_setup_failed_response,
+        _probe_image_embedding,
+    )
+    from app.services.embeddings.multimodal.bedrock_provider import (
+        BedrockMultimodalProvider,
+    )
+    from app.utils.aimodels import CredentialsRequiredError
+
+    config = {"provider": "bedrock", "configuration": {"awsAccessKeyId": "AK"}}
+    with patch(
+        "app.services.embeddings.multimodal.factory.MultimodalEmbeddingFactory.create",
+        return_value=BedrockMultimodalProvider(model_name="m", aws_access_key_id="AK"),
+    ), patch("boto3.client") as client, pytest.raises(CredentialsRequiredError) as raised:
+        await _probe_image_embedding(config, "m", 1024, MagicMock())
+    client.assert_not_called()
+
+    response = await _model_setup_failed_response("embedding model", config, "m", raised.value)
+    assert response.status_code == 400
+    body = json.loads(response.body)
+    assert body["message"] == _KEYS_REQUIRED
+    assert body["details"]["error_code"] == "credentials_required"
+    assert "hint" not in body["details"]
+
+
+def test_bedrock_chat_control_plane_client_is_ours() -> None:
+    from app.utils.aimodels import _get_generator_model_impl
+
+    entry = {
+        "provider": "bedrock",
+        "configuration": {
+            "model": "anthropic.claude-3-haiku-20240307-v1:0", "region": "us-east-1",
+            "awsAccessKeyId": "AK", "awsAccessSecretKey": "SK",
+        },
+    }
+    with patch("boto3.Session") as session, patch("langchain_aws.ChatBedrockConverse") as chat:
+        _get_generator_model_impl("bedrock", entry)
+    assert [c.kwargs["aws_access_key_id"] for c in session.call_args_list] == ["AK", "AK"]
+    kwargs = chat.call_args.kwargs
+    assert kwargs["client"] is session.return_value.client.return_value
+    assert kwargs["bedrock_client"] is session.return_value.client.return_value
+    assert [c.args[0] for c in session.return_value.client.call_args_list] == ["bedrock-runtime", "bedrock"]
+
+
+def test_bedrock_chat_without_keys_or_permission_builds_no_client(monkeypatch) -> None:
+    from app.utils.aimodels import _get_generator_model_impl
+
+    monkeypatch.setattr("app.utils.aimodels._ambient_cloud_credentials_allowed", lambda config: False)
+    entry = {"provider": "bedrock", "configuration": {"model": "m", "region": "r"}}
+    with patch("boto3.Session") as session, patch("langchain_aws.ChatBedrockConverse") as chat, \
+            pytest.raises(ValueError, match=_KEYS_REQUIRED):
+        _get_generator_model_impl("bedrock", entry)
+    session.assert_not_called()
+    chat.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blank", [None, "", "   "])
+async def test_health_blank_key_is_a_clear_400(blank) -> None:
+    import json
+
+    from app.api.routes.health import _model_setup_failed_response
+
+    try:
+        vetted_model_configuration("openai", {"apiKey": blank})
+    except ValueError as exc:  # still a ValueError for existing callers
+        error = exc
+    response = await _model_setup_failed_response("chat model", {"provider": "openai"}, "m", error)
+    assert response.status_code == 400
+    assert json.loads(response.body)["message"] == "Save an API key for this model."
 
 
 # --- A blank key never takes the server's key to another host, in any mode ---

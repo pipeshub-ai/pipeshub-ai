@@ -108,6 +108,100 @@ describe('refresh-token rotation in the page', () => {
     expect(vault.token).toBe('t2');
   });
 
+  it('the desktop keeps the replacement when the body of a yes arrives after the attempt limit', async () => {
+    vi.useFakeTimers();
+    try {
+      electron.on = true;
+      vault.token = 'first';
+      // Like fetch: the headers are in, the body is still coming, and an abort of the request errors the body read.
+      fetchMock.mockImplementationOnce(async (_url, init) => {
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            let aborted = false;
+            init?.signal?.addEventListener('abort', () => {
+              aborted = true;
+              controller.error(new DOMException('The user aborted a request.', 'AbortError'));
+            });
+            setTimeout(() => {
+              if (aborted) return;
+              controller.enqueue(new TextEncoder().encode(JSON.stringify({ accessToken: 'a1', refreshToken: 'second' })));
+              controller.close();
+            }, 15_000);
+          },
+        });
+        return new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } });
+      });
+      const { requestAccessToken } = await import('@/lib/auth/session-credential');
+      const answer = requestAccessToken();
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(await answer).toMatchObject({ outcome: 'issued', accessToken: 'a1' });
+      expect(vault.token).toBe('second');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /** A yes whose body arrives only when `release` is called (never, if it is not). */
+  function stalledYes(body: unknown) {
+    let release = () => {};
+    fetchMock.mockImplementationOnce(async () => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          release = () => {
+            controller.enqueue(new TextEncoder().encode(JSON.stringify(body)));
+            controller.close();
+          };
+        },
+      });
+      return new Response(stream, { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    return () => release();
+  }
+
+  it('a yes whose body stalls settles as no answer, frees the lock, and keeps a replacement that arrives later', async () => {
+    vi.useFakeTimers();
+    try {
+      installLocks();
+      electron.on = true;
+      vault.token = 'first';
+      const release = stalledYes({ accessToken: 'a1', refreshToken: 'second' });
+      const { requestAccessToken } = await import('@/lib/auth/session-credential');
+      const { REFRESH_BODY_TIMEOUT_MS } = await import('@/lib/api/refresh-retry');
+      const answer = requestAccessToken();
+      await vi.advanceTimersByTimeAsync(REFRESH_BODY_TIMEOUT_MS);
+      expect(await answer).toEqual({ outcome: 'unreachable' });
+      expect(vault.clear).not.toHaveBeenCalled();
+      expect(vault.token).toBe('first');
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(vault.token).toBe('second');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a late replacement does not overwrite the token a later refresh kept', async () => {
+    vi.useFakeTimers();
+    try {
+      installLocks();
+      electron.on = true;
+      vault.token = 'first';
+      const release = stalledYes({ accessToken: 'a1', refreshToken: 'stale' });
+      fetchMock.mockResolvedValueOnce(jsonResponse(200, { accessToken: 'a2', refreshToken: 'newer' }));
+      const { requestAccessToken } = await import('@/lib/auth/session-credential');
+      const { REFRESH_BODY_TIMEOUT_MS } = await import('@/lib/api/refresh-retry');
+      const first = requestAccessToken();
+      await vi.advanceTimersByTimeAsync(REFRESH_BODY_TIMEOUT_MS);
+      expect(await first).toEqual({ outcome: 'unreachable' });
+      expect(await requestAccessToken()).toMatchObject({ outcome: 'issued', accessToken: 'a2' });
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(vault.token).toBe('newer');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('a web answer carries no refresh token for the page to keep', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(200, { accessToken: 'a1' }));
     const { requestAccessToken } = await import('@/lib/auth/session-credential');

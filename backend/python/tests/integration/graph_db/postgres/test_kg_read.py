@@ -536,7 +536,9 @@ async def test_every_statement_of_the_reader_is_answered_by_index_searches(layer
     wants = {
         "by id": (kg_read.BY_ID, [ids], ("records_id", "Index Cond: ((org_id = ", "id = q.id", "coll = 1"), {"records_id", "node_keys_org_id_sk_key"}),
         "classes": (kg_read.CLASSES, [[1, 2, 3]], ("scope_classes_pkey", "Index Cond: ((org_id = ", "id = q.id"), {"scope_classes_pkey"}),
-        "literals": (kg_read.LITERALS, [sks], ("records_pkey", "Index Cond: ((org_id = ", "sk = q.sk", "records_parent", "links_pkey"), {"records_pkey", "records_parent", "links_pkey"}),
+        # records_id: the seeks of a literal's id in the other collections
+        "literals": (kg_read.LITERALS, [sks], ("records_pkey", "Index Cond: ((org_id = ", "sk = q.sk", "records_parent", "links_pkey", "records_id"),
+                     {"records_pkey", "records_parent", "links_pkey", "records_id"}),
     }
     levels = await _btree_levels(set(KEY_OF))
     for state in ("fresh", "analysed"):

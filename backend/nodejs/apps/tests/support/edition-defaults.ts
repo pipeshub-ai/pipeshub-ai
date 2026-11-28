@@ -5,3 +5,6 @@
 
 /** A Slack member without a PipesHub account is refused: an agent answers only as a person, so nothing is proxied. */
 export const SLACK_CALLER_WITHOUT_ACCOUNT_REFUSED = true;
+
+/** Whether `kvKeyBindsOrg` binds the org for a key under `<org id>/`. This build's keys belong to the whole install. */
+export const KV_ORG_PREFIXED_KEY_BINDS_ORG = false;
