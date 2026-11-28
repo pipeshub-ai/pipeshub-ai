@@ -347,3 +347,46 @@ describe("another person's answer a reader may see, in a build whose answers car
     expect(shown.parts).to.deep.equal([{ ...STUB, status: 'approved' }])
   })
 })
+
+/**
+ * The live case once a later run in a chat others read is given the earlier answers only: the owner's first answer
+ * cites the open record although its search also returned a closed one. The second, given her answers and none of
+ * that search, has nothing of the closed record to state. The third searches again, finds the closed record and cites
+ * it; the fourth cites the open record again.
+ */
+const answersOnlyChat = (): any[] =>
+  [
+    question('What does our handbook say?'),
+    answer('Launches go out on Tuesdays [1].', [citation(REC_OPEN, 'Tuesdays')]),
+    question('What did the other result say?'),
+    answer('I would have to search again to say.'),
+    question('Search again, then.'),
+    answer(`The code word is ${FIRST_SECRET} [1].`, [citation(REC_FIRST, FIRST_SECRET)]),
+    question('And the open handbook?'),
+    answer('Launches go out on Tuesdays [1].', [citation(REC_OPEN, 'Tuesdays')]),
+  ].map((row, i) => ({ _id: nextId(), sessionId: SESSION, orgId: ORG, seq: i + 1, createdAt: new Date(Date.UTC(2026, 10, 27, 11, i)), ...row }))
+
+describe('a chat others read, its later answers given the earlier answers only', () => {
+  beforeEach(() => resetVisibility())
+  afterEach(() => {
+    sinon.restore()
+    resetVisibility()
+  })
+
+  it('a reader sees each answer that states nothing hidden, and loses one only once it cites what they cannot open', async () => {
+    stubAccess()
+    stubChat(answersOnlyChat())
+
+    const messages = await readAs(READER_B)
+    expect(answersOf(messages).map((m: any) => m.answerHidden)).to.deep.equal([
+      undefined,
+      undefined,
+      { redacted: true, reason: 'no_access' },
+      // After an answer hidden from them, as the no-label rule has it.
+      { redacted: true, reason: 'no_access' },
+    ])
+    expect(JSON.stringify(messages)).to.not.contain(FIRST_SECRET)
+    // A reader who can open the record the third answer cites reads all four.
+    expect(answersOf(await readAs(READER_A)).map((m: any) => m.answerHidden)).to.deep.equal([undefined, undefined, undefined, undefined])
+  })
+})

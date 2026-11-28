@@ -47,6 +47,7 @@ import {
   patchTurnSession,
 } from './utils';
 import { historyForModel, newReadable, viewerOf } from './viewer-redaction';
+import { answersOnlyTurns, readByOthers } from './earlier-turns';
 import {
   includableRows,
   type ReaderSession,
@@ -195,8 +196,12 @@ export async function plainFollowUpContext(
       ownerProjectOptions(req, deps, conversation._id),
     ),
   ]);
+  const turns = formatPreviousConversations(history);
   return {
-    previousConversations: formatPreviousConversations(history),
+    // In a chat others read, the earlier answers' text only: what their tools returned is never given again.
+    previousConversations: readByOthers(conversation)
+      ? answersOnlyTurns(turns)
+      : turns,
     ...(label !== undefined ? { historyLabel: label } : {}),
     project,
   };

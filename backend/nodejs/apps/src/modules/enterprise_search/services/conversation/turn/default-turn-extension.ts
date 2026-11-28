@@ -8,6 +8,7 @@ import {
 import { conversationTitleFromQuery } from '../../../utils/quoted-selection';
 import { DEFAULT_RUN_LIMITS } from '../../../utils/turn-stream';
 import { formatPreviousConversations } from '../../../utils/utils';
+import { answersOnlyTurns, readByOthers } from '../../../utils/earlier-turns';
 import { TurnExtension } from './turn-extension';
 
 /** A conversation with one author: the route guard is the only precondition and its own assistant or agent answers. */
@@ -20,11 +21,16 @@ export const defaultTurnExtension: TurnExtension = {
   respondingAgentKeyOf: () => undefined,
   appendFollowUp: (input) => appendPlainFollowUp(input),
   followUpContext: (req, turn, deps) => plainFollowUpContext(turn, deps, req),
-  regenerationContext: ({ history }) =>
-    Promise.resolve({
-      previousConversations: formatPreviousConversations(history),
+  regenerationContext: ({ conversation, history }) => {
+    const turns = formatPreviousConversations(history);
+    return Promise.resolve({
+      // In a chat others read, the earlier answers' text only: what their tools returned is never given again.
+      previousConversations: readByOthers(conversation)
+        ? answersOnlyTurns(turns)
+        : turns,
       aiPayload: {},
-    }),
+    });
+  },
   createdFrameFields: () => ({}),
   aiPayloadFields: () => ({}),
   cancelRun: ({ req, appConfig, conversationId, runId }) =>
