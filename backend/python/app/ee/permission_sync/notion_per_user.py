@@ -1,3 +1,8 @@
+# Copyright (c) 2026 PipesHub Inc.
+# Licensed under the PipesHub Enterprise License. See the LICENSE file in this
+# ee folder. Free for development, testing and evaluation. Production use needs
+# a PipesHub licence key.
+
 """Notion per-user mode: reading who may see a page from Notion.
 
 In per-user mode a page or data source reaches a user only when their own Notion credential lists it
