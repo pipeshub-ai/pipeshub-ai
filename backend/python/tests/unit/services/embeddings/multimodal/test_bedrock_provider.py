@@ -41,7 +41,9 @@ class TestBedrockMultimodalProvider:
     async def test_no_credentials_during_client_creation_raises(self) -> None:
         from botocore.exceptions import NoCredentialsError
 
-        provider = _provider(aws_access_key_id=None, aws_secret_access_key=None, region_name=None)
+        provider = _provider(
+            aws_access_key_id=None, aws_secret_access_key=None, region_name=None, allow_ambient=True,
+        )
 
         with patch("boto3.client", side_effect=NoCredentialsError()):
             with pytest.raises(EmbeddingError, match="AWS credentials"):
@@ -167,7 +169,7 @@ class TestBedrockOutputEmbeddingLength:
         import json
 
         provider = BedrockMultimodalProvider(
-            model_name="titan", embedding_size=384,
+            model_name="titan", embedding_size=384, allow_ambient=True,
             normalize_fn=lambda _uri: "aW1hZ2U=",
         )
         response_body = MagicMock()
@@ -192,7 +194,7 @@ class TestBedrockErrorReportedInBody:
     async def test_message_in_body_becomes_an_error_result(self) -> None:
         logger = MagicMock()
         provider = BedrockMultimodalProvider(
-            model_name="titan", logger=logger, normalize_fn=lambda _uri: "aW1hZ2U=",
+            model_name="titan", logger=logger, allow_ambient=True, normalize_fn=lambda _uri: "aW1hZ2U=",
         )
         body = MagicMock()
         body.read.return_value = json.dumps({"message": "image too large"})
@@ -209,7 +211,7 @@ class TestBedrockErrorReportedInBody:
     @pytest.mark.asyncio
     async def test_missing_embedding_becomes_an_error_result(self) -> None:
         provider = BedrockMultimodalProvider(
-            model_name="titan", normalize_fn=lambda _uri: "aW1hZ2U=",
+            model_name="titan", allow_ambient=True, normalize_fn=lambda _uri: "aW1hZ2U=",
         )
         body = MagicMock()
         body.read.return_value = json.dumps({"inputTextTokenCount": 0})

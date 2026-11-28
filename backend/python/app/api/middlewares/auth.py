@@ -57,6 +57,9 @@ _KNOWLEDGE_LIMIT_KEYS = ("apps", "recordGroups", "records")
 
 DEFAULT_SESSION_CHECK_TTL_SECONDS = 30.0
 
+#: Scopes no token may hold any more; mirrors ``RetiredTokenScopes`` in the Node API.
+RETIRED_TOKEN_SCOPES = frozenset({"config:write"})
+
 
 def session_check_ttl_seconds() -> float:
     """How long Node's answer about a session token is reused (``SESSION_CHECK_CACHE_SECONDS``).
@@ -156,7 +159,9 @@ def _normalize_regular_payload(payload: dict[str, Any], token: str) -> dict[str,
         if not scopes:
             raise _invalid_credentials("no_scopes")
         payload["isOAuth"] = True
-        payload["oauthScopes"] = scopes
+        # A token issued before config:write was retired keeps it in its claim; it no longer
+        # counts (organization configuration changes only from an interactive session).
+        payload["oauthScopes"] = [s for s in scopes if s not in RETIRED_TOKEN_SCOPES]
         payload["oauthClientId"] = payload.get("client_id")
         if isinstance(limit, dict):
             payload[KNOWLEDGE_LIMIT_CLAIM] = _normalize_knowledge_limit(limit)
@@ -508,3 +513,91 @@ async def deny_service_tokens(request: Request) -> None:
 
 
 _tag_auth_policy(deny_service_tokens, "deny_service")
+
+
+#: Same wording as the Node API's session-only refusal (require-session-auth.middleware.ts).
+SESSION_ONLY_DETAIL = (
+    "This endpoint requires an interactive user session; OAuth access tokens and personal "
+    "access tokens are not accepted"
+)
+
+
+def refuse_delegated_caller(request: Request) -> None:
+    """403 for a caller on an OAuth access token, a personal access token or a
+    client_credentials token (all ``isOAuth``), whatever its scopes.
+
+    For writes that mint or hold credentials, point stored credentials at another host, or
+    run a local command. Node forwards the caller's own token, so a request Node makes for
+    an interactive session arrives as a session token and passes.
+    """
+    if _authenticated_user(request).get("isOAuth") is True:
+        raise AuthRejected(status.HTTP_403_FORBIDDEN, SESSION_ONLY_DETAIL, reason="session_required")
+
+
+async def require_interactive_session(request: Request) -> None:
+    """FastAPI dependency form of `refuse_delegated_caller` for a route as a whole."""
+    refuse_delegated_caller(request)
+
+
+def is_set_value(value: object) -> bool:
+    """Whether a body value sets anything: ``None``, ``{}`` and ``[]`` do not; an object or list
+    with any entry (a ``null`` entry included, since a handler may read it as "clear this") does,
+    and so does any scalar, an empty string or ``0`` among them. The key names inside are not
+    looked at."""
+    if value is None:
+        return False
+    if isinstance(value, (dict, list)):
+        return len(value) > 0
+    return True
+
+
+def _outside_allowlist(
+    body: object, allowed: Mapping[str, bool | Iterable[str]], empty_allowed: frozenset[str], prefix: str = "",
+) -> bool:
+    if not is_set_value(body):
+        return False
+    if not isinstance(body, dict):
+        return True
+    for key, value in body.items():
+        rule = allowed.get(key)
+        if rule is None or rule is False:
+            # Off the list: refused whenever present, unless this path may be sent empty.
+            if f"{prefix}{key}" in empty_allowed and not is_set_value(value):
+                continue
+            return True
+        if rule is True:
+            continue
+        if _outside_allowlist(value, dict.fromkeys(rule, True), empty_allowed, f"{prefix}{key}."):
+            return True
+    return False
+
+
+def require_interactive_session_except(
+    allowed: Mapping[str, bool | Iterable[str]],
+    empty_allowed: Iterable[str] = (),
+) -> Callable[..., Coroutine[Any, Any, None]]:
+    """Like `require_interactive_session`, but a delegated caller may still send the keys in
+    ``allowed`` (``True`` takes any value, a list of names takes an object whose own keys are
+    among them). Any other key is refused whenever it is present, even with an empty value, so a
+    field the handler reads but nobody listed (a credential, an OAuth app link, a host) can never
+    reach it from a token. ``empty_allowed`` names dotted paths of off-list keys that may be sent
+    empty (``{}``, ``[]``, ``null``) because a real caller does; name that caller where it is set.
+    An allowlist is used instead of a list of names to refuse because no such list is complete.
+    A body that is not valid JSON is left to the handler, which refuses it."""
+    rules = {name: (True if rule is True else list(rule)) for name, rule in allowed.items() if rule is not False}
+    empty = frozenset(empty_allowed)
+
+    async def _check_body(request: Request) -> None:
+        if _authenticated_user(request).get("isOAuth") is not True:
+            return
+        try:
+            body = await request.json()
+        except Exception:
+            return
+        if _outside_allowlist(body, rules, empty):
+            raise AuthRejected(status.HTTP_403_FORBIDDEN, SESSION_ONLY_DETAIL, reason="session_required")
+
+    # Read by the route tests to find which keys a route lets a token send.
+    _check_body.session_only_allowlist = rules  # type: ignore[attr-defined]
+    _check_body.session_only_empty_allowed = sorted(empty)  # type: ignore[attr-defined]
+    return _check_body

@@ -7,6 +7,9 @@ import {
   getAllowedScopeNamesForRole,
   getScopesGroupedByCategoryForRole,
   getScopeDefinition,
+  RetiredTokenScopes,
+  RETIRED_SCOPE_MESSAGE,
+  withoutRetiredScopes,
 } from '../config/scopes.config'
 import { InvalidScopeError } from '../../../libs/errors/oauth.errors'
 
@@ -35,6 +38,14 @@ export class ScopeValidatorService {
     requestedScopes: string[],
     allowedScopeNames?: string[],
   ): void {
+    const retired = requestedScopes.filter((scope) =>
+      RetiredTokenScopes.has(scope),
+    );
+    if (retired.length > 0) {
+      throw new InvalidScopeError(RETIRED_SCOPE_MESSAGE, {
+        invalidScopes: retired,
+      });
+    }
     const result = validateScopes(requestedScopes)
     if (!result.valid) {
       throw new InvalidScopeError(
@@ -89,8 +100,9 @@ export class ScopeValidatorService {
     allowedScopes: string[],
   ): { granted: string[]; notGranted: string[] } {
     // A scope repeated in the request would otherwise show twice on the
-    // consent page and be stored twice on the code.
-    const uniqueScopes = [...new Set(requestedScopes)]
+    // consent page and be stored twice on the code. A retired scope is
+    // dropped like any other the app does not allow, not refused.
+    const uniqueScopes = withoutRetiredScopes([...new Set(requestedScopes)]);
     this.validateRequestedScopes(uniqueScopes)
 
     if (uniqueScopes.length === 0) {

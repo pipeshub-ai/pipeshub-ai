@@ -13,6 +13,8 @@ name: Helm chart
 # Hub, which moves without any change to this repository.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    # Heavy: on a pull request its jobs run only with the ci:full or ci:e2e label (CONTRIBUTING.md).
     branches:
       - main
     paths:
@@ -28,7 +30,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: helm-chart-${{ github.event.pull_request.number || github.run_id }}
+  group: helm-chart-${{ github.event_name == 'pull_request' && format('pr-{0}-{1}', github.event.pull_request.number, (contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')))) && 'heavy' || format('other-{0}', github.run_id)) || format('{0}-{1}-{2}', github.event_name, github.ref, github.run_id) }}
   cancel-in-progress: true
 
 env:
@@ -86,6 +88,11 @@ jobs:
 
   install:
     name: Install on kind (${{ matrix.variant }})
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)))
     needs: check
     runs-on: ubuntu-latest
     timeout-minutes: 45

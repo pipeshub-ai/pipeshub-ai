@@ -5,6 +5,8 @@ name: docstore-migrate
 # schema. A skip is a failure here: the suites skip only when a service is missing, which in CI means the workflow is broken.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    # Heavy: on a pull request its jobs run only with the ci:full or ci:db label (CONTRIBUTING.md).
     branches:
       - 'main'
     paths:
@@ -25,16 +27,23 @@ on:
       - 'scripts/assert_no_skips.py'
       - '.github/workflows/docstore-migrate.yml'
   workflow_dispatch:
+  schedule:
+    - cron: '40 1 * * *'
 
 permissions:
   contents: read
 
 concurrency:
-  group: docstore-migrate-${{ github.ref }}
+  group: docstore-migrate-${{ github.event_name == 'pull_request' && format('pr-{0}-{1}', github.event.pull_request.number, (contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))) && 'heavy' || format('other-{0}', github.run_id)) || format('{0}-{1}-{2}', github.event_name, github.ref, github.run_id) }}
   cancel-in-progress: true
 
 jobs:
   migrate:
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))
     # MongoDB 8.0 publishes packages up to Ubuntu 24.04; ubuntu-latest (26.04) has none.
     runs-on: ubuntu-24.04
     timeout-minutes: 60

@@ -449,6 +449,7 @@ class TestFetchFullProject:
     @pytest.mark.asyncio
     async def test_failed_follow_up_page_raises(self) -> None:
         connector = _make_connector()
+        connector.config_service.get_config = AsyncMock(return_value={"auth": {"authType": "API_TOKEN"}})  # a key is not renewed
         project = _make_project_data(
             documents=_page([{"id": "doc-1"}], has_next=True, end_cursor="docs-1"),
         )

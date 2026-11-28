@@ -118,6 +118,11 @@ import {
 import { integerCheck } from '../../../libs/utils/zod-formats';
 import { ConnectorId, ConnectorIdToNameMap } from '../../../libs/types/connector.types';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
+import {
+  AllowlistOptions,
+  DelegatedAllowlist,
+  requireSessionAuthExcept,
+} from '../../../libs/middlewares/require-session-auth.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
 
@@ -215,6 +220,44 @@ const refreshTokenFor = async (
     refreshTokenExpiry:
       googleExpiry ?? (expiryAhead ? storedExpiry : undefined),
   };
+};
+
+/**
+ * What a token may send when it changes or creates a connector: names, sync and filter
+ * settings, and which sign-in form the connector uses. Everything else the controllers read
+ * (`auth`, `baseUrl`, `oauthConfigId`, and any key added later) holds a credential, links an
+ * OAuth app or names the host credentials are sent to, so it takes an interactive session.
+ * Allowed keys, and why each is safe:
+ *  - `sync`, `filters`: schedules and what to index; neither holds a credential or a host.
+ *  - `connectorType`, `instanceName`, `scope`: which connector, what to call it, who owns it.
+ *  - `authType`: picks the sign-in form; the credentials for it are in `auth`, which is refused.
+ *  - `connectorId`: which saved connector the connection check reads stored settings from.
+ *  - `config` (create): only its `sync` and `filters`; `config.auth` is refused.
+ */
+const CONNECTOR_UPDATE_ALLOWED: DelegatedAllowlist = {
+  sync: true,
+  filters: true,
+};
+const CONNECTOR_AUTH_UPDATE_ALLOWED: DelegatedAllowlist = {};
+const CONNECTOR_CREATE_ALLOWED: DelegatedAllowlist = {
+  connectorType: true,
+  instanceName: true,
+  scope: true,
+  authType: true,
+  config: ['sync', 'filters'],
+};
+const CONNECTOR_TEST_ALLOWED: DelegatedAllowlist = {
+  authType: true,
+  connectorId: true,
+};
+
+// An off-list key is refused whenever it is present, even empty, because an empty `auth` on a
+// save route clears what is stored. These are the empty ones a real caller sends and that store
+// nothing: the SDK connection-check examples send `auth: {}` (and the check's schema requires
+// `auth`), and mcp-server `add_web_source` and the SDK create examples send `config: { auth: {} }`.
+const EMPTY_AUTH_OK: AllowlistOptions = { emptyAllowed: ['auth'] };
+const EMPTY_CONFIG_AUTH_OK: AllowlistOptions = {
+  emptyAllowed: ['config.auth'],
 };
 
 // ============================================================================
@@ -789,6 +832,7 @@ export function createConnectorRouter(
   router.post(
     '/registry/:connectorType/test-connection',
     authMiddleware.authenticate,
+    requireSessionAuthExcept(CONNECTOR_TEST_ALLOWED, EMPTY_AUTH_OK),
     requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
     ValidationMiddleware.validate(testConnectorConnectionSchema),
     testConnectorConnection(config)
@@ -828,6 +872,9 @@ export function createConnectorRouter(
   router.post(
     '/',
     authMiddleware.authenticate,
+    // A token may create a connector without credentials; setting them, or linking an OAuth
+    // app, takes an interactive session.
+    requireSessionAuthExcept(CONNECTOR_CREATE_ALLOWED, EMPTY_CONFIG_AUTH_OK),
     requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
     ValidationMiddleware.validate(createConnectorInstanceSchema),
     createConnectorInstance(config)
@@ -1219,6 +1266,8 @@ export function createConnectorRouter(
   router.put(
     '/:connectorId/config',
     authMiddleware.authenticate,
+    // A token may change sync and filter settings; anything else takes an interactive session.
+    requireSessionAuthExcept(CONNECTOR_UPDATE_ALLOWED),
     requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
     ValidationMiddleware.validate(updateConnectorInstanceConfigSchema),
     updateConnectorInstanceConfig(config, scheduler)
@@ -1231,6 +1280,8 @@ export function createConnectorRouter(
   router.put(
     '/:connectorId/config/auth',
     authMiddleware.authenticate,
+    // A token may send no key here: credential changes take an interactive session.
+    requireSessionAuthExcept(CONNECTOR_AUTH_UPDATE_ALLOWED),
     requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
     ValidationMiddleware.validate(updateConnectorInstanceAuthConfigSchema),
     updateConnectorInstanceAuthConfig(config)

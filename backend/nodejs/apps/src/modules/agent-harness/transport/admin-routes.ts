@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
+import { requireSessionAuth } from '../../../libs/middlewares/require-session-auth.middleware';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
@@ -55,6 +56,7 @@ export function createAgentHarnessAdminRouter(container: Container): Router {
   router.put(
     '/coding-engine',
     auth.authenticate,
+    requireSessionAuth,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(putOrgCodingEngineSchema),

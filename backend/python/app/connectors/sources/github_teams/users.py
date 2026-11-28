@@ -141,6 +141,8 @@ class UsersSync:
         self.logger.info("User sync: %s org(s)", len(orgs))
 
         dict_member, any_success = await self._discover_principals(orgs)
+        # A list cut short by dead credentials is not the orgs' membership.
+        c.run_state.raise_if_rejected()
 
         if not any_success:
             raise RuntimeError(
@@ -196,6 +198,8 @@ class UsersSync:
                     resolved_email[uid] = email
                     unresolved_ids.discard(uid)
 
+        # A later read may have found the sign-in dead; what it missed must not be saved as the members.
+        c.run_state.raise_if_rejected()
         await self._persist_app_users(dict_member, resolved_email)
         self._resolved_emails = dict(resolved_email)
         member_ids = getattr(self, "_member_ids", set())
@@ -260,6 +264,12 @@ class UsersSync:
                     )
                     continue
                 self.logger.error("Failed to list members for org %s: %s", org, res.error)
+                # GitHub also answers 403 for a rate limit, which no scope fixes.
+                if getattr(res, "status_code", None) == 403 and getattr(res, "is_rate_limited", False) is not True:
+                    c.run_state.note(
+                        f"The members of {org} could not be listed, so people may not see its repositories. Give the "
+                        "connected account the read:org scope and approve it (or its OAuth app) for that organization."
+                    )
                 continue
             any_success = True
             member_count = collect(res.data, is_member=True)
@@ -519,6 +529,8 @@ class UsersSync:
                     reused += 1
                     return uid, profile, True
                 async with sem:
+                    if c.run_state.rejected is not None:
+                        return uid, member, False  # signed out: the rest would be refused too
                     fetched += 1
                     res = await c.runtime.ds_call(c.data_source.get_user, login)
                 if res.success and res.data is not None:

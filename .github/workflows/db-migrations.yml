@@ -3,6 +3,8 @@ name: db-migrations
 # Lints the migration tree and runs the migration tests against real PostgreSQL 17 and 18.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    # Heavy: on a pull request its jobs run only with the ci:full or ci:db label (CONTRIBUTING.md).
     branches:
       - 'main'
     paths:
@@ -22,13 +24,25 @@ on:
       - 'backend/python/app/edition.py'
       - 'scripts/assert_no_skips.py'
       - '.github/workflows/db-migrations.yml'
+  schedule:
+    - cron: '10 1 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: db-migrations-${{ github.event_name == 'pull_request' && format('pr-{0}-{1}', github.event.pull_request.number, (contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))) && 'heavy' || format('other-{0}', github.run_id)) || format('{0}-{1}-{2}', github.event_name, github.ref, github.run_id) }}
+  cancel-in-progress: true
+
 jobs:
   migrations:
     name: migrations (${{ matrix.pg }}, ${{ matrix.shard }})
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))
     runs-on: ubuntu-latest
     # The tests run in shards, each with its own PostgreSQL (the tests drop and recreate the cluster's roles, so two runs must not share a
     # cluster). tests/test_unit.py::test_every_test_file_is_in_exactly_one_shard keeps the lists complete. Each shard checks its run
@@ -40,7 +54,7 @@ jobs:
         shard: [rls, integration, graph, vetted, pins, placement, upkeep, upgrade, kg]
         include:
           - shard: rls
-            files: tests/test_rls.py tests/test_roles.py tests/test_unit.py tests/test_wait_schema.py
+            files: tests/test_rls.py tests/test_roles.py tests/test_managed_admin.py tests/test_unit.py tests/test_wait_schema.py
           - shard: integration
             files: tests/test_integration.py tests/test_import_role.py tests/test_restore_window.py tests/test_kv_access_map.py tests/test_identity_slugs.py
           - shard: graph

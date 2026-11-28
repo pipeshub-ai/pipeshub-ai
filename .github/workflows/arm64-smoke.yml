@@ -12,6 +12,8 @@ name: ARM64 first-run
 # published image.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    # Heavy: on a pull request its jobs run only with the ci:full or ci:e2e label (CONTRIBUTING.md).
     branches:
       - main
     # What decides whether the arm64 build works: the image definitions and the
@@ -36,7 +38,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: arm64-smoke-${{ github.event.pull_request.number || github.run_id }}
+  group: arm64-smoke-${{ github.event_name == 'pull_request' && format('pr-{0}-{1}', github.event.pull_request.number, (contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')))) && 'heavy' || format('other-{0}', github.run_id)) || format('{0}-{1}-{2}', github.event_name, github.ref, github.run_id) }}
   cancel-in-progress: true
 
 env:
@@ -46,6 +48,11 @@ env:
 jobs:
   slim:
     name: Build and start slim (arm64)
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)))
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     steps:

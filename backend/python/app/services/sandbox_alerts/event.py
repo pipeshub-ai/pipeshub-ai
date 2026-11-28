@@ -142,15 +142,18 @@ def build_alert_event(
         "hostMemoryFreeGb": _gb(live.get("mem_available_bytes")),
     }
     critical = level == "critical"
+    alert_type = (NotificationType.SANDBOX_CAPACITY_CRITICAL if critical else NotificationType.SANDBOX_CAPACITY_WARNING).value
     return {
         "audience": NotificationAudience.PLATFORM_ADMINS.value,
-        "type": (NotificationType.SANDBOX_CAPACITY_CRITICAL if critical else NotificationType.SANDBOX_CAPACITY_WARNING).value,
+        "type": alert_type,
         "severity": (NotificationSeverity.CRITICAL if critical else NotificationSeverity.WARNING).value,
         "status": NotificationStatus.UNREAD.value,
         "originService": NotificationOrigin.AI.value,
         "email": email,
         "isDeleted": False,
-        "payload": payload,
+        # The type and the email flag again inside the payload: a signature covers only the payload, so a consumer
+        # reads them from there (the top-level copies are for older consumers).
+        "payload": {**payload, "type": alert_type, "email": email},
     }
 
 
@@ -178,6 +181,8 @@ def build_resolved_event(
         "isDeleted": False,
         "payload": {
             "v": PAYLOAD_VERSION,
+            "type": NotificationType.SANDBOX_CAPACITY_RESOLVED.value,
+            "email": False,
             "alertId": alert_id,
             "level": level,
             "resolvesAlertId": resolved_alert_id,

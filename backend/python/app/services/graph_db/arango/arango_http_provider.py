@@ -108,6 +108,7 @@ from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.modules.named_entities.graph_ops import NamedEntityGraphMixin
 from app.modules.pipeline import parser_identity
 from app.schema.arango.documents import (
+    AGENT_SKILLS_SCHEMA_GENERATION,
     APP_SCHEMA_GENERATION,
     RECORD_SCHEMA_GENERATION,
     agent_schema,
@@ -1128,6 +1129,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self.logger = logger
         self.config_service = config_service
         self.http_client: ArangoHTTPClient | None = None
+        # The skills collections' schema guards for the current client (start and poll only), by collection name.
+        self._skill_schema_guards: dict[str, RecordSchemaGuard] = {}
         # The walk index's actual name, found by its fields (is_trash_walk_index_ready).
         self._purge_walk_index = PURGE_WALK_INDEX
         # Edge collections per graph, read once: see _edge_collections_of_graph.
@@ -1310,6 +1313,16 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 self.http_client, self.logger, schema=app_schema, generation=APP_SCHEMA_GENERATION,
                 collection=CollectionNames.APPS.value,
             )
+            self._skill_schema_guards = {
+                name: RecordSchemaGuard(
+                    self.http_client, self.logger, schema=schema, generation=AGENT_SKILLS_SCHEMA_GENERATION,
+                    collection=name,
+                )
+                for name, schema in (
+                    (CollectionNames.AGENT_SKILLS.value, agent_skills_schema),
+                    (CollectionNames.AGENT_SKILL_VERSIONS.value, agent_skill_versions_schema),
+                )
+            }
 
             # Ensure database exists
             if not await self.http_client.database_exists(arango_db):
@@ -1333,11 +1346,16 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.http_client = None
             return False
 
+    def _schema_guards(self) -> list[RecordSchemaGuard]:
+        client = self.http_client
+        if client is None:
+            return []
+        return [g for g in (client.record_guard, client.apps_guard, *self._skill_schema_guards.values()) if g is not None]
+
     async def _stop_schema_guards(self) -> None:
         """Cancel the polls of the current client's schema guards (they hold the client, so they would keep polling after a disconnect)."""
-        for guard in (self.http_client.record_guard, self.http_client.apps_guard) if self.http_client else ():
-            if guard is not None:
-                await guard.stop()
+        for guard in self._schema_guards():
+            await guard.stop()
 
     async def disconnect(self) -> bool:
         """
@@ -1359,7 +1377,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return False
 
     async def _apply_schema(self, name: str, schema: dict[str, Any]) -> bool:
-        """Apply ``schema`` to a collection. The records and apps schemas are applied only while the live generation is
+        """Apply ``schema`` to a collection. The records, apps and agent skills schemas are applied only while the live generation is
         lower than this process's, through the guard's lock and last-look checks. That narrows, but cannot close, the window in which an
         older start puts its schema over a newer one (a schema change is not transactional with the lock); the newer process's poll
         repairs it, eventually (see ``record_schema_guard``)."""
@@ -1369,6 +1387,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             guard = client.record_guard
         elif client is not None and name == CollectionNames.APPS.value:
             guard = client.apps_guard
+        elif client is not None:
+            guard = self._skill_schema_guards.get(name)
         if guard is not None:
             # The guard's locked recheck decides from reads that can be out of date by the time the schema is written; the schema
             # update itself is not fenced, so a paused older start can still overwrite a newer schema, and the newer process's
@@ -1388,11 +1408,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return bool(guard and await guard.ensure_wide(trigger))
 
     def start_record_schema_poll(self, interval: float = 10.0) -> None:
-        """Check the live records and apps schemas every ``interval`` seconds on the running loop and widen each when it is
+        """Check the live guarded schemas (records, apps, agent skills) every ``interval`` seconds on the running loop and widen each when it is
         narrower than this process's."""
-        for guard in (self.http_client.record_guard, self.http_client.apps_guard) if self.http_client else ():
-            if guard is not None:
-                guard.start(interval)
+        for guard in self._schema_guards():
+            guard.start(interval)
 
     async def ensure_schema(self) -> bool:
         """
@@ -1414,7 +1433,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 schema_by_collection[col_name] = col_schema
 
             # 1. Create all collections (node + edge)
-            apps_schema_applied = True
+            required_schemas_applied = True
+            # Reported to the caller when not applied (it retries): an older schema refuses every write of the
+            # fields a newer one adds, and nothing else applies these later.
+            reported = {
+                CollectionNames.APPS.value, CollectionNames.AGENT_SKILLS.value, CollectionNames.AGENT_SKILL_VERSIONS.value,
+            }
             edge_collection_names = {ed["edge_collection"] for ed in EDGE_DEFINITIONS}
             for name in [*(col.value for col in CollectionNames), *extra_node_collections()]:
                 is_edge = name in edge_collection_names
@@ -1424,7 +1448,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         name, edge=is_edge, schema=col_schema
                     ):
                         self.logger.warning(f"Failed to create collection '{name}', continuing")
-                        apps_schema_applied = apps_schema_applied and name != CollectionNames.APPS.value
+                        required_schemas_applied = required_schemas_applied and name not in reported
                         continue
                     # A create that lost the race to another process answers 409, which counts as created: that
                     # process's schema may be older, so the schema is applied as to any existing collection.
@@ -1438,9 +1462,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         "The schema of collection '%s' was not updated; documents carrying fields "
                         "the previous schema does not list will be refused until it is", name,
                     )
-                    # Reported to the caller for apps: an older apps schema refuses every write to an app
+                    # Reported to the caller for `reported`: e.g. an older apps schema refuses every write to an app
                     # document, and a sync whose start is refused does not run (`run_sync_task`).
-                    apps_schema_applied = apps_schema_applied and name != CollectionNames.APPS.value
+                    required_schemas_applied = required_schemas_applied and name not in reported
 
             # 2. Create knowledge graph if it doesn't exist
             has_knowledge = await self.http_client.has_graph(GraphNames.KNOWLEDGE_GRAPH.value)
@@ -1469,9 +1493,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             await self._ensure_departments_seed()
 
             self.start_record_schema_poll()
-            if apps_schema_applied:
+            if required_schemas_applied:
                 self.logger.info("✅ ArangoDB schema ensured successfully")
-            return apps_schema_applied
+            return required_schemas_applied
 
         except Exception as e:
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="ensure_schema")
@@ -4430,30 +4454,32 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         match_field: str,
         match_value: Any,
         transaction: str | None = None,
+        *,
+        expected: dict[str, Any] | None = None,
     ) -> bool:
         """REPLACE the document only while `match_field` still equals
-        `match_value`. FILTER + REPLACE is one AQL statement so a concurrent
-        overwrite cannot sneak in between the check and the write."""
+        `match_value` and `expected` holds. FILTER + REPLACE is one AQL statement
+        so a concurrent overwrite cannot sneak in between the check and the write."""
         try:
             arango_node = self._translate_node_to_arango(node)
             arango_node["_key"] = key
-            query = """
+            bind_vars: dict[str, Any] = {
+                "@collection": collection,
+                "key": key,
+                "field": match_field,
+                "expected": match_value,
+                "node": arango_node,
+            }
+            filters = _aql_expectations(expected or {}, bind_vars)
+            newline = "\n                "
+            query = f"""
             FOR doc IN @@collection
                 FILTER doc._key == @key AND doc[@field] == @expected
+                {newline.join(filters)}
                 REPLACE doc WITH @node IN @@collection
                 RETURN NEW._key
             """
-            updated = await self.http_client.execute_aql(
-                query,
-                {
-                    "@collection": collection,
-                    "key": key,
-                    "field": match_field,
-                    "expected": match_value,
-                    "node": arango_node,
-                },
-                transaction,
-            )
+            updated = await self.http_client.execute_aql(query, bind_vars, transaction)
             return bool(updated)
         except Exception:
             raise
@@ -7410,7 +7436,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 INSERT @node INTO @@collection OPTIONS { overwriteMode: "ignore" }
                 RETURN NEW
                 """,
-                bind_vars={"@collection": collection, "node": {**node, "_key": key}},
+                # The generic `id` becomes the `_key`, as in `batch_upsert_nodes`: a collection with a
+                # strict schema refuses a document that carries both.
+                bind_vars={"@collection": collection, "node": {**self._translate_node_to_arango(node), "_key": key}},
                 txn_id=transaction,
             ),
             transaction,

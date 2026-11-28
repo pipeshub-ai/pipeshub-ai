@@ -20,6 +20,7 @@ export const userExists = async (
     // handlers still expect the target user document here, but must keep the
     // actor id for privilege checks (e.g. role changes).
     const actorUserId = req.user?.userId;
+    const actorUsedToken = req.user?.isOAuth === true;
 
     const user = await getUserRepository().getLive(
       req.user?.orgId as string,
@@ -32,6 +33,10 @@ export const userExists = async (
     req.user = user;
     if (actorUserId) {
       (req.user as any).userId = actorUserId;
+    }
+    // Session-only checks further down read this; losing it would make a token look like a session.
+    if (actorUsedToken) {
+      Object.assign(req.user, { isOAuth: true });
     }
     next();
   } catch (error) {

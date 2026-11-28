@@ -233,6 +233,29 @@ class TestSkillManageToolDeleteGuard:
         assert "agent" in (result.error or "").lower()
 
 
+class TestSkillManageToolConflicts:
+    """A store write that no longer matches the skill it read is reported, never raised
+    out of the tool and never reported as done."""
+
+    @pytest.mark.parametrize(
+        ("method", "args"),
+        [
+            ("write_resource", {"action": "write_file", "path": "n.md", "file_content": "x"}),
+            ("remove_resource", {"action": "remove_file", "path": "n.md"}),
+            ("delete", {"action": "delete"}),
+            ("rollback", {"action": "rollback", "version": "1.0.0"}),
+        ],
+    )
+    async def test_a_conflict_is_an_error_output(self, method: str, args: dict) -> None:
+        from app.agent_loop_lib.modules.providers.skills.base import SkillConflictError
+
+        manager = AsyncMock()
+        setattr(manager, method, AsyncMock(side_effect=SkillConflictError("deploy", current_updated_at=0)))
+        result = await SkillManageTool(manager).execute(name="deploy", **args)
+        assert result.success is False
+        assert "was modified" in (result.error or "")
+
+
 class TestSkillToolSummaries:
     """`display_name`/`summarize_args`/`summarize_result` are what let old
     (pre-summary) and new persisted `MessagePart`s render sensible chat

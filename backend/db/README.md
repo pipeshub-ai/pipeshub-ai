@@ -293,6 +293,22 @@ includes `DEALLOCATE ALL` (with `max_prepared_statements` on, PgBouncer keeps pr
 On a managed platform that cannot revoke the large-object functions, set `{"managed": true}` in `platform.deployment_profile.profile`: check 43's
 function rows become warnings (`kernel.rls_warnings`) and that one snapshot line is not compared.
 
+**An administrator that is not a superuser** (a managed service's master user: `LOGIN CREATEROLE CREATEDB`, no SUPERUSER,
+BYPASSRLS or REPLICATION) can run `db.bootstrap_roles` when it owns the database and the platform installs the extensions (`vector`,
+`pg_trgm`) into schema `ext` owned by `pipeshub_owner`. `kernel.bootstrap_admin()` names it: the database owner when it is such a role
+(all of `LOGIN`, `CREATEROLE` and `CREATEDB`; none of SUPERUSER, BYPASSRLS and REPLICATION) and not one of ours or a predefined one
+(prefixes compared literally). Any other owner is not it and stays an actor: check 22 reports its BYPASSRLS, and check 41 reports
+the CREATEROLE, CREATEDB or REPLICATION it holds (for example an owner with CREATEROLE but no CREATEDB, or one that cannot log in). The checks treat the administrator as they treat the bootstrap superuser:
+it is not an application actor; the ADMIN-only memberships PostgreSQL 16+ gives it on every role it created, and its memberships of
+roles that are not ours (a platform's own administrative role), are accepted (checks 18 and 37); its surface lines are compared under
+the superuser's token, and the lines of the platform roles it holds (NOLOGIN groups with none of the attributes checks 22 and 41
+are about, or predefined roles) are left to the semantic checks; check 43 reports PUBLIC's access
+to the large-object functions as a warning, as on a declared managed platform. Everything else is unchanged: a role that reaches the
+administrator is still an actor holding what it reaches; the administrator holding one of our roles with INHERIT or SET is a violation
+(`37 bootstrap administrator holds an application role`); an actor's own grant on a large-object function is still check 43, on a
+declared managed platform too; a role the administrator creates is reviewed in the surface like any other. A platform role's own
+memberships of other roles are checked as any role's are. Tests: `tests/test_managed_admin.py`.
+
 ## Person-level tables and jobs functions
 Some identity tables are keyed by a person, not by an org (a credential, a sign-in code). They are `global` tables with no `org_id`
 (`kernel.apply_rls(rel, 'global', p_vetted_write => true)`), marked with `kernel.mark_person(rel)` (check 76: no `org_id` column).

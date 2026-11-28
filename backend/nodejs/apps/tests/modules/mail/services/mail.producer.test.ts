@@ -71,4 +71,21 @@ describe('MailProducer - publishing mail jobs', () => {
     expect((caught as Error).message).to.equal('broker down');
     expect(broker.publish.firstCall.args[1].key).to.equal('appuserInvite');
   });
+
+  it('publishes the job flat with signing off, and under payload (the signable shape) with it on', async () => {
+    const saved = process.env.ENVELOPE_SIGN;
+    try {
+      delete process.env.ENVELOPE_SIGN;
+      const job = { ...event('org-1').payload, eventId: 'evt-1' };
+      await producer.publishEvent({ ...event('org-1'), payload: job } as never);
+      expect(broker.publish.lastCall.args[1].value).to.deep.equal(job);
+      process.env.ENVELOPE_SIGN = 'true';
+      await producer.publishEvent({ ...event('org-1'), payload: job } as never);
+      expect(broker.publish.lastCall.args[1].value).to.deep.equal({ eventId: 'evt-1', payload: job });
+      expect(broker.publish.lastCall.args[1].key).to.equal('org-1');
+    } finally {
+      if (saved === undefined) delete process.env.ENVELOPE_SIGN;
+      else process.env.ENVELOPE_SIGN = saved;
+    }
+  });
 });

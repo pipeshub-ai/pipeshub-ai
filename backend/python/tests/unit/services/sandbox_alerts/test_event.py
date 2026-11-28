@@ -139,8 +139,15 @@ def test_the_payload_has_only_the_listed_keys() -> None:
         "windowMinutes", "runs", "waited", "refused", "busyPercent", "refusedPercent",
         "longestWaitSeconds", "slotWaitSeconds", "emailCooldownSeconds", "reason", "reasonCounts",
         "indexingSlowed", "indexingSlowedSince", "limit",
-        "hostMemoryTotalGb", "hostMemoryFreeGb",
+        "hostMemoryTotalGb", "hostMemoryFreeGb", "type", "email",
     }
+
+
+def test_the_type_and_email_flag_are_inside_the_signed_payload_too() -> None:
+    # A signature covers only the payload: Node reads the type and the email flag from there.
+    event = build()
+    assert event["payload"]["type"] == event["type"]
+    assert event["payload"]["email"] is event["email"]
 
 
 def test_the_resolved_notice_is_in_app_only() -> None:

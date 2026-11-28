@@ -27,7 +27,19 @@ import psycopg
 from db.locations import DB_DIR, extra_locations
 
 BOOTSTRAP_SUPERUSER = "<bootstrap-superuser>"
-_G = "CASE WHEN {g} = 0 THEN 'PUBLIC' ELSE {g}::regrole::text END"
+# The bootstrap superuser (oid 10) and a managed platform's administrator (kernel.bootstrap_admin(), see live_lines) are rendered as one
+# fixed token by the query itself, at every role-valued column and only there: no name is replaced in the text afterwards, so a role
+# called like a language, a schema, a column or a field label (plpgsql, public, owner) changes nothing else in a line. Every other role
+# is rendered as regrole renders it (an identifier, quoted when needed).
+_ADMIN_OID = "__BOOTSTRAP_ADMIN_OID__"   # replaced by live_lines with the administrator's oid, or 10 when there is none
+
+
+def _role(expr: str) -> str:
+    """The SQL rendering of the role whose oid is ``expr``."""
+    return f"CASE WHEN ({expr}) IN (10, {_ADMIN_OID}) THEN '{BOOTSTRAP_SUPERUSER}' ELSE ({expr})::regrole::text END"
+
+
+_G = "CASE WHEN {g} = 0 THEN 'PUBLIC' ELSE " + _role("{g}") + " END"
 # Roles that are reviewed administrators (kernel.settings.admins) and predefined roles are left to the semantic checks.
 _ROLES_OK = """(SELECT oid FROM pg_roles WHERE rolname NOT LIKE 'pg\\_%')"""
 _ADMINS = """COALESCE((SELECT admins FROM kernel.settings), '{}')"""
@@ -64,28 +76,32 @@ _SYSFUNC_ORDER = '(p.oid::regprocedure::text) COLLATE "C"'
 _SYSFUNC_FROM = f"FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace JOIN pg_language l ON l.oid = p.prolang WHERE {_SYS} AND p.oid < 16384"
 SYSFUNC_ROWS = f"SELECT {_SYSFUNC_ROW} {_SYSFUNC_FROM} ORDER BY {_SYSFUNC_ORDER}"
 
+# Every role name is rendered as an identifier (quote_ident, as regrole renders it): a name that holds a space, '=', ',' or a quote is
+# quoted, so no name can look like the separators or the fields around it, and a line names exactly one role in each position.
+_ROLE_LINE = f"""CASE WHEN r.oid IN (10, {_ADMIN_OID}) THEN '{BOOTSTRAP_SUPERUSER}' ELSE quote_ident(r.rolname) END || ' login=' || r.rolcanlogin || ' super=' || r.rolsuper || ' inherit=' || r.rolinherit
+        || ' createrole=' || r.rolcreaterole || ' createdb=' || r.rolcreatedb || ' replication=' || r.rolreplication || ' bypassrls=' || r.rolbypassrls
+        || ' connlimit=' || r.rolconnlimit
+        || ' valid_until=' || CASE WHEN r.rolvaliduntil IS NULL OR r.rolvaliduntil = 'infinity' THEN '-' ELSE r.rolvaliduntil::text END"""
+
 QUERIES = [
-    ("role", f"""SELECT r.rolname || ' login=' || r.rolcanlogin || ' super=' || r.rolsuper || ' inherit=' || r.rolinherit || ' createrole=' || r.rolcreaterole
-        || ' createdb=' || r.rolcreatedb || ' replication=' || r.rolreplication || ' bypassrls=' || r.rolbypassrls || ' connlimit=' || r.rolconnlimit
-        || ' valid_until=' || CASE WHEN r.rolvaliduntil IS NULL OR r.rolvaliduntil = 'infinity' THEN '-' ELSE r.rolvaliduntil::text END
-        FROM pg_roles r WHERE r.oid IN {_ROLES_OK}"""),
-    ("rolesetting", """SELECT COALESCE(r.rolname, '-') || ' ' || COALESCE(d.datname, '-') || ' ' || c FROM pg_db_role_setting s
+    ("role", f"""SELECT {_ROLE_LINE} FROM pg_roles r WHERE r.oid IN {_ROLES_OK}"""),
+    ("rolesetting", f"""SELECT COALESCE(CASE WHEN r.oid IN (10, {_ADMIN_OID}) THEN '{BOOTSTRAP_SUPERUSER}' ELSE quote_ident(r.rolname) END, '-') || ' ' || COALESCE(d.datname, '-') || ' ' || c FROM pg_db_role_setting s
         LEFT JOIN pg_roles r ON r.oid = s.setrole LEFT JOIN pg_database d ON d.oid = s.setdatabase, unnest(s.setconfig) c
         WHERE r.oid IS NULL OR r.oid IN """ + _ROLES_OK),
-    ("member", f"""SELECT m.member::regrole || ' -> ' || m.roleid::regrole || ' inherit=' || m.inherit_option || ' set=' || m.set_option || ' admin=' || m.admin_option
+    ("member", f"""SELECT {_role("m.member")} || ' -> ' || {_role("m.roleid")} || ' inherit=' || m.inherit_option || ' set=' || m.set_option || ' admin=' || m.admin_option
         FROM pg_auth_members m WHERE m.member::regrole::text NOT LIKE 'pg\\_%'
         AND NOT (m.member::regrole::text = ANY ({_ADMINS}) AND m.roleid::regrole::text = ANY ({_ADMINS}))"""),
     ("pin", """SELECT p.proc::text || ' ' || p.rel::text || ' ' || p.op || ' key=' || COALESCE(array_to_string(p.key_cols, ','), '-') || ' set=' || COALESCE(array_to_string(p.set_cols, ','), '-')
         || ' txn=' || COALESCE(p.txn_col::text, '-') || ' max=' || p.max_items FROM kernel.vetted_write_pins p"""),
     ("settings", """SELECT 'admins=' || array_to_string(admins, ',') || ' extensions=' || array_to_string(extensions, ',') || ' services=' || array_to_string(services, ',')
         FROM kernel.settings"""),
-    ("database", "SELECT 'owner=' || d.datdba::regrole FROM pg_database d WHERE d.datname = current_database()"),
+    ("database", "SELECT 'owner=' || CASE WHEN (d.datdba) IN (10, __BOOTSTRAP_ADMIN_OID__) THEN '<bootstrap-superuser>' ELSE (d.datdba)::regrole::text END FROM pg_database d WHERE d.datname = current_database()"),
     ("databaseacl", "SELECT " + _G.format(g="a.grantee") + " || ' ' || a.privilege_type || ' grantable=' || a.is_grantable FROM pg_database d, "
         "LATERAL aclexplode(COALESCE(d.datacl, acldefault('d', d.datdba))) a WHERE d.datname = current_database() AND a.grantee <> d.datdba"),
-    ("schema", f"SELECT n.nspname || ' owner=' || n.nspowner::regrole FROM pg_namespace n WHERE {_NSP}"),
+    ("schema", f"SELECT n.nspname || ' owner=' || CASE WHEN (n.nspowner) IN (10, __BOOTSTRAP_ADMIN_OID__) THEN '<bootstrap-superuser>' ELSE (n.nspowner)::regrole::text END FROM pg_namespace n WHERE {_NSP}"),
     ("schemaacl", "SELECT n.nspname || ' ' || " + _G.format(g="a.grantee") + f" || ' ' || a.privilege_type || ' grantable=' || a.is_grantable FROM pg_namespace n, "
         f"LATERAL aclexplode(COALESCE(n.nspacl, acldefault('n', n.nspowner))) a WHERE {_NSP} AND a.grantee <> n.nspowner"),
-    ("rel", f"""SELECT c.oid::regclass || ' kind=' || c.relkind::text || ' owner=' || c.relowner::regrole || ' rls=' || c.relrowsecurity || ' force=' || c.relforcerowsecurity
+    ("rel", f"""SELECT c.oid::regclass || ' kind=' || c.relkind::text || ' owner=' || CASE WHEN (c.relowner) IN (10, __BOOTSTRAP_ADMIN_OID__) THEN '<bootstrap-superuser>' ELSE (c.relowner)::regrole::text END || ' rls=' || c.relrowsecurity || ' force=' || c.relforcerowsecurity
         || ' options=' || COALESCE(array_to_string(c.reloptions, ','), '-') || ' ext=' || {_EXT.format(cls="'pg_class'", oid="c.oid")}
         || CASE WHEN c.relkind IN ('v', 'm') THEN ' def=' || md5(pg_get_viewdef(c.oid)) ELSE '' END
         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f') AND {_NSP} AND {_NOT_FOLDED.format(rel="c.oid")}"""),
@@ -95,7 +111,7 @@ QUERIES = [
     ("colacl", "SELECT c.oid::regclass || '.' || t.attname || ' ' || " + _G.format(g="a.grantee") + f" || ' ' || a.privilege_type FROM pg_attribute t "
         f"JOIN pg_class c ON c.oid = t.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace, LATERAL aclexplode(t.attacl) a WHERE t.attacl IS NOT NULL AND NOT t.attisdropped AND {_NSP} AND {_NOT_FOLDED.format(rel="c.oid")}"),
     ("policy", f"""SELECT p.polrelid::regclass || ' ' || p.polname || ' cmd=' || p.polcmd::text || ' permissive=' || p.polpermissive
-        || ' roles=' || COALESCE((SELECT string_agg(CASE WHEN x = 0 THEN 'PUBLIC' ELSE x::regrole::text END, ',' ORDER BY CASE WHEN x = 0 THEN 'PUBLIC' ELSE x::regrole::text END) FROM unnest(p.polroles) x), '-')
+        || ' roles=' || COALESCE((SELECT string_agg(r, ',' ORDER BY r) FROM (SELECT CASE WHEN x = 0 THEN 'PUBLIC' ELSE {_role("x")} END AS r FROM unnest(p.polroles) x) y), '-')
         || ' using=' || COALESCE(pg_get_expr(p.polqual, p.polrelid), '-') || ' check=' || COALESCE(pg_get_expr(p.polwithcheck, p.polrelid), '-')
         FROM pg_policy p JOIN pg_class c ON c.oid = p.polrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE {_NSP} AND {_NOT_FOLDED.format(rel="c.oid")}"""),
     ("rule", f"SELECT c.oid::regclass || ' ' || w.rulename || ' def=' || md5(pg_get_ruledef(w.oid)) FROM pg_rewrite w JOIN pg_class c ON c.oid = w.ev_class "
@@ -110,15 +126,15 @@ QUERIES = [
         f"WHERE a.attnum > 0 AND NOT a.attisdropped AND c.relkind IN ('r', 'p', 'v', 'm', 'f') AND {_NSP} AND {_NOT_FOLDED.format(rel="c.oid")}"),
     ("index", f"SELECT i.indexrelid::regclass || ' on ' || i.indrelid::regclass || ' unique=' || i.indisunique || ' exclusion=' || i.indisexclusion || ' valid=' || i.indisvalid "
         f"|| ' def=' || md5(pg_get_indexdef(i.indexrelid)) FROM pg_index i JOIN pg_class c ON c.oid = i.indrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE {_NSP} AND {_NOT_FOLDED.format(rel="i.indrelid")}"),
-    ("statistics", f"SELECT quote_ident(n.nspname) || '.' || quote_ident(s.stxname) || ' on ' || s.stxrelid::regclass || ' owner=' || s.stxowner::regrole "
+    ("statistics", f"SELECT quote_ident(n.nspname) || '.' || quote_ident(s.stxname) || ' on ' || s.stxrelid::regclass || ' owner=' || CASE WHEN (s.stxowner) IN (10, __BOOTSTRAP_ADMIN_OID__) THEN '<bootstrap-superuser>' ELSE (s.stxowner)::regrole::text END "
         f"|| ' def=' || md5(pg_get_statisticsobjdef(s.oid)) FROM pg_statistic_ext s JOIN pg_namespace n ON n.oid = s.stxnamespace "
         # not folded with a leaf: CREATE STATISTICS does not recurse onto partitions, so one on a leaf is its own object, read after pruning
         f"WHERE {_NSP}"),
-    ("operator", f"SELECT o.oid::regoperator || ' owner=' || o.oprowner::regrole || ' function=' || o.oprcode FROM pg_operator o JOIN pg_namespace n ON n.oid = o.oprnamespace WHERE {_NSP}"),
+    ("operator", f"SELECT o.oid::regoperator || ' owner=' || CASE WHEN (o.oprowner) IN (10, __BOOTSTRAP_ADMIN_OID__) THEN '<bootstrap-superuser>' ELSE (o.oprowner)::regrole::text END || ' function=' || o.oprcode FROM pg_operator o JOIN pg_namespace n ON n.oid = o.oprnamespace WHERE {_NSP}"),
     ("cast", "SELECT c.castsource::regtype || ' -> ' || c.casttarget::regtype || ' function=' || c.castfunc::regproc || ' context=' || c.castcontext::text "
         "FROM pg_cast c WHERE c.oid >= 16384"),
     # extension functions are listed only when they are SECURITY DEFINER, LEAKPROOF or carry a non-default ACL
-    ("func", f"""SELECT p.oid::regprocedure || ' owner=' || p.proowner::regrole || ' secdef=' || p.prosecdef || ' leakproof=' || p.proleakproof
+    ("func", f"""SELECT p.oid::regprocedure || ' owner=' || CASE WHEN (p.proowner) IN (10, __BOOTSTRAP_ADMIN_OID__) THEN '<bootstrap-superuser>' ELSE (p.proowner)::regrole::text END || ' secdef=' || p.prosecdef || ' leakproof=' || p.proleakproof
         || ' volatility=' || p.provolatile::text || ' language=' || l.lanname || ' config=' || COALESCE(array_to_string(p.proconfig, ';'), '-')
         || ' body=' || md5(COALESCE(p.prosrc, '')) || ' ext=' || {_EXT.format(cls="'pg_proc'", oid="p.oid")}
         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace JOIN pg_language l ON l.oid = p.prolang
@@ -127,31 +143,31 @@ QUERIES = [
         LATERAL aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a
         WHERE {_NSP} AND a.grantee <> p.proowner AND (p.prosecdef OR p.proleakproof OR p.proacl IS NOT NULL OR NOT EXISTS
           (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e'))"""),
-    ("type", f"SELECT t.oid::regtype || ' kind=' || t.typtype::text || ' owner=' || t.typowner::regrole FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace "
+    ("type", f"SELECT t.oid::regtype || ' kind=' || t.typtype::text || ' owner=' || CASE WHEN (t.typowner) IN (10, __BOOTSTRAP_ADMIN_OID__) THEN '<bootstrap-superuser>' ELSE (t.typowner)::regrole::text END FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace "
         f"WHERE t.typtype IN ('d', 'e', 'r', 'm') AND t.typarray <> 0 AND {_NSP}"),
     ("typeacl", "SELECT t.oid::regtype || ' ' || " + _G.format(g="a.grantee") + f" || ' ' || a.privilege_type FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace, "
         f"LATERAL aclexplode(t.typacl) a WHERE t.typacl IS NOT NULL AND t.typarray <> 0 AND {_NSP} AND a.grantee <> t.typowner"),
-    ("language", "SELECT l.lanname || ' trusted=' || l.lanpltrusted || ' owner=' || l.lanowner::regrole FROM pg_language l"),
+    ("language", "SELECT l.lanname || ' trusted=' || l.lanpltrusted || ' owner=' || CASE WHEN (l.lanowner) IN (10, __BOOTSTRAP_ADMIN_OID__) THEN '<bootstrap-superuser>' ELSE (l.lanowner)::regrole::text END FROM pg_language l"),
     ("languageacl", "SELECT l.lanname || ' ' || " + _G.format(g="a.grantee") + " || ' ' || a.privilege_type FROM pg_language l, "
         "LATERAL aclexplode(COALESCE(l.lanacl, acldefault('l', l.lanowner))) a WHERE a.grantee <> l.lanowner"),
-    ("largeobject", "SELECT m.oid || ' owner=' || m.lomowner::regrole FROM pg_largeobject_metadata m"),
+    ("largeobject", "SELECT m.oid || ' owner=' || CASE WHEN (m.lomowner) IN (10, __BOOTSTRAP_ADMIN_OID__) THEN '<bootstrap-superuser>' ELSE (m.lomowner)::regrole::text END FROM pg_largeobject_metadata m"),
     ("largeobjectacl", "SELECT m.oid || ' ' || " + _G.format(g="a.grantee") + " || ' ' || a.privilege_type FROM pg_largeobject_metadata m, "
         "LATERAL aclexplode(m.lomacl) a WHERE m.lomacl IS NOT NULL AND a.grantee <> m.lomowner"),
     ("lofunctions", """SELECT 'public_execute=' || count(*) FROM pg_proc p WHERE p.pronamespace = 'pg_catalog'::regnamespace AND p.proname ~ '^(lo_|lo(read|write)$)'
         AND EXISTS (SELECT 1 FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) x WHERE x.grantee = 0 AND x.privilege_type = 'EXECUTE')"""),
-    ("fdw", "SELECT w.fdwname || ' owner=' || w.fdwowner::regrole FROM pg_foreign_data_wrapper w"),
+    ("fdw", "SELECT w.fdwname || ' owner=' || CASE WHEN (w.fdwowner) IN (10, __BOOTSTRAP_ADMIN_OID__) THEN '<bootstrap-superuser>' ELSE (w.fdwowner)::regrole::text END FROM pg_foreign_data_wrapper w"),
     ("fdwacl", "SELECT w.fdwname || ' ' || " + _G.format(g="a.grantee") + " || ' ' || a.privilege_type FROM pg_foreign_data_wrapper w, "
         "LATERAL aclexplode(COALESCE(w.fdwacl, acldefault('F', w.fdwowner))) a WHERE a.grantee <> w.fdwowner"),
-    ("server", "SELECT s.srvname || ' fdw=' || (SELECT fdwname FROM pg_foreign_data_wrapper WHERE oid = s.srvfdw) || ' owner=' || s.srvowner::regrole FROM pg_foreign_server s"),
+    ("server", "SELECT s.srvname || ' fdw=' || (SELECT fdwname FROM pg_foreign_data_wrapper WHERE oid = s.srvfdw) || ' owner=' || CASE WHEN (s.srvowner) IN (10, __BOOTSTRAP_ADMIN_OID__) THEN '<bootstrap-superuser>' ELSE (s.srvowner)::regrole::text END FROM pg_foreign_server s"),
     ("serveracl", "SELECT s.srvname || ' ' || " + _G.format(g="a.grantee") + " || ' ' || a.privilege_type FROM pg_foreign_server s, "
         "LATERAL aclexplode(COALESCE(s.srvacl, acldefault('S', s.srvowner))) a WHERE a.grantee <> s.srvowner"),
     ("usermapping", "SELECT um.srvname || ' ' || COALESCE(um.usename, 'PUBLIC') FROM pg_user_mappings um"),
-    ("defaultacl", "SELECT COALESCE(d.defaclrole::regrole::text, '-') || ' ' || COALESCE(NULLIF(d.defaclnamespace, 0)::regnamespace::text, '-') || ' ' || d.defaclobjtype::text || ' ' || "
+    ("defaultacl", "SELECT COALESCE(" + _role("NULLIF(d.defaclrole, 0)") + ", '-') || ' ' || COALESCE(NULLIF(d.defaclnamespace, 0)::regnamespace::text, '-') || ' ' || d.defaclobjtype::text || ' ' || "
         + _G.format(g="a.grantee") + " || ' ' || a.privilege_type FROM pg_default_acl d, LATERAL aclexplode(d.defaclacl) a"),
     ("publication", "SELECT p.pubname || ' all=' || p.puballtables || ' tables=' || COALESCE((SELECT string_agg(r.prrelid::regclass::text, ',' ORDER BY r.prrelid::regclass::text) "
         "FROM pg_publication_rel r WHERE r.prpubid = p.oid), '-') FROM pg_publication p"),
-    ("subscription", "SELECT s.subname || ' owner=' || s.subowner::regrole FROM pg_subscription s"),
-    ("eventtrigger", "SELECT e.evtname || ' event=' || e.evtevent::text || ' function=' || e.evtfoid::regprocedure || ' owner=' || e.evtowner::regrole || ' enabled=' || e.evtenabled::text FROM pg_event_trigger e"),
+    ("subscription", "SELECT s.subname || ' owner=' || CASE WHEN (s.subowner) IN (10, __BOOTSTRAP_ADMIN_OID__) THEN '<bootstrap-superuser>' ELSE (s.subowner)::regrole::text END FROM pg_subscription s"),
+    ("eventtrigger", "SELECT e.evtname || ' event=' || e.evtevent::text || ' function=' || e.evtfoid::regprocedure || ' owner=' || CASE WHEN (e.evtowner) IN (10, __BOOTSTRAP_ADMIN_OID__) THEN '<bootstrap-superuser>' ELSE (e.evtowner)::regrole::text END || ' enabled=' || e.evtenabled::text FROM pg_event_trigger e"),
     # ---- the system schemas: every ACL that differs from what initdb recorded, and everything a user created there
     ("sysrelacl", f"""SELECT c.oid::regclass || ' ' || {_G.format(g="a.grantee")} || ' ' || a.privilege_type FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace,
         LATERAL aclexplode(COALESCE(c.relacl, acldefault((CASE c.relkind WHEN 'S' THEN 's' ELSE 'r' END)::\"char\", c.relowner))) a
@@ -172,9 +188,9 @@ QUERIES = [
     ("systypeacl", f"""SELECT t.oid::regtype || ' ' || {_G.format(g="a.grantee")} || ' ' || a.privilege_type FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace,
         LATERAL aclexplode(t.typacl) a WHERE {_SYS} AND t.typacl IS NOT NULL AND a.grantee <> t.typowner
           AND t.typacl IS DISTINCT FROM (SELECT i.initprivs FROM pg_init_privs i WHERE i.objoid = t.oid AND i.classoid = 'pg_type'::regclass AND i.objsubid = 0)"""),
-    ("sysobject", f"""SELECT 'relation ' || c.oid::regclass || ' owner=' || c.relowner::regrole || ' ext=' || {_EXT.format(cls="'pg_class'", oid="c.oid")}
+    ("sysobject", f"""SELECT 'relation ' || c.oid::regclass || ' owner=' || CASE WHEN (c.relowner) IN (10, __BOOTSTRAP_ADMIN_OID__) THEN '<bootstrap-superuser>' ELSE (c.relowner)::regrole::text END || ' ext=' || {_EXT.format(cls="'pg_class'", oid="c.oid")}
         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE {_SYS} AND c.oid >= 16384
-        UNION ALL SELECT 'function ' || p.oid::regprocedure || ' owner=' || p.proowner::regrole || ' secdef=' || p.prosecdef || ' body=' || md5(COALESCE(p.prosrc, ''))
+        UNION ALL SELECT 'function ' || p.oid::regprocedure || ' owner=' || CASE WHEN (p.proowner) IN (10, __BOOTSTRAP_ADMIN_OID__) THEN '<bootstrap-superuser>' ELSE (p.proowner)::regrole::text END || ' secdef=' || p.prosecdef || ' body=' || md5(COALESCE(p.prosrc, ''))
           || ' ext=' || {_EXT.format(cls="'pg_proc'", oid="p.oid")} FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE {_SYS} AND p.oid >= 16384
         UNION ALL SELECT 'type ' || t.oid::regtype FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE {_SYS} AND t.oid >= 16384
         UNION ALL SELECT 'operator ' || o.oid::regoperator FROM pg_operator o JOIN pg_namespace n ON n.oid = o.oprnamespace WHERE {_SYS} AND o.oid >= 16384"""),
@@ -190,10 +206,10 @@ QUERIES = [
         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace JOIN pg_language l ON l.oid = p.prolang
         WHERE {_SYS} AND p.oid < 16384 AND (p.prosecdef OR p.proconfig IS NOT NULL)"""),
     ("parameteracl", f"""SELECT pa.parname || ' ' || {_G.format(g="a.grantee")} || ' ' || a.privilege_type FROM pg_parameter_acl pa, LATERAL aclexplode(pa.paracl) a"""),
-    ("tablespace", "SELECT t.spcname || ' owner=' || t.spcowner::regrole FROM pg_tablespace t"),
+    ("tablespace", "SELECT t.spcname || ' owner=' || CASE WHEN (t.spcowner) IN (10, __BOOTSTRAP_ADMIN_OID__) THEN '<bootstrap-superuser>' ELSE (t.spcowner)::regrole::text END FROM pg_tablespace t"),
     ("tablespaceacl", f"""SELECT t.spcname || ' ' || {_G.format(g="a.grantee")} || ' ' || a.privilege_type FROM pg_tablespace t,
         LATERAL aclexplode(COALESCE(t.spcacl, acldefault('t', t.spcowner))) a WHERE a.grantee <> t.spcowner"""),
-    ("extension", "SELECT e.extname || ' schema=' || e.extnamespace::regnamespace || ' owner=' || e.extowner::regrole FROM pg_extension e"),
+    ("extension", "SELECT e.extname || ' schema=' || e.extnamespace::regnamespace || ' owner=' || CASE WHEN (e.extowner) IN (10, __BOOTSTRAP_ADMIN_OID__) THEN '<bootstrap-superuser>' ELSE (e.extowner)::regrole::text END FROM pg_extension e"),
 ]
 
 
@@ -217,6 +233,8 @@ def live_lines(conn: psycopg.Connection) -> list[str]:
     """The live surface. Runs in one read-only transaction under ``search_path = pg_catalog`` so deparsed text is stable."""
     out = []
     version = major(conn)
+    admin = bootstrap_admin_oid(conn)
+    token_oid = str(admin or 10)              # no administrator: only the bootstrap superuser gets the token
     with conn.transaction():
         conn.execute("SET LOCAL search_path = pg_catalog")
         folding = conn.execute("SELECT to_regclass('kernel.rls_registry') IS NOT NULL AND to_regclass('kernel.settings') IS NOT NULL").fetchone()[0]
@@ -228,22 +246,57 @@ def live_lines(conn: psycopg.Connection) -> list[str]:
                 continue
             sql = text if folding else text.replace(_FOLD_SELECT, "SELECT NULL::oid WHERE false")
             query = sql if admins_ok else sql.replace("COALESCE((SELECT admins FROM kernel.settings), '{}')", "'{}'::name[]")
-            for (line,) in conn.execute(query):
+            for (line,) in conn.execute(query.replace(_ADMIN_OID, token_oid)):
                 out.append(f"{kind}@{version} {line}" if kind == "sysfuncs" else f"{kind} {line}")
     if _managed(conn):                           # a known exception on managed platforms: reported in kernel.rls_warnings, not compared
         out = [x for x in out if not x.startswith("lofunctions ")]
-    return sorted(normalise(out, conn.execute("SELECT rolname FROM pg_roles WHERE oid = 10").fetchone()[0]))
+    if admin is None:
+        return sorted(out)
+    # A managed platform's administrator stands where the bootstrap superuser does: every role-valued column already rendered it as
+    # the superuser's token. Its own role line, the ADMIN-only memberships PostgreSQL 16+ gives it on every role it created, and its
+    # memberships and the role lines of the platform roles it holds (_PLATFORM_ROLE) are left to the semantic checks: chosen in SQL by
+    # role oid, rendered by the same expressions as the surface's own lines, and removed as whole lines.
+    left_out = {line for (line,) in conn.execute(_ADMIN_LINES.replace(_ADMIN_OID, token_oid))}
+    return sorted(x for x in out if x not in left_out)
 
 
-def normalise(lines: Iterable[str], superuser: str) -> set[str]:
-    """Replace the bootstrap superuser's name (whatever the deployment calls it) by a fixed token."""
-    token = re.compile(r'(?<![\w"])' + re.escape(superuser) + r'(?![\w"])')
-    return {token.sub(BOOTSTRAP_SUPERUSER, x) for x in lines}
+# A platform role: not ours, and either a predefined role or a NOLOGIN group with none of the attributes checks 22 and 41 are about
+# (a login, or an attribute, keeps its lines in the surface: nothing else would report a role the administrator holds that can log in).
+_PLATFORM_ROLE = """NOT starts_with(r.rolname::text, s.role_prefix) AND (starts_with(r.rolname::text, 'pg_') OR (NOT r.rolcanlogin
+      AND NOT (r.rolsuper OR r.rolbypassrls OR r.rolreplication OR r.rolcreaterole OR r.rolcreatedb)))"""
+
+# The administrator's memberships left to the semantic checks, as the "member" query renders them: the ADMIN-only grants on the roles it
+# created (kernel_0024, checks 18 and 37), and its memberships of platform roles.
+_ADMIN_MEMBERS = f"""SELECT {_role("m.member")} || ' -> ' || {_role("m.roleid")} || ' inherit=' || m.inherit_option || ' set=' || m.set_option
+        || ' admin=' || m.admin_option FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid, kernel.settings s
+    WHERE m.member = kernel.bootstrap_admin()
+      AND ((m.admin_option AND NOT m.inherit_option AND NOT m.set_option) OR ({_PLATFORM_ROLE}))"""
+
+# The platform roles the administrator holds (with INHERIT or SET: not one it merely created). A role the administrator only created,
+# or one that can log in or holds an attribute, still shows in the surface.
+_PLATFORM_ROLES = f"""SELECT r.oid FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid, kernel.settings s
+    WHERE m.member = kernel.bootstrap_admin() AND (m.inherit_option OR m.set_option) AND NOT starts_with(r.rolname::text, 'pg_')
+      AND {_PLATFORM_ROLE}"""
+
+# The whole lines left to the semantic checks: the role lines of the administrator and of the platform roles it holds, chosen by oid,
+# and the administrator's memberships above, rendered exactly as the "role" and "member" queries render them.
+_ADMIN_LINES = f"""SELECT 'role ' || {_ROLE_LINE} FROM pg_roles r WHERE r.oid = kernel.bootstrap_admin() OR r.oid IN ({_PLATFORM_ROLES})
+    UNION ALL SELECT 'member ' || x.line FROM ({_ADMIN_MEMBERS}) x(line)"""
+
+
+def bootstrap_admin_oid(conn: psycopg.Connection) -> int | None:
+    """The oid of the database owner when it is a managed platform's administrator rather than a superuser
+    (``kernel.bootstrap_admin()``), or None."""
+    if not conn.execute("SELECT to_regprocedure('kernel.bootstrap_admin()') IS NOT NULL").fetchone()[0]:
+        return None
+    return conn.execute("SELECT kernel.bootstrap_admin()::bigint").fetchone()[0]
 
 
 def _managed(conn: psycopg.Connection) -> bool:
-    return bool(conn.execute("SELECT to_regclass('platform.deployment_profile') IS NOT NULL AND COALESCE("
-                             "(SELECT (profile->>'managed')::boolean FROM platform.deployment_profile), false)").fetchone()[0])
+    """A declared managed platform, or one whose administrator is not a superuser (it cannot revoke the superuser's functions)."""
+    return bootstrap_admin_oid(conn) is not None or bool(conn.execute(
+        "SELECT to_regclass('platform.deployment_profile') IS NOT NULL AND COALESCE("
+        "(SELECT (profile->>'managed')::boolean FROM platform.deployment_profile), false)").fetchone()[0])
 
 
 def expected_files(extra: Iterable[str] = ()) -> list[Path]:
@@ -326,8 +379,11 @@ def violations(conn: psycopg.Connection, extra: Iterable[str] = ()) -> list[tupl
         expected = {x for x in expected if not x.startswith("lofunctions ")}
     live = set(live_lines(conn))
     for role in _window_roles(conn) | _migration_roles(conn):
-        live = {x for x in live if not x.startswith(f"role {role} ")}
-        expected = {x for x in expected if not x.startswith(f"role {role} ")}
+        # quoted as the role query renders it, so "role <name> login=" names exactly this role (a longer name differs at its first
+        # character after the identifier)
+        name = conn.execute("SELECT quote_ident(%s)", (role,)).fetchone()[0]
+        live = {x for x in live if not x.startswith(f"role {name} login=")}
+        expected = {x for x in expected if not x.startswith(f"role {name} login=")}
     return diff(live, expected)
 
 

@@ -1265,6 +1265,15 @@ describe('UserAccountController', () => {
   });
 
   describe('getAccessTokenFromRefreshToken', () => {
+    // No logout on record: the refresh path now reads this for real, and a failed read refuses.
+    beforeEach(() => {
+      const query: any = {
+        sort: () => query,
+        lean: () => query,
+        exec: async () => null,
+      };
+      sinon.stub(UserActivities, 'findOne').returns(query);
+    });
     it('should call next(UnauthorizedError) when the lookup finds no user', async () => {
       const req: any = {
         tokenPayload: { orgId: 'o1', userId: 'u1' },
@@ -1856,6 +1865,15 @@ describe('UserAccountController', () => {
   });
 
   describe('getAccessTokenFromRefreshToken (additional)', () => {
+    // No logout on record: the refresh path now reads this for real, and a failed read refuses.
+    beforeEach(() => {
+      const query: any = {
+        sort: () => query,
+        lean: () => query,
+        exec: async () => null,
+      };
+      sinon.stub(UserActivities, 'findOne').returns(query);
+    });
     it('should call next(UnauthorizedError) when user data is null', async () => {
       const req: any = {
         tokenPayload: { orgId: 'o1', userId: 'u1' },
@@ -2507,6 +2525,15 @@ describe('UserAccountController', () => {
   });
 
   describe('getAccessTokenFromRefreshToken - success', () => {
+    // No logout on record: the refresh path now reads this for real, and a failed read refuses.
+    beforeEach(() => {
+      const query: any = {
+        sort: () => query,
+        lean: () => query,
+        exec: async () => null,
+      };
+      sinon.stub(UserActivities, 'findOne').returns(query);
+    });
     it('should return access token for valid refresh token', async () => {
       const req: any = {
         tokenPayload: { orgId: 'o1', userId: 'u1' },
@@ -3561,6 +3588,15 @@ describe('UserAccountController', () => {
   // getAccessTokenFromRefreshToken - full success with credential update
   // -----------------------------------------------------------------------
   describe('getAccessTokenFromRefreshToken - success with credential update', () => {
+    // No logout on record: the refresh path now reads this for real, and a failed read refuses.
+    beforeEach(() => {
+      const query: any = {
+        sort: () => query,
+        lean: () => query,
+        exec: async () => null,
+      };
+      sinon.stub(UserActivities, 'findOne').returns(query);
+    });
     it('should update credentials and return new access token', async () => {
       const { refreshToken } = await (controller as any).sessions.start('u1', 'o1');
       const req: any = {
@@ -3675,6 +3711,13 @@ describe('UserAccountController', () => {
       saved = process.env.PIPESHUB_HARDENED;
       delete process.env.PIPESHUB_HARDENED;
       sinon.stub(UserActivities, 'create').resolves({} as any);
+      // No logout on record: the refresh path reads this for real, and a failed read refuses.
+      const query: any = {
+        sort: () => query,
+        lean: () => query,
+        exec: async () => null,
+      };
+      sinon.stub(UserActivities, 'findOne').returns(query);
       mockIamService.getUserById.resolves({ statusCode: 200, data: { _id: 'u1', orgId: 'o1', email: 'test@test.com' } });
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({ isBlocked: false } as any);
       const generateAuthTokenMod = require('../../../../src/modules/auth/utils/generateAuthToken');

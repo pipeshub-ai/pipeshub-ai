@@ -2028,6 +2028,104 @@ describe('UserController', () => {
       expect(emitForceLogout.calledWith(otherUserId, 'role_changed')).to.be.true;
     });
 
+    // A token is refused admin at the route; taking it away shows only here, once the
+    // target's current role is known.
+    const tokenRoleCase = (
+      targetRole: 'admin' | 'member',
+      sentRole: string,
+    ) => {
+      const targetId = '507f1f77bcf86cd799439013';
+      req.params.id = targetId;
+      req.body = { role: sentRole, fullName: 'Kept Name' };
+      req.user.isOAuth = true;
+      const mockUser = {
+        _id: targetId,
+        orgId: new mongoose.Types.ObjectId(req.user.orgId),
+        fullName: 'Admin Two',
+        email: 'admin2@test.com',
+        role: targetRole,
+        save: sinon.stub().resolves(),
+        toObject() {
+          const { ...rest } = this as any;
+          delete rest.save;
+          delete rest.toObject;
+          return { ...rest };
+        },
+      };
+      const findOneStub = sinon.stub(Users, 'findOne');
+      findOneStub.onFirstCall().returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves({ role: 'admin' }),
+      } as any);
+      findOneStub.resolves(mockUser as any);
+      return mockUser;
+    };
+
+    it('refuses a token that takes admin away from someone, and saves nothing', async () => {
+      const mockUser = tokenRoleCase('admin', 'member');
+      mockConfig.rsAvailable = 'true';
+      // Everything a demotion needs, so without the refusal it would go through.
+      const withTransaction = sinon
+        .stub()
+        .callsFake(async (fn: () => Promise<void>) => {
+          await fn();
+        });
+      sinon.stub(mongoose, 'startSession').resolves({
+        withTransaction,
+        endSession: sinon.stub().resolves(),
+      } as any);
+      sinon.stub(Org, 'updateOne').resolves({} as any);
+      sinon.stub(Users, 'countDocuments').returns({
+        session: sinon.stub().callsFake(() => Promise.resolve(2)),
+      } as any);
+      stubUserMemberships([{ _id: mockUser._id, orgId: mockUser.orgId }]);
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
+      sinon
+        .stub(NotificationContainer, 'getNotificationService')
+        .returns({ emitForceLogout: sinon.stub().returns(true) } as any);
+
+      await controller.updateUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      const error = next.firstCall.args[0];
+      expect(error.statusCode).to.equal(403);
+      expect(error.message).to.contain('requires an interactive user session');
+      expect(mockUser.role).to.equal('admin');
+      expect(mockUser.save.called).to.be.false;
+      expect(withTransaction.called).to.be.false;
+      expect(res.json.called).to.be.false;
+    });
+
+    it("still lets a token send someone's current role along with a profile change", async () => {
+      const readUser = tokenRoleCase('member', 'member');
+      // An admin promotes the target between the controller's read and its write.
+      const promoted = { ...readUser, role: 'admin', save: sinon.stub().resolves() };
+      (Users.findOne as sinon.SinonStub).onThirdCall().resolves(promoted as any);
+
+      await controller.updateUser(req, res, next);
+
+      expect(next.called, next.firstCall?.args[0]?.message).to.be.false;
+      expect(res.json.calledOnce).to.be.true;
+      expect(promoted.save.calledOnce).to.be.true;
+      expect(promoted.fullName).to.equal('Kept Name');
+      expect(promoted.role).to.equal('admin');
+    });
+
+    it('refuses a token that sends member for an admin whose stored role is unset', async () => {
+      const mockUser = tokenRoleCase('member', 'member');
+      delete (mockUser as any).role;
+      // The legacy row reads as member; the fresh admin check says otherwise.
+      (Users.findOne as sinon.SinonStub).onThirdCall().returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves({ role: 'admin' }),
+      } as any);
+
+      await controller.updateUser(req, res, next);
+
+      expect(next.firstCall?.args[0]?.statusCode).to.equal(403);
+      expect(mockUser.save.called).to.be.false;
+    });
+
     it('should reject duplicate email when updating email', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
       req.body = { email: 'new@test.com' };

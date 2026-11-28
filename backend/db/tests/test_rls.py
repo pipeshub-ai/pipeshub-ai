@@ -877,10 +877,11 @@ def test_independently_written_plants_are_detected(org_db):
 
 
 def test_the_bootstrap_superuser_name_is_not_part_of_the_snapshot():
-    live = ["role dbadmin login=true", "database owner=dbadmin", "language c owner=dbadmin", "role dbadminx login=true", 'role "dbadmin" x']
-    assert surface.normalise(live, "dbadmin") == {"role <bootstrap-superuser> login=true", "database owner=<bootstrap-superuser>",
-                                                  "language c owner=<bootstrap-superuser>", "role dbadminx login=true", 'role "dbadmin" x'}
-    assert surface.normalise(["role postgres x"], "postgres") == surface.normalise(["role other x".replace("other", "postgres")], "postgres")
+    """The queries render the bootstrap superuser (oid 10), and a managed platform's administrator, as one token at every role-valued
+    column; nothing is replaced in the text afterwards, so a role's name never changes another word of a line."""
+    assert surface._role("o") == ("CASE WHEN (o) IN (10, __BOOTSTRAP_ADMIN_OID__) THEN '<bootstrap-superuser>' "
+                                  "ELSE (o)::regrole::text END")
+    assert not hasattr(surface, "normalise")
 
 
 def test_the_administrator_list_is_in_the_snapshot(org_db):

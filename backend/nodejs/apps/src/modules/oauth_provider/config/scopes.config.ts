@@ -288,12 +288,6 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
     category: 'Configuration',
     requiresUserConsent: true,
   },
-  'config:write': {
-    name: 'config:write',
-    description: 'Update system configuration',
-    category: 'Configuration',
-    requiresUserConsent: true,
-  },
 
   // Crawling Manager
   'crawl:read': {
@@ -345,6 +339,23 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
 };
 
 /**
+ * Scopes no token may hold any more. Organization configuration changes only from an
+ * interactive session, so `config:write` is not offered, a request for it is refused,
+ * and a token issued before the change loses it when it is used.
+ */
+export const RetiredTokenScopes: ReadonlySet<string> = new Set([
+  'config:write',
+]);
+
+export const RETIRED_SCOPE_MESSAGE =
+  "config:write can't be granted to tokens; change configuration in the PipesHub UI";
+
+/** `scopes` without the retired ones. */
+export function withoutRetiredScopes(scopes: readonly string[]): string[] {
+  return scopes.filter((scope) => !RetiredTokenScopes.has(scope));
+}
+
+/**
  * Scopes non–org-admin users cannot register on OAuth apps (org admins get all scopes).
  * `code:write` is not one: a pushed repository is indexed only into the pusher's own
  * personal connector, and the device login app every user signs in with is cut to the
@@ -357,7 +368,6 @@ export const AdminOnlyScopes = new Set<string>([
   'user:delete',
   'usergroup:write',
   'team:write',
-  'config:write',
   'crawl:write',
   'crawl:delete',
 ]);

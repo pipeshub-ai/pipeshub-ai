@@ -667,3 +667,34 @@ class TestComplete:
         nodes.append({"id": "extra"})
 
         assert first_page == [{"id": "c1"}]
+
+
+class TestRenewOnRefusedToken:
+    """A token Linear refuses mid-run is renewed once, so a working refresh token keeps the sync going."""
+
+    @pytest.mark.asyncio
+    async def test_a_refused_token_is_renewed_and_the_request_sent_again(self) -> None:
+        datasource = MagicMock(execute_operation=AsyncMock(side_effect=[_failed(status=401), _ok({"viewer": {"id": "u"}})]))
+        renew = AsyncMock()
+        gateway = LinearGateway(AsyncMock(return_value=datasource), MagicMock(), sleep=AsyncMock(), renew=renew)
+        assert await gateway.call("viewer") == {"viewer": {"id": "u"}}
+        renew.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_token_refused_again_after_renewal_is_raised(self) -> None:
+        datasource = MagicMock(execute_operation=AsyncMock(return_value=_failed(status=401)))
+        renew = AsyncMock()
+        gateway = LinearGateway(AsyncMock(return_value=datasource), MagicMock(), sleep=AsyncMock(), renew=renew)
+        with pytest.raises(LinearAuthError):
+            await gateway.call("viewer")
+        renew.assert_awaited_once()
+        assert datasource.execute_operation.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_renewal_that_cannot_happen_raises_its_reason(self) -> None:
+        datasource = MagicMock(execute_operation=AsyncMock(return_value=_failed(status=401)))
+        renew = AsyncMock(side_effect=LinearAuthError("no refresh token", 401))
+        gateway = LinearGateway(AsyncMock(return_value=datasource), MagicMock(), sleep=AsyncMock(), renew=renew)
+        with pytest.raises(LinearAuthError, match="no refresh token"):
+            await gateway.call("viewer")
+        assert datasource.execute_operation.await_count == 1

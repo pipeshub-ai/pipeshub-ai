@@ -75,7 +75,10 @@ and the agent stays. That flow is kept. On top of it:
   - Private networks are allowed for admins' servers only (`MCP_ALLOW_PRIVATE_NETWORK_URLS`).
   - URLs a server names in its OAuth metadata are public-only.
   - IPv6-mapped IPv4 is judged as IPv4.
-  - An egress proxy may resolve names the pod can't.
+  - Behind an egress proxy (`HTTPS_PROXY`) requests stay pinned to the checked address: the
+    proxy is asked to CONNECT to it, and TLS and `Host` keep the name. A name the pod can't
+    resolve, or one a domain-filtering proxy must see, goes to the proxy by name only when it
+    is listed in `PIPESHUB_PROXY_ALLOWED_HOSTS` (comma-separated, exact or `*.suffix`).
 - **Local (STDIO) servers**, on top of `main`'s opt-in (`MCP_ALLOW_CUSTOM_STDIO`, #3887):
   - personal servers can't be STDIO;
   - launchers are allow-listed (`MCP_STDIO_ALLOWED_COMMANDS`);

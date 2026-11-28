@@ -28,6 +28,7 @@ from app.config.constants.arangodb import (
     RecordRelations,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.address_policy import public_only_for_scope
 from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
     ConnectionCheckResult,
@@ -644,6 +645,11 @@ class SnowflakeConnector(SyncLifecycleMixin, BaseConnector):
                 self.logger.error(f"Invalid Snowflake configuration: {e}")
                 return False
 
+            # A private-link account name can resolve to a private address, so a personal
+            # connector reaches public addresses only. Either record naming it personal is enough.
+            public_only = public_only_for_scope(self.scope) or public_only_for_scope(
+                config.get("scope", self.scope)
+            )
             self.scope = config.get("scope", self.scope or ConnectorScope.TEAM.value)
             self.connector_scope = self.scope
             self.created_by = config.get("created_by", self.created_by)
@@ -652,6 +658,8 @@ class SnowflakeConnector(SyncLifecycleMixin, BaseConnector):
             self.logger.info(f"Using {settings.auth_type.value} authentication for Snowflake")
 
             self.data_source = SnowflakeDataSource(settings.create_client())
+            if public_only:
+                self.data_source.http.require_public_addresses()
             self.runner = SnowflakeStatementRunner(
                 self.data_source, warehouse=self.warehouse, role=settings.role, rate_limiter=self.rate_limiter,
             )

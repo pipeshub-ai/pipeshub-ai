@@ -19,7 +19,7 @@ vi.mock('@/config', async () => {
 const { useAuthStore } = await import('@/config');
 const { fakeApi } = await import('@/lib/api/__tests__/fake-api');
 const { useConnectorsStore } = await import('../../store');
-const { startConnectorSync, runConnectorResync, toggleConnectorSyncOn, assertLocalFsRootPathAvailable } =
+const { startConnectorSync, runConnectorResync, toggleConnectorSyncOn, toggleConnectorSyncOff, assertLocalFsRootPathAvailable } =
   await import('../connector-sync-actions');
 const { LOCAL_FS_DESKTOP_OFFLINE, LOCAL_FS_DESKTOP_OWNED_BY_OTHER_DEVICE } = await import('../../constants');
 
@@ -173,6 +173,26 @@ describe('runConnectorResync', () => {
   it('does not treat the desktop code as special for other connector types', async () => {
     fakeApi({ [`POST ${BASE}/c1/resync`]: desktopRefusal(LOCAL_FS_DESKTOP_OFFLINE) });
     await expect(runConnectorResync({ connectorId: 'c1', connectorType: 'Google Drive' })).rejects.toBeDefined();
+  });
+});
+
+describe('toggleConnectorSyncOff', () => {
+  it('turns sync off', async () => {
+    const api = fakeApi({ [`POST ${BASE}/c1/toggle`]: { status: 200 } });
+    const outcome = await toggleConnectorSyncOff('c1', 'Slack');
+    expect(outcome).toEqual({ kind: 'backend' });
+    expect(api.sent[0].body).toEqual({ type: 'sync', enabled: false });
+  });
+
+  it('reports a Local FS connector whose desktop app refuses instead of throwing', async () => {
+    fakeApi({ [`POST ${BASE}/c1/toggle`]: desktopRefusal(LOCAL_FS_DESKTOP_OFFLINE, 'Studio Mac') });
+    const outcome = await toggleConnectorSyncOff('c1', 'Local FS');
+    expect(outcome).toEqual({ kind: 'requires-desktop', reason: 'offline', ownerDeviceName: 'Studio Mac' });
+  });
+
+  it('rethrows the same refusal for any other connector', async () => {
+    fakeApi({ [`POST ${BASE}/c1/toggle`]: desktopRefusal(LOCAL_FS_DESKTOP_OFFLINE) });
+    await expect(toggleConnectorSyncOff('c1', 'Slack')).rejects.toBeTruthy();
   });
 });
 

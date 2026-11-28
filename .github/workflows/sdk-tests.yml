@@ -10,6 +10,8 @@ name: SDK Tests
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    # Heavy: on a pull request its jobs run only with the ci:full or ci:e2e label (CONTRIBUTING.md).
     branches:
       - main
     paths:
@@ -29,7 +31,7 @@ permissions:
 
 # A new push replaces a pull request's run; a manual run never cancels the nightly one.
 concurrency:
-  group: sdk-tests-${{ github.event.pull_request.number || github.run_id }}
+  group: sdk-tests-${{ github.event_name == 'pull_request' && format('pr-{0}-{1}', github.event.pull_request.number, (contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')))) && 'heavy' || format('other-{0}', github.run_id)) || format('{0}-{1}-{2}', github.event_name, github.ref, github.run_id) }}
   cancel-in-progress: true
 
 env:
@@ -47,7 +49,12 @@ jobs:
   sdk-tests:
     name: SDK tests (TypeScript, Python, Go)
     # A fork's pull request gets no secrets; the nightly run covers what forks merge.
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    if: >-
+      github.event_name != 'pull_request' ||
+      (((github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)) ||
+        (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')) &&
+         (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)))) &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
     timeout-minutes: 120
     permissions:

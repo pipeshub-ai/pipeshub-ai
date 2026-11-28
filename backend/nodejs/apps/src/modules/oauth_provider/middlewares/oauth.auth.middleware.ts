@@ -7,6 +7,7 @@ import {
   parseScopeString,
 } from '../services/scope.validator.service';
 import { OAuthTokenPayload } from '../types/oauth.types';
+import { withoutRetiredScopes } from '../config/scopes.config';
 import {
   InvalidTokenError,
   ExpiredTokenError,
@@ -182,7 +183,7 @@ export class OAuthAuthMiddleware {
         clientId: payload.client_id,
         userId: payload.userId,
         orgId: payload.orgId,
-        scopes,
+        scopes: withoutRetiredScopes(scopes),
         payload,
       };
       setContextIdentity(payload);
@@ -393,7 +394,7 @@ export function scopeCheck(
           }
 
           const hasAllScopes = scopeValidatorService.hasAllScopes(
-            tokenScopes,
+            withoutRetiredScopes(tokenScopes),
             requiredScopes,
           );
 

@@ -45,6 +45,11 @@ import {
 } from '../container/controller-factories';
 import { OrgController } from '../controller/org.controller';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
+import {
+  isAdminRole,
+  requireSessionAuth,
+  requireSessionAuthForFields,
+} from '../../../libs/middlewares/require-session-auth.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { emailCheck } from '../../../libs/utils/zod-formats';
 
@@ -398,6 +403,7 @@ export function createUserRouter(container: Container) {
   router.put(
     '/:id/unblock',
     authMiddleware.authenticate,
+    requireSessionAuth,
     requireScopes(OAuthScopeNames.USER_WRITE),
     ValidationMiddleware.validate(UserIdValidationSchema),
     userAdminCheck,
@@ -591,6 +597,7 @@ export function createUserRouter(container: Container) {
   router.post(
     '/',
     authMiddleware.authenticate,
+    requireSessionAuthForFields({ role: isAdminRole }),
     requireScopes(OAuthScopeNames.USER_INVITE),
     ValidationMiddleware.validate(createUserValidationSchema),
     userAdminCheck,
@@ -764,6 +771,7 @@ export function createUserRouter(container: Container) {
   router.patch(
     '/:id/email',
     authMiddleware.authenticate,
+    requireSessionAuth,
     requireScopes(OAuthScopeNames.USER_WRITE),
     ValidationMiddleware.validate(updateUserEmailValidationSchema),
     userAdminOrSelfCheck,
@@ -813,6 +821,7 @@ export function createUserRouter(container: Container) {
   router.put(
     '/:id',
     authMiddleware.authenticate,
+    requireSessionAuthForFields({ email: true, role: isAdminRole }),
     requireScopes(OAuthScopeNames.USER_WRITE),
     ValidationMiddleware.validate(updateUserValidationSchema),
     userAdminOrSelfCheck,
@@ -877,6 +886,7 @@ export function createUserRouter(container: Container) {
   router.post(
     '/bulk/invite',
     authMiddleware.authenticate,
+    requireSessionAuthForFields({ role: isAdminRole }),
     requireScopes(OAuthScopeNames.USER_INVITE),
     smtpConfigCheck(config.cmBackend, config.scopedJwtSecret),
     accountTypeCheck,
@@ -917,6 +927,8 @@ export function createUserRouter(container: Container) {
       maxFileSize: 5 * 1024 * 1024,
       strictFileUpload: true,
     }).getMiddleware,
+    // After the upload parser, so the form fields are in the body when the guard reads them.
+    requireSessionAuthForFields({ role: isAdminRole }),
     async (
       req: AuthenticatedUserRequest,
       res: Response,

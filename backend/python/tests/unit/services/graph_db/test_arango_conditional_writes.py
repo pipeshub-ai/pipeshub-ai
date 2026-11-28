@@ -54,6 +54,35 @@ class TestCreateNodeIfAbsent:
         assert p.http_client.execute_aql.await_count == 1
 
 
+class TestCreateNodeIfAbsentTranslatesTheGenericNode:
+    async def test_the_generic_id_becomes_the_key_and_is_not_stored_as_a_field(self, provider) -> None:
+        """A collection with a strict schema refuses a document that carries `id` as well as `_key`."""
+        p, _ = provider
+        p.http_client.execute_aql = AsyncMock(return_value=[{"_key": "k"}])
+
+        assert await p.create_node_if_absent("k", "c", {"id": "k", "a": 1}) is True
+
+        sent = p.http_client.execute_aql.await_args.kwargs["bind_vars"]["node"]
+        assert sent == {"_key": "k", "a": 1}
+
+    async def test_a_node_without_an_id_still_gets_the_requested_key(self, provider) -> None:
+        p, _ = provider
+        p.http_client.execute_aql = AsyncMock(return_value=[{"_key": "k"}])
+
+        await p.create_node_if_absent("k", "c", {"a": 1})
+
+        assert p.http_client.execute_aql.await_args.kwargs["bind_vars"]["node"] == {"_key": "k", "a": 1}
+
+    async def test_the_caller_node_is_not_modified(self, provider) -> None:
+        p, _ = provider
+        p.http_client.execute_aql = AsyncMock(return_value=[{"_key": "k"}])
+        node = {"id": "k", "a": 1}
+
+        await p.create_node_if_absent("k", "c", node)
+
+        assert node == {"id": "k", "a": 1}
+
+
 class TestUpdateNodeFieldsIfMatch:
     async def test_a_conflict_is_retried_with_backoff(self, provider) -> None:
         p, sleep = provider
