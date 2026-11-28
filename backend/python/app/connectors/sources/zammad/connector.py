@@ -8,7 +8,6 @@ import re
 from dataclasses import dataclass, field
 from collections import defaultdict
 from datetime import datetime, timezone
-from enum import Enum
 from logging import Logger
 from typing import (
     Any,
@@ -72,19 +71,20 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
-from app.connectors.sources.zammad.access import GroupReaders, RoleAccess, UserAccess, is_external
 from app.connectors.sources.zammad.common.apps import ZammadApp
 from app.connectors.sources.zammad.kb_access import (
     ARCHIVED,
     DRAFT,
     INTERNAL,
     PUBLISHED,
-    CategoryAccess,
     answer_changed_at,
     answer_state,
 )
+from app.connectors.sources.zammad.read_outcome import ReadOutcome, read_failure
 from app.connectors.utils.record_ids import new_record_id
 from app.connectors.utils.value_mapper import ValueMapper
+from app.ee.permission_sync.zammad import ZammadPermissionsMixin
+from app.ee.permission_sync.zammad_access import GroupReaders, RoleAccess, UserAccess, is_external
 from app.models.blocks import (
     Block,
     BlockGroup,
@@ -97,7 +97,6 @@ from app.models.blocks import (
     GroupType,
 )
 from app.models.entities import (
-    AppRole,
     AppUser,
     AppUserGroup,
     FileRecord,
@@ -238,38 +237,6 @@ class ZammadSyncIncompleteError(Exception):
         self.parts = parts
 
 
-class ReadOutcome(Enum):
-    """How far a read of who belongs where got, which decides what may be written from it."""
-
-    COMPLETE = "complete"
-    # Stopped for a reason that passes (no answer, a timeout, a rate limit, a server
-    # error): replacing stored members with what was read would take access from
-    # everyone not read, so what is stored stays until a sync reads it all.
-    INTERRUPTED = "interrupted"
-    # Zammad refused it (401, 403 and other 4xx), which repeats every sync until the
-    # token or Zammad is changed. Keeping stored members would keep access no one can
-    # check, so the write goes ahead without what couldn't be read: access fails closed.
-    REFUSED = "refused"
-
-
-# Client errors that pass with time, unlike the rest of 4xx.
-RETRYABLE_CLIENT_ERRORS = frozenset({408, HttpStatusCode.TOO_MANY_REQUESTS.value})
-
-
-def read_failure(status_code: int | None) -> ReadOutcome:
-    """The outcome of a read Zammad answered with ``status_code`` instead of the data.
-
-    No status means no answer at all (a network error, or a body that wasn't JSON).
-    """
-    if (
-        isinstance(status_code, int)
-        and HttpStatusCode.BAD_REQUEST.value <= status_code < HttpStatusCode.INTERNAL_SERVER_ERROR.value
-        and status_code not in RETRYABLE_CLIENT_ERRORS
-    ):
-        return ReadOutcome.REFUSED
-    return ReadOutcome.INTERRUPTED
-
-
 # Zammad link type to RecordRelations mapping
 # Zammad supports: normal, parent, child
 ZAMMAD_LINK_TYPE_MAP: Dict[str, RecordRelations] = {
@@ -367,7 +334,7 @@ ZAMMAD_LINK_OBJECT_MAP: Dict[str, RecordType] = {
         ))
     )\
     .build_decorator()
-class ZammadConnector(BaseConnector):
+class ZammadConnector(ZammadPermissionsMixin, BaseConnector):
     """
     Zammad connector for syncing tickets, articles, knowledge base, and users from Zammad
     """
@@ -959,90 +926,6 @@ class ZammadConnector(BaseConnector):
             source_created_at=created_at if created_at else None,
             source_updated_at=updated_at if updated_at else None,
         )
-
-    async def _fetch_roles(self) -> tuple[list[dict[str, Any]], ReadOutcome]:
-        """Every role, with its permission names (``expand``), and how far the read got."""
-        datasource = await self._get_fresh_datasource()
-        roles: list[dict[str, Any]] = []
-        page = 1
-        per_page = 100
-        while True:
-            response = await datasource.list_roles(page=page, per_page=per_page, expand=True)
-            if not response.success:
-                outcome = read_failure(response.status_code)
-                hint = ""
-                if response.status_code == HttpStatusCode.FORBIDDEN.value:
-                    # Zammad before 6.5 lists roles to admin.role only.
-                    hint = "; before Zammad 6.5 the token needs the admin.role permission"
-                self.logger.warning(
-                    f"Failed to read Zammad roles (page {page}, HTTP {response.status_code}){hint}: "
-                    f"{response.error or response.message}"
-                )
-                return roles, outcome
-            data = response.data
-            if not data:
-                return roles, ReadOutcome.COMPLETE
-            if not isinstance(data, list) or not all(isinstance(r, dict) for r in data):
-                self.logger.warning(f"Zammad answered the role list (page {page}) with something that is not a list of roles")
-                return roles, ReadOutcome.INTERRUPTED
-            if any(r.get("permission_ids") and not isinstance(r.get("permissions"), list) for r in data):
-                # Without the names nobody would count as an agent, and every member list would be emptied.
-                self.logger.warning("Zammad listed roles without their permission names (expand); members stay as stored")
-                return roles, ReadOutcome.INTERRUPTED
-            roles.extend(data)
-            if len(data) < per_page:
-                return roles, ReadOutcome.COMPLETE
-            page += 1
-
-    async def _sync_roles(
-        self,
-        roles_data: list[dict[str, Any]],
-        user_email_map: Dict[str, AppUser]
-    ) -> None:
-        """Write the roles as AppRoles with their members.
-
-        An inactive role is written with no members: Zammad grants nothing
-        through it, so nobody keeps knowledge-base access through it.
-        """
-        app_roles: list[tuple[AppRole, list[AppUser]]] = []
-        for role_data in roles_data:
-            role_id = role_data.get("id")
-            if not role_id:
-                continue
-
-            role_name = role_data.get("name", f"Role {role_id}")
-            active = role_data.get("active", True) is not False
-
-            # Parse timestamps
-            created_at = self._parse_zammad_datetime(role_data.get("created_at", ""))
-            updated_at = self._parse_zammad_datetime(role_data.get("updated_at", ""))
-
-            # Get users assigned to this role by checking user_id_to_data mapping
-            role_users: list[AppUser] = []
-            if active:
-                for user_data in self._user_id_to_data.values():
-                    if role_id in user_data.get("role_ids", []):
-                        email = user_data.get("email")
-                        if email and email in user_email_map:
-                            role_users.append(user_email_map[email])
-
-            app_role = AppRole(
-                id=str(uuid4()),
-                org_id=self.data_entities_processor.org_id,
-                source_role_id=str(role_id),
-                connector_id=self.connector_id,
-                app_name=Connectors.ZAMMAD,
-                name=role_name,
-                source_created_at=created_at if created_at else None,
-                source_updated_at=updated_at if updated_at else None,
-            )
-            app_roles.append((app_role, role_users))
-
-        if app_roles:
-            await self.data_entities_processor.on_new_app_roles(app_roles)
-            self.logger.info(f"✅ Synced {len(app_roles)} roles")
-        else:
-            self.logger.info("No roles found")
 
     # ==================== TICKET SYNCING ====================
 
@@ -2878,47 +2761,9 @@ class ZammadConnector(BaseConnector):
                 else:
                     parent_external_group_id = None
 
-                # Effective access per role: the category's (inherited) rows, and the
-                # default of every role without a row. Only the permissions endpoint
-                # says which roles hold knowledge_base.editor / .reader, so it is read
-                # for every category; the listing's permissions_effective has rows only.
-                editor_role_ids: List[int] = []
-                reader_role_ids: List[int] = []
-                # False when the category's permissions couldn't be read for a reason
-                # that passes: saving it would replace its stored grants with none.
-                permissions_read = True
-                try:
-                    perm_response = await datasource.get_kb_category_permissions(
-                        kb_id=kb_id,
-                        cat_id=cat_id
-                    )
-                except Exception as e:
-                    perm_response = None
-                    self.logger.warning(f"Failed to fetch permissions for category {cat_id}: {e}")
-                perm_data = perm_response.data if perm_response else None
-                if perm_response and perm_response.success and isinstance(perm_data, dict):
-                    access = CategoryAccess.from_permissions_response(perm_data)
-                    editor_role_ids = list(access.editor_role_ids)
-                    reader_role_ids = list(access.reader_role_ids)
-                elif (
-                    perm_response is None
-                    or perm_response.success
-                    or read_failure(perm_response.status_code) is ReadOutcome.INTERRUPTED
-                ):
-                    permissions_read = False
-                    self._incomplete.append(f"the permissions of knowledge base category {cat_id}")
-                    self.logger.warning(
-                        f"Could not read the permissions of KB category {cat_id}; it and its "
-                        "archived and draft answers keep their stored access this sync"
-                    )
-                else:
-                    # Refused (only editors may read them), or gone (404): saved with no
-                    # role grants, so nobody keeps access through it that Zammad can't confirm.
-                    self.logger.warning(
-                        f"Zammad refused the permissions of KB category {cat_id} "
-                        f"(HTTP {perm_response.status_code}); saving it with no role grants. "
-                        "The token needs knowledge_base.editor for internal and draft answers to be shared"
-                    )
+                editor_role_ids, reader_role_ids, permissions_read = await self._kb_category_access(
+                    datasource, kb_id, cat_id
+                )
 
                 # Store permissions and KB ID for answer processing
                 category_permissions_map[cat_id] = {
@@ -3606,14 +3451,7 @@ class ZammadConnector(BaseConnector):
                 try:
                     # Fetch category permissions to get editor role IDs
                     datasource = await self._get_fresh_datasource()
-                    perm_response = await datasource.get_kb_category_permissions(
-                        kb_id=kb_id,
-                        cat_id=category_id
-                    )
-                    if perm_response.success and isinstance(perm_response.data, dict):
-                        editor_role_ids = list(
-                            CategoryAccess.from_permissions_response(perm_response.data).editor_role_ids
-                        )
+                    editor_role_ids = await self._kb_category_editor_role_ids(datasource, kb_id, category_id)
                 except Exception as e:
                     self.logger.debug(f"Failed to fetch category permissions for category {category_id}: {e}")
 
@@ -4493,14 +4331,7 @@ class ZammadConnector(BaseConnector):
             # Fetch category permissions for visibility-based permission handling
             if category_id:
                 try:
-                    perm_response = await datasource.get_kb_category_permissions(
-                        kb_id=kb_id,
-                        cat_id=category_id
-                    )
-                    if perm_response.success and isinstance(perm_response.data, dict):
-                        editor_role_ids = list(
-                            CategoryAccess.from_permissions_response(perm_response.data).editor_role_ids
-                        )
+                    editor_role_ids = await self._kb_category_editor_role_ids(datasource, kb_id, category_id)
                 except Exception as e:
                     self.logger.warning(f"Failed to fetch category permissions for reindexing: {e}")
 

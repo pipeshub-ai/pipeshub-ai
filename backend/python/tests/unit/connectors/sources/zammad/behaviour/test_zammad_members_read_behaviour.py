@@ -227,3 +227,20 @@ async def test_group_members_come_from_the_lists_not_a_read_of_each_group(world:
     assert world.zammad.group_detail_reads() == []
     role_reads = [params for path, params in world.zammad.calls if path == "/api/v1/roles"]
     assert role_reads and all(params.get("expand") == "true" for params in role_reads)
+
+
+async def test_without_a_licence_roles_are_not_read_and_groups_still_sync(world: World) -> None:
+    """Unlicensed, a company-wide connector reads no roles (``app/ee/permission_sync/zammad.py``): nobody reads a
+    group as an agent, the roles are not written, and the groups are still written as the folders tickets sit in."""
+    world.directory.skips_permission_writes = AsyncMock(return_value=True)
+    world.directory.record_groups.clear()
+    world.zammad.calls.clear()
+    role_writes = world.directory.role_writes
+
+    await world.sync()  # complete: nothing counts as unread
+
+    assert [path for path, _ in world.zammad.calls if path == "/api/v1/roles"] == []
+    assert world.directory.role_writes == role_writes and world.agents() == EVERYONE
+    assert set(world.directory.record_groups) == {f"group_{SUPPORT}", f"group_{SALES}"}
+    # Handed to the processor, which keeps what is stored while it skips permission writes.
+    assert world.members(SUPPORT) == set() and world.members(SALES) == set()

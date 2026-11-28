@@ -1,4 +1,4 @@
-"""Who may read a Zammad group's tickets (``app.connectors.sources.zammad.access``).
+"""Who may read a Zammad group's tickets (``app.ee.permission_sync.zammad_access``).
 
 Zammad's rule: the agent is active, holds ``ticket.agent`` through an active role,
 the group is active, and the agent has ``read`` or ``full`` access to the group,
@@ -8,7 +8,7 @@ let an agent read a ticket.
 
 import pytest
 
-from app.connectors.sources.zammad.access import (
+from app.ee.permission_sync.zammad_access import (
     GroupReaders,
     RoleAccess,
     UserAccess,

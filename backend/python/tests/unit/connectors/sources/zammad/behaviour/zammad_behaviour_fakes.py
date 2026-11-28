@@ -237,6 +237,9 @@ class FakeRecordsDb:
     as the processor notes them for the full sync in progress, under external ids.
     """
 
+    async def skips_permission_writes(self, connector_id: str | None) -> bool:
+        return False  # licensed: the licence gate has its own tests
+
     def __init__(self, org_id: str = "org-1") -> None:
         self.org_id = org_id
         self.records: dict[str, Any] = {}  # external id -> record as written
@@ -532,6 +535,9 @@ class FakeZammadPeople:
 
 class FakeDirectory:
     """Groups and roles as the processor stores them: each write replaces the members."""
+
+    async def skips_permission_writes(self, connector_id: str | None) -> bool:
+        return False  # licensed: the licence gate has its own tests
 
     def __init__(self) -> None:
         self.org_id = "org-1"

@@ -71,6 +71,7 @@ def mock_data_entities_processor(mock_tx_store):
     proc = MagicMock()
     proc.org_id = "org-zd-1"
     proc.on_new_app_users = AsyncMock()
+    proc.skips_permission_writes = AsyncMock(return_value=False)
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
     proc.on_new_user_groups = AsyncMock()
@@ -5961,6 +5962,61 @@ class TestConverterReachesTheBlock:
 
 
 # ===========================================================================
+# Without a licence key (app/ee/permission_sync/zendesk.py)
+# ===========================================================================
+
+
+class TestUnlicensedSync:
+    """A company-wide connector without a licence key reads no access from Zendesk, and still syncs its content."""
+
+    async def test_a_ticket_is_written_with_no_grants_of_its_own(
+        self, zendesk_connector, mock_data_entities_processor
+    ) -> None:
+        mock_data_entities_processor.skips_permission_writes.return_value = True
+        zendesk_connector._user_id_to_data = {"10": {"email": "req@acme.com", "name": "Req User"}}
+
+        record, permissions = await zendesk_connector._ticket_to_record({
+            "id": 555, "subject": "Printer on fire", "group_id": 7, "requester_id": 10,
+            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z",
+        })
+
+        # The processor keeps the stored grants; who reads the ticket is the connector's access limit.
+        assert permissions == []
+        assert record.external_record_id == "555" and record.reporter_email == "req@acme.com"
+
+    @patch("app.connectors.sources.zendesk.connector.load_connector_filters",
+           new_callable=AsyncMock, return_value=({}, {}))
+    async def test_a_sync_reads_no_access_and_still_writes_folders_tickets_and_articles(
+        self, _filters, zendesk_connector, mock_data_entities_processor
+    ) -> None:
+        mock_data_entities_processor.skips_permission_writes.return_value = True
+        datasource = _ready(zendesk_connector)
+        datasource.list_groups = AsyncMock(return_value=_make_response(data={
+            "groups": [{"id": 7, "name": "Technical Support"}],
+        }))
+        datasource.list_group_memberships = AsyncMock()
+        zendesk_connector.records_sync_point.read_sync_point = AsyncMock(
+            return_value={"lastEndTime": 1767312000, "grantModel": TICKET_GRANT_MODEL}
+        )
+        user = _app_user()
+        zendesk_connector._fetch_users = AsyncMock(return_value=([user], {"1": user}, True))
+        zendesk_connector._call_incremental = AsyncMock()
+        zendesk_connector._sync_tickets = AsyncMock(return_value=3)
+        zendesk_connector._sync_help_center_articles = AsyncMock(return_value=4)
+
+        await zendesk_connector.run_sync()
+
+        # No custom roles, group members, organizations, their people, or revoked users were asked for.
+        datasource.list_custom_roles.assert_not_awaited()
+        datasource.list_group_memberships.assert_not_awaited()
+        datasource.list_organization_users.assert_not_awaited()
+        zendesk_connector._call_incremental.assert_not_awaited()
+        # The ticket groups are still written as the folders tickets are filed in, and nothing was left unread.
+        (folders,), _ = mock_data_entities_processor.on_new_record_groups.await_args
+        assert [folder.external_group_id for folder, _ in folders] == ["group_7", UNASSIGNED_GROUP_ID]
+        zendesk_connector._sync_tickets.assert_awaited_once()
+        zendesk_connector._sync_help_center_articles.assert_awaited_once()
+        assert zendesk_connector._skipped_this_sync == []
 # What a full sync unlinks when it ends
 # ===========================================================================
 
