@@ -3834,7 +3834,11 @@ export const updateTitle = async (
       conv.title = req.body.title;
       // Readers learn of a change by `rev`, a rename too.
       conv.$inc('rev', 1);
-      await conv.save(txnSession ? { session: txnSession } : {});
+      // A rename is no activity: the chat keeps its `updatedAt`.
+      await conv.save({
+        ...(txnSession ? { session: txnSession } : {}),
+        timestamps: false,
+      });
       return conv;
     };
 
@@ -7393,7 +7397,8 @@ export const updateAgentConversationTitle = async (
       },
       // Readers learn of a change by `rev`, a rename too.
       { $set: { title }, $inc: { rev: 1 } },
-      { returnDocument: 'after' },
+      // A rename is no activity: the chat keeps its `updatedAt`.
+      { returnDocument: 'after', timestamps: false },
     );
 
     if (!conversation) {
