@@ -141,6 +141,11 @@ def _is_retryable(instance: object, exception: Exception) -> bool:
     return isinstance(store, DataStoreProvider) and store.is_transient_error(exception) is True
 
 
+def is_retryable(instance: object, exception: Exception) -> bool:
+    """Whether retry_on_deadlock retries this failure of a method of ``instance`` (attempts left or not)."""
+    return _is_retryable(instance, exception)
+
+
 # False while retry_on_deadlock still has an attempt left after the current one.
 _ON_LAST_ATTEMPT: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "retry_on_deadlock_on_last_attempt", default=True

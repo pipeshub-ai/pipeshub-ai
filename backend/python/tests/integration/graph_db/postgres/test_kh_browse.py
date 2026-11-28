@@ -549,6 +549,7 @@ async def kg_statistics_held() -> AsyncIterator[None]:
 # after_first_load: the statistics are those the worker took when the connectors' first loads asked for them (kg.analyze_requests), and the org has grown tenfold since.
 # Before the request, an org the statistics did not know was put at one row, and the plan of a page could read every kg row of the org (records_pkey bounded by
 # the org alone, then a sort) instead of the parent's range of a children index: a near tie the planner broke either way.
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 @pytest.mark.parametrize("analyzed", [False, True], ids=["after_first_load", "after_analyze"])
 async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_organisation(pg_db, kg_statistics_held, analyzed) -> None:
     p, org = prov(pg_db), new_org()
@@ -807,11 +808,15 @@ async def test_a_browse_of_many_chain_top_holders_resolves_the_chain_tops_once(p
             calls[_name] = calls.get(_name, 0) + 1
             return await _real(self, *a, **kw)
         monkeypatch.setattr(kh_browse.KhBrowseMixin, name, counted)
+    # what this counts is reads, not time: the request's wall-clock budget (BUDGET_S) ends a page early and caps its total on a loaded host, as it should
+    monkeypatch.setattr(kh_browse, "BUDGET_S", 3600.0)
+    monkeypatch.setattr(kh_listing, "BUDGET_S", 3600.0)
     page = await browse(p, org, "fold", granted, limit=50)
     assert [r["id"] for r in page["rows"]] == groups[:50] and all(r["hasChildren"] for r in page["rows"]) and page["total"] == 300, page["rows"][:3]
     assert calls == {"_kh_v3_chain_top_groups": 1, "_kh_v3_chain_top_candidates": 1, "_kh_v3_chain_top_hidden": 1}, calls
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_a_wide_page_reads_each_linked_child_by_its_key_whatever_the_organisation_is_estimated_at(pg_db) -> None:
     """The page of a group whose 400 children are linked to it (``wide linked``): the linked children are read by their keys, one primary-key probe each, and the
     primary ones by the parent's range of a children index, however the planner estimates the organisation. Here the organisation is outside the most common values
@@ -853,6 +858,7 @@ async def test_a_wide_page_reads_each_linked_child_by_its_key_whatever_the_organ
         await con.close()
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_the_chain_top_read_reads_each_graph_node_by_its_key_whatever_the_statistics(pg_db) -> None:
     """EXPLAIN gate for ``CHAIN_GRANTED`` (``_kh_v3_chain_top_groups``): an org of 4,000 records and 200 groups, 600 of them granted, read as the call reads it (custom plan) while the
     statistics know only two small orgs whose graph nodes share its partition, after ANALYZE, and with two more orgs of its size in that partition. In every state each graph node is
@@ -1013,6 +1019,75 @@ async def test_a_wide_nodes_total_counts_by_class_only_the_children_of_its_own_c
     monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 3)      # wide: the total is counted by class where the rows are
     page = await browse(p, org, "fold", ["fold", *KIDS[:8], "alien"])      # its id among the grants too: the class's own-grant arm would take it
     assert "alien" not in [r["id"] for r in page["rows"]] and page["total"] == 8, (page["total"], [r["id"] for r in page["rows"]])
+
+
+async def test_a_wide_node_of_a_connector_with_more_classes_than_a_page_evaluates_is_counted_by_its_childrens_classes(pg_db, monkeypatch) -> None:
+    """The connector holds more classes than a page evaluates (CLASS_MAX), its children fewer. A wide node is decided by the classes of the children it reads, as a node held
+    whole is: its total is the count, not the lower bound of a sample (COUNT_SCAN), and the live walk is asked about none of its children."""
+    import asyncpg
+
+    from app.services.graph_db.postgres import access as access_sql
+    p, org = prov(pg_db), new_org()
+    await seed_folder(p, pg_db, org, 8, readable_kids=KIDS[1:6])
+    with ctx(org):      # elsewhere in the connector, records of classes of their own
+        await p.batch_upsert_nodes([{"_key": k, "recordName": k, "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR",
+                                     **({"mimeType": "application/vnd.folder"} if k == "other" else {})} for k in ("other", "o1", "o2")], "records")
+        await p.batch_create_edges([edge("other", "records", k, "records", relationshipType="PARENT_CHILD") for k in ("o1", "o2")], "nodeRelations")
+        await p.batch_create_edges([edge("u1", "users", k, "records", type="USER", role="READER") for k in ("other", "o1")], "permission")
+    await flip(pg_db, org)
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        every = await con.fetchval("SELECT count(*) FROM kg.scope_classes c JOIN kg.node_keys a ON a.org_id = c.org_id AND a.sk = c.app_sk WHERE c.org_id = $1 AND a.id = 'app1'", org)
+        page = await con.fetchval("SELECT count(DISTINCT r.class_id) FROM kg.records r JOIN kg.records f ON f.org_id = r.org_id AND (f.sk = r.parent_sk OR f.sk = r.sk) "
+                                  "WHERE r.org_id = $1 AND f.id = 'fold'", org)
+    finally:
+        await con.close()
+    assert 0 < page < every, (page, every)      # the classes of the folder and its children
+    monkeypatch.setattr(kh_listing, "CLASS_MAX", every - 1)      # every class of the connector is one too many; the children's are not
+    monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 3)      # wide: read in windows of the children index
+    monkeypatch.setattr(kh_browse, "COUNT_SCAN", 3)      # a total counted from a sample would stop short of the eight children
+    walked: list[str] = []
+    real = access_sql.accessible_rows
+
+    async def spy(tx, org_, ids, *a, **kw) -> list:
+        walked.extend(ids)
+        return await real(tx, org_, ids, *a, **kw)
+    monkeypatch.setattr(access_sql, "accessible_rows", spy)
+    page = await browse(p, org, "fold", ["fold", *KIDS[1:6]])
+    assert [r["id"] for r in page["rows"]] == KIDS[1:6] and page["total"] == 5 and not page.get("totalCapped"), (page["total"], page.get("totalCapped"))
+    assert not set(walked) & set(KIDS), walked
+
+
+async def test_a_wide_nodes_child_of_a_class_its_sample_did_not_read_is_asked_of_the_check(pg_db, monkeypatch) -> None:
+    """The classes of a wide node's children are read from a sample of them (``kgl.browse_classes_sql``, up to the count's cap): a child of a class the sample missed is
+    undecided (``_browse_undecided``'s ``known``): left out of the count by class and asked of the access check, which admits it. Here the readable children's class is
+    left out of what the sample found."""
+    import asyncpg
+    p, org = prov(pg_db), new_org()
+    await seed_folder(p, pg_db, org, 8, readable_kids=KIDS[1:6])
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        missed = await con.fetchval("SELECT class_id FROM kg.records WHERE org_id = $1 AND coll = 3 AND id = 'c0001'", org)
+        every = await con.fetchval("SELECT count(*) FROM kg.scope_classes c JOIN kg.node_keys a ON a.org_id = c.org_id AND a.sk = c.app_sk WHERE c.org_id = $1 AND a.id = 'app1'", org)
+    finally:
+        await con.close()
+    monkeypatch.setattr(kh_listing, "CLASS_MAX", every - 1)      # the connector's every class is too many: the browse reads its children's
+    monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 3)
+    real_sets = kh_browse.class_sets
+
+    async def sampled(tx, org_, app_sk, held, only=None) -> object:
+        return await real_sets(tx, org_, app_sk, held, None if only is None else [c for c in only if c != missed])
+    monkeypatch.setattr(kh_browse, "class_sets", sampled)
+    asked: list[str] = []
+    real_check = type(p)._kh_v3_accessible_rows
+
+    async def check(self, user_key, org_id, node_ids, *a, **kw) -> object:      # the access check the browse asks about rows its classes do not decide
+        asked.extend(node_ids)
+        return await real_check(self, user_key, org_id, node_ids, *a, **kw)
+    monkeypatch.setattr(type(p), "_kh_v3_accessible_rows", check)
+    page = await browse(p, org, "fold", ["fold", *KIDS[1:6]])
+    assert [r["id"] for r in page["rows"]] == KIDS[1:6] and page["total"] == 5 and not page.get("totalCapped"), (page["total"], page.get("totalCapped"))
+    assert set(KIDS[1:6]) <= set(asked), asked      # the children of the class the sample missed: the check's
 
 
 async def test_an_arrow_samples_the_same_children_it_asks_about(pg_db, monkeypatch) -> None:

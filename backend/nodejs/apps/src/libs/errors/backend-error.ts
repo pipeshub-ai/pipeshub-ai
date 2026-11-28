@@ -1,17 +1,23 @@
+import { STATUS_CODES } from 'http';
 import {
   BadGatewayError,
   BadRequestError,
   ConflictError,
   ForbiddenError,
   GatewayTimeoutError,
+  GoneError,
   HttpError,
   InternalServerError,
+  LargePayloadError,
   NotFoundError,
+  NotImplementedError,
   PaymentRequiredError,
+  PreconditionFailedError,
   ServiceUnavailableError,
   TooManyRequestsError,
   UnauthorizedError,
   UnprocessableEntityError,
+  UnsupportedMediaTypeError,
 } from './http.errors';
 import { BaseError, ErrorMetadata, withCause } from './base.error';
 
@@ -261,9 +267,13 @@ export const unansweredCallError = (error: unknown): HttpError | null => {
  * return: `{ statusCode, data, message }`, axios's `{ response: { status, data } }`
  * and `{ statusCode, data, msg }`.
  *
- * A 4xx keeps the service's own words — those are written for the person who
- * made the request. A 5xx does not: the reader gets `operation` in plain words,
- * and the upstream's detail stays in the upstream's own log (same request id).
+ * A 4xx keeps its status and the service's own words — those are written for
+ * the person who made the request (405/406 are our wiring, so our 500; a 408
+ * is our call timing out, so a 504). A 5xx does not keep its words: the reader
+ * gets `operation` in plain words, and the upstream's detail stays in the
+ * upstream's own log (same request id). It is answered 502, the gateway's
+ * status for a service behind it that failed; 501 stays 501, and 503/504 are
+ * transient (Retry-After kept).
  *
  * Not logged here: the call's `upstream.call.end` line and the error
  * middleware's line report it. A mapped 5xx carries `{ status }` as its cause,
@@ -296,10 +306,11 @@ export const handleBackendError = (
   const statusCode = typeof rawStatus === 'number' ? rawStatus : undefined;
   const data = asRecord(response ? response.data : source.data);
 
-  // Only the body's own words. The error's own `message` is axios's wording
+  // Only the body's own words, else the status text (all a command keeps of a
+  // body that was not JSON). The error's own `message` is axios's wording
   // ("Request failed with status code 503"), which must never reach a reader.
   const bodyDetail =
-    data?.detail ?? data?.reason ?? data?.message ?? source.msg;
+    data?.detail ?? data?.reason ?? data?.message ?? asText(source.msg);
   // A caught error's own message is a last resort, and only when it was not
   // written by the HTTP client.
   const ownMessage = asText(source.message);
@@ -328,7 +339,12 @@ export const handleBackendError = (
   const refusal = relayedRefusal(data);
   const errorDetail =
     refusal?.message ??
-    stringifyErrorDetail(bodyDetail ?? fallbackDetail ?? 'Unknown error');
+    stringifyErrorDetail(
+      bodyDetail ??
+        fallbackDetail ??
+        STATUS_CODES[statusCode] ??
+        'Unknown error',
+    );
   const coded: ErrorMetadata | undefined = refusal
     ? { reasonCode: refusal.reasonCode }
     : undefined;
@@ -356,6 +372,15 @@ export const safeCause = (error: unknown): Error | undefined => {
   return error instanceof Error ? error : undefined;
 };
 
+// These describe our request to the service, or the hop to it (a proxy's 407), not the reader's: our 500.
+const WIRING_STATUSES = new Set([405, 406, 407, 411, 414, 417, 421, 426, 431]);
+
+// `HTTP_<reason phrase>`, as the named classes spell theirs (HTTP_GONE).
+const statusName = (status: number): string =>
+  (STATUS_CODES[status] ?? 'Client Error')
+    .toUpperCase()
+    .replace(/[^A-Z]+/g, '_');
+
 const errorForStatus = (
   statusCode: number,
   errorDetail: string,
@@ -373,11 +398,21 @@ const errorForStatus = (
     case 402:
       return new PaymentRequiredError(
         asText(asRecord(bodyDetail)?.message) ?? errorDetail,
+        coded,
       );
     case 403:
       return new ForbiddenError(errorDetail, coded);
     case 404:
       return new NotFoundError(errorDetail, coded);
+    // Named so their codes stay put if Node renames a reason phrase (413 is "Content Too Large" in RFC 9110).
+    case 410:
+      return new GoneError(errorDetail, coded);
+    case 412:
+      return new PreconditionFailedError(errorDetail, coded);
+    case 413:
+      return new LargePayloadError(errorDetail, coded);
+    case 415:
+      return new UnsupportedMediaTypeError(errorDetail, coded);
     case 409:
       // The connector service words this refusal the same way everywhere (kb_service.py); it is
       // the one 409 a client may want to tell apart, because retrying the write can never work.
@@ -392,34 +427,45 @@ const errorForStatus = (
     case 503:
     case 504:
       return transientError(statusCode, bodyDetail, source, refusal);
-    // A refusal from a service this one depends on (an MCP server it could
-    // not list, a runner that would not start): the code tells the reader
-    // which; the service's words name our internals, so they stay in the log.
-    case 502:
-      if (refusal) {
-        return withCause(
-          markClientSafe(
-            new BadGatewayError(serverFailureMessage(operation), coded),
-          ),
-          { status: statusCode },
-        );
-      }
-      return withCause(
-        markClientSafe(
-          new InternalServerError(serverFailureMessage(operation)),
-        ),
-        { status: statusCode },
-      );
+    // The service says our call to it timed out: for the reader, a slow gateway.
+    case 408:
+      return transientError(504, bodyDetail, source, refusal);
     default:
-      // Every 5xx (502 included, as the upload pre-check documents), and
-      // anything unrecognised: the service's own words describe its internals,
-      // so the reader gets the plain sentence instead. The status as the cause
-      // lets the log class an upstream 5xx as theirs (a 405 stays ours).
-      return withCause(
-        markClientSafe(
-          new InternalServerError(serverFailureMessage(operation)),
-        ),
-        { status: statusCode },
-      );
+      break;
   }
+  const integer = Number.isInteger(statusCode);
+  if (integer && statusCode >= 500 && statusCode <= 599) {
+    // The service's own words describe its internals, so the reader gets the
+    // plain sentence. A 502's code (an MCP server it could not list, a runner
+    // that would not start) tells the reader which. The status as the cause
+    // lets the log class the failure as theirs.
+    const Failure = statusCode === 501 ? NotImplementedError : BadGatewayError;
+    return withCause(
+      markClientSafe(
+        new Failure(
+          serverFailureMessage(operation),
+          statusCode === 502 ? coded : undefined,
+        ),
+      ),
+      { status: statusCode },
+    );
+  }
+  if (
+    integer &&
+    statusCode >= 400 &&
+    statusCode <= 499 &&
+    !WIRING_STATUSES.has(statusCode)
+  ) {
+    return new HttpError(
+      statusName(statusCode),
+      errorDetail,
+      statusCode,
+      coded,
+    );
+  }
+  // A status no service should send, or our own wiring (WIRING_STATUSES): our 500.
+  return withCause(
+    markClientSafe(new InternalServerError(serverFailureMessage(operation))),
+    { status: statusCode },
+  );
 };

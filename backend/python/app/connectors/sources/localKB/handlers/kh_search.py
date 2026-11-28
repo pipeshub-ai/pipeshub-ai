@@ -275,6 +275,7 @@ async def search_page(
 
     has_next = more_beyond if direction == "next" else True
     has_prev = (cursor is not None) if direction == "next" else more_beyond
+    total, total_capped = at_least_shown(total, seen_before + len(merged.rows), capped=total_capped)
 
     next_cursor = prev_cursor = None
     if merged.rows or stalled is not None:
@@ -303,6 +304,13 @@ async def search_page(
         not_ready=not_ready,
         scan_cursor=(next_cursor if direction == "next" else prev_cursor) if not merged.rows and stalled is not None else None,
     )
+
+
+def at_least_shown(total: int, shown: int, *, capped: bool) -> tuple[int, bool]:
+    """A total below the rows a listing has shown so far (a capped count asks the access check about a bounded number of candidates, so it can admit
+    fewer than a page that read on) is raised to them, as a lower bound; any other total is kept. Not exact at a walk's last page either: a provider
+    can end a page with rows it did not ask about, so the rows shown are not proof of the whole."""
+    return (shown, True) if total < shown else (total, capped)
 
 
 def resume_boundary(results: list[dict[str, Any]], *, descending: bool, reverse: bool) -> dict[str, Any] | None:

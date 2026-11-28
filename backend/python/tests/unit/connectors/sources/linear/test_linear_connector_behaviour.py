@@ -553,6 +553,8 @@ class TestStreamError:
     @pytest.mark.asyncio
     async def test_fetch_for_stream_chains_the_cause(self) -> None:
         connector = _make_connector()
+        # An API key is not renewed, so the refusal stands.
+        connector.config_service.get_config = AsyncMock(return_value={"auth": {"authType": "API_TOKEN"}})
         datasource = _use_datasource(connector, MagicMock())
         datasource.document = AsyncMock(
             return_value=GraphQLResponse(success=False, message="Unauthorized", status_code=401))
@@ -1066,11 +1068,6 @@ class TestSyncFailureMessage:
         assert "Reconnect Linear" in message
         assert "SECRET" not in message
 
-    def test_rate_limit(self) -> None:
-        message = LinearConnector._sync_failure_message(LinearRateLimited("RATELIMITED", 400))
-        assert "rate limit" in message
-        assert "next run continues" in message
-
     def test_anything_else_is_quoted_and_cut_short(self) -> None:
         message = LinearConnector._sync_failure_message(RuntimeError("x" * 500))
         assert "x" * 200 in message
@@ -1345,8 +1342,8 @@ class TestRunSync:
             await self._run(connector)
 
         connector._sync_deleted_issues.assert_not_awaited()
-        connector.notify.assert_awaited_once()
-        assert "rate limit" in connector.notify.await_args.kwargs["message"]
+        # The next run continues where the limit stopped this one: nobody has anything to fix.
+        connector.notify.assert_not_awaited()
 
 
 class TestChangeProbe:

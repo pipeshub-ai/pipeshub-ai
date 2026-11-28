@@ -12,6 +12,10 @@ import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
 import { RecordRelationService } from '../services/kb.relation.service';
 import { IRecordDocument } from '../types/record';
 import { IFileRecordDocument } from '../types/file_record';
+import {
+  KbUploadGrantScope,
+  signKbUploadGrant,
+} from '../../../libs/utils/kbUploadGrant';
 import { ConnectorServiceCommand } from '../../../libs/commands/connector_service/connector.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import {
@@ -372,6 +376,7 @@ export const processUploadsInBackground = async (
   headers: Record<string, string>,
   logger: Logger,
   publish: UploadStreamPublish,
+  grantScope: KbUploadGrantScope,
 ): Promise<{
   succeeded: number;
   failed: number;
@@ -516,6 +521,23 @@ export const processUploadsInBackground = async (
     });
 
     // STEP 5: Call Python service with only successful files
+    // The connector never accepts a storage document id from a request body.
+    // It uses only the ids in this grant: the documents this request just
+    // created, bound to the org, user, KB and folder.
+    const grant = signKbUploadGrant({
+      secret: grantScope.secret,
+      orgId,
+      userId: grantScope.userId,
+      kbId,
+      folderId: grantScope.folderId,
+      documents: processedFiles.map((pf) => ({
+        recordKey: pf.record._key,
+        documentId: pf.record.externalRecordId,
+        mimeType: pf.record.mimeType ?? '',
+        extension: pf.fileRecord.extension ?? '',
+      })),
+    });
+
     const connectorCommandOptions = {
       uri: pythonServiceUrl,
       method: HttpMethod.POST,
@@ -525,6 +547,7 @@ export const processUploadsInBackground = async (
       },
       body: {
         files: processedFiles,
+        grant,
       },
     };
 

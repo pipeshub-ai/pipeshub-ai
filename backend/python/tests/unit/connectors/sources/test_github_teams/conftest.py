@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.connectors.core.base.connector.failure_notices import SyncRunState
 from app.connectors.sources.github_teams.runtime import RefreshOutcome
 
 if TYPE_CHECKING:
@@ -42,6 +43,7 @@ def make_mock_connector() -> MagicMock:
     c.logger = MagicMock()
     c.data_source = MagicMock()
     c.display_name = "GitHub"
+    c.run_state = SyncRunState()
 
     dep = MagicMock()
     dep.org_id = "org-1"
@@ -88,8 +90,6 @@ def make_mock_connector() -> MagicMock:
     c.record_sync_point = rsp
 
     c.creator_user_permission = MagicMock(return_value=None)
-    # A run's failure path awaits it; a test of a refused sign-in binds the real one.
-    c._stop_if_sign_in_refused = AsyncMock()
 
     # transaction() context manager -> tx_store mock
     tx_store = MagicMock()

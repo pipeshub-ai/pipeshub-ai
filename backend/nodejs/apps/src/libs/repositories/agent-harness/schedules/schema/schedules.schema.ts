@@ -38,7 +38,8 @@ const scheduleSchema = new Schema<ScheduleDocument>(
     deadlineS: { type: Number, required: true },
     status: {
       type: String,
-      enum: ['active', 'paused', 'disabled'],
+      // `deleted`: a tombstone (ScheduleTombstoneDocument), never read as a schedule.
+      enum: ['active', 'paused', 'disabled', 'deleted'],
       required: true,
     },
     statusReason: { type: String, default: null },
@@ -51,6 +52,8 @@ const scheduleSchema = new Schema<ScheduleDocument>(
       default: undefined,
     },
     notify: { type: [String], default: undefined },
+    origin: { type: Schema.Types.Mixed, default: undefined },
+    deletedAt: { type: Number, default: undefined },
     createdAt: { type: Number, required: true },
     updatedAt: { type: Number, required: true },
   },
@@ -86,7 +89,11 @@ const firingSchema = new Schema<ScheduleFiringDocument>(
     actorId: { type: String, required: true },
     slotKey: { type: String, required: true },
     slotAt: { type: Number, required: true },
-    kind: { type: String, enum: ['cron', 'manual', 'event'], required: true },
+    kind: {
+      type: String,
+      enum: ['cron', 'once', 'manual', 'event'],
+      required: true,
+    },
     status: {
       type: String,
       enum: ['pending', 'admitted', 'refused', 'skipped'],

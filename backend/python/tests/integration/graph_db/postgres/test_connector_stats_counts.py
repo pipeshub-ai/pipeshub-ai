@@ -213,6 +213,7 @@ RESTORE_GRAPH = """DO $$ DECLARE t regclass; BEGIN
 LIVE_KEYS = {"nodes": r"\bid = ", "edges": r"\bfrom_id >= "}      # a node by its id, a link by its source (the primary key's order)
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_the_live_rows_read_each_node_and_link_by_its_key_with_no_statistics_and_analysed(w: World, pg_db) -> None:
     """EXPLAIN gate of LIVE as the drain and the read run it (under reader.seeks): every read of graph.nodes is by id and every read of graph.edges by its source, with
     graph's statistics cleared and analysed. As joins, PostgreSQL 18 costed the primary key as a skip scan over to_id and read the org's links once per hop instead."""
@@ -343,6 +344,7 @@ async def test_writes_during_the_first_count_are_counted_once_it_ends(w: World, 
     assert (await walk(w, APP)).total() == 4 + BULK + 1 - 1 + 1
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_a_page_of_the_first_count_reads_its_records_by_key_with_no_statistics_and_analysed(w: World, pg_db) -> None:
     """EXPLAIN gate of the first count's page as it runs (under reader.seeks): graph.nodes and graph.stats_records are read as a range of record ids after the checkpoint,
     a page's rows at most, with graph's statistics cleared and analysed; no read of the organisation's records grows with a connector."""

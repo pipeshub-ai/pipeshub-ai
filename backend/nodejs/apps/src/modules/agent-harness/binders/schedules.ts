@@ -1,3 +1,4 @@
+import { orgHarnessOn } from '../config';
 import type { ControlPlaneTransaction } from '../../control-plane';
 import { BrokerTriggerSource } from '../adapters/messaging/broker-trigger-source';
 import { createRunStatusReader } from '../../../libs/repositories/agent-harness/run-status';
@@ -10,6 +11,12 @@ import { ScheduleFirer } from '../application/schedule-firer';
 import { InboxAwareScheduleNotifier } from '../application/inbox-notice-policy';
 import type { InboxPreferenceStore } from '../ports/inbox';
 import { ScheduleService } from '../application/schedule-service';
+import {
+  ChatScheduleService,
+  JournalScheduleMarks,
+} from '../application/chat-schedules';
+import { inDurableTransaction } from '../../../libs/repositories/agent-harness/durable-transaction';
+import type { ExecutionStore } from '../ports/execution-store';
 import { RunAdmissionScheduledRuns } from '../application/scheduled-run-admission';
 import { RELEASE_TRIGGER_SETTINGS } from '../application/release-run-settings';
 import type { ScheduleReach, TriggerSettings } from '../ports/schedules';
@@ -18,7 +25,9 @@ import { runBudgetCeilingOf } from './cost-ports';
 import type { ScheduledWaitNotices } from '../ports/schedules';
 import {
   AGENT_HARNESS_SCHEDULED_WAIT_NOTICES,
+  AGENT_HARNESS_CHAT_SCHEDULES,
   AGENT_HARNESS_EXECUTION_SERVICE,
+  AGENT_HARNESS_EXECUTION_STORE,
   AGENT_HARNESS_INBOX_STORE,
   AGENT_HARNESS_RUN_ADMISSION_SERVICE,
   AGENT_HARNESS_RUN_TIMELINES,
@@ -57,6 +66,7 @@ export const bindSchedules: HarnessBinder = ({
         setting: schedules.setting,
         runs: createRunStatusReader(),
         settings: triggers,
+        harnessOn: (orgId) => orgHarnessOn(orgId),
         ...(dependencies.recordAccess !== undefined
           ? { records: dependencies.recordAccess }
           : {}),
@@ -139,6 +149,39 @@ export const bindSchedules: HarnessBinder = ({
         }),
     )
     .inSingletonScope();
+  if (
+    container.isBound(AGENT_HARNESS_EXECUTION_SERVICE) &&
+    container.isBound(AGENT_HARNESS_EXECUTION_STORE)
+  ) {
+    container
+      .bind<ChatScheduleService>(AGENT_HARNESS_CHAT_SCHEDULES)
+      .toDynamicValue((context) => {
+        const runs = context.container.get<ExecutionStore>(
+          AGENT_HARNESS_EXECUTION_STORE,
+        );
+        return new ChatScheduleService({
+          runs: context.container.get<ExecutionService>(
+            AGENT_HARNESS_EXECUTION_SERVICE,
+          ),
+          vias: {
+            via: async (orgId, runId) =>
+              (await runs.readClaimSubject(orgId, runId))?.via ?? null,
+          },
+          schedules: context.container.get<ScheduleService>(
+            AGENT_HARNESS_SCHEDULES,
+          ),
+          store,
+          actors: schedules.actors,
+          marks: new JournalScheduleMarks(
+            journal.store,
+            journal.service,
+            inDurableTransaction,
+          ),
+          logger,
+        });
+      })
+      .inSingletonScope();
+  }
   // A fired run's end tells its actor and frees a firing queued behind it (TR-06, TR-07) at once; the
   // scheduler's watch is the backstop. The firer is resolved when a run ends, not while binding.
   if (container.isBound(AGENT_HARNESS_EXECUTION_SERVICE)) {

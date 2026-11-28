@@ -76,7 +76,7 @@ class _Graph:
             if xid in external_ids and name in connector_names
         ]
 
-    async def get_user_by_user_id(self, user_id: str) -> dict:
+    async def get_user_by_user_id(self, user_id: str, **_: object) -> dict:
         return {"_key": f"key-{user_id}"}
 
     async def get_edge(self, **_: str) -> None:
@@ -312,3 +312,34 @@ def test_artifact_provenance_is_checked_with_the_token_identity(monkeypatch: pyt
 def test_artifacts_count_toward_the_cap() -> None:
     body = {"recordIds": ["kb-open"], "artifactIds": [f"a{i}" for i in range(MAX_RECORD_IDS)]}
     assert _ask(_client(_Graph()), "viewer", body).status_code == 422
+
+
+def test_a_limited_connected_app_reads_nothing_outside_its_connections(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A record the user can read but the app's limit leaves out reads as denied; a live item, whose indexed copy
+    the limit is not checked against here, too."""
+    from app.api.routes import record_access
+
+    limited = {**USERS["pat-conversation"], "knowledgeLimit": {"apps": ["app-1"]}}
+    monkeypatch.setitem(USERS, "pat-limited", limited)
+    asked: list[list[str]] = []
+
+    async def outside(_request: object, _graph: object, org_id: str, user_id: str, ids: list[str]) -> set[str]:
+        assert (org_id, user_id) == ("org-1", "u-viewer")
+        asked.append(list(ids))
+        return {"kb-open"}
+
+    monkeypatch.setattr(record_access, "ids_outside_connection", outside)
+    graph = _Graph()
+    graph.access.grant("kb-closed", user="u-viewer")
+    response = _ask(_client(graph), "pat-limited", {
+        "recordIds": ["kb-open", "kb-closed"], "references": [_indexed("kb-open"), _live("f-open")],
+    })
+    assert response.status_code == 200
+    assert response.json() == {
+        "readable": ["kb-closed"],
+        "decisions": [
+            {"source": _indexed("kb-open"), "status": "denied"},
+            {"source": _live("f-open"), "status": "denied"},
+        ],
+    }
+    assert asked == [["kb-open", "kb-closed", "kb-open"]]

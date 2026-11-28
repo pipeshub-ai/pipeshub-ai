@@ -161,6 +161,71 @@ async def test_a_batch_deleted_at_two_times_takes_the_walk(pg_provider, pg_db, t
     assert tally.c[("trash", "odd")], dict(tally.c)          # every read that reaches b; one that stops before it (a count capped at 0, a page of one) is kg's
 
 
+async def test_a_page_whose_cursor_falls_between_a_batchs_delete_times_still_takes_the_walk(pg_provider, pg_db, tally) -> None:
+    """b's batch (b, and c below it deleted 7 ms later) and e deleted between the two times: the walk places b's batch at b's time, after e. A
+    page that starts after e meets b's batch only at b's own, earlier time: it must still hand the read to the walk, not leave the batch out."""
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    await _trash(pg_provider, org, ["b"])
+    await _trash(pg_provider, org, ["e"])
+    base = "(SELECT (doc->>'deletedAtTimestamp')::bigint FROM graph.nodes WHERE org_id = $1 AND coll = 'records' AND id = 'b')"
+    await _admin(f"""UPDATE graph.nodes SET doc = jsonb_set(doc, '{{deletedAtTimestamp}}', to_jsonb({base} + CASE id WHEN 'c' THEN 7 ELSE 3 END))
+        WHERE org_id = $1 AND coll = 'records' AND id IN ('c', 'e')""", org)
+    await flip(pg_db, org)
+    tally.c.clear()
+    walk, got = await _both(pg_provider, org)
+    assert [[i["record"]["id"] for i in p["items"]] for p in walk["cursor False 1"]] == [["e"], ["b"], []]
+    assert got == walk and tally.c[("trash", "odd")], dict(tally.c)
+
+
+async def test_a_batch_whose_roots_were_deleted_at_different_times_is_kgs_in_the_walks_order(pg_provider, pg_db, tally) -> None:
+    """Two roots of one batch deleted at different times (a retried delete, data written before one statement marked a batch): the batch is placed by its latest root's time,
+    as the walk places it, read once, and counted once; kg answers it."""
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    first = await _trash(pg_provider, org, ["e", "d"])                      # two roots: e, and d (a's attachment; a stays)
+    await _trash(pg_provider, org, ["b"])                                   # b with c below it, deleted later
+    await _admin("""UPDATE graph.nodes SET doc = jsonb_set(doc, '{deletedAtTimestamp}', to_jsonb((doc->>'deletedAtTimestamp')::bigint + 100000))
+        WHERE org_id = $1 AND coll = 'records' AND id = 'd'""", org)        # d now after b's batch: the first batch comes first
+    await flip(pg_db, org)
+    tally.c.clear()
+    walk, got = await _both(pg_provider, org)
+    assert got == walk
+    assert walk["cursor False 50"][0]["items"][0]["batchId"] == first and walk["cursor False 50"][0]["total"] == 2
+    assert tally.c[("trash", "kg")] and not tally.c[("trash", "odd")], dict(tally.c)
+
+
+async def _count_hits(db, org: str) -> int:
+    """Shared buffers the capped count of the connector's trash reads, as page() runs it."""
+    async def go(tx) -> int:
+        await tx.fetchval(kg_hier.PROFILE)
+        app = await tx.fetchval("SELECT sk FROM kg.records WHERE org_id = $1 AND coll = 1 AND id = $2", org, KB)
+        ran = await tx.fetchval("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + kg_trash.COUNT, org, app, False, 10_001)
+        plan = (json.loads(ran) if isinstance(ran, str) else ran)[0]["Plan"]
+        return plan["Shared Hit Blocks"] + plan["Shared Read Blocks"]
+    with ctx(org):
+        return await db.run(go, custom_plan=True)
+
+
+@pytest.mark.parametrize("shape", ["flat", "folder"])
+async def test_the_capped_count_reads_a_few_pages_a_batch_whatever_the_batch_holds(pg_provider, pg_db, shape) -> None:
+    """The count is of batches: 40 batches of one record and 40 batches of 25 (25 files, or a folder with 24 below it) cost about the same reads, a few pages a batch. It once
+    tested every record of every batch for a root, so the trash of a large connector cost a read of each of its trashed records."""
+    sizes = {}
+    for per in (1, 25):
+        org = new_org()
+        records = [f"r{b:02d}x{i:02d}" for b in range(40) for i in range(per)]
+        rels = [(f"r{b:02d}x00", f"r{b:02d}x{i:02d}", "PARENT_CHILD") for b in range(40) for i in range(1, per)] if shape == "folder" else []
+        await _world(pg_provider, pg_db, org, records, rels, {r for r in records if not r.endswith("x00") or shape == "flat"})
+        for b in range(40):
+            await _trash(pg_provider, org, [f"r{b:02d}x00"] if shape == "folder" else [f"r{b:02d}x{i:02d}" for i in range(per)])
+        await flip(pg_db, org)
+        with ctx(org):
+            assert (await pg_provider.list_trashed_records(KB, org, limit=1, count_cap=10_000))["total"] == 40
+        sizes[per] = await _count_hits(pg_db, org)
+    assert sizes[25] <= 3 * sizes[1] and sizes[25] <= 40 * 20, sizes          # a climb of one level at most; a read of every record was 60 to 260 pages a batch
+
+
 async def test_a_change_waiting_in_the_log_takes_the_walk_until_it_is_drained(pg_provider, pg_db, tally, monkeypatch) -> None:
     org = new_org()
     await _tree(pg_provider, pg_db, org)
@@ -275,6 +340,7 @@ async def _rows(tx: Any, org: str) -> dict:  # noqa: ANN401
     return {r["id"]: (r["deleted_ms"], r["delete_batch"]) for r in await tx.fetch("SELECT id, deleted_ms, delete_batch FROM kg.records WHERE org_id = $1 AND coll = 3", org)}
 
 
+@pytest.mark.pg_table_lock           # runs kg_0019's relabel, which takes every org's copy to epoch 7
 async def test_a_filled_copy_taken_down_to_kg_0018_and_up_again_is_filled_again_before_it_is_served(pg_provider, pg_db, tally) -> None:
     """A copy filled and enforced at epoch 8, after a downgrade to kg_0018 and an upgrade back: the columns are new and empty, and kg_0019 relabels the copy epoch 7. The
     bootstrap fills it again: enforced and served, and its listing is the walk's (before the relabel it was served with empty columns and listed nothing)."""
@@ -447,6 +513,7 @@ async def test_a_sampled_listing_that_differs_from_the_walk_takes_the_connector_
         assert [i["record"]["id"] for i in (await pg_provider.list_trashed_records(KB, org))["items"]] == ["e"]     # the walk's, from now on
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_every_trash_statement_is_answered_by_index_searches(pg_provider, pg_db, monkeypatch) -> None:
     """EXPLAIN gate: 3,000 trashed records of the connector in kg and in the graph, beside 3,000 live ones, never analysed and analysed: no statement scans a table, the batches
     are read from records_trash and each batch's records from records_trash_batch, and a page's rows read each parent by its to_id."""
@@ -465,7 +532,7 @@ async def test_every_trash_statement_is_answered_by_index_searches(pg_provider, 
     with ctx(org):
         app = await pg_db.run(lambda tx: tx.fetchval("SELECT app_sk FROM kg.records WHERE org_id = $1 AND coll = 3 AND id = 'e'", org))
     cases = {"page": (kg_trash.PAGE, [app, False, None, None, 26, 25]), "page_after": (kg_trash.PAGE, [app, True, 1790000000700, "pb-700", 26, 25]),
-             "count": (kg_trash.COUNT, [app, False, None, None, 10001])}
+             "count": (kg_trash.COUNT, [app, False, 10001]), "count_files": (kg_trash.COUNT, [app, True, 10001])}
     for state in ("fresh", "analysed"):
         if state == "analysed":
             await _admin("ANALYZE kg.records; ANALYZE graph.nodes; ANALYZE graph.edges")
@@ -474,14 +541,16 @@ async def test_every_trash_statement_is_answered_by_index_searches(pg_provider, 
                 await tx.fetchval(kg_hier.PROFILE)
                 ran = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, org, *args)
                 plan = (json.loads(ran) if isinstance(ran, str) else ran)[0]["Plan"]
-                # the batches are records_trash read backwards from the cursor, one row per step (LIMIT 1), and a batch's records are records_trash_batch bounded by the batch
-                # (a key the shared checker does not name)
-                return [x for x in _scans(plan) if "'records_trash'" not in x and "(delete_batch >= b.batch) AND (delete_batch <= b.batch)" not in x], json.dumps(plan)
+                # a page's batches are records_trash read backwards from the cursor and a count's records_trash_app_batch in batch order, one row per step (LIMIT 1); a
+                # batch's records are records_trash_batch or records_trash_app_batch bounded by the batch (a key the shared checker does not name)
+                return [x for x in _scans(plan) if "'records_trash'" not in x and "'records_trash_app_batch'" not in x
+                        and not re.search(r"\(delete_batch >= [bc]\.batch\) AND \(delete_batch <= [bc]\.batch\)", x)], json.dumps(plan)
             with ctx(org):
                 bad, plan = await pg_db.run(go, custom_plan=True)
             assert not bad, f"{state} {name}: {bad}"
-            used = set(re.findall(r'"Index Name": "[^"]*?(records_trash(?:_batch)?)"', plan))
-            assert used == {"records_trash", "records_trash_batch"}, f"{state} {name}: {used}"
+            used = set(re.findall(r'"Index Name": "[^"]*?(records_trash(?:_app_batch|_batch)?)"', plan))
+            want = {"records_trash", "records_trash_batch"} if name.startswith("page") else {"records_trash_batch", "records_trash_app_batch"}
+            assert used == want, f"{state} {name}: {used}"
 
         # a page's rows, as page() runs them under the profile: a record's first parent is a seek on to_id, not the primary key read in from_id order (the plan that
         # needs no sort, which reads the org's relations up to the parent)
