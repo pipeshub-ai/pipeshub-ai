@@ -117,6 +117,10 @@ class OpenEditionRoots(unittest.TestCase):
             "backend/python/tests/unit/ee/permission_sync/test_box_gate.py",
             "backend/nodejs/apps/src/ee/modules/license/license-codec.ts",
             "backend/nodejs/apps/tests/ee/modules/license/license-core.test.ts",
+            "backend/python/app/ee/LICENSE",
+            "backend/python/tests/unit/ee/LICENSE",
+            "backend/nodejs/apps/src/ee/LICENSE",
+            "backend/nodejs/apps/tests/ee/LICENSE",
         ):
             with self.subTest(path=path):
                 self.assertEqual(edition_guard.check([path], "").errors, [])
@@ -133,6 +137,9 @@ class OpenEditionRoots(unittest.TestCase):
             "x/backend/python/app/ee/permission_sync/box.py",
             "backend/python/tests/unit/ee/__init__.pyi",
             "backend/python/tests/unit/ee/__init__.py.bak",
+            "backend/python/app/ee/LICENSE.txt",
+            "backend/python/app/ee/other/LICENSE",
+            "frontend/ee/LICENSE",
         ):
             with self.subTest(path=path):
                 self.assertEqual(len(edition_guard.check([path], "").errors), 1)
@@ -395,7 +402,8 @@ class AgainstGit(unittest.TestCase):
         self.assertEqual(sorted(report.errors), [
             "backend/python/app/x.py:2: imports an edition package; use an extension point instead",
             "docs/ee/new.md: an edition-only path; it belongs in that edition's repository",
-            "docs/ee/new.md:2: a proprietary licence marker; this repository's code is Apache-2.0",
+            "docs/ee/new.md:2: a proprietary licence marker; code here is Apache-2.0, or under the Enterprise License in an"
+            " ee/ directory's LICENSE",
         ])
 
     def test_a_clean_tree_passes_and_main_says_so(self) -> None:
