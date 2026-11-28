@@ -97,6 +97,11 @@ export interface CollectionMapping {
   nullsCol?: string;
   fields: FieldMap[];
   children?: ChildMap[];
+  /**
+   * Global tables the importer also writes for this collection, through a vetted function, with no document of their own (no
+   * comparison). reset empties them with the migrate login, after the copied rows (`reset.ts`).
+   */
+  sideTables?: string[];
   /** Root columns that are keys, copies or computed from other fields: not part of the document. */
   derived: string[];
   /** Document paths deliberately not copied, with the reason; the verifier removes them from the source side and lists them. */

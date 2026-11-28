@@ -87,7 +87,13 @@ export async function importOrgDocs(
     // In the unit that wrote the rows: a chosen slug another organisation holds fails the batch on the unique key, so a claim
     // racing the copy has exactly one winner.
     for (const r of orgs) {
-      if (typeof r.slug !== 'string' || /^org-[0-9]+$/.test(r.slug)) continue;
+      // an empty slug is the store's to assign (callerSlug), as on a sign-up
+      if (
+        typeof r.slug !== 'string' ||
+        r.slug === '' ||
+        /^org-[0-9]+$/.test(r.slug)
+      )
+        continue;
       await k.query(
         '/* pipeshub:identity.copied_org_slug_claim */ SELECT identity.copied_org_slug_claim($1, $2)',
         [r.org_id, r.slug],

@@ -364,6 +364,31 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         }
       });
 
+      it('a reset that stops before the slugs go is finished by the next one, and a copy refuses to start until then', async () => {
+        const slugs = async (): Promise<number> => Number((await sql('SELECT count(*)::int AS n FROM identity.org_slugs'))[0].n);
+        await bulk(w.rt, await JobState.attach(w.rt), { log });
+        expect(await slugs(), 'the copy claimed the chosen slugs').to.be.greaterThan(0);
+        const pool = w.rt.migratePool as unknown as { query: (...a: unknown[]) => Promise<unknown> };
+        const real = pool.query.bind(pool);
+        pool.query = async (...a: unknown[]) => {
+          if (String(a[0]).includes('pipeshub:reset.delete_side')) throw new Error('stopped between the two steps');
+          return real(...a);
+        };
+        try {
+          expect(await reset(w.rt, { force: false }).then(() => 'finished', (e: Error) => e.message)).to.equal('stopped between the two steps');
+        } finally {
+          pool.query = real;
+        }
+        expect(Number((await sql('SELECT count(*)::int AS n FROM identity.orgs'))[0].n), 'the copied rows are gone').to.equal(0);
+        expect(await slugs(), 'the slugs are not').to.be.greaterThan(0);
+        const refused = await bulk(w.rt, await JobState.attach(w.rt), { log }).then(() => 'copied', (e: Error) => e.message);
+        expect(refused).to.contain('run `reset --yes` again');
+        expect((await reset(w.rt, { force: false })).ok).to.equal(true);
+        for (const [t, rows] of Object.entries(await snapshot())) expect(rows, t).to.deep.equal([]);
+        await bulk(w.rt, await JobState.attach(w.rt), { log });
+        expect(await slugs(), 'the copy claims them again').to.be.greaterThan(0);
+      });
+
       it('refuses once MongoDB is marked retired, and goes ahead when forced', async () => {
         const js = await JobState.attach(w.rt);
         await bulk(w.rt, js, { log });

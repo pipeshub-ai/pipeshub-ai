@@ -4,6 +4,8 @@ export const org: CollectionMapping = {
   collection: 'org',
   repository: 'org',
   table: 'identity.orgs',
+  // the chosen slugs, claimed by the importer in the unit that writes each organisation (importOrgDocs)
+  sideTables: ['identity.org_slugs'],
   idCol: 'org_id',
   orgPath: '_id',
   orgCol: 'org_id',

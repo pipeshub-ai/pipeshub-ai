@@ -11,4 +11,10 @@ CREATE TABLE identity.org_slugs (
 SELECT kernel.apply_rls('identity.org_slugs', 'global', p_vetted_write => true);
 -- The document copy claims each copied organisation's slug too (identity.copied_org_slug_claim, in the unit that writes the row), so the
 -- table holds every chosen slug and the unique key decides a claim racing the copy. Rows copied before this revision are claimed here.
+-- The owner reaches no organisation's row (forced row security), so the claim reads identity.orgs as the schema's vetted owner,
+-- whose vetted_read policy sees every row and who may write this table, as the vetted functions are installed.
+GRANT pipeshub_vetted_identity TO pipeshub_owner WITH SET TRUE;
+SET LOCAL ROLE pipeshub_vetted_identity;
 INSERT INTO identity.org_slugs (org_id, slug) SELECT o.org_id, o.slug FROM identity.orgs o WHERE o.slug !~ '^org-[0-9]+$';
+SET LOCAL ROLE pipeshub_owner;
+REVOKE pipeshub_vetted_identity FROM pipeshub_owner;

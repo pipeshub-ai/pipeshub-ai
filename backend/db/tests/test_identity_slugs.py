@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import psycopg
 import pytest
 
+from .conftest import run_migrate
 from .test_graph import as_role
 from .test_integration import connect
 
@@ -102,3 +103,28 @@ def test_a_claim_racing_the_copy_for_one_slug_has_exactly_one_winner(rdb, first)
     finally:
         claim.close()
         copy.close()
+
+
+def _org_slugs_after_upgrade(cluster, name, slug):
+    """identity_0008 applied to an install whose one organisation holds ``slug``: what identity.org_slugs then holds."""
+    url = cluster.url(name, "pipeshub_migrate")
+    r = run_migrate(url, "downgrade", "identity_0007", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        c.execute("DELETE FROM identity.orgs")
+        c.execute(ORG, (A, slug))
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        return c.execute("SELECT org_id, slug FROM identity.org_slugs").fetchall()
+
+
+def test_the_upgrade_claims_the_slug_an_existing_organisation_chose(rdb):
+    """The backfill reads identity.orgs as the vetted owner: as the owner it reads no row (forced row security) and claims nothing."""
+    cluster, name = rdb
+    assert _org_slugs_after_upgrade(cluster, name, "chosen-before") == [(A, "chosen-before")]
+
+
+def test_the_upgrade_claims_no_counter_slug(rdb):
+    cluster, name = rdb
+    assert _org_slugs_after_upgrade(cluster, name, "org-42") == []
