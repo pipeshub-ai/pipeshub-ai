@@ -172,6 +172,24 @@ def test_export_and_load_move_one_org_without_losing_a_row(conns, tmp_path):
         admin.execute("DELETE FROM kt.cfg WHERE k IN ('empty', 'null')")
 
 
+def test_an_export_leaves_generated_columns_out_so_the_load_computes_them(conns, tmp_path):
+    org_db, admin, migrate, backup = conns
+    admin.execute("ALTER TABLE kt.cfg ADD COLUMN v_len int GENERATED ALWAYS AS (length(v)) STORED")
+    try:
+        want = admin.execute("SELECT k, v, v_len FROM kt.cfg WHERE org_id = %s ORDER BY k", (ORG_B,)).fetchall()
+        order = restore_window.export_org(migrate, backup, ORG_B, tmp_path)
+        assert "v_len" not in (tmp_path / "kt.cfg.csv").read_text().splitlines()[0].split(",")
+        for t in reversed(order):
+            admin.execute(f"DELETE FROM {t} WHERE org_id = %s", (ORG_B,))
+        restore_window.open_window(admin, migrate, backup, ORG_B, PASSWORD, hours=1)
+        with as_restore(org_db) as r:
+            restore_window.load_org(r, ORG_B, tmp_path, set(order))
+        assert admin.execute("SELECT k, v, v_len FROM kt.cfg WHERE org_id = %s ORDER BY k", (ORG_B,)).fetchall() == want
+    finally:
+        restore_window.close_window(admin, migrate, abandon=True)
+        admin.execute("ALTER TABLE kt.cfg DROP COLUMN v_len")
+
+
 def test_an_export_reads_every_table_in_one_snapshot(conns, tmp_path):
     """Derived rows (counters, frequencies, keys) must agree with the rows they derive from: a write that commits while the export runs
     is in every exported table or in none."""
