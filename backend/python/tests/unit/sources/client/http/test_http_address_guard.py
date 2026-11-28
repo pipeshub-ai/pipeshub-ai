@@ -1,7 +1,9 @@
 """The address guard every HTTPClient sends through (`app.sources.client.http.address_guard`)."""
 from __future__ import annotations
 
+import io
 import socket
+import threading
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -26,6 +28,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
 _PUBLIC_IP = "93.184.216.34"
+_PUBLIC_IPV6 = "2606:2800:220:1:248:1893:25c8:1946"
 
 
 def _dns(answers: dict[str, list[str]]) -> "Callable[..., list]":
@@ -336,3 +339,191 @@ class TestRequestsAdapter:
         session = _secure_session()
         assert isinstance(session.get_adapter("https://gitlab.example.com/"), AddressGuardAdapter)
         assert isinstance(session.get_adapter("http://gitlab.example.com/"), AddressGuardAdapter)
+
+
+class TestRequestsAdapterThroughAProxy:
+    """Behind an environment proxy the adapter still connects to the checked address: urllib3
+    tunnels to it and keeps the name for TLS."""
+
+    PROXIES = {"https": "http://proxy.corp:3128", "http": "http://proxy.corp:3128"}
+
+    def test_a_proxied_request_goes_to_the_checked_address(self) -> None:
+        session, sent = TestRequestsAdapter._session()
+        with patch("socket.getaddrinfo", _dns({"gitlab.example": [_PUBLIC_IP]})):
+            session.get("https://gitlab.example/api/v4/version", proxies=self.PROXIES)
+        assert sent == [(_PUBLIC_IP, "gitlab.example")]
+
+    def test_a_name_only_the_proxy_can_resolve_is_refused_unless_listed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        session, sent = TestRequestsAdapter._session()
+
+        def nxdomain(*_a: object, **_k: object) -> list:
+            raise socket.gaierror("Name or service not known")
+
+        with patch("socket.getaddrinfo", nxdomain):
+            with pytest.raises(AddressNotAllowedError, match=url_guard.PROXY_ALLOWED_HOSTS_ENV):
+                session.get("https://gitlab.example/a", proxies=self.PROXIES)
+            assert sent == []
+            monkeypatch.setenv(url_guard.PROXY_ALLOWED_HOSTS_ENV, "gitlab.example")
+            session.get("https://gitlab.example/a", proxies=self.PROXIES)
+        assert sent == [("gitlab.example", "gitlab.example")]
+
+    def test_a_plain_http_request_names_the_address_in_the_url_the_proxy_fetches(self) -> None:
+        adapter = AddressGuardAdapter(allow_private=False)
+        fetched: list[str] = []
+
+        def send(_self: HTTPAdapter, req: requests.PreparedRequest, *_a: object, **kwargs: object) -> requests.Response:
+            fetched.append(adapter.request_url(req, kwargs["proxies"]))  # type: ignore[arg-type]
+            return requests.Response()
+
+        with patch("socket.getaddrinfo", _dns({"gitlab.example": [_PUBLIC_IP]})), \
+             patch.object(HTTPAdapter, "send", send):
+            adapter.send(requests.Request("GET", "http://gitlab.example:8080/api?x=1").prepare(), proxies=self.PROXIES)
+        assert fetched == [f"http://{_PUBLIC_IP}:8080/api?x=1"]
+        assert adapter.request_url(requests.Request("GET", "https://gitlab.example/a").prepare(), {}) == "/a"
+
+    def test_a_connect_the_proxy_refuses_moves_on_to_the_next_address(self) -> None:
+        """A dual-stack name whose IPv6 address the proxy can't reach: a 502 to that CONNECT,
+        then the IPv4 address. urllib3 brackets the IPv6 target itself."""
+        connects: list[bytes] = []
+        proxy = socket.socket()
+        proxy.bind(("127.0.0.1", 0))
+        proxy.listen(4)
+
+        def serve() -> None:
+            for _ in range(2):
+                conn, _ = proxy.accept()
+                with conn, conn.makefile("rb") as lines:
+                    connects.append(lines.readline())
+                    while lines.readline() not in (b"\r\n", b""):
+                        pass
+                    conn.sendall(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+
+        server = threading.Thread(target=serve, daemon=True)
+        server.start()
+        url = f"http://127.0.0.1:{proxy.getsockname()[1]}"
+        real_getaddrinfo = socket.getaddrinfo
+
+        def getaddrinfo(host: str, *args: object, **kwargs: object) -> list:
+            if host == "gitlab.example":
+                return [
+                    (socket.AF_INET6, socket.SOCK_STREAM, 6, "", (_PUBLIC_IPV6, 0, 0, 0)),
+                    (socket.AF_INET, socket.SOCK_STREAM, 6, "", (_PUBLIC_IP, 0)),
+                ]
+            return real_getaddrinfo(host, *args, **kwargs)
+
+        session = requests.Session()
+        session.trust_env = False
+        session.mount("https://", AddressGuardAdapter(allow_private=False))
+        with patch("socket.getaddrinfo", getaddrinfo), pytest.raises(requests.exceptions.ProxyError):
+            session.get("https://gitlab.example/a", proxies={"https": url}, timeout=5)
+        server.join(5)
+        proxy.close()
+
+        assert connects == [f"CONNECT [{_PUBLIC_IPV6}]:443 HTTP/1.1\r\n".encode(), f"CONNECT {_PUBLIC_IP}:443 HTTP/1.1\r\n".encode()]
+
+    @pytest.mark.parametrize(("method", "tried", "status"), [("GET", 2, 200), ("OPTIONS", 2, 200), ("PUT", 1, 502)])
+    def test_a_plain_http_proxys_502_moves_on_only_for_a_request_safe_to_repeat(
+        self, method: str, tried: int, status: int,
+    ) -> None:
+        sent: list[bytes] = []
+        proxy = socket.socket()
+        proxy.bind(("127.0.0.1", 0))
+        proxy.listen(4)
+
+        def serve() -> None:
+            for _ in range(tried):
+                conn, _ = proxy.accept()
+                with conn, conn.makefile("rb") as lines:
+                    line = lines.readline()
+                    sent.append(line.split()[1])
+                    length = 0
+                    while (header := lines.readline()) not in (b"\r\n", b""):
+                        if header.lower().startswith(b"content-length:"):
+                            length = int(header.split(b":")[1])
+                    lines.read(length)
+                    conn.sendall(
+                        b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n" if b"[" in line
+                        else b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+
+        server = threading.Thread(target=serve, daemon=True)
+        server.start()
+        url = f"http://127.0.0.1:{proxy.getsockname()[1]}"
+        real_getaddrinfo = socket.getaddrinfo
+
+        def getaddrinfo(host: str, *args: object, **kwargs: object) -> list:
+            if host == "gitlab.example":
+                return [
+                    (socket.AF_INET6, socket.SOCK_STREAM, 6, "", (_PUBLIC_IPV6, 0, 0, 0)),
+                    (socket.AF_INET, socket.SOCK_STREAM, 6, "", (_PUBLIC_IP, 0)),
+                ]
+            return real_getaddrinfo(host, *args, **kwargs)
+
+        session = requests.Session()
+        session.trust_env = False
+        session.mount("http://", AddressGuardAdapter(allow_private=False))
+        with patch("socket.getaddrinfo", getaddrinfo):
+            response = session.request(method, "http://gitlab.example:8080/a", data=b"x" if method == "PUT" else None, proxies={"http": url}, timeout=5)
+        server.join(5)
+        proxy.close()
+
+        assert response.status_code == status
+        assert sent == [f"http://[{_PUBLIC_IPV6}]:8080/a".encode(), f"http://{_PUBLIC_IP}:8080/a".encode()][:tried]
+
+    def test_a_502_through_a_tunnel_is_the_servers_and_is_returned(self) -> None:
+        adapter = AddressGuardAdapter(allow_private=False)
+        tried: list[str] = []
+
+        def send(_self: HTTPAdapter, req: requests.PreparedRequest, *_a: object, **_k: object) -> requests.Response:
+            conn_host, _ = adapter.build_connection_pool_key_attributes(req, True)
+            tried.append(conn_host["host"])
+            response = requests.Response()
+            response.status_code = 502
+            return response
+
+        two = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 0)) for address in (_PUBLIC_IP, "93.184.216.35")]
+        with patch("socket.getaddrinfo", return_value=two), patch.object(HTTPAdapter, "send", send):
+            response = adapter.send(requests.Request("GET", "https://gitlab.example/a").prepare(), proxies=self.PROXIES)
+        assert response.status_code == 502
+        assert tried == [_PUBLIC_IP]
+
+    @pytest.mark.parametrize(("streamed", "tried_count", "status"), [(False, 2, 200), (True, 1, 502)])
+    def test_a_plain_http_proxys_502_moves_on_only_when_the_body_can_be_sent_again(
+        self, streamed: bool, tried_count: int, status: int,
+    ) -> None:
+        """A generator body is used up by the first attempt; the proxy's 502 is returned rather
+        than the request sent again without it."""
+        adapter = AddressGuardAdapter(allow_private=False)
+        tried: list[str] = []
+
+        def send(_self: HTTPAdapter, req: requests.PreparedRequest, *_a: object, **_k: object) -> requests.Response:
+            conn_host, _ = adapter.build_connection_pool_key_attributes(req, True)
+            tried.append(conn_host["host"])
+            response = requests.Response()
+            response.status_code = 502 if len(tried) == 1 else 200
+            response.raw = io.BytesIO()
+            return response
+
+        body = (chunk for chunk in [b"x"]) if streamed else b"x"
+        two = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 0)) for address in (_PUBLIC_IP, "93.184.216.35")]
+        with patch("socket.getaddrinfo", return_value=two), patch.object(HTTPAdapter, "send", send):
+            response = adapter.send(
+                requests.Request("GET", "http://gitlab.example/a", data=body).prepare(), proxies=self.PROXIES,
+            )
+        assert response.status_code == status
+        assert tried == [_PUBLIC_IP, "93.184.216.35"][:tried_count]
+
+    def test_a_failure_after_the_request_went_out_is_not_sent_again(self) -> None:
+        adapter = AddressGuardAdapter(allow_private=False)
+        tried: list[str] = []
+
+        def send(_self: HTTPAdapter, req: requests.PreparedRequest, *_a: object, **_k: object) -> requests.Response:
+            conn_host, _ = adapter.build_connection_pool_key_attributes(req, True)
+            tried.append(conn_host["host"])
+            raise requests.ConnectionError(ConnectionResetError("reset by peer"))
+
+        two = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 0)) for address in (_PUBLIC_IP, "93.184.216.35")]
+        with patch("socket.getaddrinfo", return_value=two), patch.object(HTTPAdapter, "send", send):
+            with pytest.raises(requests.ConnectionError):
+                adapter.send(requests.Request("POST", "https://gitlab.example/a").prepare(), proxies=self.PROXIES)
+        assert tried == [_PUBLIC_IP]
