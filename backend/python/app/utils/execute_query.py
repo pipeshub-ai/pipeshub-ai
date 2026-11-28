@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from app.modules.transformers.blob_storage import BlobStorage
 
 from app.config.constants.arangodb import CollectionNames, Connectors
-from app.connectors.core.address_policy import public_only_for_scope
+from app.connectors.core.address_policy import connector_public_only
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.core.org_context import spawn_in_request
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -456,6 +456,8 @@ async def _execute_snowflake_query(
     query: str,
     config_service: "ConfigurationService",
     connector_instance_id: Optional[str] = None,
+    *,
+    public_only: bool = True,
 ) -> Dict[str, Any]:
     """Execute a query against Snowflake through the SQL API.
 
@@ -474,6 +476,7 @@ async def _execute_snowflake_query(
             config_service=config_service,
             connector_id=connector_instance_id,
             query_tag="pipeshub:agent",
+            public_only=public_only,
         ) as runner:
             result = await runner.run(
                 query, timeout_s=SQL_QUERY_TIMEOUT_S, max_rows=SQL_MAX_ROWS + 1,
@@ -497,6 +500,8 @@ async def _execute_mariadb_query(
     query: str,
     config_service: "ConfigurationService",
     connector_instance_id: Optional[str] = None,
+    *,
+    public_only: bool = True,
 ) -> Dict[str, Any]:
     """Execute a query against MariaDB.
     
@@ -504,6 +509,7 @@ async def _execute_mariadb_query(
         query: SQL query to execute
         config_service: Configuration service
         connector_instance_id: Optional connector instance ID
+        public_only: Connect to public addresses only (a personal connector)
         
     Returns:
         Dict with 'ok', 'columns', 'rows' or 'error'
@@ -516,6 +522,7 @@ async def _execute_mariadb_query(
             logger=logger,
             config_service=config_service,
             connector_instance_id=connector_instance_id,
+            public_only=public_only,
         )
 
         client = client_builder.get_client()
@@ -669,12 +676,14 @@ async def _execute_query_impl(
             query=query,
             config_service=config_service,
             connector_instance_id=connector_instance_id,
+            public_only=public_only,
         )
     elif source_type == "mariadb":
         result = await _execute_mariadb_query(
             query=query,
             config_service=config_service,
             connector_instance_id=connector_instance_id,
+            public_only=public_only,
         )
     else:
         return {
@@ -737,10 +746,7 @@ async def _connector_is_accessible(
 
 async def _connector_is_public_only(graph_provider: IGraphDBProvider | None, connector_id: str) -> bool:
     """Whether the connector may reach public addresses only: any scope but team. Unknown is."""
-    if graph_provider is None:
-        return True
-    app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
-    return public_only_for_scope((app or {}).get("scope"))
+    return await connector_public_only(graph_provider, connector_id)
 
 
 def schedule_result_csv(

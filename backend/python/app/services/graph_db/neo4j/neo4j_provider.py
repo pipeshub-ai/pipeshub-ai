@@ -19163,6 +19163,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query = f"""
             MERGE (p:{label} {{email: $email, orgId: $org_id}})
             ON CREATE SET p = $props
+            ON MATCH SET p.{_MATCH_LOCK} = true
+            WITH p
+            REMOVE p.{_MATCH_LOCK}
             RETURN p.id AS id
             """
             parameters: dict[str, Any] = {
@@ -19253,9 +19256,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         Ensure a principal (user or person) has a membership edge to an app.
 
-        Create-only. An existing edge is left untouched, so this can never downgrade
-        a real member to an external collaborator, and re-running it over an
-        already-synced app is a no-op.
+        Create-only. An existing edge keeps its flag, so this can never downgrade a
+        real member to an external collaborator. Its ``updatedAtTimestamp`` is written:
+        the write lock makes a reaper deciding on the edge wait for this transaction
+        and then see the grant written before it (``reap_stale_external_app_relations``).
 
         Deliberately not routed through batch_create_edges: that helper does
         ``SET r = edge.props``, which would overwrite an existing edge's flag.
@@ -19283,6 +19287,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (app:{app_label} {{id: $connector_id}})
             MERGE (principal)-[r:{relationship}]->(app)
             ON CREATE SET r = $props
+            ON MATCH SET r.updatedAtTimestamp = $now
             """
             await self.client.execute_query(
                 query,
@@ -19290,6 +19295,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "principal_id": principal_id,
                     "connector_id": connector_id,
                     "props": props,
+                    "now": now,
                 },
                 txn_id=transaction,
             )
@@ -19469,16 +19475,26 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (app:{app_label} {{id: $connector_id}})
             MATCH (principal)-[uar:{app_rel}]->(app)
             WHERE uar.isExternalUser = true
-              AND NOT {grant_exists}
+            // The write lock first (a property set and removed: nothing kept), then the flag and the grant: a writer of a grant touches its
+            // holder's edge after it (ensure_app_membership) and a writer of a membership writes its flag, so either has committed (and is
+            // read below) or waits for this transaction and writes the edge again once it is gone.
+            SET uar.{_MATCH_LOCK} = true
+            REMOVE uar.{_MATCH_LOCK}
+            WITH principal, uar, app
+            WHERE uar.isExternalUser = true AND NOT {grant_exists}
             WITH collect(DISTINCT principal) AS stale_principals, collect(uar) AS stale_edges
 
             FOREACH (e IN stale_edges | DELETE e)
 
             // Delete only Persons this pass actually stranded. A global sweep would risk
-            // a Person created moments ago whose first edge is not committed yet.
+            // a Person created moments ago whose first edge is not committed yet. The person's lock first, as
+            // above: a writer of a grant from it takes it (upsert_person_by_email), so its edge is seen.
             WITH stale_principals
             UNWIND stale_principals AS principal
-            WITH principal WHERE principal:{person_label} AND NOT (principal)--()
+            WITH principal WHERE principal:{person_label}
+            SET principal.{_MATCH_LOCK} = true
+            REMOVE principal.{_MATCH_LOCK}
+            WITH principal WHERE NOT (principal)--()
             DETACH DELETE principal
             RETURN count(*) AS reaped_people
             """
@@ -19498,6 +19514,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return reaped
 
         except Exception as e:
+            if self.is_write_conflict(e):
+                # Nothing is removed and the caller's transaction is aborted: raised, so the caller runs it again (and never commits a dead one).
+                raise
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
                                     op="reap_stale_external_app_relations", connector_id=connector_id)
             return 0

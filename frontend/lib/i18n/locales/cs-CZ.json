@@ -7492,6 +7492,9 @@
     }
   },
   "errorToast": {
+    "reconnecting": "Znovu se připojuje…",
+    "reconnectingDescription": "Právě nemůžeme zkontrolovat vaše přihlášení. Zůstáváte přihlášeni. Několik minut to budeme zkoušet znovu, potom až se vrátíte nebo znovu připojíte.",
+    "sessionUnavailable": "Právě nemůžeme zkontrolovat vaše přihlášení. Znovu se připojuje…",
     "accessDenied": "Přístup odepřen",
     "invalidRequest": "Neplatný požadavek",
     "notFound": "Nenalezeno",

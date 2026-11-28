@@ -5,7 +5,10 @@ import type { Cluster } from 'ioredis';
 import { Logger } from '../../../libs/services/logger.service';
 import { usesInProcessCache } from '../../../libs/services/redis.service';
 import { inject, injectable } from 'inversify';
-import { BadRequestError } from '../../../libs/errors/http.errors';
+import {
+  BadRequestError,
+  UnauthorizedError,
+} from '../../../libs/errors/http.errors';
 import { classifyError } from '../../../libs/utils/error-class';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { TYPES } from '../../../libs/types/container.types';
@@ -15,6 +18,11 @@ import type {
   IRedisConnectionProvider,
   RedisClient,
 } from '../../../libs/services/redis/connectionProvider.interface';
+import {
+  HANDSHAKE_REFUSAL,
+  authRefusal,
+  sessionCheckUnavailable,
+} from '../../../libs/utils/socket-handshake-refusal';
 
 interface CustomSocketData {
   userId: string;
@@ -161,12 +169,22 @@ export class NotificationService {
       try {
         const extractedToken = this.extractToken(socket.handshake.auth.token);
         if (!extractedToken) {
-          return next(new BadRequestError('Authentication token missing'));
+          return next(
+            authRefusal(
+              new BadRequestError('Authentication token missing'),
+              HANDSHAKE_REFUSAL.TOKEN_MISSING,
+            ),
+          );
         }
         const decodedData =
           await this.authTokenService.verifyToken(extractedToken);
         if (!decodedData) {
-          return next(new BadRequestError('Authentication token expired'));
+          return next(
+            authRefusal(
+              new BadRequestError('Authentication token expired'),
+              HANDSHAKE_REFUSAL.TOKEN_INVALID,
+            ),
+          );
         }
 
         socket.data.userId = decodedData.userId;
@@ -183,13 +201,13 @@ export class NotificationService {
           try {
             refusal = await this.sessionRefusal(decodedData, this.logger);
           } catch (error) {
-            // Fail closed, and not as an auth failure, so the client retries rather than signing out.
+            // Fail closed, and not as an auth failure, so no client signs out over a database error. Web and desktop clients retry it with backoff.
             this.logger.error('Notification handshake: session check failed', {
               error,
               target_user_id: socket.data.userId,
               org_id: socket.data.orgId,
             });
-            return next(new Error('Unable to check the session right now'));
+            return next(sessionCheckUnavailable());
           }
           if (refusal) {
             socket.data.forceLogoutReason = 'session_ended';
@@ -203,10 +221,16 @@ export class NotificationService {
           error_class: classifyError(error),
           error,
         });
+        // verifyToken throws for a bad signature or an expired token.
         next(
-          error instanceof Error
-            ? error
-            : new BadRequestError('Authentication failed'),
+          authRefusal(
+            error instanceof Error
+              ? error
+              : new BadRequestError('Authentication failed'),
+            error instanceof UnauthorizedError
+              ? HANDSHAKE_REFUSAL.TOKEN_INVALID
+              : HANDSHAKE_REFUSAL.AUTH_FAILED,
+          ),
         );
       }
     });

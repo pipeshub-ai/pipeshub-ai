@@ -157,7 +157,7 @@ def test_bedrock_is_built_with_a_ten_second_connect_timeout() -> None:
     from app.utils.aimodels import _bedrock_client_config, _create_bedrock_client
 
     assert _bedrock_client_config().connect_timeout == 10
-    client = _create_bedrock_client({"region": "us-east-1", "awsAccessKeyId": "x", "awsAccessSecretKey": "y"})
+    client = _create_bedrock_client({"region": "us-east-1", "awsAccessKeyId": "x", "awsAccessSecretKey": "y"}, allow_ambient=False)
     assert client.meta.config.connect_timeout == 10
 
 

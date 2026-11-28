@@ -30,6 +30,7 @@ from app.services.model_identity.runtime import call_scope
 from app.services.model_identity.workload import Workload
 from app.services.vector_db.collections import CollectionType
 from app.utils.aimodels import (
+    CredentialsRequiredError,
     ImageGenerationProvider,
     LLMProvider,
     STTProvider,
@@ -510,6 +511,8 @@ async def _model_setup_failed_response(
     configuration = model_config.get("configuration") or {}
     if not isinstance(configuration, dict):
         configuration = {}
+    if isinstance(e, CredentialsRequiredError):
+        return _config_error(str(e), model_config, model, error_code="credentials_required")
     reason = _provider_reason(e, model_config)
     name = configuration.get("modelFriendlyName") or model_config.get("modelFriendlyName") or model or kind
     code = provider_error_code(e)
@@ -581,6 +584,8 @@ def _unstamped(model_config: dict) -> dict:
 
 def _is_settings_failure(e: BaseException) -> bool:
     """Whether the provider refused the settings, has no credit left for them, or could not be reached at all."""
+    if isinstance(e, CredentialsRequiredError):
+        return True
     code = provider_error_code(e)
     return code in _REJECTED_SETTINGS_CODES or code == "quota_exceeded" or _looks_like_connectivity_error(e)
 
@@ -942,12 +947,12 @@ async def initialize_embedding_model(request: Request, embedding_configs: list[d
             dense_embeddings = None
             for config in embedding_configs:
                 if config.get("isDefault", False):
-                    dense_embeddings = await asyncio.to_thread(get_embedding_model, config["provider"], config)
+                    dense_embeddings = await asyncio.to_thread(get_embedding_model, config["provider"], _unstamped(config))
                     break
 
             if not dense_embeddings:
                 for config in embedding_configs:
-                    dense_embeddings = await asyncio.to_thread(get_embedding_model, config["provider"], config)
+                    dense_embeddings = await asyncio.to_thread(get_embedding_model, config["provider"], _unstamped(config))
                     break
 
             if not dense_embeddings:
@@ -1844,7 +1849,7 @@ async def _probe_image_embedding(
                 base_url=configuration.get("endpoint") or configuration.get("baseUrl"),
                 region_name=configuration.get("region"),
                 aws_access_key_id=configuration.get("awsAccessKeyId"),
-                aws_secret_access_key=configuration.get("awsSecretAccessKey"),
+                aws_secret_access_key=configuration.get("awsAccessSecretKey"),
                 # A request body carries no model entry, so it is unstamped.
                 allow_ambient_credentials=(
                     provider in AMBIENT_MULTIMODAL_PROVIDERS
@@ -2500,7 +2505,7 @@ async def perform_decision_health_check(model_config: dict, logger: Logger) -> J
     checked: JSONResponse | None = None
     for model_name in model_names:
         try:
-            model = get_decision_model(provider=provider, config=model_config, model_name=model_name)
+            model = get_decision_model(provider=provider, config=_unstamped(model_config), model_name=model_name)
         except Exception as e:
             logger.error(f"Decision health check failed to build {provider}/{model_name}: {e}", exc_info=True)
             return await _model_setup_failed_response("decision model", model_config, model_name, e)

@@ -7405,6 +7405,9 @@
     "appLimited_other": "{{appName}} 只能查看其创建者选择的 {{count}} 个项目，且仅限您可见的部分。"
   },
   "errorToast": {
+    "reconnecting": "正在重新连接…",
+    "reconnectingDescription": "暂时无法检查您的会话。您仍保持登录状态。我们会在几分钟内重试，之后会在您返回或重新连接时再次尝试。",
+    "sessionUnavailable": "暂时无法检查您的会话。正在重新连接…",
     "accessDenied": "访问被拒绝",
     "invalidRequest": "无效请求",
     "notFound": "未找到",

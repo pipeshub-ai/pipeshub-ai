@@ -1,6 +1,6 @@
 import axios, { AxiosError, InternalAxiosRequestConfig, isAxiosError } from 'axios';
 import { useAuthStore, logoutAndRedirect } from '@/config';
-import { busyMessage, ErrorType, extractApiErrorMessage, processError, ProcessedError } from './api-error';
+import { ErrorType, extractApiErrorMessage, processError, ProcessedError } from './api-error';
 import { showErrorToast } from './error-toast';
 import {
   refreshOrSignOut,
@@ -10,6 +10,7 @@ import {
   REFRESH_TOKEN_ENDPOINT,
 } from './token-refresh';
 import { captureSession } from './session-cache';
+import { sessionUnavailableMessage } from './session-notice';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { applyElectronOverrides } from '@/lib/electron';
 import { generateRequestId } from '@/lib/utils/request-id';
@@ -41,11 +42,14 @@ const sessionEnded = (config: { sessionCurrent?: () => boolean } | undefined): b
  */
 const dropped = (): Promise<never> => new Promise<never>(() => {});
 
-/** The refresh got no answer: the request was not retried, and nothing says the session is over. */
-const sessionServiceBusy = (error: AxiosError): ProcessedError => ({
+/**
+ * The refresh got no answer for its whole retry cycle: the request was not sent (or not
+ * replayed), and nothing says the session is over. The "Reconnecting…" notice is showing.
+ */
+const sessionUnavailable = (error?: AxiosError): ProcessedError => ({
   type: ErrorType.SERVER_ERROR,
   statusCode: 503,
-  message: busyMessage(),
+  message: sessionUnavailableMessage(),
   originalError: error,
 });
 
@@ -136,8 +140,10 @@ apiClient.interceptors.request.use(
       // handlers may write into the reset stores.
       const outcome = await refreshOrSignOut();
       if (sessionOver(outcome)) return dropped();
-      // No answer: send with the token we have and let the server decide.
       if (outcome === 'refreshed') accessToken = useAuthStore.getState().accessToken;
+      // No answer: send with the token we have and let the server decide, unless it has run out.
+      // The "Reconnecting…" notice says it already, and one toast shows at a time: no error toast in its place.
+      else if (isTokenExpired(accessToken, 0)) return Promise.reject(sessionUnavailable());
     }
 
     if (accessToken) {
@@ -195,7 +201,7 @@ apiClient.interceptors.response.use(
       // If a refresh is already running (timer or another 401), this just
       // awaits the existing promise; otherwise it kicks off a new one.
       const outcome = await refreshOrSignOut();
-      if (outcome === 'unreachable') return rejectShown(sessionServiceBusy(error), originalRequest);
+      if (outcome === 'unreachable') return Promise.reject(sessionUnavailable(error));
       if (outcome !== 'refreshed') return dropped();
       // A write is never sent twice: the server may have acted on it before it answered 401.
       if (!REPLAYABLE_METHODS.has(originalRequest.method ?? 'get')) {

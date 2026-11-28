@@ -25,8 +25,14 @@ from app.services.llm_gateway.embedding_gateway import (
     get_embedding_gateway,
 )
 from app.services.llm_gateway.wire import refused_by_allowance
+from app.utils.aimodels import CredentialsRequiredError
 
 _CONCURRENCY_LIMIT = 10
+
+
+class BedrockKeysRequiredError(EmbeddingError, CredentialsRequiredError):
+    """An embedding error that the health check reports as ``credentials_required``."""
+
 _DEFAULT_OUTPUT_EMBEDDING_LENGTH = 1024
 # Titan Multimodal rejects any other value; asking for one the collection
 # needs but Titan cannot produce is a config error worth naming up front
@@ -41,6 +47,8 @@ class BedrockMultimodalProvider(IMultimodalEmbeddingProvider):
         region_name: str | None = None,
         aws_access_key_id: str | None = None,
         aws_secret_access_key: str | None = None,
+        *,
+        allow_ambient: bool = False,
         embedding_size: int | None = None,
         normalize_fn: Callable[[str], Any] | None = None,
         logger: logging.Logger | None = None,
@@ -51,6 +59,7 @@ class BedrockMultimodalProvider(IMultimodalEmbeddingProvider):
         self.region_name = region_name
         self.aws_access_key_id = aws_access_key_id
         self.aws_secret_access_key = aws_secret_access_key
+        self.allow_ambient = allow_ambient
         # Consumed by IMultimodalEmbeddingProvider.normalize().
         self._normalize_fn = normalize_fn
         self.logger = logger
@@ -83,14 +92,18 @@ class BedrockMultimodalProvider(IMultimodalEmbeddingProvider):
         from botocore.exceptions import ClientError, NoCredentialsError
 
         client_kwargs: dict = {"service_name": "bedrock-runtime"}
-        if self.aws_access_key_id and self.aws_secret_access_key and self.region_name:
+        access_key = (self.aws_access_key_id or "").strip()
+        secret_key = (self.aws_secret_access_key or "").strip()
+        if access_key and secret_key:
             client_kwargs.update(
-                {
-                    "aws_access_key_id": self.aws_access_key_id,
-                    "aws_secret_access_key": self.aws_secret_access_key,
-                    "region_name": self.region_name,
-                }
+                {"aws_access_key_id": access_key, "aws_secret_access_key": secret_key}
             )
+            if self.region_name:
+                client_kwargs["region_name"] = self.region_name
+        elif not self.allow_ambient:
+            raise BedrockKeysRequiredError("Enter an AWS access key and secret for this model.")
+        elif (access_key or secret_key) and self.logger:
+            self.logger.warning("Only one of the AWS access key and secret is set for this Bedrock model.")
         if self.sdk_retries is not None:
             from botocore.config import Config
 

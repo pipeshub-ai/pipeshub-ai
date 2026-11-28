@@ -28,7 +28,14 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.failure_notices import (
+    SyncIncompleteError,
+    SyncRunState,
+    notify_init_failed,
+    reports_failed_sync,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -93,7 +100,7 @@ from .users import UsersSync
 _GITLAB_EXECUTOR_MAX_WORKERS = 8
 
 
-class GitLabSyncIncompleteError(RuntimeError):
+class GitLabSyncIncompleteError(SyncIncompleteError):
     """Part of the source could not be read. Raised once the rest of the sync has run, so
     the run is not reported as a success and a full sync unlinks nothing it did not see."""
 
@@ -291,6 +298,7 @@ class GitLabConnector(BaseConnector):
         self._auditor_fallback_warned: bool = False
         self._code_file_timestamp_backfill_task = None
         self.sync_problems: list[str] = []
+        self.run_state = SyncRunState()
 
         # Dedicated executor: isolates blocking python-gitlab threads from the
         # shared loop executor so a stuck EE instance cannot freeze the service.
@@ -355,6 +363,9 @@ class GitLabConnector(BaseConnector):
         except Exception as e:
             self.logger.error("Failed to initialize GitLab client: %s", e, exc_info=True)
             return False
+
+    async def on_background_init_failed(self, error: Exception | None) -> None:
+        await notify_init_failed(self, "GitLab", error)
 
     async def _resolve_creator_identity(self) -> None:
         """Cache the connector creator's email, GitLab id, and role flags (best-effort)."""
@@ -428,6 +439,7 @@ class GitLabConnector(BaseConnector):
             str(source_user_id) if source_user_id is not None else None,
         )
 
+    @reports_failed_sync("GitLab")
     async def run_sync(self) -> None:
         """Run a full GitLab sync (users → projects → issues/MRs/repos)."""
         try:
@@ -527,6 +539,8 @@ class GitLabConnector(BaseConnector):
         is an answer, not a gap. Anything else, or a listing cut off part-way, left part of
         the source unread."""
         partial = bool(getattr(response, "data", None))
+        if getattr(response, "status_code", None) == HttpStatusCode.TOO_MANY_REQUESTS.value:
+            self.run_state.rate_limited = True
         if getattr(response, "status_code", None) in (403, 404) and not partial:
             self.logger.warning("GitLab refused %s: %s", what, getattr(response, "error", None))
             return

@@ -9,6 +9,7 @@ interface FakeSocket {
   /** socket.io's: false once the server refused the handshake, until `connect()` is called. */
   active: boolean;
   auth: { token: string };
+  on: ReturnType<typeof vi.fn>;
   disconnect: ReturnType<typeof vi.fn>;
   removeAllListeners: ReturnType<typeof vi.fn>;
   connect: ReturnType<typeof vi.fn>;
@@ -27,6 +28,7 @@ vi.mock('socket.io-client', () => ({
       connected: false,
       active: true,
       auth: options.auth ?? { token: '' },
+      on: vi.fn(),
       disconnect: disconnectMock,
       removeAllListeners: removeAllListenersMock,
       connect: vi.fn(() => {
@@ -116,6 +118,8 @@ describe('notification-socket', () => {
     );
   });
 
+  // A refusal the server marks as temporary is retried with backoff (notification-socket.session-check.test.ts); a
+  // refused token is not, and the refreshed token reconnects through connectNotificationSocket.
   describe('bug-bash #5: a handshake the server refused', () => {
     afterEach(() => vi.useRealTimers());
 
@@ -123,23 +127,6 @@ describe('notification-socket', () => {
       sock.active = false;
       sock.emit('connect_error', new Error('Authentication token expired'));
     };
-
-    it('is retried with growing delays instead of leaving the socket dead until a reload', async () => {
-      vi.useFakeTimers();
-      const { connectNotificationSocket, REFUSED_RETRY_BASE_MS } = await import('../notification-socket');
-      connectNotificationSocket('token-a');
-      const sock = lastSocket!;
-      refuse(sock);
-      vi.advanceTimersByTime(REFUSED_RETRY_BASE_MS - 1);
-      expect(sock.connect).not.toHaveBeenCalled();
-      vi.advanceTimersByTime(1);
-      expect(sock.connect).toHaveBeenCalledTimes(1);
-      refuse(sock);
-      vi.advanceTimersByTime(REFUSED_RETRY_BASE_MS);
-      expect(sock.connect).toHaveBeenCalledTimes(1);
-      vi.advanceTimersByTime(REFUSED_RETRY_BASE_MS);
-      expect(sock.connect).toHaveBeenCalledTimes(2);
-    });
 
     it('is left to socket.io when it is still reconnecting by itself', async () => {
       vi.useFakeTimers();

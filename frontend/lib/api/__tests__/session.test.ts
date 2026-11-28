@@ -22,10 +22,18 @@ vi.mock('@/config', async () => {
   };
 });
 
+// One attempt per refresh here; the retry cycle has its own tests in session-check-retry.test.ts.
+vi.mock('../refresh-retry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../refresh-retry')>()),
+  REFRESH_MAX_TOTAL_WAIT_MS: 0,
+}));
+
 const { useAuthStore } = await import('@/lib/store/auth-store');
 const { SESSION_HINT_KEY } = await import('@/lib/auth/session-credential');
 const { apiClient } = await import('../axios-instance');
-const { ErrorType, busyMessage } = await import('../api-error');
+const { ErrorType } = await import('../api-error');
+const { sessionUnavailableMessage } = await import('../session-notice');
+const { REFRESH_MAX_COOLDOWN_CYCLES } = await import('../refresh-retry');
 const { refreshAccessToken, refreshOrSignOut, isTokenExpired, decodeJwtPayload, REFRESH_TOKEN_ENDPOINT } = await import(
   '../token-refresh'
 );
@@ -172,8 +180,7 @@ describe('the shared refresh lock', () => {
     ['the account is locked', () => {}, jsonResponse(400, {}), 'refused'],
     ['the origin check refuses', () => {}, jsonResponse(403, {}), 'refused'],
     ['a 4xx above 429 comes back', () => {}, jsonResponse(431, {}), 'refused'],
-    // Our server never sends 408 on this route; reading it as a refusal is a deliberate choice.
-    ['a request timeout (408) comes back', () => {}, jsonResponse(408, {}), 'refused'],
+    ['a request timeout (408) comes back', () => {}, jsonResponse(408, {}), 'unreachable'],
     ['the reply has no token', () => {}, jsonResponse(200, {}), 'refused'],
     ['the network is down', () => {}, new TypeError('Failed to fetch'), 'unreachable'],
     ['the server fails', () => {}, jsonResponse(500, {}), 'unreachable'],
@@ -386,16 +393,16 @@ describe('a 401 from the server', () => {
     await expect(apiClient.get('/api/v1/users/me')).rejects.toMatchObject({
       type: ErrorType.SERVER_ERROR,
       statusCode: 503,
-      message: busyMessage(),
+      message: sessionUnavailableMessage(),
     });
 
     expect(sent).toHaveLength(1);
     expect(logoutAndRedirect).not.toHaveBeenCalled();
     expect(useAuthStore.getState().accessToken).toBe(token);
-    expect(errorToasts()).toHaveLength(1);
-    // The busy toast: its title says the server is busy, its sentence when to try again.
-    expect(errorToasts()[0].title).toBe('The server is busy');
-    expect(errorToasts()[0].description).toBe(busyMessage());
+    // The "Reconnecting…" notice says so, and stays up: no error toast replaces it.
+    expect(errorToasts()).toHaveLength(0);
+    const notices = useToastStore.getState().toasts.filter((t) => t.variant === 'loading' && !t.isExiting);
+    expect(notices.map((t) => t.title)).toEqual(['Reconnecting…']);
   });
 
   it('lets a caller suppress the toast when the refresh gets no answer', async () => {
@@ -591,8 +598,11 @@ describe('the proactive refresh timer', () => {
     scheduler.scheduleFromToken(jwtExpiringIn(30));
     await vi.advanceTimersByTimeAsync(0);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    // A bounded number of later tries, then it waits for activity (a request, the tab, the network).
     await vi.advanceTimersByTimeAsync(600_000);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1 + REFRESH_MAX_COOLDOWN_CYCLES);
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1 + REFRESH_MAX_COOLDOWN_CYCLES);
     expect(logoutAndRedirect).not.toHaveBeenCalled();
   });
 
