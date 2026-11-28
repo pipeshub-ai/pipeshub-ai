@@ -234,7 +234,7 @@ CLASSIFICATION: dict[str, str] = {
     # ---- edges
     "batch_create_edges": _E, "create_edges_if_absent": _E, "batch_create_entity_relations": _E, "replace_record_entity_relations": _E,
     "batch_upsert_node_relations": _E, "batch_create_user_app_edges": _E, "update_edge": _E,
-    "upsert_authenticated_as": _E, "ensure_app_membership": _E, "ensure_taxonomy_hierarchy_edge": _E,
+    "upsert_authenticated_as": _E, "set_directory_link": _E, "ensure_app_membership": _E, "ensure_taxonomy_hierarchy_edge": _E,
     "ensure_team_app_edge": _E, "create_record_relation": _E, "create_record_group_relation": _E,
     "create_record_groups_relation": _E, "create_inherit_permissions_relation_record_group": _E,
     "create_kb_permissions": _E, "batch_upsert_record_permissions": _E, "replace_edges_to": _E,
@@ -1043,7 +1043,7 @@ COVERAGE_GAPS: dict[str, str] = {
          "taxonomy / entity helpers, multi-statement"),
         (("update_queued_duplicates_status", "claim_push_record", "retag_push_record", "record_purge_failure",
           "increment_node_field", "take_back_kept_record_group"), "values are computed by the provider, not supplied"),
-        (("batch_create_user_app_edges", "upsert_authenticated_as", "ensure_app_membership",
+        (("batch_create_user_app_edges", "upsert_authenticated_as", "set_directory_link", "ensure_app_membership",
           "ensure_taxonomy_hierarchy_edge", "ensure_team_app_edge", "create_record_relation",
           "create_record_group_relation", "create_record_groups_relation",
           "create_inherit_permissions_relation_record_group", "create_kb_permissions",

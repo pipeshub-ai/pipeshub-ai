@@ -60,6 +60,7 @@ from tests.integration.real_graph import (
     connect_arango,
     connect_neo4j,
 )
+from tests.support.in_memory_config import InMemoryConfigService
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 logger = logging.getLogger("full-sync-unlink-it")
@@ -290,7 +291,7 @@ async def _seed(graph: object) -> _Sync:
          for key in (alice, bob)],
         collection=CollectionNames.USER_APP_RELATION.value,
     )
-    processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
+    processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), InMemoryConfigService())
     processor.org_id = org_id
     producer = MagicMock()
     producer.send_messages = AsyncMock(side_effect=lambda topic, messages: [True] * len(messages))

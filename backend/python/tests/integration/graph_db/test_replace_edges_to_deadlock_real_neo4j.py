@@ -21,7 +21,6 @@ import re
 import uuid
 from collections import Counter
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
 
 import pytest
 from neo4j.exceptions import TransientError
@@ -40,6 +39,7 @@ from tests.integration.graph_db.replace_edges_support import (
     seed_nodes,
 )
 from tests.integration.real_graph import backend_unavailable, connect_neo4j
+from tests.support.in_memory_config import InMemoryConfigService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -190,7 +190,8 @@ async def test_concurrent_syncs_of_overlapping_group_batches_do_not_deadlock(pro
     run_id = f"dl-{uuid.uuid4().hex[:8]}"
     connector_id = f"{run_id}-conn"
     logger = logging.getLogger("replace-deadlock-it")
-    processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, provider), MagicMock())
+    # A config service the processor can read, as in production: it reads the connector's source-account state before a grant.
+    processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, provider), InMemoryConfigService())
     processor.org_id = run_id
     retries = _DeadlockWarnings()
     watched = [logger, logging.getLogger(DataSourceEntitiesProcessor.__module__)]

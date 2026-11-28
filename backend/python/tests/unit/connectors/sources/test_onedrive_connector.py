@@ -29,6 +29,7 @@ import asyncio
 from app.connectors.core.registry.filters import FilterCollection, FilterOperator
 from msgraph.generated.models.o_data_errors.main_error import MainError
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import stub_source_accounts
 
 
 # ===========================================================================
@@ -70,7 +71,7 @@ def _make_connector():
     """Create an OneDrive connector with mocked dependencies."""
     logger, dep, dsp, cs = _make_mock_deps()
     connector = OneDriveConnector(logger, dep, dsp, cs, "conn-onedrive-1", "team", "test-user")
-    return connector
+    return stub_source_accounts(connector)
 
 
 def _make_drive_item(
@@ -1849,7 +1850,7 @@ def _make_connector_cov():
     cs = MagicMock()
     cs.get_config = AsyncMock()
     connector = OneDriveConnector(logger, dep, dsp, cs, "conn-onedrive-cov", "team", "test-user-id")
-    return connector
+    return stub_source_accounts(connector)
 
 
 def _make_drive_item(

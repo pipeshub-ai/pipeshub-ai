@@ -451,7 +451,8 @@ class TestMailDelta:
         mailbox_id = "mailbox:u-ana"
         assert db.record_groups[mailbox_id].permission_model == PermissionModel.RECORD_GROUP_LEVEL
         assert db.record_groups[mailbox_id].inherit_permissions is False
-        assert [(p.email, p.type) for p in db.record_group_permissions[mailbox_id]] == [(ANA, PermissionType.OWNER)]
+        assert [(p.email, p.external_id, p.type) for p in db.record_group_permissions[mailbox_id]] == [
+            (ANA, "u-ana", PermissionType.OWNER)]
         assert db.record_groups[INBOX].parent_external_group_id == mailbox_id
         assert db.record_groups[INBOX].permission_model == PermissionModel.RECORD_GROUP_LEVEL
         assert db.record_groups[INBOX].inherit_permissions is True

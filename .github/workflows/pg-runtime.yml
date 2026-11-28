@@ -66,6 +66,9 @@ on:
       - 'backend/python/tests/integration/graph_permissions/loaders.py'
       - 'backend/python/tests/integration/graph_permissions/test_record_property_projection.py'
       - 'backend/python/tests/integration/graph_permissions/write_path_support.py'
+      - 'backend/python/tests/integration/graph_permissions/source_account_writes.py'
+      - 'backend/python/tests/support/in_memory_config.py'
+      - 'backend/python/app/connectors/core/base/data_processor/**'
       - 'backend/python/app/modules/record_metadata/**'
       - 'backend/python/pyproject.toml'
       - 'backend/nodejs/apps/src/libs/db/**'
@@ -111,23 +114,42 @@ jobs:
         # scripts/test_pg_runtime_shards.py checks that every case runs exactly once; each shard checks its run against its own
         # collection, so no count is written here. The jobs are sized to about 25 min of the 45 min limit (shard 1: 30-40 of
         # 60); --durations in the graph step prints the per-test times to rebalance by.
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         include:
           # test_conformance_kh_pg.py alone is longer than a shard should be: its two slowest cases run on their own, and the
           # rest is split by the state of the copy
           - shard: 1
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
-            graph_k: '[not_current-adversarial]'
+            graph_k: '[not_current-adversarial] and not linked_source_accounts'
           # also runs tests/integration/db and tests/integration/pg_runtime
           - shard: 2
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
-            graph_k: not [not_current-adversarial] and [current-adversarial]
+            graph_k: not [not_current-adversarial] and [current-adversarial] and not linked_source_accounts
           - shard: 3
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
-            graph_k: not [not_current-adversarial] and not [current-adversarial] and not_current
+            graph_k: not [not_current-adversarial] and not [current-adversarial] and not_current and not linked_source_accounts
           - shard: 6
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
-            graph_k: not [not_current-adversarial] and not [current-adversarial] and not not_current
+            graph_k: not [not_current-adversarial] and not [current-adversarial] and not not_current and not linked_source_accounts
+          # the worlds that link a user to a source account, on their own so no other shard grows. A not-current case took 8.5-17 min
+          # (runners differ about 2x), so each runs alone; the two current ones took 12-15 min together.
+          - shard: 8
+            graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
+            graph_k: linked_source_accounts and not not_current
+          - shard: 9
+            graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
+            graph_k: linked_source_accounts and not_current and not withdrawn
+          - shard: 10
+            graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
+            graph_k: linked_source_accounts and not_current and withdrawn
+          # test_conformance.py, out of shard 4 (which it took to 37-44 min): the source-account worlds against the oracle (about 19 min),
+          # and the rest of it (about 7)
+          - shard: 11
+            graph_tests: tests/integration/graph_db/postgres/test_conformance.py
+            graph_k: linked_source_accounts or linked_accounts
+          - shard: 12
+            graph_tests: tests/integration/graph_db/postgres/test_conformance.py
+            graph_k: not linked_source_accounts and not linked_accounts
           # test_kg_read.py stays in shard 5, behind most of the files that run before it in the whole folder: its plan gate
           # depends on the statistics they leave.
           - shard: 4
@@ -149,10 +171,9 @@ jobs:
               tests/integration/graph_db/postgres/test_kg_hierarchy.py::test_generated_worlds_read_from_kg_equal_the_walk
               tests/integration/graph_db/postgres/test_kg_trash.py::test_after_every_mutation_the_trash_from_kg_equals_the_walk
           # from shard 5, by test, as shard 7: the corpus and generated worlds of test_kg_read.py (8-10 min) and the mutation
-          # worlds of test_kg_kb_root.py (3 min), with test_conformance.py from shard 4 (7 min)
-          - shard: 8
+          # worlds of test_kg_kb_root.py (3 min)
+          - shard: 13
             graph_tests: >-
-              tests/integration/graph_db/postgres/test_conformance.py
               tests/integration/graph_db/postgres/test_kg_read.py::test_the_corpus_answered_from_kg_equals_the_walk_and_the_oracle
               tests/integration/graph_db/postgres/test_kg_read.py::test_generated_worlds_answered_from_kg_equal_the_walk_and_the_oracle
               tests/integration/graph_db/postgres/test_kg_kb_root.py::test_after_every_mutation_the_root_from_kg_equals_the_walk
@@ -292,6 +313,24 @@ jobs:
           if [ -n "$GRAPH_K" ]; then args+=(-k "$GRAPH_K"); fi
           python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/py-graph.collected" "${args[@]}"
           python -m pytest "${args[@]}" --timeout=600 --durations=30 --junitxml="$RUNNER_TEMP/py-graph-junit.xml"
+
+      # The PostgreSQL suites that write through the processor again, with every connector keeping its accounts as SourceAccount nodes
+      # (PERM_SOURCE_ACCOUNTS=1, tests/support/in_memory_config.py): what anyone reads must not change. Its skips are designed (the address
+      # registry's immediate hand-over, the case of the setting off). Under a minute, in shard 4.
+      - name: PostgreSQL processor suites with the source-account writers on
+        if: ${{ matrix.shard == 4 }}
+        working-directory: backend/python
+        env:
+          PERM_SOURCE_ACCOUNTS: '1'
+        run: |
+          PG_PORT="$("$GITHUB_WORKSPACE/scripts/ensure_pg_cluster.sh" "${{ matrix.pg }}")"
+          eval "$(PG_ADMIN_URL="postgresql://postgres@127.0.0.1:${PG_PORT}/postgres" PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" "$GITHUB_WORKSPACE/scripts/prepare_pg_test_db.sh" pipeshub_accounts)"
+          sel=(tests/integration/graph_db/postgres/test_identity.py tests/integration/graph_db/postgres/test_source_account_writers.py -m integration -p no:cacheprovider)
+          python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/accounts.collected" "${sel[@]}"
+          python -m pytest "${sel[@]}" --timeout=600 -rs --junitxml="$RUNNER_TEMP/accounts-junit.xml"
+          python3 "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" "$RUNNER_TEMP/accounts-junit.xml" --collected "$RUNNER_TEMP/accounts.collected" \
+            --allow 'test_identity::test_a_group_rewrite_after_an_address_changed_hands_admits_only_the_account_holding_it' \
+            --allow 'test_source_account_writers::test_with_the_setting_off_nothing_new_is_written_and_everyone_reads_what_they_did'
 
       # One job is enough: the split is the same in every job. Collecting the folder and every shard takes a few minutes, so it
       # runs in shard 4, the shortest.

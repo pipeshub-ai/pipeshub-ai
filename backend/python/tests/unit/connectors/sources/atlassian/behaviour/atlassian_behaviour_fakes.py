@@ -418,11 +418,21 @@ class FakeConfigService:
     def __init__(self, connector_id: str, config: dict[str, Any]) -> None:
         self.connector_id = connector_id
         self.config = config
+        self.saved: dict[str, Any] = {}
 
     async def get_config(self, path: str, default: object = None, **_: object) -> object:
         if path == f"/services/connectors/{self.connector_id}/config":
             return self.config
-        return default
+        return self.saved.get(path, default)
+
+    async def set_config(self, path: str, value: object, **_: object) -> bool:
+        self.saved[path] = value
+        return True
+
+    async def compare_and_set_config(self, path: str, expected: object, new: object) -> bool:
+        if await self.get_config(path) != expected:
+            return False
+        return await self.set_config(path, new)
 
 
 async def run_full_sync(connector: Any, db: "FakeRecordsDb") -> AsyncMock:  # noqa: ANN401

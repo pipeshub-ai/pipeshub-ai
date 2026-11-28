@@ -65,7 +65,7 @@ async def test_each_lookup_reads_its_vetted_function_and_a_value_out_of_bounds_t
     await a.get_entity_id_by_email("ann@x.com", org_id=a.org)
     await a.bulk_get_entity_ids_by_email(["ann@x.com"], org_id=a.org)
     await a.get_user_by_email("ann@x.com", org_id=a.org)
-    await a.get_users_by_emails(["ann@x.com"])
+    await a.get_users_by_emails(["ann@x.com"], org_id=a.org)
     await a.find_people(a.org, "ann@x.com")
     await a.find_people(a.org, "ann")
     assert sent == ["records_page_by_connector", "organizations_by_name", "person_by_source_key", "person_by_source_key", "principals_by_email", "principals_by_email",

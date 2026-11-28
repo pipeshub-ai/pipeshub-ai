@@ -2859,7 +2859,8 @@ class TestAttachmentMetByTwoWritersAtOnce:
 SCHEME_PATH = f"{API}/permissionscheme/7/permission"
 FIELD_USERS, FIELD_GROUP = "customfield_20000", "customfield_20001"
 REPORTER, ASSIGNEE = {"type": "reporter"}, {"type": "assignee"}
-CAROL = ("EntityType.USER", None, "carol@example.com")
+# A holder grant names the account beside the address the directory resolved.
+CAROL = ("EntityType.USER", "carol-key", "carol@example.com")
 
 
 def scheme_with(jira: AtlassianApiStub, *holders: dict[str, Any], permission: str = "BROWSE_PROJECTS") -> None:
@@ -2909,7 +2910,7 @@ class TestBrowseHolders:
     ) -> None:
         mine = story("1001", "ENG-1", assignee={"key": "bob-key", "name": "bob", "displayName": "Bob"})
         await self.sync(jira, db, store, search, [mine], REPORTER, ASSIGNEE)
-        assert grants(db, "1001") == [("EntityType.USER", None, "bob@example.com"), CAROL]
+        assert grants(db, "1001") == [("EntityType.USER", "bob-key", "bob@example.com"), CAROL]
         assert db.records["1001"].access_rule.value == "OPEN" and db.records["1001"].rewrite_permissions is True
 
         other_db, other_store = JiraRecordsDb(), FakeCheckpointStore()
@@ -2934,7 +2935,7 @@ class TestBrowseHolders:
             {"key": "ghost-key", "name": "ghost"},  # not in the directory and no email
         ]
         await self.sync(jira, db, store, search, [story("1001", "ENG-1", **{FIELD_USERS: users, FIELD_GROUP: {"name": "ops"}})], *holders)
-        assert grants(db, "1001") == [("EntityType.GROUP", "ops", None), ("EntityType.USER", None, "bob@example.com")]
+        assert grants(db, "1001") == [("EntityType.GROUP", "ops", None), ("EntityType.USER", "bob-key", "bob@example.com")]
         assert {FIELD_USERS, FIELD_GROUP} <= set(search.fields_asked[-1]), "the issue read asks for the holder fields"
 
     async def test_a_deactivated_reporter_gets_no_grant(self, jira, db, store, search) -> None:
@@ -3482,7 +3483,7 @@ class TestBrowseHolders:
             "admitted_without_email", {"accounts": '["dave-key"]', "key_only": "[]"})
         searched = len(search.jql)
         await connector.run_sync()
-        assert ("EntityType.USER", None, "bob@example.com") in grants(db, "1001")
+        assert ("EntityType.USER", "bob-key", "bob@example.com") in grants(db, "1001")
         project_searches = [jql for jql in search.jql[searched:] if 'project = "ENG"' in jql]
         assert project_searches and all("updated >=" in jql for jql in project_searches), (
             "the incremental pass alone (its date predicate), no project re-read")

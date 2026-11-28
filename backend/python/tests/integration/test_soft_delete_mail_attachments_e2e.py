@@ -64,6 +64,7 @@ from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.test_trash_purge_e2e import _KV, DAY_MS, _Broker, _Lease
 from tests.support import it_backends
+from tests.support.in_memory_config import InMemoryConfigService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -346,7 +347,7 @@ class _Producer:
 
 
 def _processor(w: _World, monkeypatch: pytest.MonkeyPatch) -> DataSourceEntitiesProcessor:
-    processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, w.graph), MagicMock())
+    processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, w.graph), InMemoryConfigService())
     processor.messaging_producer = _Producer()
     processor.org_id = w.org_id
     monkeypatch.setattr(processor_module, "is_soft_delete_enabled", AsyncMock(return_value=True))

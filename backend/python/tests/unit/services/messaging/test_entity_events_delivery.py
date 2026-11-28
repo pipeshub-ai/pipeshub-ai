@@ -117,6 +117,12 @@ class InMemoryGraph:
             if all(n.get(k) == v for k, v in filters.items())
         ]
 
+    async def get_edges_from_node(self, from_node_id: str, edge_collection: str, transaction: str | None = None, *,
+                                  raise_on_error: bool = False) -> list[dict]:
+        coll, key = from_node_id.split("/", 1)
+        return [dict(e) for e in self.edges.get(edge_collection, [])
+                if e["from_id"] == key and e.get("from_collection", coll) == coll]
+
     async def get_user_by_email(self, email: str, transaction: str | None = None, *,
                                 raise_on_error: bool = False, org_id: str | None = None) -> SimpleNamespace | None:
         for node in self.nodes.get(CollectionNames.USERS.value, {}).values():

@@ -522,6 +522,7 @@ class TestAbstractMethodInventory:
         # Authenticated-as (creator -> source account)
         "upsert_authenticated_as",
         "remove_authenticated_as",
+        "set_directory_link",
         # User operations
         "get_organization_users",
         # Agent permission operations

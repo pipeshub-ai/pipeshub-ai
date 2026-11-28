@@ -107,7 +107,7 @@ class TestNeo4jLabel:
         assert Neo4jLabel.AGENT_VERSIONS.value == "AgentVersion"
 
     def test_total_member_count(self) -> None:
-        assert len(Neo4jLabel) == 53
+        assert len(Neo4jLabel) == 54
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +215,7 @@ class TestCollectionToLabelMapping:
             )
 
     def test_mapping_size(self) -> None:
-        assert len(COLLECTION_TO_LABEL) == 53
+        assert len(COLLECTION_TO_LABEL) == 54
 
     def test_all_values_are_strings(self) -> None:
         for k, v in COLLECTION_TO_LABEL.items():

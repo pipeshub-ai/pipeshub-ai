@@ -29,6 +29,9 @@ from app.connectors.sources.microsoft.outlook.connector import (
     OutlookUserListing,
 )
 from tests.support.data_store import runs_in_its_transaction
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import (
+    stub_source_accounts,
+)
 
 # Backwards compatibility aliases for tests
 STANDARD_OUTLOOK_FOLDERS = OutlookFolders.STANDARD_FOLDERS
@@ -82,7 +85,7 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps()
-    return OutlookConnector(logger, dep, dsp, cs, "conn-outlook-1", "team", "user-1")
+    return stub_source_accounts(OutlookConnector(logger, dep, dsp, cs, "conn-outlook-1", "team", "user-1"))
 
 
 def _delta_pages(*results) -> Callable[..., AsyncIterator[object]]:
@@ -2012,6 +2015,32 @@ class TestSyncUserGroupsDeepFlow:
         connector.data_entities_processor.on_new_record_groups.assert_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_member_is_written_with_the_account_id_it_was_checked_as(self) -> None:
+        """A reindex may refresh the user cache while the members are read; if the address now names another
+        account there, the member is not written under that other account's id."""
+        connector = _make_connector()
+        connector.external_users_client = MagicMock()
+        connector._user_cache = {"alice@test.com": "acc-old"}
+        group = MagicMock(id="g1", display_name="Team", description="", additional_data={}, mail=None,
+                          mail_nickname=None)
+        member = MagicMock(mail="alice@test.com", display_name="Alice", id="acc-old",
+                           user_principal_name="alice@test.com")
+
+        async def members(_group_id: str) -> list:
+            connector._user_cache = {"alice@test.com": "acc-new"}       # refreshed meanwhile
+            return [member]
+
+        connector._get_all_microsoft_365_groups = AsyncMock(return_value=[group])
+        connector._get_group_members = members
+        _stub_sync_points(connector)
+
+        await connector._sync_user_groups()
+
+        written = [u.source_user_id for call in connector.data_entities_processor.on_new_user_groups.await_args_list
+                   for _, users in call.args[0] for u in users]
+        assert "acc-new" not in written
+
+    @pytest.mark.asyncio
     async def test_no_groups_returns_empty(self):
         connector = _make_connector()
         connector.external_users_client = MagicMock()
@@ -2073,6 +2102,41 @@ class TestSyncUserGroupsFilter:
             connector.sync_filters = FilterCollection()
 
         return connector
+
+    @pytest.mark.asyncio
+    async def test_a_member_naming_the_deleted_account_at_a_reused_address_is_not_written(self) -> None:
+        """Outside-diff: the member's object id is checked before the cached id of its address is used; the processor
+        writes the membership by address, so the old account's membership would go to the new account."""
+        groups = [_make_mock_group(group_id="g1", display_name="Engineering", mail="eng@contoso.com")]
+        connector = self._setup_connector(groups)
+        connector.source_accounts.reused = {"ana@contoso.com": "new-oid"}
+        connector._user_cache = {"ana@contoso.com": "new-oid", "bo@contoso.com": "bo-oid"}
+
+        def member(oid: str, email: str) -> MagicMock:
+            return MagicMock(id=oid, mail=email, user_principal_name=email, display_name=email)
+
+        connector._get_group_members = AsyncMock(return_value=[member("old-oid", "ana@contoso.com"), member("bo-oid", "bo@contoso.com")])
+        connector.data_entities_processor.on_new_user_groups = AsyncMock()
+
+        await connector._sync_user_groups()
+
+        (batch,) = connector.data_entities_processor.on_new_user_groups.await_args.args
+        ((_, members),) = batch
+        assert [m.email for m in members] == ["bo@contoso.com"]
+
+    @pytest.mark.asyncio
+    async def test_members_are_kept_as_stored_while_the_account_state_cannot_be_read(self) -> None:
+        groups = [_make_mock_group(group_id="g1", display_name="Engineering", mail="eng@contoso.com")]
+        connector = self._setup_connector(groups)
+        connector.source_accounts.admission_failed = True
+        connector.data_entities_processor.on_new_user_groups = AsyncMock()
+        connector.data_entities_processor.note_kept_user_group = AsyncMock()
+
+        await connector._sync_user_groups()
+
+        connector.data_entities_processor.note_kept_user_group.assert_awaited_once()
+        assert not connector.data_entities_processor.on_new_user_groups.await_args or \
+            connector.data_entities_processor.on_new_user_groups.await_args.args[0] == []
 
     @pytest.mark.asyncio
     async def test_no_filter_syncs_all_groups(self):
@@ -2485,7 +2549,7 @@ def _make_mock_deps_fullcov():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps_fullcov()
-    return OutlookConnector(logger, dep, dsp, cs, "conn-outlook-1", "team", "test-user-id")
+    return stub_source_accounts(OutlookConnector(logger, dep, dsp, cs, "conn-outlook-1", "team", "test-user-id"))
 
 
 def _make_graph_response(success=True, data=None, error=None):

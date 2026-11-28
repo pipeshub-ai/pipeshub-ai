@@ -93,6 +93,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.test_record_visibility_e2e import _ids_anywhere
 from tests.integration.test_soft_delete_e2e import _connect_arango, _connect_neo4j
 from tests.integration.test_trash_purge_e2e import _KV, DAY_MS, _Broker, _Lease
+from tests.support.in_memory_config import InMemoryConfigService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -389,7 +390,7 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         monkeypatch.setattr(router_module, "notify_kb_records_changed", AsyncMock())
         suffix = uuid.uuid4().hex[:10]
         broker = _Broker()
-        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
+        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), InMemoryConfigService())
         processor.messaging_producer = broker
         # No blob store here; renames still go through the production rename path.
         monkeypatch.setattr(processor, "_get_storage_cleanup", lambda: None)

@@ -526,6 +526,65 @@ class TestCreateConfigIfAbsentTtl:
         store.create_key.assert_awaited_once_with("/k", "v", overwrite=False, ttl=None)
 
 
+class TestCompareAndSetConfig:
+    @pytest.mark.asyncio
+    async def test_a_win_evicts_the_cached_value_and_publishes(self) -> None:
+        """Not cached: a later writer's invalidation can land while this call waits for the store, and caching
+        ``new`` after it would serve the older value until the next change."""
+        store = AsyncMock()
+        store.compare_and_set = AsyncMock(return_value=True)
+        svc = _build_service(store)
+        svc.cache["/k"] = {"n": 1}
+
+        assert await svc.compare_and_set_config("/k", {"n": 1}, {"n": 2}) is True
+
+        store.compare_and_set.assert_awaited_once_with("/k", {"n": 1}, {"n": 2})
+        store.publish_change.assert_awaited_once_with("/k")
+        assert "/k" not in svc.cache
+
+    @pytest.mark.asyncio
+    async def test_a_loss_drops_the_cached_value_and_publishes_nothing(self) -> None:
+        store = AsyncMock()
+        store.compare_and_set = AsyncMock(return_value=False)
+        svc = _build_service(store)
+        svc.cache["/k"] = {"n": 1}
+
+        assert await svc.compare_and_set_config("/k", {"n": 1}, {"n": 2}) is False
+
+        assert "/k" not in svc.cache
+        store.publish_change.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_store_failure_raises_instead_of_reading_as_a_lost_race(self) -> None:
+        store = AsyncMock()
+        store.compare_and_set = AsyncMock(side_effect=ConnectionError("down"))
+        svc = _build_service(store)
+        svc.cache["/k"] = {"n": 1}
+
+        with pytest.raises(ConnectionError):
+            await svc.compare_and_set_config("/k", {"n": 1}, {"n": 2})
+        assert svc.cache["/k"] == {"n": 1}
+
+    @pytest.mark.asyncio
+    async def test_a_read_modify_write_loop_keeps_both_writers_updates(self) -> None:
+        """What the primitive is for: two writers append to one list, and neither entry is lost."""
+        from app.config.providers.in_memory_store import InMemoryKeyValueStore
+
+        svc = _build_service(InMemoryKeyValueStore(MagicMock()))
+        await svc.set_config("/list", [])
+
+        async def append(item: str) -> None:
+            while True:
+                current = await svc.get_config("/list", use_cache=False, raise_on_error=True)
+                await asyncio.sleep(0)  # let the other writer read the same value
+                if await svc.compare_and_set_config("/list", current, [*current, item]):
+                    return
+
+        await asyncio.gather(append("a"), append("b"))
+
+        assert sorted(await svc.get_config("/list", use_cache=False)) == ["a", "b"]
+
+
 class TestUpdateConfig:
     """Tests for ConfigurationService.update_config."""
 
@@ -909,6 +968,10 @@ class TestCacheLock:
         assert await svc.create_config_if_absent("/b", 1)
         store.create_key.return_value = False
         assert not await svc.create_config_if_absent("/b", 1)
+        store.compare_and_set = AsyncMock(return_value=True)
+        assert await svc.compare_and_set_config("/c", None, 1)
+        store.compare_and_set.return_value = False
+        assert not await svc.compare_and_set_config("/c", None, 2)
         svc._invalidation_callback("/hit")
         svc._invalidation_callback("__CLEAR_ALL__")
         svc.clear_cache()

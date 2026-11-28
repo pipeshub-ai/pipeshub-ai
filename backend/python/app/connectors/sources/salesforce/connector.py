@@ -29,6 +29,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
+from app.connectors.core.base.data_processor.source_accounts import grant_fence
 from app.connectors.core.base.connector.failure_notices import (
     note_token_accepted,
     switched_off_after_rejection,
@@ -2747,27 +2748,7 @@ class SalesforceConnector(BaseConnector):
 
                 # Step 1: Incremental sync for users
                 self.logger.info("Syncing users (incremental)...")
-                user_sync_point = await self.user_sync_point.read_sync_point(USERS_SYNC_POINT_KEY)
-                last_sync_ts_ms = user_sync_point.get("lastSyncTimestamp")
-                base_soql = (
-                    "SELECT Id, FirstName, LastName, Email, Phone, MobilePhone, Title, IsActive, UserType, CreatedDate, "
-                    "LastModifiedDate, UserRoleId FROM User"
-                )
-                if last_sync_ts_ms:
-                    soql_datetime = to_soql_datetime(last_sync_ts_ms)
-                    soql_query = f"{base_soql} WHERE LastModifiedDate >= {soql_datetime} ORDER BY LastModifiedDate ASC"
-                    self.logger.debug("Incremental user sync: fetching users modified since %s", soql_datetime)
-                else:
-                    soql_query = f"{base_soql} ORDER BY LastModifiedDate ASC"
-                    self.logger.debug("Full user sync: no previous sync point, fetching all users")
-                inactive_user_ids = await self._sync_users(
-                    self._soql_query_paginated(api_version=api_version, q=soql_query),
-                )
-                await self._withdraw_ineligible_users(api_version, inactive_user_ids)
-                await self.user_sync_point.update_sync_point(
-                    USERS_SYNC_POINT_KEY,
-                    {"lastSyncTimestamp": checkpoint_for(run_started_ms)},
-                )
+                await self._sync_user_list(api_version, run_started_ms)
 
                 # Step 2: Incremental sync for roles
                 self.logger.info("Syncing roles and role permissions (incremental)...")
@@ -3344,8 +3325,39 @@ class SalesforceConnector(BaseConnector):
             source_updated_at=_parse_salesforce_timestamp(role.SystemModstamp),
         )
 
+    async def _sync_user_list(self, api_version: str, run_started_ms: int) -> None:
+        """The users changed since the last run, linked unless they cannot sign in, then the ineligible withdrawn."""
+        user_sync_point = await self.user_sync_point.read_sync_point(USERS_SYNC_POINT_KEY)
+        last_sync_ts_ms = user_sync_point.get("lastSyncTimestamp")
+        base_soql = (
+            "SELECT Id, FirstName, LastName, Email, Phone, MobilePhone, Title, IsActive, UserType, CreatedDate, "
+            "LastModifiedDate, UserRoleId FROM User"
+        )
+        if last_sync_ts_ms:
+            soql_datetime = to_soql_datetime(last_sync_ts_ms)
+            soql_query = f"{base_soql} WHERE LastModifiedDate >= {soql_datetime} ORDER BY LastModifiedDate ASC"
+            self.logger.debug("Incremental user sync: fetching users modified since %s", soql_datetime)
+        else:
+            soql_query = f"{base_soql} ORDER BY LastModifiedDate ASC"
+            self.logger.debug("Full user sync: no previous sync point, fetching all users")
+        # One snapshot for the linking, the withdrawal and the checkpoint: read twice, a user unfrozen in between
+        # would be skipped here and missing from the checkpoint, so never linked again.
+        frozen = await self._eligibility(api_version).frozen_user_ids()
+        if frozen is None:
+            # Unknown is not empty: a frozen user would be linked, so nobody is, and these users are read again.
+            await self._withdraw_ineligible_users(api_version, set(), None)
+            return
+        inactive_user_ids = await self._sync_users(
+            self._soql_query_paginated(api_version=api_version, q=soql_query), frozen=frozen,
+        )
+        await self._withdraw_ineligible_users(api_version, inactive_user_ids, frozen)
+        await self.user_sync_point.update_sync_point(
+            USERS_SYNC_POINT_KEY,
+            {"lastSyncTimestamp": checkpoint_for(run_started_ms)},
+        )
+
     async def _sync_users(
-        self, user_records_pages: SalesforceRawPageStream,
+        self, user_records_pages: SalesforceRawPageStream, frozen: set[str] | None = None,
     ) -> set[str]:
         """Sync users from Salesforce, committing each Salesforce page in its own
         transaction.  Per-page commit semantics: a crash mid-stream leaves earlier
@@ -3361,10 +3373,13 @@ class SalesforceConnector(BaseConnector):
                 if not page:
                     continue
                 parsed_users = [SalesforceUser.model_validate(r) for r in page]
+                # A frozen user cannot sign in either, so it is not linked: linked, a frozen duplicate of an active
+                # user's address would read as that address changing hands and take the active user's access.
                 app_users = []
                 for u in parsed_users:
                     if u.IsActive is not False and u.UserType in READER_USER_TYPES:
-                        app_users.append(self.user_to_app_user(u))
+                        if u.Id not in (frozen or ()):
+                            app_users.append(self.user_to_app_user(u))
                     elif u.Id:
                         inactive.add(u.Id)
                 if app_users:
@@ -3439,16 +3454,17 @@ class SalesforceConnector(BaseConnector):
             return None
         return emails
 
-    async def _withdraw_ineligible_users(self, api_version: str, inactive_user_ids: set[str]) -> None:
+    async def _withdraw_ineligible_users(
+        self, api_version: str, inactive_user_ids: set[str], frozen: Optional[set[str]],
+    ) -> None:
         """Take the connector away from users who cannot sign in to Salesforce: inactive and
-        frozen ones (both read in full every sync; freezing does not change the User row).
-        A user unfrozen since the last sync is linked again. A list that cannot be read
-        withdraws nobody on its account."""
+        frozen ones (``frozen``, None when unreadable; both read in full every sync, as
+        freezing does not change the User row). A user unfrozen since the last sync is
+        linked again. A list that cannot be read withdraws nobody on its account."""
         eligibility = self._eligibility(api_version)
         # Read in full every sync: an install upgraded from a version that linked inactive
         # users never sees them again in the incremental user list.
         inactive = await eligibility.inactive_user_ids()
-        frozen = await eligibility.frozen_user_ids()
         point = await self.user_sync_point.read_sync_point(FROZEN_USERS_SYNC_POINT_KEY) or {}
         previously_frozen = set(point.get("userIds") or [])
         ineligible = set(inactive_user_ids) | (inactive or set()) | (frozen or set())
@@ -6485,8 +6501,11 @@ class SalesforceConnector(BaseConnector):
                     sf_users.append(u)
         eligibility = self._eligibility(api_version)
         frozen = await eligibility.frozen_user_ids()
-        if frozen:
-            sf_users = [u for u in sf_users if u.get("Id") not in frozen]
+        if frozen is None:
+            # Unknown is not empty: a frozen user would be granted. Stored edges stay until a run reads the list.
+            self.logger.warning("Salesforce frozen users unreadable; record permissions are synced next run")
+            return
+        sf_users = [u for u in sf_users if u.get("Id") not in frozen]
 
         # 2. Fetch records, record groups, and matching DB users in one transaction
         org_id = self.data_entities_processor.org_id
@@ -6549,8 +6568,13 @@ class SalesforceConnector(BaseConnector):
             if u.get("email") and (u.get("id") or u.get("_key"))
             and u.get("orgId") == (parent_org_id or org_id)
         }
-        # Only Salesforce users with a PipesHub account get edges, so only they are read.
+        # Only Salesforce users with a PipesHub account get edges, so only they are read. Of an address another account
+        # held before, only the account that holds it now is: these edges are written by email, outside the processor's
+        # grant check, so an earlier account's record access must never be read for that address's user.
         sf_users = [u for u in sf_users if u["Email"].lower() in email_to_user_id]
+        accounts = self.data_entities_processor.source_accounts(self.connector_id)
+        await accounts.ensure_loaded([u["Email"] for u in sf_users])
+        sf_users = [u for u in sf_users if accounts.admits(u["Email"], u.get("Id"))]
 
         await self._sync_product_readers(eligibility, sf_users)
 
@@ -6585,6 +6609,7 @@ class SalesforceConnector(BaseConnector):
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         all_permission_tuples: List[Tuple[str, str, str, bool]] = []
+        account_of: list[str | None] = []     # the Salesforce user each tuple was read for, index by index
         for i, result in enumerate(results):
             if isinstance(result, Exception):
                 self.logger.error(
@@ -6594,6 +6619,7 @@ class SalesforceConnector(BaseConnector):
                 unknown_users.add(sf_users[i]["Email"].lower())
             else:
                 all_permission_tuples.extend(result)  # type: ignore[arg-type]
+                account_of.extend([sf_users[i].get("Id")] * len(result))  # type: ignore[arg-type]
 
         self.logger.info("Collected %d permission tuples total.", len(all_permission_tuples))
 
@@ -6681,7 +6707,16 @@ class SalesforceConnector(BaseConnector):
                     await tx_store.batch_create_edges(rg_edges, collection=CollectionNames.PERMISSION.value)
                 return record_edges, rg_edges
 
-            record_edges, rg_edges = await self.data_store_provider.execute_in_transaction(write_permissions)
+            async with grant_fence().shared():      # judged and written with no change of hands in between
+                # Judged again on the state read now (recheck), not only before the crawl: another process may have
+                # given an address to a new account meanwhile, and these edges are written by email. A tuple of an
+                # account that no longer holds its address is dropped. shortcut: across processes the window is the
+                # transaction below.
+                asked = [Permission(email=t[0], external_id=sid, type=PermissionType.READ, entity_type=EntityType.USER)
+                         for t, sid in zip(all_permission_tuples, account_of)]
+                admitted = {id(p) for p in await accounts.recheck(asked)}
+                all_permission_tuples[:] = [t for t, p in zip(all_permission_tuples, asked) if id(p) in admitted]
+                record_edges, rg_edges = await self.data_store_provider.execute_in_transaction(write_permissions)
         finally:
             # Even when the write raised: on Neo4j without explicit transactions each
             # delete commits on its own, and a rerun finds nothing left to delete.
@@ -6754,7 +6789,8 @@ class SalesforceConnector(BaseConnector):
         if readers is None:
             return
         permissions = [
-            Permission(email=u["Email"], type=PermissionType.READ, entity_type=EntityType.USER)
+            # The account id lets the processor tell a re-used address's current holder from the earlier account.
+            Permission(email=u["Email"], external_id=u["Id"], type=PermissionType.READ, entity_type=EntityType.USER)
             for u in sf_users if u.get("Id") in readers and u.get("UserType") in PRODUCT_READER_USER_TYPES
         ]
         await self.data_entities_processor.on_new_record_groups([(self._product_record_group(), permissions)])

@@ -12,6 +12,9 @@ from kiota_abstractions.request_information import RequestInformation
 from kiota_abstractions.serialization import Parsable, ParseNode, SerializationWriter
 from kiota_abstractions.serialization.parsable_factory import ParsableFactory
 from msgraph import GraphServiceClient
+from msgraph.generated.directory.deleted_items.graph_user.graph_user_request_builder import (
+    GraphUserRequestBuilder,
+)
 from msgraph.generated.models.base_delta_function_response import (
     BaseDeltaFunctionResponse,
 )
@@ -145,6 +148,37 @@ class GroupDeltaGetResponse(BaseDeltaFunctionResponse, Parsable):
             raise TypeError("writer cannot be null.")
         super().serialize(writer)
         writer.write_collection_of_object_values("value", self.value)
+
+async def list_deleted_users(graph: GraphServiceClient) -> dict[str, str]:
+    """Address (mail and user principal name, lower-cased) -> object id of every user in the directory's deleted
+    items (https://learn.microsoft.com/en-us/graph/api/directory-deleteditems-list). A failed read raises.
+
+    A deleted user's userPrincipalName comes back with its object id in front of the address
+    (https://learn.microsoft.com/en-us/powershell/module/microsoft.entra.users/get-entradeleteduser shows
+    ``dddddddd-3333-4444-5555-eeeeeeeeeeeeAveryS@contoso.com``; Graph has also been seen to drop the hyphens), so that
+    prefix is taken off; mail is kept as it was."""
+    query = GraphUserRequestBuilder.GraphUserRequestBuilderGetQueryParameters(
+        select=["id", "mail", "userPrincipalName"], top=999,
+    )
+    page = await graph.directory.deleted_items.graph_user.get(RequestConfiguration(query_parameters=query))
+    out: dict[str, str] = {}
+    while page is not None:
+        for user in page.value or []:
+            if not user.id:
+                continue
+            upn = (user.user_principal_name or "").lower()
+            for prefix in (user.id.lower(), user.id.lower().replace("-", "")):
+                if upn.startswith(prefix) and "@" in upn[len(prefix):]:
+                    upn = upn[len(prefix):]
+                    break
+            for address in (user.mail, upn):
+                if address:
+                    out[address.lower()] = user.id
+        if not page.odata_next_link:
+            break
+        page = await graph.directory.deleted_items.graph_user.with_url(page.odata_next_link).get()
+    return out
+
 
 class UserListing(list):
     """The users of one listing, with whether it is known to be complete."""

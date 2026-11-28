@@ -10,7 +10,7 @@ import etcd3
 import grpc
 from etcd3.events import DeleteEvent, PutEvent
 
-from app.config.key_value_store import KeyValueStore
+from app.config.key_value_store import KeyValueStore, decode_for_compare
 from app.config.providers.etcd.etcd3_connection_manager import (
     ConnectionConfig,
     Etcd3ConnectionManager,
@@ -308,19 +308,19 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             if watch is not None and watch.client is not None and not watch.dead:
                 await self._cancel_on_owner(watch)
 
+    @staticmethod
+    def _encode(value: object) -> bytes:
+        # json.dumps, not str(): str() of a dict or list is a Python repr (single quotes), not JSON.
+        return (value if isinstance(value, str) else json.dumps(value, default=str)).encode()
+
     async def create_key(self, key: str, value: T, overwrite: bool = True, ttl: Optional[int] = None) -> bool:
         """Create a new key in etcd."""
         logger.debug("🔄 Creating key in ETCD: %s", key)
         logger.debug("📋 TTL: %s seconds", ttl if ttl else "None")
 
         try:
-            # Serialize to a JSON-compatible string.  str() on dicts/lists
-            # produces Python repr (single quotes) which is not valid JSON.
-            if isinstance(value, str):
-                value_str = value
-            else:
-                value_str = json.dumps(value, default=str)
-            logger.debug("📋 Serialized value (%d chars)", len(value_str))
+            value_bytes = self._encode(value)
+            logger.debug("📋 Serialized value (%d bytes)", len(value_bytes))
 
             if not overwrite:
                 # One transaction, not get-then-put: with a separate read, every
@@ -328,7 +328,7 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                 # told it owns the value it then overwrites.
                 lease = await self._run(lambda c: c.lease(ttl)) if ttl else None
                 created = await self._run(
-                    lambda c: c.put_if_not_exists(key, value_str.encode(), lease)
+                    lambda c: c.put_if_not_exists(key, value_bytes, lease)
                 )
                 if not created and lease is not None:
                     await self._run(lambda c: c.revoke_lease(lease.id))
@@ -340,22 +340,22 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
             if existing_value[0] is not None and not ttl:
                 logger.debug("📋 Key exists, updating value")
-                success = await self._run(lambda c: c.put(key, value_str.encode()))
+                success = await self._run(lambda c: c.put(key, value_bytes))
             elif ttl:
                 # A plain put on an existing key would drop its expiry (it leaves the old lease).
                 logger.debug("🔄 Writing with a lease of %s seconds", ttl)
                 lease = await self._run(lambda c: c.lease(ttl))
-                success = await self._run(lambda c: c.put(key, value_str.encode(), lease=lease))
+                success = await self._run(lambda c: c.put(key, value_bytes, lease=lease))
             else:
                 logger.debug("📋 Key doesn't exist, creating new")
                 if ttl:
                     logger.debug("🔄 Creating lease with TTL: %s seconds", ttl)
                     lease = await self._run(lambda c: c.lease(ttl))
                     success = await self._run(
-                        lambda c: c.put(key, value_str.encode(), lease=lease)
+                        lambda c: c.put(key, value_bytes, lease=lease)
                     )
                 else:
-                    success = await self._run(lambda c: c.put(key, value_str.encode()))
+                    success = await self._run(lambda c: c.put(key, value_bytes))
 
             logger.debug("✅ Key operation successful: %s", success is not None)
             return success is not None
@@ -423,6 +423,25 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
         except Exception as e:
             raise ConnectionError(f"Failed to get key: {e}") from e
+
+    async def compare_and_set(self, key: str, expected: Optional[T], new: T) -> bool:
+        try:
+            raw, _ = await self._run(lambda c: c.get(key))
+        except Exception as e:
+            raise ConnectionError(f"Failed to read key for compare-and-set: {e}") from e
+        current = decode_for_compare(self.deserializer, raw) if raw else None
+        if current != expected:
+            return False
+        data = self._encode(new)
+        try:
+            # Both are one Txn, which etcd applies atomically
+            # (https://etcd.io/docs/v3.5/learning/api/#transaction): put_if_not_exists compares
+            # create_revision == 0, replace compares the value with the bytes read above.
+            if raw is None:
+                return bool(await self._run(lambda c: c.put_if_not_exists(key, data)))
+            return bool(await self._run(lambda c: c.replace(key, raw, data)))
+        except Exception as e:
+            raise ConnectionError(f"Failed to compare-and-set key: {e}") from e
 
     async def delete_key(self, key: str) -> bool:
         try:

@@ -209,7 +209,8 @@ class LookupsMixin(PgBase):
 
     async def get_record_by_conversation_index(self, connector_id: str, conversation_index: str, thread_id: str, org_id: str, user_id: str,
                                                transaction: str | None = None) -> Record | None:
-        """A mail record of this thread the user owns (a permission edge of role OWNER on it or on an ancestor it inherits from, up to 8 hops)."""
+        """A mail record of this thread the user owns (a permission edge of role OWNER on it or on an ancestor it inherits from, up to 8 hops), from the user
+        or from a source account the user is linked to in this connector."""
         org = current_org_id()
         try:
             d = await self._one("""/* pipeshub:graph.get_record_by_conversation_index */ WITH RECURSIVE m AS (
@@ -221,10 +222,15 @@ class LookupsMixin(PgBase):
                   SELECT m.id, 'records'::text, m.id, 0 FROM m
                   UNION
                   SELECT up.rid, i.to_coll, i.to_id, up.d + 1 FROM up JOIN graph.edges i ON i.org_id = $1 AND i.coll = 'inheritPermissions'
-                    AND i.from_coll = up.cur_coll AND i.from_id = up.cur WHERE up.d < 8)
+                    AND i.from_coll = up.cur_coll AND i.from_id = up.cur WHERE up.d < 8),
+                me AS (SELECT u.id FROM graph.nodes u WHERE u.org_id = $1 AND u.coll = 'users' AND u.doc->>'userId' = $6),
+                holders(coll, id) AS (SELECT 'users'::text, me.id FROM me
+                  UNION SELECT l.to_coll, l.to_id FROM me JOIN graph.edges l ON l.org_id = $1 AND l.coll = 'authenticatedAs' AND l.from_coll = 'users' AND l.from_id = me.id
+                    AND l.to_coll = 'sourceAccounts' AND l.doc->>'connectorId' = $2
+                    JOIN graph.nodes s ON s.org_id = l.org_id AND s.coll = l.to_coll AND s.id = l.to_id AND coalesce(s.doc->>'state', '') <> 'withdrawn')
                 SELECT m.doc FROM m WHERE EXISTS (SELECT 1 FROM up JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.to_coll = up.cur_coll AND p.to_id = up.cur
-                    AND p.from_coll = 'users' AND p.doc->>'role' = 'OWNER' AND p.doc->>'type' = 'USER'
-                  JOIN graph.nodes u ON u.org_id = $1 AND u.coll = 'users' AND u.id = p.from_id AND u.doc->>'userId' = $6 WHERE up.rid = m.id) LIMIT 1""",
+                    AND p.doc->>'role' = 'OWNER' AND p.doc->>'type' = 'USER'
+                  JOIN holders h ON h.coll = p.from_coll AND h.id = p.from_id WHERE up.rid = m.id) LIMIT 1""",
                                 org, connector_id, org_id, conversation_index, thread_id, user_id, transaction=transaction)
             return Record.from_arango_base_record(_arango(d, "records")) if d else None
         except Exception as e:
@@ -832,7 +838,7 @@ class LookupsMixin(PgBase):
             raise GraphQueryError(f"Could not read file record {record_id}: {e}") from e
 
     async def get_record_owner_source_user_email(self, record_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> str | None:
-        """The email of a user holding an OWNER grant of type USER on the record or on what it inherits permissions from (8 hops), the nearest first."""
+        """The email of a user or source account holding an OWNER grant of type USER on the record or on what it inherits permissions from (8 hops), the nearest first."""
         org = current_org_id()
         try:
             rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_record_owner_source_user_email */ WITH RECURSIVE anc(coll, id, depth) AS (
@@ -840,9 +846,9 @@ class LookupsMixin(PgBase):
                   UNION
                   SELECT i.to_coll, i.to_id, a.depth + 1 FROM anc a JOIN graph.edges i ON i.org_id = $1 AND i.coll = 'inheritPermissions'
                     AND i.from_coll = a.coll AND i.from_id = a.id WHERE a.depth < 8)
-                SELECT u.doc->>'email' AS email FROM anc JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users' AND p.to_coll = anc.coll
+                SELECT u.doc->>'email' AS email FROM anc JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll IN ('users', 'sourceAccounts') AND p.to_coll = anc.coll
                   AND p.to_id = anc.id AND p.doc->>'role' = 'OWNER' AND p.doc->>'type' = 'USER'
-                  JOIN graph.nodes u ON u.org_id = $1 AND u.coll = 'users' AND u.id = p.from_id AND u.doc->>'email' IS NOT NULL ORDER BY anc.depth, u.id LIMIT 1""", org, record_id), transaction)
+                  JOIN graph.nodes u ON u.org_id = $1 AND u.coll = p.from_coll AND u.id = p.from_id AND u.doc->>'email' IS NOT NULL ORDER BY anc.depth, u.id LIMIT 1""", org, record_id), transaction)
             return rows[0]["email"] if rows else None
         except Exception as e:
             if raise_on_error:

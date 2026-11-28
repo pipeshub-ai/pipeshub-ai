@@ -74,6 +74,7 @@ from app.services.graph_db.neo4j import neo4j_provider as neo4j_provider_module
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.support import it_backends
+from tests.support.in_memory_config import InMemoryConfigService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -198,7 +199,7 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
             cleanup.push_async_callback(disconnect)
         suffix = uuid.uuid4().hex[:10]
         producer = _Producer()
-        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
+        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), InMemoryConfigService())
         processor.messaging_producer = producer
         w = _World(
             graph=graph, processor=processor, producer=producer,

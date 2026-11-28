@@ -62,6 +62,7 @@ from app.services.messaging.redis_streams.producer import RedisStreamsProducer
 from app.utils.api_call import ApiCallError
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.support import it_backends
+from tests.support.in_memory_config import InMemoryConfigService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -238,7 +239,7 @@ async def _seeded_env(
     cleanup.push_async_callback(inner.cleanup)
     await inner.initialize()
     producer = _OneStreamProducer(inner, stream)
-    processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
+    processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), InMemoryConfigService())
     processor.org_id = ORG_ID
     processor.messaging_producer = producer
 

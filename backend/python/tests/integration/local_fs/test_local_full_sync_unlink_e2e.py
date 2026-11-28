@@ -38,6 +38,7 @@ from tests.integration.local_fs.test_local_fs_sync_e2e import (
     OWNER,
     LocalFsDataStoreProvider,
 )
+from tests.support.in_memory_config import InMemoryConfigService
 from tests.support.sql_full_sync import full_sync_losses, run_full_sync
 from tests.unit.connectors.sources.test_connector_workflow_integration import (
     MockArangoProvider,
@@ -77,7 +78,8 @@ def data_store_provider(graph_store) -> LocalFsDataStoreProvider:
 
 @pytest.fixture
 def processor(data_store_provider) -> DataSourceEntitiesProcessor:
-    proc = DataSourceEntitiesProcessor(MagicMock(), data_store_provider, AsyncMock())
+    # the real store answers None for a key never saved (a never-synced connector's account state); a bare AsyncMock answers a mock
+    proc = DataSourceEntitiesProcessor(MagicMock(), data_store_provider, InMemoryConfigService())
     proc.org_id = ORG_ID
     proc.messaging_producer = AsyncMock()
     proc.messaging_producer.send_messages = AsyncMock(side_effect=lambda _topic, items: [True] * len(items))

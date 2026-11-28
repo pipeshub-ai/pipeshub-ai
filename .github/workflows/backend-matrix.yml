@@ -198,6 +198,7 @@ on:
       - 'backend/python/tests/permissions/rewrite_kit.py'
       - 'backend/python/tests/permissions/kh_layer.py'
       - 'backend/python/tests/permissions/kh_worlds.py'
+      - 'backend/python/tests/permissions/linked_readers.py'
       - 'backend/python/tests/permissions/scenarios/**'
       - 'backend/python/tests/harness_replay/search.py'
       - 'backend/python/tests/harness_replay/world.py'

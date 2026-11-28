@@ -32,6 +32,20 @@ from app.utils.logger import create_logger
 logger = create_logger("redis_cluster_provider")
 
 
+class _InitializedCluster(RedisCluster):
+    """A ``RedisCluster`` that loads the topology before it routes a command.
+
+    redis-py's ``execute_command`` picks a command's routing before it initializes: on a client that has not
+    loaded the topology yet there is no default node, so a keyed command is sent unkeyed, comes back MOVED, and
+    the topology reload that follows closes connections that other first commands are still using. Those then
+    fail, and the retry re-sends a write (a ``SET NX``) that may already have won.
+    """
+
+    async def execute_command(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        await self.initialize()      # a no-op once loaded; concurrent first callers wait on its lock
+        return await super().execute_command(*args, **kwargs)
+
+
 # Matches what a non-blocking standalone client gets: no per-node cap in practice.
 _UNBOUNDED_NODE_CONNECTIONS = 2**31
 
@@ -144,13 +158,13 @@ class ClusterRedisProvider(IRedisConnectionProvider):
                     return client
                 del self._clients[thread_id]
 
-            client = RedisCluster(**self._client_kwargs(ClientOptions()))
+            client = _InitializedCluster(**self._client_kwargs(ClientOptions()))
             self._track(client)
             self._clients[thread_id] = (client, current_loop)
             return client
 
     def create_client(self, options: ClientOptions | None = None) -> RedisCluster:
-        client = RedisCluster(**self._client_kwargs(options or ClientOptions()))
+        client = _InitializedCluster(**self._client_kwargs(options or ClientOptions()))
         return self._track(client)
 
     def create_pubsub_client(self) -> Redis:

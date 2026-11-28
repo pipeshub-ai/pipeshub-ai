@@ -1762,7 +1762,13 @@ class DropboxConnector(BaseConnector):
             self._health.skipped("team member list", members.error)
         app_users = self.get_app_users(members.raw)
         self._team_emails = {u.email.lower() for u in app_users if u.email}
-        await self.data_entities_processor.on_new_app_users(app_users)
+        # Only an active member is linked. An invited one "has not joined the team yet" and a suspended one "is no
+        # longer a member of the team" (TeamMemberStatus, https://github.com/dropbox/dropbox-api-spec team.stone);
+        # linked, one sharing an active member's address reads as that address changing hands. Withdrawn below,
+        # and linked again once Dropbox lists it active.
+        active = [u for u in app_users if u.is_active]
+        if active:
+            await self.data_entities_processor.on_new_app_users(active)
         if members.complete:
             stored = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
             gone = withdrawn(stored, members)
@@ -1779,6 +1785,10 @@ class DropboxConnector(BaseConnector):
                         external_group_id=user.source_user_id, connector_id=self.connector_id,
                         trash_live_records=True,
                     )
+        else:
+            # A partial list still withdraws the members its pages reported invited or suspended.
+            await self.data_entities_processor.withdraw_reported_unusable(
+                self.connector_id, {u.source_user_id for u in app_users if not u.is_active})
         return app_users
 
     def full_sync_coverage(self) -> FullSyncCoverage:
@@ -2738,6 +2748,7 @@ class DropboxConnector(BaseConnector):
 
             # Create permission for the user (OWNER)
             user_permission = Permission(
+                external_id=user.source_user_id,     # the account the address is linked to: holds a re-used address
                 email=user.email,
                 type=PermissionType.OWNER,
                 entity_type=EntityType.USER

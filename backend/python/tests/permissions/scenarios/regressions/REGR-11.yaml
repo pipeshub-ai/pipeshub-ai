@@ -1,0 +1,26 @@
+- id: REGR-11
+  title: 'Linked account: its organisation grants nothing; the viewer''s role on a record comes from its own grants'
+  source: review of the source-account readers
+  rule: linked-account
+  world:
+    principals:
+      - {id: u, org_member: false}
+      - {id: acct}
+    nodes:
+      - {id: A, kind: app, app_type: CONFLUENCE}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [S], inherits: [S]}
+      - {id: g, kind: record, connector: A, rule: OPEN, parents: [S], inherits: [S]}
+    grants:
+      - [u, f, USER, READER]
+      - [org, f, ORG, OWNER]
+      - [org, g, ORG, OWNER]
+    gates:
+      - [u, A]
+    links:
+      - [u, acct, A]
+  expect:
+    verdicts:
+      u: {f: admit, g: deny, S: deny}
+  tags: [regression, linked-account]
+  comment: u is no member of the organisation; acct is. The access check gives u f and never g. Whether acct is stored as a SourceAccount or as a User, it adds no organisation to any reader, so u reads f as READER, its own grant.

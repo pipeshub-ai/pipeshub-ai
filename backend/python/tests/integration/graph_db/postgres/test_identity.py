@@ -8,15 +8,23 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 """
 from __future__ import annotations
 
+import logging
+import os
 import uuid
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.config.constants.arangodb import Connectors
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
+from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.core import org_context
 from app.core.org_context import MissingOrgContext, OrgMismatch, SystemContextNotAllowed
 from app.models.entities import AppRole, AppUser, AppUserGroup
+from tests.support.in_memory_config import InMemoryConfigService
 
 from .test_access import APP, World, rec
 
@@ -357,7 +365,7 @@ CALLS = [
 @pytest.mark.parametrize(("name", "args"), CALLS, ids=[c[0] for c in CALLS])
 async def test_no_org_is_an_error_even_where_a_failed_read_answers_a_default(pg_provider, name: str, args: tuple) -> None:
     kwargs = ({"is_external": False} if name == "ensure_app_membership" else {"chunk_size": 10} if name == "get_graph_user_keys_by_mongo_user_ids"
-              else {"org_id": "o"} if name in ("get_user_by_email", "batch_upsert_app_users") else {})
+              else {"org_id": "o"} if name in ("get_users_by_emails", "get_user_by_email", "batch_upsert_app_users") else {})
     with pytest.raises(MissingOrgContext):
         await getattr(pg_provider, name)(*args, **kwargs)
     with org_context.system("test.no-org"), pytest.raises((SystemContextNotAllowed, MissingOrgContext)):
@@ -405,17 +413,10 @@ async def test_an_address_is_lowered_by_the_database_alone_so_the_stored_and_the
 
 async def test_a_withdrawn_user_gets_the_link_back_when_the_next_listing_shows_the_user(w: World) -> None:
     """The self-healing the withdrawal relies on, through the real processor: save, withdraw, save again."""
-    import logging
     from types import SimpleNamespace
-    from unittest.mock import AsyncMock, MagicMock
-
-    from app.connectors.core.base.data_processor.data_source_entities_processor import (
-        DataSourceEntitiesProcessor,
-    )
-    from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 
     await member(w, "m", userId="um", email="m@x.com")
-    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), MagicMock())
+    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), InMemoryConfigService())
     processor.org_id = w.org
     processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
     listed = app_user("m@x.com", "m")
@@ -425,10 +426,86 @@ async def test_a_withdrawn_user_gets_the_link_back_when_the_next_listing_shows_t
 
     await processor.on_new_app_users([listed])
     assert await links() == {"m"}
+    assert [u.email for u in await processor.get_app_user_links(APP)] == ["m@x.com"]
     await processor.withdraw_app_user_access(APP, [SimpleNamespace(id="m")])
     assert await links() == set()
     await processor.on_new_app_users([listed])                                  # the next listing shows the user again
     assert await links() == {"m"}
+
+
+
+async def test_a_new_account_that_takes_an_address_reads_nothing_the_old_one_was_granted(w: World) -> None:
+    """A source account deleted and re-created with the same address has a new source id: the PipesHub user keeps
+    no grant of this connector written for the old one, after the link moves to the new id. Another user's grant and
+    another connector's records stay; ``remove_user_access_to_connector`` runs on PostgreSQL too."""
+    await member(w, "m", userId="um", email="m@x.com")
+    await member(w, "k", userId="uk", email="k@x.com")
+    await w.nodes("apps", {"_key": "other-app", "type": "JIRA", "isActive": True})
+    await w.nodes("records", rec("mine"), rec("kept"), {**rec("elsewhere"), "connectorId": "other-app"})
+    for target in (("records", "mine"), ("records", "elsewhere")):
+        await w.edge("permission", ("users", "m"), target, type="USER", role="READER")
+    await w.edge("permission", ("users", "k"), ("records", "kept"), type="USER", role="READER")
+    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), InMemoryConfigService())
+    processor.org_id = w.org
+    processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
+    await processor.on_new_app_users([app_user("m@x.com", "m"), app_user("k@x.com", "k")])
+    assert await w.allowed("m", "mine") == {"mine"}
+
+    renewed = app_user("m@x.com", "m").model_copy(update={"source_user_id": "src-m-new"})
+    await processor.on_new_app_users([renewed, app_user("k@x.com", "k")])
+
+    assert {u.source_user_id for u in await processor.get_app_user_links(APP)} == {"src-m-new", "src-k"}
+    assert await w.allowed("m", "mine", "kept") == set()
+    assert await w.allowed("k", "kept") == {"kept"}
+    targets = {e["_to"] for e in await w.p.get_edges_from_node("users/m", "permission")}
+    assert "records/elsewhere" in targets and "records/mine" not in targets
+
+
+async def test_a_link_already_rewritten_to_the_new_account_still_takes_the_old_accounts_grants(w: World) -> None:
+    """The link was moved to the new id by a write that skipped the check (an earlier release linked by address
+    alone): the id this connector last linked the address to tells the change of hands."""
+    await member(w, "m", userId="um", email="m@x.com")
+    await w.nodes("records", rec("mine"))
+    await w.edge("permission", ("users", "m"), ("records", "mine"), type="USER", role="READER")
+    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), InMemoryConfigService())
+    processor.org_id = w.org
+    processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
+    await processor.on_new_app_users([app_user("m@x.com", "m")])
+    renewed = app_user("m@x.com", "m").model_copy(update={"source_user_id": "src-m-new"})
+    await w.p.batch_upsert_app_users([renewed], org_id=w.org)
+    assert await w.allowed("m", "mine") == {"mine"}
+
+    await processor.on_new_app_users([renewed])
+
+    assert await w.allowed("m", "mine") == set()
+
+
+@pytest.mark.skipif(os.environ.get("PERM_SOURCE_ACCOUNTS") == "1",
+                    reason="the registry's hand-over; with accounts the address links the new one once the old one is withdrawn (test_source_account_writers)")
+async def test_a_group_rewrite_after_an_address_changed_hands_admits_only_the_account_holding_it(w: World) -> None:
+    """After the processor saw m@x.com pass to a new account, a group listing the deleted account does not make the
+    PipesHub user a member again; the same group listing the new account does."""
+    await member(w, "m", userId="um", email="m@x.com")
+    await w.nodes("records", rec("doc"))
+    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), InMemoryConfigService())
+    processor.org_id = w.org
+    processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
+    group = AppUserGroup(app_name=Connectors.JIRA, connector_id=APP, source_user_group_id="ext-team", name="Team")
+    old, new = app_user("m@x.com", "m"), app_user("m@x.com", "m").model_copy(update={"source_user_id": "src-m-new"})
+    await processor.on_new_app_users([old])
+    await processor.on_new_user_groups([(group, [old])])
+    stored = await w.p.get_user_group_by_external_id(APP, "ext-team")
+    await w.edge("permission", ("groups", stored.id), ("records", "doc"), type="GROUP", role="READER")
+    assert await w.allowed("m", "doc") == {"doc"}
+
+    await processor.on_new_app_users([new])
+    assert await w.allowed("m", "doc") == set()
+
+    await processor.on_new_user_groups([(group, [old])])
+    assert await w.allowed("m", "doc") == set()
+
+    await processor.on_new_user_groups([(group, [new])])
+    assert await w.allowed("m", "doc") == {"doc"}
 
 
 async def test_a_user_withdrawn_with_their_grants_reads_nothing_even_through_the_org_team(w: World) -> None:
@@ -456,7 +533,7 @@ async def test_a_user_withdrawn_with_their_grants_reads_nothing_even_through_the
     await w.nodes("teams", {"_key": f"all_{w.org}"})
     await w.member("m", f"all_{w.org}", coll="teams")
     await w.edge("userAppRelation", ("teams", f"all_{w.org}"), ("apps", APP))           # the gate, open to the org
-    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), MagicMock())
+    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), InMemoryConfigService())
     processor.org_id = w.org
     processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
     await processor.on_new_app_users([app_user("m@x.com", "m"), app_user("k@x.com", "k")])
@@ -489,7 +566,8 @@ async def test_opening_the_app_to_the_org_team_first_takes_the_grants_left_on_un
     await w.nodes("teams", {"_key": f"all_{w.org}"})
     for who in ("m", "s"):
         await w.member(who, f"all_{w.org}", coll="teams")
-    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), MagicMock())
+    # the link decision reads and saves the connector's account state through the config service, which is async
+    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), InMemoryConfigService())
     processor.org_id = w.org
     processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
     await processor.on_new_app_users([app_user("m@x.com", "m")])

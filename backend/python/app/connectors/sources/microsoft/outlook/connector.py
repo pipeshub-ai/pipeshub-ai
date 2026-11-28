@@ -93,6 +93,7 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
     read_user_status,
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
+from app.connectors.sources.microsoft.common.msgraph_client import list_deleted_users
 from app.connectors.sources.microsoft.common.outlook_constants import (
     MessagesDeltaResult,
     OutlookAPIFields,
@@ -179,6 +180,8 @@ class OutlookUserListing(UserListing):
 
     listed_ids: frozenset[str] | set[str] = frozenset()
     disabled_ids: frozenset[str] | set[str] = frozenset()
+    # Filled on every read: an account a page reports disabled is disabled, whether or not the read was complete.
+    reported_disabled_ids: frozenset[str] | set[str] = frozenset()
 
 
 @ConnectorBuilder(OutlookConnectorNames.TEAM)\
@@ -365,6 +368,9 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             org_id=self.data_entities_processor.org_id,
             sync_data_point_type=SyncDataPointType.RECORDS,
             data_store_provider=self.data_store_provider
+        )
+        self.source_accounts = self.data_entities_processor.source_accounts(
+            self.connector_id, deleted_users=lambda: list_deleted_users(self.external_users_client.client)
         )
 
         self.sync_filters: FilterCollection = FilterCollection()
@@ -672,6 +678,9 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             # Sync all enterprise users to database
             await self.data_entities_processor.on_new_app_users(all_enterprise_users)
             self._users_trusted = await self._withdraw_disabled_app_users(all_enterprise_users)
+            if not getattr(all_enterprise_users, "complete", True):
+                await self.data_entities_processor.withdraw_reported_unusable(
+                    self.connector_id, set(getattr(all_enterprise_users, "reported_disabled_ids", ())))
             if self._users_trusted:
                 await self._populate_user_cache(all_enterprise_users)
 
@@ -815,6 +824,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             listing.complete = complete
             listing.listed_ids = listed_ids if complete else set()
             listing.disabled_ids = disabled_ids if complete else set()
+            listing.reported_disabled_ids = disabled_ids
 
             self.logger.info(f"Retrieved {len(all_users)} total users across {page_num} page(s) (complete: {complete})")
             return listing
@@ -917,6 +927,8 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                     # Fetch members for this group. Unknown is not empty: a failed read keeps
                     # the stored members, while the mailbox and its conversations sync as usual.
                     try:
+                        # who holds each address now must be known before a member is written by address
+                        await self.source_accounts.ensure_loaded()
                         members = await self._get_group_members(group_id)
                     except Exception as e:
                         self.logger.error(f"Keeping stored members of group {group_id}: {e}")
@@ -933,7 +945,9 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                         if member_email:
                             # Look up existing user from cache
                             user_id = self._user_cache.get(member_email.lower())
-                            if user_id:
+                            # The cache may be refreshed meanwhile: write only the account the check judged.
+                            if user_id and user_id == getattr(member, "id", None) \
+                                    and self.source_accounts.may_grant(member_email, user_id):
                                 app_user = AppUser(
                                     app_name=Connectors.OUTLOOK,
                                     connector_id=self.connector_id,
@@ -2326,8 +2340,10 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                 return []
 
             mailbox_external_id = self._mailbox_external_id(user)
+            # The object id lets a re-used address's new holder keep their own mailbox (see SourceAccounts).
             owner_permission = Permission(
                 email=user.email,
+                external_id=user_id,
                 type=PermissionType.OWNER,
                 entity_type=EntityType.USER,
             )

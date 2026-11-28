@@ -569,7 +569,7 @@ class GraphTransactionStore(TransactionStore):
         return value
 
     async def get_users_by_emails(
-        self, emails: list[str], *, raise_on_error: bool = False, org_id: str | None = None,
+        self, emails: list[str], *, raise_on_error: bool = False, org_id: str,
     ) -> dict[str, User]:
         """The members for ``emails`` (lowercased keys), one provider call for the addresses the memo lacks."""
         wanted = list(dict.fromkeys(e.lower() for e in emails if e))
@@ -577,9 +577,8 @@ class GraphTransactionStore(TransactionStore):
         found = {e: self._memo[k] for e, k in keys.items() if k in self._memo}
         missing = [e for e in wanted if e not in found]
         if missing:
-            scope = {"org_id": org_id} if org_id is not None else {}
             got = await self.graph_provider.get_users_by_emails(
-                missing, transaction=self.txn, raise_on_error=raise_on_error, **scope
+                missing, transaction=self.txn, raise_on_error=raise_on_error, org_id=org_id
             )
             for e in missing:
                 self._memo_put(keys[e], got.get(e))
@@ -1183,11 +1182,14 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.ensure_team_app_edge(connector_id, org_id, transaction=self.txn)
 
     async def upsert_authenticated_as(
-        self, creator_key: str, source_user_key: str, connector_id: str, org_id: str
+        self, creator_key: str, source_user_key: str, connector_id: str, org_id: str, *, target_collection: str = "users"
     ) -> None:
         return await self.graph_provider.upsert_authenticated_as(
-            creator_key, source_user_key, connector_id, org_id, transaction=self.txn
+            creator_key, source_user_key, connector_id, org_id, transaction=self.txn, target_collection=target_collection
         )
+
+    async def set_directory_link(self, user_key: str, connector_id: str, email: str, org_id: str) -> None:
+        await self.graph_provider.set_directory_link(user_key, connector_id, email, org_id, transaction=self.txn)
 
     async def remove_authenticated_as(self, connector_id: str) -> bool:
         return await self.graph_provider.remove_authenticated_as(connector_id, transaction=self.txn)
@@ -2067,7 +2069,7 @@ _HARMLESS_WRITERS = frozenset({
     "batch_upsert_nodes", "batch_update_nodes", "batch_upsert_people",
     "upsert_person_by_email", "upsert_person_by_source_key", "ensure_app_membership", "reap_stale_external_app_relations", "create_user_group_hierarchy",
     "create_user_group_membership", "batch_create_user_app_edges", "batch_upsert_user_groups",
-    "batch_upsert_app_roles", "batch_upsert_app_users", "ensure_team_app_edge", "upsert_authenticated_as", "remove_authenticated_as",
+    "batch_upsert_app_roles", "batch_upsert_app_users", "ensure_team_app_edge", "upsert_authenticated_as", "remove_authenticated_as", "set_directory_link",
     "batch_upsert_orgs", "commit", "rollback", "publish_with_commit", "create_user_groups", "create_users", "create_orgs", "create_sync_point",
     "delete_sync_point", "update_sync_point", "batch_create_entity_relations",
     "remove_nodes_by_field", "create_taxonomy_node_if_absent", "add_taxonomy_aliases", "take_back_kept_record_group",

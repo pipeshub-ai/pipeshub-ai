@@ -14,6 +14,7 @@ import importlib.metadata
 import inspect
 import io
 import json
+import logging
 import re
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
@@ -29,6 +30,7 @@ from msgraph_core.middleware.async_graph_transport import AsyncGraphTransport
 from packaging.version import Version
 from requests.structures import CaseInsensitiveDict
 
+from app.connectors.core.base.data_processor.source_accounts import SourceAccounts
 from app.services.graph_db.common.record_visibility import is_live_record
 
 if TYPE_CHECKING:
@@ -244,11 +246,21 @@ class FakeConfigService:
     def __init__(self, connector_id: str, config: dict[str, Any]) -> None:
         self.connector_id = connector_id
         self.config = config
+        self.saved: dict[str, Any] = {}
 
     async def get_config(self, path: str, default: object = None, **_: object) -> object:
         if path == f"/services/connectors/{self.connector_id}/config":
             return self.config
-        return default
+        return self.saved.get(path, default)
+
+    async def set_config(self, path: str, value: object, **_: object) -> bool:
+        self.saved[path] = value
+        return True
+
+    async def compare_and_set_config(self, path: str, expected: object, new: object) -> bool:
+        if await self.get_config(path) != expected:
+            return False
+        return await self.set_config(path, new)
 
 
 class RecordingNotifications:
@@ -279,6 +291,7 @@ class FakeRecordsDb:
         self.record_group_permissions: dict[str, list[Any]] = {}
         self.record_group_writes: list[tuple[Any, list[Any] | None]] = []
         self.app_users: list[Any] = []
+        self.access_removed: list[str] = []
         self.active_users: list[Any] = []
         self.user_groups: dict[str, list[Any]] = {}
         self.kept_user_groups: list[str] = []
@@ -474,9 +487,30 @@ class FakeRecordsDb:
     async def get_app_user_links(self, connector_id: str) -> list[Any]:
         return list(self.app_users)
 
+    def source_accounts(self, connector_id: str, *, deleted_users: Any = None) -> Any:  # noqa: ANN401
+        """A new one per connector, as a new process starts with nothing loaded."""
+        return SourceAccounts(self, connector_id, FakeConfigService(connector_id, {}), logging.getLogger("t"),
+                              deleted_users=deleted_users)
+
+    async def get_user_by_email(self, email: str, **_: object) -> object | None:
+        from types import SimpleNamespace
+
+        return next((SimpleNamespace(id=u.id, email=u.email) for u in self.app_users
+                     if (u.email or "").lower() == email.lower()), None)
+
+    async def remove_user_access_to_connector(self, connector_id: str, user_email: str) -> int:
+        self.access_removed.append(user_email.lower())
+        return 0
+
     async def withdraw_app_user_access(self, connector_id: str, users: list[Any]) -> None:
         gone = {u.source_user_id for u in users}
         self.app_users = [u for u in self.app_users if u.source_user_id not in gone]
+
+    async def withdraw_reported_unusable(self, connector_id: str, source_ids: set[str]) -> None:
+        # As DataSourceEntitiesProcessor: the stored links whose account the source reported unusable.
+        gone = [u for u in await self.get_app_user_links(connector_id) if u.source_user_id in source_ids]
+        if gone:
+            await self.withdraw_app_user_access(connector_id, gone)
 
     async def get_all_active_users(self, *, raise_on_error: bool = False) -> list[Any]:
         return list(self.active_users)

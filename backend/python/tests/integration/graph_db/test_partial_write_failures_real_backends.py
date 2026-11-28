@@ -132,6 +132,7 @@ from tests.integration.real_graph import (
     connect_arango,
     connect_neo4j,
 )
+from tests.support.in_memory_config import InMemoryConfigService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
@@ -202,7 +203,7 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         except Exception as exc:
             backend_unavailable(request.param, exc)
         cleanup.push_async_callback(graph.disconnect)
-        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
+        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), InMemoryConfigService())
         processor.org_id = f"org-pw-{suffix}"
         processor.messaging_producer = MagicMock(
             send_message=AsyncMock(),

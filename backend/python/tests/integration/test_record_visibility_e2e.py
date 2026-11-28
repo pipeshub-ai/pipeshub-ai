@@ -80,6 +80,7 @@ from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.services.resource_governor.models import ParseTier
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.support import it_backends
+from tests.support.in_memory_config import InMemoryConfigService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -988,7 +989,7 @@ async def test_connector_delete_collects_the_trash(world: _World) -> None:
 
 
 def _processor(world: _World) -> DataSourceEntitiesProcessor:
-    processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, world.graph), MagicMock())
+    processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, world.graph), InMemoryConfigService())
     processor.org_id = world.org_id
     processor.messaging_producer = AsyncMock()
     return processor

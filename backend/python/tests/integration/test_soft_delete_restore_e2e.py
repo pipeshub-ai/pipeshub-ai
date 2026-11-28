@@ -86,6 +86,7 @@ from tests.integration.test_soft_delete_e2e import (
     _connect_neo4j,
     _Producer,
 )
+from tests.support.in_memory_config import InMemoryConfigService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -249,7 +250,7 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
             )
         suffix = uuid.uuid4().hex[:10]
         producer = _Producer()
-        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
+        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), InMemoryConfigService())
         processor.messaging_producer = producer
         # No blob store here; renames still go through the production rename path.
         monkeypatch.setattr(processor, "_get_storage_cleanup", lambda: None)

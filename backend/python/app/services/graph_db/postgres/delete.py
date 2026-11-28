@@ -57,7 +57,7 @@ _DEFAULT_DELETE_ROLES = ("OWNER", "WRITER")
 
 _CHUNK = 5000      # nodes removed per statement (and per transaction, when a connector is deleted in batches)
 _HANDLES = "connectorDeleteHandles"      # the ids a delete in batches must still name after the nodes are gone: written in the transaction that removes them
-_CONNECTOR_NODE_COLLS = ("syncPoints", "stageStates", "agentKnowledge", "blocks")      # nodes that name their connector and hang off no edge the cascade follows (blocks: the ones no record owns any more)
+_CONNECTOR_NODE_COLLS = ("syncPoints", "stageStates", "agentKnowledge", "blocks", "sourceAccounts")      # nodes that name their connector and hang off no edge the cascade follows (blocks: the ones no record owns any more)
 _LATE_WRITE_COLLS = ("blocks", "stageStates")      # what indexing already in flight can still write for a connector after its delete
 _LATE_LINK_COLLS = ("nodeRelations", "recordLinks")      # where its code links land; they carry the record group, not the connector
 
@@ -160,7 +160,7 @@ async def _delete_connector(tx: Tx, org: str, connector_id: str) -> dict[str, An
     await tx.execute("/* pipeshub:graph.connector_delete_links */ DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'authenticatedAs' AND doc->>'connectorId' = $2", org, connector_id)
     await _remove_nodes(tx, org, "apps", [connector_id])
     left = await tx.fetchval("""/* pipeshub:graph.connector_delete_left */ SELECT count(*) FROM graph.nodes WHERE org_id = $1 AND doc->>'connectorId' = $2
-        AND coll IN ('records', 'recordGroups', 'roles', 'groups', 'syncPoints', 'stageStates', 'agentKnowledge', 'blocks')""", org, connector_id)
+        AND coll IN ('records', 'recordGroups', 'roles', 'groups', 'syncPoints', 'stageStates', 'agentKnowledge', 'blocks', 'sourceAccounts')""", org, connector_id)
     if left:
         raise RuntimeError(f"{left} node(s) of the connector remain")
     labels = 0
@@ -359,17 +359,23 @@ class DeleteMixin(PgBase):
         return ids, payloads
 
     async def _refuse_without_delete_role(self, record_id: str, record: dict, user_id: str, transaction: str | None) -> dict | None:
-        """A refusal unless the user holds a deleting role on the record (granted to them, or to a group, role or team they hold a USER permission on, as the access check reads membership); a role that cannot be read refuses."""
+        """A refusal unless the user holds a deleting role on the record (granted to them or to a source account they are linked to in the record's connector, or to
+        a group, role or team either holds a USER permission on, as the access check reads membership); a role that cannot be read refuses."""
         user = await self.get_user_by_user_id(user_id)
         if not user:
             return {"success": False, "code": 404, "reason": f"User not found: {user_id}"}
         user_key = user.get("id") or user.get("_key")
-        rows = await self._drows("""/* pipeshub:graph.delete_record_roles */ SELECT p.doc->>'role' AS role FROM graph.edges p
+        rows = await self._drows("""/* pipeshub:graph.delete_record_roles */ WITH pr(coll, id) AS (SELECT 'users'::text, $3::text
+              UNION SELECT l.to_coll, l.to_id FROM graph.edges l
+                JOIN graph.nodes s ON s.org_id = l.org_id AND s.coll = l.to_coll AND s.id = l.to_id AND coalesce(s.doc->>'state', '') <> 'withdrawn'
+                WHERE l.org_id = $1 AND l.coll = 'authenticatedAs' AND l.from_coll = 'users' AND l.from_id = $3
+                AND l.to_coll = 'sourceAccounts' AND l.doc->>'connectorId' = $4)
+            SELECT p.doc->>'role' AS role FROM graph.edges p
             WHERE p.org_id = $1 AND p.coll = 'permission' AND p.to_coll = 'records' AND p.to_id = $2
-              AND ((p.from_coll = 'users' AND p.from_id = $3 AND p.doc->>'type' = 'USER')
-                OR (p.from_coll IN ('groups', 'roles', 'teams') AND EXISTS (SELECT 1 FROM graph.edges b WHERE b.org_id = $1
-                    AND b.coll = 'permission' AND b.from_coll = 'users' AND b.from_id = $3 AND b.to_coll = p.from_coll AND b.to_id = p.from_id
-                    AND b.doc->>'type' = 'USER')))""", current_org_id(), record_id, user_key, transaction=transaction)
+              AND ((EXISTS (SELECT 1 FROM pr WHERE pr.coll = p.from_coll AND pr.id = p.from_id) AND p.doc->>'type' = 'USER')
+                OR (p.from_coll IN ('groups', 'roles', 'teams') AND EXISTS (SELECT 1 FROM graph.edges b JOIN pr ON pr.coll = b.from_coll AND pr.id = b.from_id
+                    WHERE b.org_id = $1 AND b.coll = 'permission' AND b.to_coll = p.from_coll AND b.to_id = p.from_id
+                    AND b.doc->>'type' = 'USER')))""", current_org_id(), record_id, user_key, record.get("connectorId") or "", transaction=transaction)
         allowed = _DELETE_ROLES.get(record.get("connectorName", ""), _DEFAULT_DELETE_ROLES)
         if not any(r["role"] in allowed for r in rows):
             return {"success": False, "code": 403, "reason": "User lacks permission to delete this record"}

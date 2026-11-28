@@ -80,6 +80,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.test_soft_delete_e2e import _connect_arango, _connect_neo4j
 from tests.integration.test_trash_purge_e2e import _KV, DAY_MS, _Broker, _Lease
 from tests.support import it_backends
+from tests.support.in_memory_config import InMemoryConfigService
 from tests.support.vector_db import make_config_service
 
 if TYPE_CHECKING:
@@ -326,7 +327,7 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
             stored_content=StoredContentCleanup(logger, graph, blobs),
         )
         broker = _Broker()
-        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
+        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), InMemoryConfigService())
         processor.messaging_producer = broker
         processor.org_id = org_id
         monkeypatch.setattr(processor, "_get_storage_cleanup", lambda: None)

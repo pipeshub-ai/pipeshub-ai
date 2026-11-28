@@ -38,6 +38,7 @@ def _make_processor():
     logger = MagicMock()
     data_store_provider = MagicMock()
     config_service = AsyncMock()
+    config_service.get_config.return_value = None    # no saved connector state
     proc = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
     proc.org_id = "org-1"
     proc.messaging_producer = AsyncMock()

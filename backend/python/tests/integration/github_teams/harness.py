@@ -20,7 +20,6 @@ import types
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
-from unittest.mock import MagicMock
 
 import httpx
 
@@ -50,6 +49,7 @@ from tests.integration.real_graph import (
     connect_arango,
     connect_neo4j,
 )
+from tests.support.in_memory_config import InMemoryConfigService
 
 if TYPE_CHECKING:
     from app.models.entities import Record
@@ -126,14 +126,18 @@ class Producer:
         return [m for _, m in self.events if isinstance(m, dict) and m.get("eventType") == event_type]
 
 
-class ConfigService:
+class ConfigService(InMemoryConfigService):
+    """The shared in-memory store (every key the processor writes, such as the source-account state, is kept), with the connector's
+    config and the platform settings this world sets."""
+
     def __init__(self, connector_id: str, config: dict[str, Any]) -> None:
+        super().__init__()
         self.connector_id = connector_id
         self.config = config
         self.platform: dict[str, Any] = {}
         self.fail_reads = 0  # the next N reads of the connector config raise
 
-    async def get_config(self, path: str, default: Any = None, **_: Any) -> Any:  # noqa: ANN401
+    async def get_config(self, path: str, default: Any = None, **kwargs: Any) -> Any:  # noqa: ANN401
         if path == f"/services/connectors/{self.connector_id}/config":
             if self.fail_reads:
                 self.fail_reads -= 1
@@ -141,7 +145,13 @@ class ConfigService:
             return json.loads(json.dumps(self.config))
         if path == "/services/platform/settings":
             return self.platform or default
-        return default
+        return await super().get_config(path, default, **kwargs)
+
+    async def compare_and_set_config(self, key, expected, new) -> bool:
+        # The connector processor keeps its per-connector account state by compare-and-set (SourceAccounts).
+        if await self.get_config(key) != expected:
+            return False
+        return await self.set_config(key, new)
 
 
 class LogCapture(logging.Handler):
@@ -196,7 +206,7 @@ class World:
         self.logger.addHandler(self.logs)
         self.producer = Producer()
         self.store = GraphDataStore(self.logger, graph)
-        self.processor = DataSourceEntitiesProcessor(self.logger, self.store, MagicMock())
+        self.processor = DataSourceEntitiesProcessor(self.logger, self.store, InMemoryConfigService())
         self.processor.org_id = self.org_id
         self.processor.messaging_producer = self.producer
         self.users: dict[str, str] = {}  # email -> PipesHub userId

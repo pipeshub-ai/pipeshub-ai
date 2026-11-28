@@ -644,6 +644,21 @@ class TestUserDeleted:
         assert user_data["id"] == "user-key-1"
 
     @pytest.mark.asyncio
+    async def test_cached_access_moves_before_the_source_accounts_are_unlinked(self) -> None:
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_email = AsyncMock(return_value=MagicMock(id="user-key-1", user_id=None))
+        svc = _make_entity_service(graph_provider=graph_provider)
+        order: list[str] = []
+        svc._unlink_source_accounts = AsyncMock(side_effect=lambda _key: order.append("unlink"))
+
+        async def notified(_org: str) -> None:
+            order.append("notify")
+
+        with patch("app.services.messaging.kafka.handlers.entity.notify_principals_changed", AsyncMock(side_effect=notified)):
+            assert await svc.process_event("userDeleted", {"orgId": "org-1", "email": "alice@test.com"}) is True
+        assert order[:2] == ["notify", "unlink"], "a stalled unlink must not keep access cached from before the delete"
+
+    @pytest.mark.asyncio
     async def test_a_late_delete_finds_its_user_by_user_id_not_the_new_holder_of_the_address(self) -> None:
         """u-old was deleted after u-new took the address. Its late userDeleted deactivates u-old, never u-new."""
         graph_provider = AsyncMock()

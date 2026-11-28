@@ -71,6 +71,9 @@ def mock_data_entities_processor(mock_tx_store):
     proc = MagicMock()
     proc.org_id = "org-zd-1"
     proc.on_new_app_users = AsyncMock()
+    proc.get_app_user_links = AsyncMock(return_value=[])
+    proc.withdraw_app_user_access = AsyncMock()
+    proc.withdraw_reported_unusable = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
     proc.on_new_user_groups = AsyncMock()
@@ -1496,6 +1499,50 @@ class TestAllTicketsAccess:
             if group.source_user_group_id == "group_7"
         )
         assert [m.source_user_id for m in support] == ["1"]
+
+    @patch("app.connectors.sources.zendesk.connector.load_connector_filters",
+           new_callable=AsyncMock, return_value=({}, {}))
+    @pytest.mark.parametrize("complete", [True, False])
+    async def test_a_suspended_or_deleted_user_is_not_linked(
+        self, _f, zendesk_connector, mock_data_entities_processor, complete: bool
+    ) -> None:
+        """Neither can sign in; linked, one sharing an active agent's address would take that address. One linked
+        before is withdrawn, as is one the export no longer lists (4: deleted or demoted), unless it was truncated."""
+        from types import SimpleNamespace
+
+        _ready(zendesk_connector)
+        users = {k: _app_user(k, "maya@acme.com") for k in ("1", "2", "3")}
+        mock_data_entities_processor.get_app_user_links = AsyncMock(return_value=[
+            SimpleNamespace(id=f"n-{k}", source_user_id=k, email=None) for k in ("1", "2", "3", "4")
+        ])
+
+        async def _users():
+            zendesk_connector._user_id_to_data = {
+                "1": {"id": 1, "role": "agent", "active": True},
+                "2": {"id": 2, "role": "agent", "active": True, "suspended": True},
+                "3": {"id": 3, "role": "agent", "active": False},
+            }
+            zendesk_connector._user_id_to_app_user = dict(users)
+            return list(users.values()), users, complete
+
+        zendesk_connector._fetch_users = AsyncMock(side_effect=_users)
+        zendesk_connector._fetch_groups = AsyncMock(return_value=([], [], True))
+        zendesk_connector._fetch_organizations = AsyncMock(return_value=([], True))
+        zendesk_connector._sync_tickets = AsyncMock(return_value=0)
+        zendesk_connector._sync_help_center_articles = AsyncMock(return_value=0)
+
+        await zendesk_connector.run_sync()
+
+        linked = mock_data_entities_processor.on_new_app_users.await_args.args[0]
+        assert [u.source_user_id for u in linked] == ["1"]
+        withdraw = mock_data_entities_processor.withdraw_app_user_access
+        if complete:
+            assert sorted(u.source_user_id for u in withdraw.await_args.args[1]) == ["2", "3", "4"]
+        else:
+            # A cut export takes nobody for gone (4 stays), but withdraws whom its pages reported suspended or deleted.
+            withdraw.assert_not_awaited()
+            mock_data_entities_processor.withdraw_reported_unusable.assert_awaited_once_with(
+                zendesk_connector.connector_id, {"2", "3"})
 
     async def test_record_groups_grant_all_tickets_group(self, zendesk_connector) -> None:
         datasource = _ready(zendesk_connector)

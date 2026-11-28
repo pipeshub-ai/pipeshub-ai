@@ -70,6 +70,11 @@ def _make_mock_deps():
 
     dep = MagicMock()
     dep.org_id = "org-sf-1"
+    # A real account state over an in-memory config: grants are judged as in production (empty: everyone holds).
+    from app.connectors.core.base.data_processor.source_accounts import SourceAccounts
+    from tests.support.in_memory_config import InMemoryConfigService
+    dep.account_config = InMemoryConfigService()
+    dep.source_accounts = MagicMock(return_value=SourceAccounts(dep, "conn-sf-1", dep.account_config, logger))
     dep.on_new_app_users = AsyncMock()
     dep.on_new_app_roles = AsyncMock()
     dep.on_new_user_groups = AsyncMock()
@@ -1351,6 +1356,55 @@ class TestSyncUsers:
         assert len(call_args) == 2
 
     @pytest.mark.asyncio
+    async def test_a_frozen_user_is_not_linked(self) -> None:
+        """Salesforce emails are not unique: a frozen duplicate must not take an active user's address."""
+        connector = _make_connector()
+        users = [
+            {"Id": "u1", "FirstName": "Maya", "LastName": "A", "Email": "maya@example.com", "UserType": "Standard"},
+            {"Id": "u2", "FirstName": "Maya", "LastName": "Old", "Email": "maya@example.com", "UserType": "Standard"},
+        ]
+        await connector._sync_users(_async_iter_pages(users), frozen={"u2"})
+        linked = connector.data_entities_processor.on_new_app_users.call_args[0][0]
+        assert [u.source_user_id for u in linked] == ["u1"]
+
+    @staticmethod
+    def _user_step(frozen_answers: list) -> SalesforceConnector:
+        """A connector whose user list has U (active), and whose frozen-user list gives ``frozen_answers`` in turn."""
+        connector = _make_connector()
+        connector.user_sync_point = MagicMock(read_sync_point=AsyncMock(return_value={}),
+                                              update_sync_point=AsyncMock())
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        connector.data_entities_processor.withdraw_app_user_access = AsyncMock()
+
+        async def pages(api_version: str, q: str, **_: object) -> AsyncIterator[list[dict]]:
+            if "UserLogin" in q:
+                answer = frozen_answers.pop(0)
+                if isinstance(answer, Exception):
+                    raise answer
+                yield [{"UserId": uid} for uid in answer]
+            elif q.startswith("SELECT Id, FirstName"):
+                yield [{"Id": "U", "FirstName": "Una", "LastName": "F", "Email": "una@example.com", "IsActive": True,
+                        "UserType": "Standard"}]
+
+        connector._soql_query_paginated = pages
+        return connector
+
+    @pytest.mark.asyncio
+    async def test_a_user_unfrozen_during_the_run_stays_in_the_frozen_checkpoint(self) -> None:
+        """Skipped as frozen, U must be in the checkpoint, or its unfreezing is never seen and it is never linked."""
+        connector = self._user_step([{"U"}, set()])
+        await connector._sync_user_list("59.0", 1_000)
+        connector.data_entities_processor.on_new_app_users.assert_not_awaited()
+        connector.user_sync_point.update_sync_point.assert_any_await("frozen_users", {"userIds": ["U"]})
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_frozen_list_links_nobody_and_keeps_the_checkpoint(self) -> None:
+        connector = self._user_step([RuntimeError("HTTP 403"), RuntimeError("HTTP 403")])
+        await connector._sync_user_list("59.0", 1_000)
+        connector.data_entities_processor.on_new_app_users.assert_not_awaited()
+        assert not any(c.args[0] == "users" for c in connector.user_sync_point.update_sync_point.await_args_list)
+
+    @pytest.mark.asyncio
     async def test_only_accounts_people_sign_in_with_are_linked(self) -> None:
         """A site's guest user is no one's account, and a Chatter Free user reads no CRM
         record: neither links a PipesHub user. Internal and external accounts do; a type the
@@ -1431,7 +1485,7 @@ class TestOnlyAccountsReadThroughTheConnector:
         connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[guest_link])
         connector.data_entities_processor.withdraw_app_user_access = AsyncMock()
 
-        await connector._withdraw_ineligible_users("59.0", set())
+        await connector._withdraw_ineligible_users("59.0", set(), set())
 
         connector.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with(
             "conn-sf-1", [guest_link], drop_grants=True)
@@ -3818,6 +3872,107 @@ class TestSyncPermissionsEdges:
         )
         await connector._sync_permissions_edges(api_version="59.0")
         mock_tx.batch_create_edges.assert_awaited()
+
+
+class TestSyncPermissionsEdgesReusedAddress:
+
+    @pytest.mark.asyncio
+    async def test_an_earlier_account_at_a_reused_address_is_not_read_for(self) -> None:
+        """alice@ belongs to another account now: the earlier account's record access must not be read and written
+        onto alice's PipesHub user (these edges are written by email, not through the processor's grant check)."""
+        from app.connectors.core.base.data_processor.source_accounts import (
+            _bucket,
+            source_accounts_key,
+        )
+
+        connector = _make_connector()
+        connector._soql_query_paginated = _mock_pages([{"Id": "sf-user-1", "Email": "alice@example.com"}])
+        dep = connector.data_entities_processor
+        await dep.account_config.set_config(source_accounts_key("conn-sf-1", _bucket("alice@example.com")),
+                                            {"linked": {"alice@example.com": "sf-new"},
+                                             "reused": {"alice@example.com": "sf-new"}})
+        mock_tx = dep.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [{"externalRecordId": "opp-1", "id": "deal-1", "connectorId": "conn-sf-1"}], [],
+            [{"email": "alice@example.com", "id": "user-1", "orgId": "org-sf-1"}],
+        ])
+        connector._sync_permissions_for_user = AsyncMock(return_value=[("alice@example.com", "opp-1", "READER", False)])
+        connector._sync_product_readers = AsyncMock()
+
+        await connector._sync_permissions_edges(api_version="59.0")
+
+        connector._sync_permissions_for_user.assert_not_awaited()
+
+
+class TestSyncPermissionsEdgesHolderChangesDuringTheCrawl:
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("max_age", [0, 60])     # 60: the copy loaded before the crawl still counts as fresh
+    async def test_an_address_admitted_to_another_account_during_the_crawl_gets_none_of_the_earlier_ones_records(
+        self, max_age: int,
+    ) -> None:
+        """Another process gives alice@ to a new account while the earlier one's record access is being read: the edges,
+        written by email, must not put the earlier account's records on alice's PipesHub user."""
+        from app.connectors.core.base.data_processor.source_accounts import (
+            _bucket,
+            source_accounts_key,
+        )
+
+        connector = _make_connector()
+        connector._soql_query_paginated = _mock_pages([{"Id": "sf-user-1", "Email": "alice@example.com"}])
+        dep = connector.data_entities_processor
+        mock_tx = dep.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [{"externalRecordId": "opp-1", "id": "deal-1", "connectorId": "conn-sf-1"}], [],
+            [{"email": "alice@example.com", "id": "user-1", "orgId": "org-sf-1"}],
+        ])
+        mock_tx.batch_create_edges = AsyncMock()
+
+        async def crawl(**_: object) -> list:
+            # Another replica admits sf-new for alice@ and publishes a new version.
+            await dep.account_config.set_config(
+                source_accounts_key("conn-sf-1", _bucket("alice@example.com")),
+                {"linked": {"alice@example.com": "sf-new"}, "reused": {"alice@example.com": "sf-new"}})
+            await dep.account_config.set_config(source_accounts_key("conn-sf-1"), {"seeded": True, "version": "v2"})
+            return [("alice@example.com", "opp-1", "READER", False)]
+
+        connector._sync_permissions_for_user = AsyncMock(side_effect=crawl)
+        connector._sync_product_readers = AsyncMock()
+
+        with patch("app.connectors.core.base.data_processor.source_accounts.STATE_MAX_AGE_SECONDS", max_age):
+            await connector._sync_permissions_edges(api_version="59.0")
+
+        connector._sync_permissions_for_user.assert_awaited_once()
+        written = [e for c in mock_tx.batch_create_edges.await_args_list for e in c.args[0]]
+        assert not [e for e in written if "user-1" in str(e)]
+
+
+class TestSyncPermissionsEdgesFrozenUnreadable:
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_frozen_list_writes_no_record_permission(self) -> None:
+        """Unknown is not empty: an active but frozen user would be read for and granted. Nothing is written."""
+        connector = _make_connector()
+        connector._soql_query_paginated = _mock_pages([{"Id": "sf-user-1", "Email": "alice@example.com"}])
+        connector._eligibility = MagicMock(return_value=MagicMock(frozen_user_ids=AsyncMock(return_value=None)))
+        connector._sync_permissions_for_user = AsyncMock(return_value=[])
+        await connector._sync_permissions_edges(api_version="59.0")
+        connector._sync_permissions_for_user.assert_not_awaited()
+        connector.data_entities_processor.data_store_provider.transaction.assert_not_called()
+
+
+class TestProductReaderGrants:
+
+    @pytest.mark.asyncio
+    async def test_a_product_reader_grant_names_its_account(self) -> None:
+        """Address-only, it would be refused at a re-used address, and the current holder would lose Products."""
+        connector = _make_connector()
+        connector.data_entities_processor.on_new_record_groups = AsyncMock()
+        eligibility = MagicMock(product_reader_ids=AsyncMock(return_value={"sf-1"}))
+        await connector._sync_product_readers(eligibility, [{"Id": "sf-1", "Email": "a@x.com", "UserType": "Standard"},
+                                                            {"Id": "sf-2", "Email": "b@x.com", "UserType": "Standard"}])
+        (_group, permissions), = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
+        assert [(p.email, p.external_id) for p in permissions] == [("a@x.com", "sf-1")]
 
 
 class TestSyncPermissionsEdgesSkipsUnlinkedRecords:

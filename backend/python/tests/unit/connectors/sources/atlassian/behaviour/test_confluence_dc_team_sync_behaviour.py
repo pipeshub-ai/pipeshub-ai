@@ -11,6 +11,7 @@ import json
 import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any, Optional
 from unittest.mock import AsyncMock
 
@@ -38,7 +39,7 @@ from app.connectors.sources.atlassian.confluence_datacenter.connector import (
     ConfluenceDataCenterConnector,
 )
 from app.connectors.sources.atlassian.core import confluence_dc_removal
-from app.models.entities import AppUserGroup, Record, RecordType, WebpageRecord
+from app.models.entities import AppUser, AppUserGroup, Record, RecordType, WebpageRecord
 from app.models.permission import EntityType, PermissionType
 from app.sources.client.confluence.confluence import ConfluenceRESTClientViaToken
 from app.sources.external.confluence.confluence import ConfluenceDataSource
@@ -48,6 +49,7 @@ BASE = "https://confluence.example.com"
 API = "/rest/api"
 FAKE_PAT = "fake-pat-for-tests"
 AUDIT = "/rest/auditing/1.0/events"
+ACTIVE_USERS = f"{API}/admin/users/list/active"
 
 
 class TeamDb(RemovalRecordsDb):
@@ -56,6 +58,7 @@ class TeamDb(RemovalRecordsDb):
     def __init__(self) -> None:
         super().__init__()
         self.migrations: list[dict[str, Any]] = []
+        self.creator_link: Optional[SimpleNamespace] = None
 
     async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> object:
         return next((u for u in reversed(self.app_users) if u.source_user_id == source_user_id), None)
@@ -68,6 +71,11 @@ class TeamDb(RemovalRecordsDb):
 
     async def migrate_group_to_user_by_external_id(self, **kwargs: str) -> None:
         self.migrations.append(kwargs)
+
+    async def get_app_user_links(self, connector_id: str) -> list[SimpleNamespace]:
+        linked = {u.source_user_id: u for u in self.app_users}
+        links = [SimpleNamespace(id=u.id, source_user_id=sid, email=u.email) for sid, u in linked.items()]
+        return links + ([self.creator_link] if self.creator_link else [])
 
     async def get_placeholder_records(self, connector_id: str) -> list[Any]:
         return [r for r in self.records.values() if getattr(r, "is_placeholder", False)]
@@ -190,7 +198,7 @@ def restricted_to(users: list[dict[str, Any]] = (), groups: list[dict[str, Any]]
 
 
 def user(key: str, email: Optional[str]) -> dict[str, Any]:
-    data = {"userKey": key, "username": key, "displayName": key.title()}
+    data = {"type": "known", "userKey": key, "username": key, "displayName": key.title()}
     if email:
         data["email"] = email
     return data
@@ -248,7 +256,7 @@ def search(atlassian_api: AtlassianApiStub) -> ContentSearch:
 
 
 def with_directory(api: AtlassianApiStub, users: list[dict[str, Any]], groups: dict[str, list[dict[str, Any]]]) -> None:
-    api.on("GET", f"{API}/user/list", {"results": users})
+    api.on("GET", ACTIVE_USERS, {"results": users})
     api.on("GET", f"{API}/group", {"results": [{"type": "group", "name": name} for name in groups]})
     for name, members in groups.items():
         api.on("GET", f"{API}/group/{name}/member", {"results": members})
@@ -278,8 +286,8 @@ async def make_connector(
         ("/permissions", json_response([])),
     ):
         api.on_suffix("GET", suffix, body)
-    api.on("GET", f"{API}/server-information", {"version": "9.2.0", "versionNumbers": [9, 2, 0]})
-    api.on("GET", f"{API}/user/list", {"results": []})
+    api.on("GET", f"{API}/server-information", {"version": "10.2.0", "versionNumbers": [10, 2, 0]})
+    api.on("GET", ACTIVE_USERS, {"results": []})
     api.on("GET", f"{API}/group", {"results": []})
     api.on("GET", f"{API}/space", {"results": [space("ENG", 10)], "_links": {"base": BASE}})
     api.on("GET", AUDIT, {"entities": [], "pagingInfo": {"lastPage": True}})
@@ -317,7 +325,7 @@ class TestUsersAndGroups:
         pages = {"0": {"results": first}, "200": {"results": [user("last", "last@example.com")]}}
         connector = await make_connector(atlassian_api, db, store)
         atlassian_api.on(
-            "GET", f"{API}/user/list", lambda r: json_response(pages[AtlassianApiStub.query(r).get("start", "0")])
+            "GET", ACTIVE_USERS, lambda r: json_response(pages[AtlassianApiStub.query(r).get("start", "0")])
         )
 
         await connector._sync_users()
@@ -325,17 +333,224 @@ class TestUsersAndGroups:
         emails = {u.email for u in db.app_users}
         assert len(emails) == 200 and "last@example.com" in emails
         assert all(u.source_user_id != "no-mail" for u in db.app_users)
-        assert [AtlassianApiStub.query(r)["start"] for r in atlassian_api.calls("GET", f"{API}/user/list")] == ["0", "200"]
+        assert [AtlassianApiStub.query(r)["start"] for r in atlassian_api.calls("GET", ACTIVE_USERS)] == ["0", "200"]
         assert {m["group_external_id"] for m in db.migrations} >= {"u0", "last"}, (
             "access held by a stand-in group for an email-less user moves to the real user once their email is known"
         )
+
+    @pytest.mark.parametrize("version", ["9.3.0", "10.1.0", "11.1.0"])
+    async def test_a_disabled_account_with_an_active_users_address_is_not_linked(
+        self, atlassian_api, db, store, version
+    ) -> None:
+        # /user/list returns disabled accounts too; Data Center allows duplicate emails.
+        connector = await make_connector(atlassian_api, db, store)
+        numbers = [int(part) for part in version.split(".")]
+        atlassian_api.on("GET", f"{API}/server-information", {"version": version, "versionNumbers": numbers})
+        ana, disabled = user("ana", "ana@example.com"), user("ana-disabled", "ana@example.com")
+        atlassian_api.on("GET", f"{API}/user/list", {"results": [ana, disabled]})
+        atlassian_api.on("GET", ACTIVE_USERS, {"results": [ana]})
+
+        await connector._sync_users()
+
+        assert [u.source_user_id for u in db.app_users] == ["ana"]
+        assert atlassian_api.calls("GET", f"{API}/user/list") == []
+
+    @pytest.mark.parametrize("version", ["8.5.4", "9.0.0", "9.2.1"])
+    async def test_before_9_3_the_listed_users_are_linked(self, atlassian_api, db, store, version) -> None:
+        # These docs give no per-user status, so a disabled duplicate is linked too: a known limit, exact from 9.3.
+        connector = await make_connector(atlassian_api, db, store)
+        numbers = [int(part) for part in version.split(".")]
+        atlassian_api.on("GET", f"{API}/server-information", {"version": version, "versionNumbers": numbers})
+        ana, disabled = user("ana", "ana@example.com"), user("ana-disabled", "ana@example.com")
+        atlassian_api.on("GET", f"{API}/user/list", {"results": [ana, disabled]})
+        atlassian_api.on("GET", ACTIVE_USERS, {"results": [ana]})
+
+        await connector._sync_users()
+
+        assert [u.source_user_id for u in db.app_users] == ["ana", "ana-disabled"]
+        assert atlassian_api.calls("GET", ACTIVE_USERS) == []
+        assert db.withdrawn_users == []
+
+    @pytest.mark.parametrize("info", [
+        {},
+        {"versionNumbers": ["x"], "version": "x"},
+        json_response({}, status=500),
+    ])
+    async def test_an_unreadable_version_links_no_user(self, atlassian_api, db, store, info) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        atlassian_api.on("GET", f"{API}/server-information", info)
+        atlassian_api.on("GET", f"{API}/user/list", {"results": [user("ana", "ana@example.com")]})
+        atlassian_api.on("GET", ACTIVE_USERS, {"results": [user("ana", "ana@example.com")]})
+        logs = record_logs(connector)
+
+        await connector._sync_users()
+
+        assert db.app_users == []
+        assert atlassian_api.calls("GET", ACTIVE_USERS) == [] and atlassian_api.calls("GET", f"{API}/user/list") == []
+        assert any("version could not be read" in m for m in logged(logs))
+
+    async def test_a_version_that_could_not_be_read_is_asked_for_again_on_the_next_sync(
+        self, atlassian_api, db, store
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        atlassian_api.on("GET", f"{API}/server-information", json_response({}, status=503))
+        atlassian_api.on("GET", ACTIVE_USERS, {"results": [user("ana", "ana@example.com")]})
+        await connector._sync_users()
+        assert db.app_users == []
+
+        atlassian_api.on("GET", f"{API}/server-information", {"version": "10.2.0", "versionNumbers": [10, 2, 0]})
+        await connector._sync_users()
+
+        assert [u.source_user_id for u in db.app_users] == ["ana"]
+
+    @pytest.mark.parametrize("version", ["11.2.0", "12.0.0"])
+    async def test_a_newer_release_that_answers_the_active_list_links_its_users(
+        self, atlassian_api, db, store, version
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        numbers = [int(part) for part in version.split(".")]
+        atlassian_api.on("GET", f"{API}/server-information", {"version": version, "versionNumbers": numbers})
+        ana, disabled = user("ana", "ana@example.com"), user("ana-disabled", "ana@example.com")
+        atlassian_api.on("GET", f"{API}/user/list", {"results": [ana, disabled]})
+        atlassian_api.on("GET", ACTIVE_USERS, {"results": [ana]})
+
+        await connector._sync_users()
+
+        assert [u.source_user_id for u in db.app_users] == ["ana"]
+
+    @pytest.mark.parametrize(("answer", "why"), [
+        (json_response({"message": "not found"}, status=404), "404"),
+        (json_response({"message": "forbidden"}, status=403), "403"),
+        ({"users": [{"type": "known", "userKey": "ana", "email": "ana@example.com"}]}, "not a page of results"),
+        (json_response([]), "not a page of results"),
+    ])
+    async def test_a_newer_release_that_refuses_the_active_list_links_and_withdraws_no_user(
+        self, atlassian_api, db, store, answer, why
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        db.app_users.append(AppUser(
+            app_name=Connectors.CONFLUENCE_DATA_CENTER, connector_id=CONNECTOR_ID, source_user_id="bob",
+            org_id="org-1", email="bob@example.com", full_name="Bob",
+        ))
+        atlassian_api.on("GET", f"{API}/server-information", {"version": "11.2.0", "versionNumbers": [11, 2, 0]})
+        atlassian_api.on("GET", f"{API}/user/list", {"results": [user("ana", "ana@example.com")]})
+        atlassian_api.on("GET", ACTIVE_USERS, answer)
+        logs = record_logs(connector)
+
+        await connector._sync_users()
+
+        assert [u.source_user_id for u in db.app_users] == ["bob"], "nothing linked"
+        assert db.withdrawn_users == [], "a refused list is not a complete one"
+        assert atlassian_api.calls("GET", f"{API}/user/list") == []
+        assert any(why in m for m in logged(logs))
+
+    async def test_a_linked_user_the_active_list_no_longer_shows_is_withdrawn(self, atlassian_api, db, store) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        db.creator_link = SimpleNamespace(id="creator-node", source_user_id="creator_admin-user-1", email="owner@example.com")
+        ana, bob = user("ana", "ana@example.com"), user("bob", "bob@example.com")
+        atlassian_api.on("GET", ACTIVE_USERS, {"results": [ana, bob]})
+        await connector._sync_users()
+        assert db.withdrawn_users == []
+
+        atlassian_api.on("GET", ACTIVE_USERS, {"results": [ana]})   # bob was disabled
+        await connector._sync_users()
+
+        assert [u.source_user_id for u in db.withdrawn_users] == ["bob"]
+
+        atlassian_api.on("GET", ACTIVE_USERS, {"results": [ana, bob]})   # and enabled again
+        await connector._sync_users()
+        assert db.app_users[-1].source_user_id == "bob"
+
+    async def test_an_active_list_entry_without_a_key_withdraws_nobody(self, atlassian_api, db, store) -> None:
+        """The 9.3-10.0 docs list no fields for an entry: one without a userKey may be a linked user, so nobody the
+        list seems to leave out is withdrawn."""
+        connector = await make_connector(atlassian_api, db, store)
+        ana, bob = user("ana", "ana@example.com"), user("bob", "bob@example.com")
+        atlassian_api.on("GET", ACTIVE_USERS, {"results": [ana, bob]})
+        await connector._sync_users()
+
+        keyless_bob = {k: v for k, v in bob.items() if k not in ("userKey", "key")}
+        atlassian_api.on("GET", ACTIVE_USERS, {"results": [ana, keyless_bob]})
+        await connector._sync_users()
+
+        assert db.withdrawn_users == []
+
+    @pytest.mark.parametrize("second_page", [
+        json_response({"message": "busy"}, status=503),
+        {"oops": True},
+        # an empty page that still links a next one is not the end of the list
+        {"results": [], "size": 0, "_links": {"base": BASE, "next": f"{ACTIVE_USERS}?start=2"}},
+    ])
+    async def test_a_cut_active_list_withdraws_nobody(self, atlassian_api, db, store, second_page) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        ana, bob = user("ana", "ana@example.com"), user("bob", "bob@example.com")
+        atlassian_api.on("GET", ACTIVE_USERS, {"results": [ana, bob]})
+        await connector._sync_users()
+
+        pages = {"0": {"results": [ana], "size": 1, "_links": {"base": BASE, "next": f"{ACTIVE_USERS}?start=1"}}}
+        atlassian_api.on(
+            "GET", ACTIVE_USERS,
+            lambda r: (lambda page: page if isinstance(page, httpx.Response) else json_response(page))(
+                pages.get(AtlassianApiStub.query(r).get("start", "0"), second_page)
+            ),
+        )
+        await connector._sync_users()
+
+        assert db.withdrawn_users == []
+
+    async def test_an_empty_active_list_withdraws_nobody(self, atlassian_api, db, store) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        atlassian_api.on("GET", ACTIVE_USERS, {"results": [user("ana", "ana@example.com")]})
+        await connector._sync_users()
+
+        atlassian_api.on("GET", ACTIVE_USERS, {"results": []})
+        await connector._sync_users()
+
+        assert db.withdrawn_users == []
+
+    async def test_an_entry_that_is_not_a_known_user_is_not_linked(self, atlassian_api, db, store) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        untyped = {k: v for k, v in user("untyped", "untyped@example.com").items() if k != "type"}
+        atlassian_api.on("GET", ACTIVE_USERS, {"results": [
+            user("ana", "ana@example.com"),
+            {**user("odd", "odd@example.com"), "type": "something-new"},
+            {**user("anon", "anon@example.com"), "type": "anonymous"},
+            untyped,
+        ]})
+
+        await connector._sync_users()
+
+        assert [u.source_user_id for u in db.app_users] == ["ana"]
+
+    async def test_a_user_enabled_again_is_linked_on_the_next_sync(self, atlassian_api, db, store) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        await connector._sync_users()
+        assert db.app_users == []
+
+        atlassian_api.on("GET", ACTIVE_USERS, {"results": [user("ana", "ana@example.com")]})
+        await connector._sync_users()
+
+        assert [u.source_user_id for u in db.app_users] == ["ana"]
+
+    async def test_a_capped_page_of_active_users_is_followed_by_the_rows_it_returned(self, atlassian_api, db, store) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        alice, bob = user("alice", "alice@example.com"), user("bob", "bob@example.com")
+        pages = {
+            "0": {"results": [alice], "size": 1, "_links": {"base": BASE, "next": f"{ACTIVE_USERS}?start=200&limit=200"}},
+            "1": {"results": [bob], "size": 1, "_links": {"base": BASE}},
+        }
+        atlassian_api.on("GET", ACTIVE_USERS, lambda r: json_response(pages[AtlassianApiStub.query(r).get("start", "0")]))
+
+        await connector._sync_users()
+
+        assert sorted(u.email for u in db.app_users) == ["alice@example.com", "bob@example.com"]
 
     async def test_group_members_are_read_to_the_end_and_missing_emails_are_looked_up(self, atlassian_api, db, store) -> None:
         people = [user(f"m{i}", f"m{i}@example.com") for i in range(200)] + [user("ldap", "ldap@example.com")]
         connector = await make_connector(atlassian_api, db, store)
         user_pages = {"0": people[:200], "200": people[200:]}
         atlassian_api.on(
-            "GET", f"{API}/user/list",
+            "GET", ACTIVE_USERS,
             lambda r: json_response({"results": user_pages[AtlassianApiStub.query(r).get("start", "0")]}),
         )
         atlassian_api.on("GET", f"{API}/group", {"results": [{"type": "group", "name": "eng team"}]})
@@ -455,7 +670,7 @@ class TestUsersAndGroups:
                 return json_response({"results": people})
             return json_response({"message": "no group"}, status=404)
 
-        atlassian_api.on("GET", f"{API}/user/list", users)
+        atlassian_api.on("GET", ACTIVE_USERS, users)
         atlassian_api.on("GET", f"{API}/group", {"results": [{"type": "group", "name": "eng"}]})
         atlassian_api.on("GET", f"{API}/group/eng/member", members)
         await connector._sync_users()

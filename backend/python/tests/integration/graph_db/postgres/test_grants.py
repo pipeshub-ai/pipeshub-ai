@@ -487,3 +487,13 @@ async def test_a_node_read_fails_closed_unless_the_check_could_not_answer_and_re
         await w.p.get_knowledge_hub_node_access("r", "u", w.org, [])
     monkeypatch.setattr(w.p, "_q", real)
     assert (await w.p.get_knowledge_hub_node_access("r", "u", w.org, []))["id"] == "r"
+
+
+async def test_a_user_the_source_no_longer_lets_in_also_leaves_the_connectors_roles(w: World) -> None:
+    """A role membership is the user's own access too: it goes with the rest, and another connector's role stays."""
+    await w.nodes("apps", {"_key": OTHER_APP, "type": "CONNECTOR", "isActive": True})
+    await w.nodes("roles", {"_key": "r1", "connectorId": APP}, {"_key": "r2", "connectorId": OTHER_APP})
+    await w.member("u", "r1", "roles")
+    await w.member("u", "r2", "roles")
+    assert await w.p.remove_user_access_to_connector(APP, "u") == 1
+    assert {e["_to"] for e in await w.p.get_edges_from_node("users/u", "permission") if e["_to"].startswith("roles/")} == {"roles/r2"}

@@ -192,30 +192,8 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
             self.logger.debug("Skipping existing key: %s", key)
             return False  # Key was not created (already exists)
 
-        # Convert value to JSON string
-        # Use datetime-safe encoder to handle any datetime objects that may have leaked into the config
-        value_json = json.dumps(value, cls=_DatetimeSafeEncoder)
-
         encrypt_value = not is_unencrypted_key(key)
-
-        if encrypt_value:
-            # Encrypt the value
-            store_value = self.cipher.encrypt(key, value_json)
-        else:
-            # The underlying store serializes what it is given (Redis and
-            # PostgreSQL json.dumps it, etcd writes a str as-is and json.dumps
-            # anything else). So pass the decoded structure, never value_json:
-            # a pre-dumped string would be encoded a second time, and Node,
-            # which reads these keys with one JSON.parse, would get a string
-            # where it expects an object. Round-tripping through value_json
-            # keeps the datetime-safe encoding. A str stays a JSON string
-            # (value_json) so "123" or "true" reads back as the str that was
-            # written; None has no one-layer form either.
-            store_value = (
-                value_json
-                if isinstance(value, str) or value is None
-                else json.loads(value_json)
-            )
+        store_value = self._encode_value(key, value)
 
         self.logger.debug("Encrypted value for key %s", key)
 
@@ -243,10 +221,31 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
             self.logger.error("Failed to store key: %s", key)
             return False
 
+    def _encode_value(self, key: str, value: T) -> object:
+        # Datetime-safe: a datetime that slipped into a config value must not fail the write.
+        value_json = json.dumps(value, cls=_DatetimeSafeEncoder)
+        if not is_unencrypted_key(key):
+            return self.cipher.encrypt(key, value_json)
+        # The underlying store serializes what it is given (Redis and PostgreSQL json.dumps it, etcd writes a str as-is
+        # and json.dumps anything else), so a plaintext key gets the decoded structure, never value_json: a pre-dumped
+        # string would be encoded twice and Node, which reads these keys with one JSON.parse, would get a string where
+        # it expects an object. A str stays a JSON string so "123" or "true" reads back as the str that was written;
+        # None has no one-layer form either.
+        return value_json if isinstance(value, str) or value is None else json.loads(value_json)
+
     async def update_value(
         self, key: str, value: T, ttl: Optional[int] = None
     ) -> None:
         return await self.create_key(key, value, True, ttl)
+
+    async def compare_and_set(self, key: str, expected: Optional[T], new: T) -> bool:
+        # Compared decrypted: the same value encrypts to different bytes every time (a random IV),
+        # so the inner store is asked to swap the exact ciphertext read here.
+        stored = await self.store.get_key(key, raise_on_error=True)
+        current = None if stored is None else self._decode_value(key, stored)
+        if current != expected:
+            return False
+        return await self.store.compare_and_set(key, stored, self._encode_value(key, new))
 
     async def get_key(self, key: str, *, raise_on_error: bool = False) -> Optional[T]:
         try:

@@ -32,6 +32,15 @@ def _filter_op_val(f: Any) -> str:
     return (op.value if hasattr(op, "value") else str(op)).lower()
 
 
+
+def _note_member(dict_member: dict, member: object) -> None:
+    """Keep one row per user, but never let a membership awaiting approval replace an active one: the user can
+    use GitLab through the active membership, and the row decides whether they are linked."""
+    kept = dict_member.get(member.id)
+    if kept is None or getattr(kept, "membership_state", "active") != "active" \
+            or getattr(member, "membership_state", "active") == "active":
+        dict_member[member.id] = member
+
 class UsersSync:
     """Handles all GitLab user-synchronisation steps for ``GitLabConnector``."""
 
@@ -213,7 +222,7 @@ class UsersSync:
                     return False, 0
                 rows = list(pres.data or [])
                 for member in rows:
-                    dict_member[member.id] = member
+                    _note_member(dict_member, member)
                 return bool(rows), len(rows)
             except Exception as e:
                 self.logger.error("Error in syncing users for %s: %s", label, e, exc_info=True)
@@ -239,7 +248,7 @@ class UsersSync:
                 else:
                     rows = list(members_res.data or [])
                     for member in rows:
-                        dict_member[member.id] = member
+                        _note_member(dict_member, member)
                     if rows:
                         any_success = True
                     total_groups_synced += 1
@@ -385,7 +394,7 @@ class UsersSync:
                         total_groups_skipped += 1
                         continue
                     for member in members_res.data:
-                        dict_member[member.id] = member
+                        _note_member(dict_member, member)
                     total_groups_synced += 1
                 except Exception as e:
                     self.logger.error(
@@ -445,7 +454,7 @@ class UsersSync:
                         total_projects_skipped += 1
                         continue
                     for member in members_res.data:
-                        dict_member[member.id] = member
+                        _note_member(dict_member, member)
                     total_projects_synced += 1
                 except Exception as e:
                     self.logger.error("Error in syncing users for project: %s", e, exc_info=True)
@@ -501,6 +510,12 @@ class UsersSync:
                         _gitlab_timeout=120.0,
                     )
                     if user_res.success and user_res.data is not None:
+                        # The profile has no membership: keep the member row's state, or an awaiting membership
+                        # ("one of awaiting or active", https://docs.gitlab.com/api/members/) would read as active.
+                        full = getattr(user_res.data, "attributes", None)
+                        if isinstance(full, dict):
+                            membership = attributes.get("membership_state") if isinstance(attributes, dict) else None
+                            return member_id, SimpleNamespace(**full, membership_state=membership)
                         return member_id, user_res.data
                     self.logger.warning(
                         "Could not fetch full GitLab user id=%s (%s); using member payload.",
@@ -587,7 +602,24 @@ class UsersSync:
         c = self.c
         total_users_synced = total_users_skipped = 0
         app_users: list[AppUser] = []
+        blocked: set[str] = set()
         for member_id, member in dict_member.items():
+            # Member and user rows carry the account `state` ("active" in the docs' examples), members also a
+            # membership state, "one of awaiting or active" (https://docs.gitlab.com/api/members/). Anything else
+            # cannot use GitLab: "A banned user: Cannot sign in or access any repositories", a deactivated one
+            # "Cannot access repositories or the API", one pending approval "Is functionally identical to a
+            # blocked user" (https://docs.gitlab.com/administration/moderate_users/). Linked, such an account
+            # sharing an active user's address would read as that address changing hands. A row without the
+            # field (the creator stand-in) is not judged by it. An account so listed and linked before is withdrawn
+            # below; a membership awaiting approval is not, as the user may be an active member elsewhere.
+            account_unusable = isinstance(state := getattr(member, "state", None), str) and state != "active"
+            if account_unusable:
+                blocked.add(str(member_id))
+            if account_unusable or (
+                isinstance(membership := getattr(member, "membership_state", None), str) and membership != "active"
+            ):
+                total_users_skipped += 1
+                continue
             raw_email = getattr(member, "public_email", None)
             if isinstance(raw_email, str) and raw_email.strip():
                 user_email = raw_email.strip()
@@ -644,6 +676,19 @@ class UsersSync:
                         "Failed to migrate pseudo-group permissions for user %s: %s",
                         user.email, e, exc_info=True,
                     )
+
+        # The row states the account itself, so a walk that missed other groups still decides it.
+        if blocked:
+            # A failed withdrawal must not stop the membership rewrites after it, which leave these accounts out.
+            try:
+                gone = [
+                    u for u in await c.data_entities_processor.get_app_user_links(c.connector_id)
+                    if u.source_user_id in blocked
+                ]
+                if gone:
+                    await c.data_entities_processor.withdraw_app_user_access(c.connector_id, gone)
+            except Exception as e:
+                self.logger.error("Withdrawing blocked accounts failed; tried again next sync: %s", e, exc_info=True)
 
         self.logger.info(
             "Total users synced: %s, Total users skipped: %s",

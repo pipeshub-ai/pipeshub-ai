@@ -80,7 +80,8 @@ def team() -> DropboxConnector:
     p = conn.data_entities_processor
     p.org_id = "org-1"
     for name in ("on_new_records", "on_record_metadata_update", "on_record_content_update", "on_new_app_users",
-                 "withdraw_app_user_access", "on_record_group_deleted", "batch_update_nodes"):
+                 "withdraw_app_user_access", "withdraw_reported_unusable", "on_record_group_deleted",
+                 "batch_update_nodes"):
         setattr(p, name, AsyncMock())
     p.get_record_by_external_id = AsyncMock(return_value=None)
     p.get_records_by_file_path = AsyncMock(return_value=[])
@@ -561,6 +562,45 @@ class TestTeamMembers:
         assert withdrawn_ids == ["dbmid:s", "dbmid:gone"]
         team.data_entities_processor.on_record_group_deleted.assert_awaited_once_with(
             external_group_id="dbmid:gone", connector_id="dbx-1", trash_live_records=True)
+
+
+    @pytest.mark.asyncio
+    async def test_a_partial_list_still_withdraws_members_it_reports_suspended_or_invited(self, team) -> None:
+        """A later page fails: nobody missing from the list is taken for gone, but a member a read page reports
+        suspended or invited ("is no longer a member of the team", "has not joined the team yet") loses access."""
+        def member(member_id: str, status: str) -> SimpleNamespace:
+            return SimpleNamespace(profile=SimpleNamespace(
+                team_member_id=member_id, email=f"{member_id}@x.com", name=SimpleNamespace(display_name=member_id),
+                status=SimpleNamespace(_tag=status, is_active=lambda: status == "active")),
+                role=SimpleNamespace(_tag="member_only"))
+        team.data_source.team_members_list = AsyncMock(return_value=ok(SimpleNamespace(members=[
+            member("dbmid:a", "active"), member("dbmid:s", "suspended"), member("dbmid:i", "invited")],
+            has_more=True, cursor="c")))
+        team.data_source.team_members_list_continue = AsyncMock(return_value=fail("503"))
+
+        await team._sync_members()
+
+        team.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
+        team.data_entities_processor.withdraw_reported_unusable.assert_awaited_once_with(
+            "dbx-1", {"dbmid:s", "dbmid:i"})
+
+    @pytest.mark.asyncio
+    async def test_only_active_members_are_linked(self, team) -> None:
+        """An invited, suspended or removed member sharing an active member's address must not take it."""
+        def member(member_id: str, status: str) -> SimpleNamespace:
+            return SimpleNamespace(profile=SimpleNamespace(
+                team_member_id=member_id, email="maya@x.com", name=SimpleNamespace(display_name="Maya"),
+                status=SimpleNamespace(_tag=status, is_active=lambda: status == "active")),
+                role=SimpleNamespace(_tag="member_only"))
+        team.data_source.team_members_list = AsyncMock(return_value=ok(SimpleNamespace(members=[
+            member("dbmid:a", "active"), member("dbmid:i", "invited"), member("dbmid:s", "suspended"),
+            member("dbmid:r", "removed")], has_more=False, cursor="c")))
+        team.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+
+        await team._sync_members()
+
+        linked = team.data_entities_processor.on_new_app_users.await_args.args[0]
+        assert [u.source_user_id for u in linked] == ["dbmid:a"]
 
 
 class TestTeamRun:

@@ -183,6 +183,7 @@ INTEGRATION_HELPERS = (
     f"{PYTHON}/tests/permissions/rewrite_kit.py",
     f"{PYTHON}/tests/permissions/kh_layer.py",
     f"{PYTHON}/tests/permissions/kh_worlds.py",
+    f"{PYTHON}/tests/permissions/linked_readers.py",
     f"{PYTHON}/tests/permissions/scenarios/**",
     # The harness lanes the integration suites drive (the durable stack, the tool matrix, the egress stack).
     f"{PYTHON}/tests/harness_replay/search.py",

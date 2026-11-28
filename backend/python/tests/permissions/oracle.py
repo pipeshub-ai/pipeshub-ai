@@ -91,6 +91,11 @@ def principals(s: Store, user: str) -> set[str]:
     return ps
 
 
+def _links(s: Store, user: str) -> list[EdgeDict]:
+    """The user's AUTHENTICATED_AS links, less those to a withdrawn SourceAccount: it links nobody, by either link kind."""
+    return [e for e in s.out[("AUTHENTICATED_AS", user)] if not (s.kind(e["to"]) == "SourceAccount" and s.p(e["to"]).get("state") == "withdrawn")]
+
+
 def gate(s: Store, user: str, org: str, ps: set[str]) -> set[str]:
     """R4: apps of the org reached by PERMISSION or USER_APP_RELATION from a principal,
     plus apps the user authenticated as a source account in. ORG_APP_RELATION never."""
@@ -100,7 +105,7 @@ def gate(s: Store, user: str, org: str, ps: set[str]) -> set[str]:
             for e in s.out[(t, p)]:
                 if s.kind(e["to"]) == "App" and s.p(e["to"]).get("orgId") == org:
                     apps.add(e["to"])
-    for e in s.out[("AUTHENTICATED_AS", user)]:
+    for e in _links(s, user):
         a = e["props"].get("connectorId")
         if isinstance(a, str) and s.kind(a) == "App" and s.p(a).get("orgId") == org:
             apps.add(a)
@@ -122,7 +127,7 @@ def grants(s: Store, user: str, ps: set[str], apps: set[str]) -> set[str]:
     """R5: records/groups granted to a principal (or, inside its connector only, to a
     linked source account and its one-level groups), live, in a gated connector."""
     found = [n for p in ps for n in _granted_targets(s, p, typed=True)]
-    for link in s.out[("AUTHENTICATED_AS", user)]:
+    for link in _links(s, user):
         conn, src = link["props"].get("connectorId"), link["to"]
         holders = {src} | {e["to"] for e in s.out[("PERMISSION", src)]
                            if e["props"].get("type") == "USER" and s.kind(e["to"]) in ("Group", "Role", "Teams")}

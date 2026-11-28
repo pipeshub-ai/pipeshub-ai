@@ -552,13 +552,16 @@ def _permissions_for_holder(
     def add_user(email: str | None, account: str | None = None) -> None:
         if not email and not account:
             return
-        key = f"user:{email.lower()}" if email else f"account:{account}"
+        # By account: two accounts sharing an address (Data Center allows it) each keep their grant, and an account the directory
+        # holds no address for still gets one. An address-only grant to an address a grant also names by account is dropped
+        # (``_prefer_named``).
+        key = f"user:{account or email.lower()}"
         if key in seen:
             return
         seen.add(key)
-        # By email, or by the account's source id when the directory holds no email for it (resolved by that id).
-        grants.append(Permission(entity_type=EntityType.USER, email=email or None,
-                                 external_id=None if email else account, type=PermissionType.READ))
+        # The account id lets the processor tell a re-used address's new holder from the deleted account, and resolves an
+        # account without an address.
+        grants.append(Permission(entity_type=EntityType.USER, email=email or None, external_id=account, type=PermissionType.READ))
 
     def add_group(external_id: str | None) -> None:
         if not external_id:
@@ -588,7 +591,8 @@ def _permissions_for_holder(
         email, inactive, account = _holder_user_email(holder, user_by_id)
         if inactive:
             return grants, False, None
-        add_user(email, account)
+        # The account is named only beside an address the directory resolved: outside it, a person gets no grant at all.
+        add_user(email, account or (_account_of(holder.get("user")) or parameter if email else None))
         # A person who resolves to no e-mail is unread, not outside the level.
         return grants, False, None if email or account else HOLDER_USER
 
@@ -603,12 +607,12 @@ def _permissions_for_holder(
 
     if holder_type == HOLDER_REPORTER:
         if not _deactivated(fields.get("reporter")):
-            add_user(reporter_email, reporter_account)
+            add_user(reporter_email, reporter_account or (_account_of(fields.get("reporter")) if reporter_email else None))
         return grants, False, None
 
     if holder_type == HOLDER_ASSIGNEE:
         if not _deactivated(fields.get("assignee")):
-            add_user(assignee_email, assignee_account)
+            add_user(assignee_email, assignee_account or (_account_of(fields.get("assignee")) if assignee_email else None))
         return grants, False, None
 
     if holder_type == HOLDER_PROJECT_LEAD:
@@ -655,11 +659,26 @@ def _permissions_for_holder(
             else:
                 email, inactive, account = _holder_user_email({"user": entry, "parameter": entry.get("accountId")}, user_by_id)
                 if not inactive:
-                    add_user(email, account)
+                    add_user(email, account or (_account_of(entry) if email else None))
                     unresolved = unresolved or not (email or account)
         return grants, False, holder_type if unresolved else None
 
     return grants, False, str(holder_type) if holder_type else "unknown"
+
+
+def _account_of(person: object) -> str | None:
+    """The id a user field names its person by, as the user holder reads it (Cloud ``accountId``, Data Center ``key``)."""
+    if not isinstance(person, dict):
+        return None
+    account = person.get("accountId") or person.get("key")
+    return str(account) if account else None
+
+
+def _prefer_named(grants: list[Permission]) -> list[Permission]:
+    """Without the address-only user grants of an address another grant names by account: one grant per person."""
+    named = {p.email.lower() for p in grants if p.entity_type == EntityType.USER and p.email and p.external_id}
+    return [p for p in grants
+            if not (p.entity_type == EntityType.USER and p.email and not p.external_id and p.email.lower() in named)]
 
 
 def _field_entries(value: object) -> list[dict[str, Any]]:
@@ -705,7 +724,7 @@ def browse_holder_grants(
             reporter_account=reporter_account, assignee_account=assignee_account,
         )
         grants.extend(portion)
-    return grants
+    return _prefer_named(grants)
 
 
 def level_grants(
@@ -743,7 +762,7 @@ def level_grants(
         grants.extend(portion)
         if skipped_type and skipped_type not in skipped:
             skipped.append(skipped_type)
-    return grants, False, skipped
+    return _prefer_named(grants), False, skipped
 
 
 def user_grant_key(email: str | None, account: str | None) -> tuple[str, str]:

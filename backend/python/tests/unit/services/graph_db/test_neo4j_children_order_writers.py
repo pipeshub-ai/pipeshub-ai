@@ -68,6 +68,7 @@ UNTOUCHED = {
     "replace_record_entity_relations": "entity relation edges",
     "reset_indexing_status_for_connector": "records' indexing status and run fields",
     "retag_push_record": "a record's external revision",
+    "set_directory_link": "AUTHENTICATED_AS edges",
     "stage_state_compare_and_set": "StageState nodes",
     "stage_state_create": "StageState nodes",
     "stage_states_delete_unheld_revisions": "StageState nodes",

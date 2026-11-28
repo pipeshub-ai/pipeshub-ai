@@ -217,4 +217,7 @@ async def snapshot(tx: Tx, org: str, focus: set[Key], allocate, *, known_childre
     sk = await allocate(existing)
     sk.update(await load_sks(tx, org, (focus | ends) - set(sk)))      # keys of nodes that are gone stay (never deleted)
     kids = await (load_known_children(tx, org, set(nodes), focus, nodes, edges_to, sk) if known_children else load_has_children(tx, org, set(nodes)))
-    return Snapshot(nodes, edges_to, edges_from, sk, kids, org, await load_files(tx, org, focus))
+    granting = sorted({e.frm[1] for e in to if e.coll == "permission" and e.frm[0] == "sourceAccounts"})
+    accounts = {("sourceAccounts", r["id"]) for r in await tx.fetch("""/* pipeshub:kg.read_granting_accounts */ SELECT id FROM graph.nodes
+        WHERE org_id = $1 AND coll = 'sourceAccounts' AND id = ANY($2::text[])""", org, granting)} if granting else set()
+    return Snapshot(nodes, edges_to, edges_from, sk, kids, org, accounts=accounts, files=await load_files(tx, org, focus))

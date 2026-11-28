@@ -13,7 +13,7 @@ from collections.abc import Callable, Collection
 from typing import Any, Generic, TypeVar
 
 from app import edition
-from app.config.key_value_store import KeyValueStore
+from app.config.key_value_store import KeyValueStore, decode_for_compare
 from app.core.db import notify
 from app.services.pg_runtime import KV_CHANNEL, PgListener, RuntimeDb, listen_dsn
 from app.utils.logger import create_logger
@@ -42,6 +42,11 @@ _UPDATE_PRESENT = """/* pipeshub:kv.update */
 UPDATE platform.kv_entries SET value = $2, updated_at = now(),
   expires_at = CASE WHEN $3::double precision IS NULL THEN NULL ELSE now() + make_interval(secs => $3::double precision) END
 WHERE key = $1 AND (expires_at IS NULL OR expires_at > now()) RETURNING true"""
+# Under READ COMMITTED a concurrent writer makes this UPDATE wait and then re-check its WHERE on the row it committed
+# (https://www.postgresql.org/docs/17/transaction-iso.html#XACT-READ-COMMITTED), so the value test and the write are one step.
+_SET_IF_UNCHANGED = """/* pipeshub:kv.cas */
+UPDATE platform.kv_entries SET value = $3, expires_at = NULL, updated_at = now()
+WHERE key = $1 AND value = $2 AND (expires_at IS NULL OR expires_at > now()) RETURNING true"""
 _GET = """/* pipeshub:kv.get */
 SELECT value FROM platform.kv_entries WHERE key = $1 AND (expires_at IS NULL OR expires_at > now())"""
 _DELETE = """/* pipeshub:kv.delete */
@@ -166,6 +171,29 @@ class PostgresKeyValueStore(KeyValueStore[T], Generic[T]):
             if raise_on_error:
                 raise
             return None
+
+    async def compare_and_set(self, key: str, expected: T | None, new: T) -> bool:
+        try:
+            db = await self._rt.db()
+            async with db.runtime_uow(org=edition.kv_key_binds_org(key)) as tx:
+                raw = await tx.fetchval(_GET, key)
+        except Exception as e:
+            raise ConnectionError(f"Failed to read key for compare-and-set: {e}") from e
+        raw = None if raw is None else bytes(raw)
+        current = decode_for_compare(self.deserializer, raw) if raw else None
+        if current != expected:
+            return False
+        data = self.serializer(new)
+        try:
+            if raw is None:
+                swapped = await self._write(_INSERT_ABSENT, key, data, None)
+            else:
+                swapped = await self._write(_SET_IF_UNCHANGED, key, raw, data)
+        except Exception as e:
+            raise ConnectionError(f"Failed to compare-and-set key: {e}") from e
+        if swapped:
+            await self._notify_watchers(key, new)
+        return bool(swapped)
 
     async def delete_key(self, key: str) -> bool:
         try:
