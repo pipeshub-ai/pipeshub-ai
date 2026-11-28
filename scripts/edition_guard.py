@@ -61,6 +61,11 @@ OPEN_EE_ROOTS = (
     "backend/python/tests/unit/ee/permission_sync/",
     "backend/nodejs/apps/src/ee/modules/license/",
     "backend/nodejs/apps/tests/ee/modules/license/",
+    # The PipesHub Enterprise License, one copy at the top of each ee/ directory above.
+    "backend/python/app/ee/LICENSE",
+    "backend/python/tests/unit/ee/LICENSE",
+    "backend/nodejs/apps/src/ee/LICENSE",
+    "backend/nodejs/apps/tests/ee/LICENSE",
 )
 # Every ee module or path a line names, each judged on its own: a line passes only when all of them are open.
 _PYTHON_EE_TARGET = re.compile(r"\bapp\.ee(?:\.\w+)*")
@@ -341,7 +346,10 @@ def check(
         if line.path.endswith(SCRIPT_SOURCES) and script_import:
             report.errors.append(f"{where}: imports an edition directory; use an extension point instead")
         if LICENCE_MARKER in line.text:
-            report.errors.append(f"{where}: a proprietary licence marker; this repository's code is Apache-2.0")
+            report.errors.append(
+                f"{where}: a proprietary licence marker; code here is Apache-2.0, or under the Enterprise License in an"
+                " ee/ directory's LICENSE"
+            )
         if PRIVATE_REPOSITORY.search(line.text):
             report.errors.append(f"{where}: names a private repository; say \"the enterprise edition\" instead")
     for message in messages:
