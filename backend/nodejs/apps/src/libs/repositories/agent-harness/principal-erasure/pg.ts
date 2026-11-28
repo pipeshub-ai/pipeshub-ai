@@ -27,6 +27,7 @@ import {
   decodeDoc,
   docParam,
   jobsUnit,
+  jobsUnitAcrossOrgs,
   orgUnit,
   rowRegion,
 } from '../pg-documents/pg';
@@ -189,7 +190,7 @@ export class PgPrincipalErasureJobs implements PrincipalErasureJobStore<Tx> {
   }
 
   due(now: number, limit: number): Promise<PrincipalErasureJob[]> {
-    return jobsUnit(REASON, { write: false }, async (k) => {
+    return jobsUnitAcrossOrgs(REASON, { write: false }, async (k) => {
       const { rows } = await k.query<{ doc: unknown }>(
         `/* pipeshub:harness.principal_erasures_due */ SELECT doc FROM harness.principal_erasures
           WHERE next_attempt_at_ms <= $1 ORDER BY next_attempt_at_ms, org_id, id LIMIT $2`,

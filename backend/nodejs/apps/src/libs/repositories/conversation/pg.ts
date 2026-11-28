@@ -412,9 +412,10 @@ const harnessParams = (
 
 /**
  * Deployment-wide sweeps (erasure requests, the backfill's scan of every org) as the jobs role, whose row policy admits
- * every org; every statement names `org_id` where it means one org.
+ * every org; every statement names `org_id` where it means one org. Only for reads that must see every organisation:
+ * a read for one organisation opens that organisation's unit.
  */
-function jobsRead<T>(
+function jobsReadAcrossOrgs<T>(
   reason: string,
   fn: (k: PgKernelTx) => Promise<T>,
 ): Promise<T> {
@@ -2075,7 +2076,7 @@ export class PgConversationRepository
   ): Promise<ErasureRequestDto[]> {
     if (limit <= 0) return [];
     const afterId = after !== null ? (oidOf(after.sessionId) ?? null) : null;
-    return jobsRead('conversation-erasure-requests', async (k) => {
+    return jobsReadAcrossOrgs('conversation-erasure-requests', async (k) => {
       const { rows } = await k.query<{
         org_id: string;
         id: string;
@@ -2109,7 +2110,7 @@ export class PgConversationRepository
   ): Promise<SessionDeletionDto[]> {
     if (limit <= 0 || (orgId !== null && !oidOf(orgId))) return [];
     const afterId = after !== null ? (oidOf(after) ?? null) : null;
-    return jobsRead('conversation-backfill', async (k) => {
+    return jobsReadAcrossOrgs('conversation-backfill', async (k) => {
       const { rows } = await k.query<DeletionSqlRow>(
         fill(DELETION_STATES, {
           WHERE:

@@ -4,7 +4,11 @@
  * stamp. The tables are the harness branch of `backend/db` (`versions/harness`): org_id leads every key, `doc` holds
  * the document as the Mongo store keeps it, and the fields a query reads are typed or generated columns.
  */
-import { orgContextStorage, system } from '../../../context/orgContext';
+import {
+  getCurrentOrgId,
+  orgContextStorage,
+  system,
+} from '../../../context/orgContext';
 import {
   Tx as PgKernelTx,
   activeUnit,
@@ -44,23 +48,44 @@ export async function orgUnit<T>(
 }
 
 /**
- * Work that reads or writes across organisations (the run queue, the sweeps, the deployment-wide reports): as the jobs
- * role, whose row policy admits every org, in a system context when the caller has none. Statements name `org_id` in
- * every predicate that is meant for one org.
+ * A unit as the jobs role for work that is not a request's. Inside an organisation's context (a request, or work bound
+ * to one organisation) it opens that organisation's unit instead: the jobs role's row policy admits every organisation,
+ * so a statement missing its `org_id` predicate would otherwise read past the caller's own rows. Work that must reach
+ * every organisation goes through `jobsUnitAcrossOrgs`.
  */
 export function jobsUnit<T>(
   reason: string,
   opts: { write: boolean },
   fn: (k: PgKernelTx) => Promise<T>,
 ): Promise<T> {
-  const run = async (): Promise<T> => {
-    try {
-      return await withJobsUow({ write: opts.write }, fn);
-    } catch (error) {
-      throw mapPgStoreError(error);
-    }
-  };
+  const org = getCurrentOrgId();
+  if (org === undefined || org === '')
+    return jobsUnitAcrossOrgs(reason, opts, fn);
+  return mapped(() => withUow({ write: opts.write }, fn));
+}
+
+/**
+ * Work that reads or writes across organisations (the run queue, the sweeps, the deployment-wide reports): as the jobs
+ * role, whose row policy admits every org, in a system context when the caller has none. Statements name `org_id` in
+ * every predicate that is meant for one org. Each caller is one that must see every organisation, even when it runs
+ * inside a request.
+ */
+export function jobsUnitAcrossOrgs<T>(
+  reason: string,
+  opts: { write: boolean },
+  fn: (k: PgKernelTx) => Promise<T>,
+): Promise<T> {
+  const run = (): Promise<T> =>
+    mapped(() => withJobsUow({ write: opts.write }, fn));
   return orgContextStorage.getStore() ? run() : system(reason, run);
+}
+
+async function mapped<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (error) {
+    throw mapPgStoreError(error);
+  }
 }
 
 /** Deployment-wide plumbing with no org (`internal` tables: the leader leases): a unit with no organisation. */

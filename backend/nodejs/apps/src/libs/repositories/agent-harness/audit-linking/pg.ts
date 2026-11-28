@@ -12,6 +12,7 @@ import {
   decodeDoc,
   docParam,
   jobsUnit,
+  jobsUnitAcrossOrgs,
   rowRegion,
   type PgKernelTx,
 } from '../pg-documents/pg';
@@ -167,7 +168,7 @@ export async function linkAllPendingAuditPg(orgId: string): Promise<void> {
 
 /** The orgs with an append committed and not linked. */
 export function pendingAuditOrgsPg(): Promise<string[]> {
-  return jobsUnit('audit-link', { write: false }, async (k) => {
+  return jobsUnitAcrossOrgs('audit-link', { write: false }, async (k) => {
     const { rows } = await k.query<{ org_id: string }>(
       `/* pipeshub:harness.audit_pending_orgs */ SELECT DISTINCT org_id FROM harness.audit_pending`,
     );
@@ -177,7 +178,7 @@ export function pendingAuditOrgsPg(): Promise<string[]> {
 
 /** What is committed and not linked, per org (one org when given). */
 export function unlinkedAuditPg(orgId?: string): Promise<AuditUnlinked[]> {
-  return jobsUnit('audit-link', { write: false }, async (k) => {
+  return jobsUnitAcrossOrgs('audit-link', { write: false }, async (k) => {
     const { rows } = await k.query<{
       org_id: string;
       appends: number;

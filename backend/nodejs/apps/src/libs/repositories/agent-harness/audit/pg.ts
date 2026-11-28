@@ -27,7 +27,11 @@ import {
   unlinkedAuditPg,
 } from '../audit-linking/pg';
 import { durableCommits } from '../durable-transaction/commits';
-import { decodeDoc, jobsUnit, type PgKernelTx } from '../pg-documents/pg';
+import {
+  decodeDoc,
+  jobsUnitAcrossOrgs,
+  type PgKernelTx,
+} from '../pg-documents/pg';
 import { orgOrJobsUnit } from '../pg-documents/org-or-jobs';
 import { auditLinkDefer } from './mongo';
 
@@ -295,7 +299,7 @@ export class PgAuditChainStore
 
   async unanchored(limit: number): Promise<AuditHead[]> {
     for (const orgId of await pendingAuditOrgsPg()) await this.linked(orgId);
-    return jobsUnit('audit-anchor', { write: false }, async (k) => {
+    return jobsUnitAcrossOrgs('audit-anchor', { write: false }, async (k) => {
       const { rows } = await k.query<HeadRow>(
         `/* pipeshub:harness.audit_heads_unanchored */ SELECT org_id, seq, hash, anchored_seq
            FROM harness.audit_heads WHERE seq > anchored_seq ORDER BY anchored_seq, org_id LIMIT $1`,

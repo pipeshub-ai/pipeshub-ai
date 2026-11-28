@@ -2,7 +2,7 @@ import { getCurrentOrgId } from '../../../context/orgContext';
 import { activeUnit } from '../../../db';
 import { mapPgStoreError } from '../../pg';
 import { inUnit } from '../../pg-util';
-import { jobsUnit, type PgKernelTx } from './pg';
+import { jobsUnit, jobsUnitAcrossOrgs, type PgKernelTx } from './pg';
 
 /**
  * A call keyed by something that names no organisation (a link's token digest, a notice key, an outbox id): in the
@@ -34,7 +34,7 @@ export function crossOrgUnit<T>(
   fn: (k: PgKernelTx) => Promise<T>,
 ): Promise<T> {
   const open = activeUnit();
-  return open ? fn(open) : jobsUnit(reason, opts, fn);
+  return open ? fn(open) : jobsUnitAcrossOrgs(reason, opts, fn);
 }
 
 export { inBoundOrgUnit } from '../durable-transaction/bound-org';
