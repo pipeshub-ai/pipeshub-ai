@@ -1596,7 +1596,7 @@ describe('the reader check: who may see an answer', () => {
     const WITHHELD_TEXT = 'Answered a question from the assistant.'
     // To who may see the card: still a card's answer, so the card reads as answered, with nothing of what was picked.
     const PICKS_WITHHELD = `User selections:\n${WITHHELD_TEXT}`
-    // The same of an approval card's answer: it still opens as one, with no word of the decision.
+    // An approval card's answer, to anyone but its author: it still opens as one, with no word of the decision.
     const APPROVAL_WITHHELD = `Tool approval:\n${WITHHELD_TEXT}`
     type Row = ReaderRow & Record<string, unknown>
     const perRecordView = async <M extends object>(rows: M[]): Promise<M[]> => rows
@@ -1636,17 +1636,67 @@ describe('the reader check: who may see an answer', () => {
       expect(byId(await view(DANA, t.rows, w), t.reply._id).content).to.equal(SELECTIONS)
     })
 
-    it("an approval answer bound to the card: Carol, who may see it, reads an approval's answer with no decision; Bob only that it was answered", async () => {
-      // The app joins a row in that form to the card's row, so what the answer carried on still reads under the card.
+    /** Dana's run that stopped on an approval card in its answer, her decision as the app stores it (no card bound), and the run it carried on. */
+    const approvalTurn = (decision = 'Tool approval: allow') => {
+      const asked: Row = { ...question('@assistant file the login bug'), runId: 'run-1' }
+      const holder = answer('I will file it.', { runId: 'run-1', inReplyTo: asked._id }, { direct: { records: [R] } })
+      const decided: Row = { ...question(decision), runId: 'run-2' }
+      const resumed = answer('Filed as OPS-7.', { runId: 'run-2', inReplyTo: asked._id }, { direct: { records: [R] } })
+      return { asked, holder, decided, resumed, rows: [asked, holder, decided, resumed] }
+    }
+
+    it("Dana's decision on an approval card, stored bound to no card: nobody else reads it, and no one else's model gets it", async () => {
+      const t = approvalTurn()
+      const w = world(t.rows)
+      // Carol may read the answer the card is in, Bob may not: both get the form the app joins to the card's row, with
+      // the decision taken out. For Bob that row is hidden, so the room reads as it did before the answer.
+      for (const who of [CAROL, BOB]) {
+        const got = byId(await view(who, t.rows, w), t.decided._id)
+        expect(got.content, who).to.equal(APPROVAL_WITHHELD)
+        expect(JSON.stringify(got), who).to.not.include('allow')
+        const models = (await includableRows(reader(who), session, t.rows, { deps: w.deps })) as Row[]
+        expect(byId(models, t.decided._id).content, `${who}'s model`).to.equal(WITHHELD_TEXT)
+      }
+      expect(byId(await view(DANA, t.rows, w), t.decided._id).content).to.equal('Tool approval: allow')
+      const danas = (await includableRows(reader(DANA), session, t.rows, { deps: w.deps })) as Row[]
+      expect(byId(danas, t.decided._id).content).to.equal('Tool approval: allow')
+    })
+
+    it('the same for a deny with space before it, read alone on a feed page, or bound to a card by a resume', async () => {
+      const t = approvalTurn('  Tool approval: deny')
+      const w = world(t.rows)
+      for (const who of [CAROL, BOB]) {
+        const got = byId(await view(who, [t.decided], w), t.decided._id)
+        expect(got.content, who).to.equal(APPROVAL_WITHHELD)
+        expect(JSON.stringify(got), who).to.not.include('deny')
+      }
+      // A request can name a question card as what it resumes and still send an approval's text: it reads the same.
+      const c = cardTurn()
+      const bound: Row = { ...c.reply, content: 'Tool approval: allow' }
+      const rows = [c.asked, c.card, c.waiting, bound, c.resumed]
+      const cw = world(rows)
+      for (const who of [CAROL, BOB]) {
+        expect(byId(await view(who, rows, cw), bound._id).content, who).to.equal(APPROVAL_WITHHELD)
+      }
+      expect(byId(await view(DANA, rows, cw), bound._id).content).to.equal('Tool approval: allow')
+    })
+
+    it("Dana's answers to cards, read with no id, reach no one else's model either: only that each was answered", async () => {
       const t = cardTurn()
-      const approval: Row = { ...t.reply, content: 'Tool approval: allow' }
-      const rows = [t.asked, t.card, t.waiting, approval, t.resumed]
+      const picks: Row = { ...t.reply }
+      const decided: Row = { ...question('Tool approval: allow') }
+      delete picks._id
+      delete decided._id
+      const rows = [t.asked, t.card, t.waiting, picks, decided]
       const w = world(rows)
-      expect(byId(await view(CAROL, rows, w), approval._id).content).to.equal(APPROVAL_WITHHELD)
-      expect(byId(await view(BOB, rows, w), approval._id).content).to.equal(WITHHELD_TEXT)
-      expect(byId(await view(DANA, rows, w), approval._id).content).to.equal('Tool approval: allow')
-      const carols = (await includableRows(reader(CAROL), session, rows, { deps: w.deps })) as Row[]
-      expect(byId(carols, approval._id).content, "nor does anyone else's model get the decision").to.equal(WITHHELD_TEXT)
+      for (const who of [BOB, CAROL]) {
+        const models = (await includableRows(reader(who), session, rows, { deps: w.deps })) as Row[]
+        const idless = models.filter((r) => r.messageType === 'user_query' && r._id === undefined)
+        expect(idless.map((r) => r.content), who).to.deep.equal([WITHHELD_TEXT, WITHHELD_TEXT])
+      }
+      const danas = (await includableRows(reader(DANA), session, rows, { deps: w.deps })) as Row[]
+      const hers = danas.filter((r) => r.messageType === 'user_query' && r._id === undefined)
+      expect(hers.map((r) => r.content)).to.deep.equal([SELECTIONS, 'Tool approval: allow'])
     })
 
     it("Dana's own model, where others read the chat, gets her card whole: its questions go with its run's answer, sealed", async () => {

@@ -698,15 +698,35 @@ const APPROVAL_TEXT =
   // eslint-disable-next-line no-control-regex -- matching those characters is the point
   /^[\s\x1c-\x1f\x85]*Tool approval:/u;
 
+/**
+ * An answer to an approval card, as the app stores it: its decision alone, bound to no card (`bindApproval` keeps the
+ * card's row on the request only).
+ */
+const isApprovalAnswer = (row: ReaderRow): boolean =>
+  row.messageType === 'user_query' &&
+  typeof row.content === 'string' &&
+  APPROVAL_TEXT.test(row.content);
+
+/**
+ * What a reader other than its author gets of an answer to a card. An approval's answer always keeps the form the app
+ * joins to the card's row, with no word of the decision: to a reader who may not see the card that row is hidden, so
+ * the room reads as it did before the answer.
+ */
 const withheldCardAnswer = <T extends object>(row: T, cardShown = false): T => {
   const r = row as Plain;
-  const text = cardShown && typeof r.content === 'string' ? r.content : '';
-  const content = SELECTIONS_TEXT.test(text)
-    ? CARD_PICKS_WITHHELD
-    : APPROVAL_TEXT.test(text)
-      ? APPROVAL_DECISION_WITHHELD
+  const text = typeof r.content === 'string' ? r.content : '';
+  const content = APPROVAL_TEXT.test(text)
+    ? APPROVAL_DECISION_WITHHELD
+    : cardShown && SELECTIONS_TEXT.test(text)
+      ? CARD_PICKS_WITHHELD
       : CARD_ANSWER_WITHHELD;
   const view: Plain = { ...r, content };
+  return view as T;
+};
+
+/** What every other person's model gets of an answer to a card: that it was answered, never with what. */
+const cardAnswerForModel = <T extends object>(row: T): T => {
+  const view: Plain = { ...(row as Plain), content: CARD_ANSWER_WITHHELD };
   return view as T;
 };
 
@@ -4100,9 +4120,23 @@ async function judgeRows(
   rows.forEach((row, i) => {
     const id = idOf(row._id);
     const named = answeredCardOf(row);
-    if (id === undefined || (named === undefined && !isUnboundCardAnswer(row)))
+    const approval = isApprovalAnswer(row);
+    if (
+      id === undefined ||
+      (named === undefined && !approval && !isUnboundCardAnswer(row))
+    )
       return;
     if (rowAuthorOf(row, rowsOwnerId) === reader.userId) return;
+    // An approval's answer holds no word of its card, only the decision, which nobody else is given: its form does not
+    // depend on whether the reader may see the card (`withheldCardAnswer`).
+    if (approval) {
+      out.set(id, {
+        verdict: 'visible',
+        cardWithheld: true,
+        validUntil: forever,
+      });
+      return;
+    }
     const card = named !== undefined ? cards.cards.get(named) : cardBefore(i);
     const cardId = card === undefined ? undefined : idOf(card._id);
     const shown =
@@ -6344,7 +6378,10 @@ export async function includableRows<R extends object>(
     const own = author !== undefined && author === reader.userId;
     const type = row.messageType;
     if (type === 'user_query' || type === 'note') {
-      if (verdict?.cardWithheld === true) return sealed(withheldCardAnswer(m));
+      // Someone else's answer to a card reaches no model but its author's, a row read with no id included.
+      if (verdict?.cardWithheld === true || (!own && answersACard(row))) {
+        return sealed(cardAnswerForModel(m));
+      }
       return sealed(own ? m : withoutQuote(m));
     }
     if (type === 'system' || type === 'feedback') return m;

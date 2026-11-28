@@ -453,6 +453,21 @@ const isUnboundCardAnswer = (row: ReaderRow): boolean =>
   typeof row.content === 'string' &&
   row.content.trimStart().startsWith('User selections:');
 
+/** An answer to an approval card, as the app stores it: its decision alone, bound to no card. */
+const isApprovalAnswer = (row: ReaderRow): boolean =>
+  row.messageType === 'user_query' &&
+  typeof row.content === 'string' &&
+  // eslint-disable-next-line no-control-regex -- Python's `str.lstrip()` strips these too
+  /^[\s\x1c-\x1f\x85]*Tool approval:/u.test(row.content);
+
+/** A question bound to the card it answers, or in the words the app answers a card with. */
+const answersACard = (row: ReaderRow): boolean =>
+  row.messageType === 'user_query' &&
+  (row.answersCard != null ||
+    (typeof row.content === 'string' &&
+      // eslint-disable-next-line no-control-regex -- Python's `str.lstrip()` strips these too
+      /^[\s\x1c-\x1f\x85]*(?:User selections|Tool approval):/u.test(row.content)));
+
 /** What a reader who may not see a card gets of a question that answers it: that it was answered, never with what. */
 export const CARD_ANSWER_WITHHELD = 'Answered a question from the assistant.';
 
@@ -2367,9 +2382,15 @@ async function judgeRows(
   rows.forEach((row, i) => {
     const id = idOf(row._id);
     const named = answeredCardOf(row);
-    if (id === undefined || (named === undefined && !isUnboundCardAnswer(row)))
+    const approval = isApprovalAnswer(row);
+    if (id === undefined || (named === undefined && !approval && !isUnboundCardAnswer(row)))
       return;
     if (rowAuthorOf(row, rowsOwnerId) === reader.userId) return;
+    // An approval's answer holds no word of its card, only the decision, which nobody else is given.
+    if (approval) {
+      out.set(id, { verdict: 'visible', cardWithheld: true, validUntil: forever });
+      return;
+    }
     const card = named !== undefined ? cards.cards.get(named) : cardBefore(i);
     const cardId = card === undefined ? undefined : idOf(card._id);
     const shown =
@@ -3363,7 +3384,8 @@ export async function includableRows<R extends object>(
     const own = author !== undefined && author === reader.userId;
     const type = row.messageType;
     if (type === 'user_query' || type === 'note') {
-      if (verdict?.cardWithheld === true) return sealed(withheldCardAnswer(m));
+      // Someone else's answer to a card reaches no model but its author's, a row read with no id included.
+      if (verdict?.cardWithheld === true || (!own && answersACard(row))) return sealed(withheldCardAnswer(m));
       return sealed(own ? m : withoutQuote(m));
     }
     if (type === 'system' || type === 'feedback') return m;
