@@ -4,6 +4,7 @@ Handles agent instances, templates, chat, and permissions using graph-based arch
 """
 
 import asyncio
+import copy
 import json
 import logging
 import uuid
@@ -122,11 +123,15 @@ from app.modules.agents.knowledge_scope import (
     NO_KB_SELECTED_FILTER,
     UnreadableSourceLimitError,
     admit_caller_project_collections,
+    hide_limited_names,
+    hide_names_the_viewer_cannot_open,
+    keep_hidden_titles,
     project_files_knowledge,
     read_source_limit,
     resolve_agent_filters,
     service_account_knowledge,
     source_reach,
+    with_current_limits,
 )
 from app.modules.agents.qna.router import (
     RouteDecision,  # noqa: F401 - re-exported for backward-compat imports (see below)
@@ -3601,6 +3606,10 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
             versioning = None
 
         agent.update(perm)
+        await hide_names_the_viewer_cannot_open(
+            services["graph_provider"], [agent.get("knowledge") or []], user_context["userId"], org_key,
+            is_admin=is_request_admin(request),
+        )
         if versioning is not None:
             agent["versioning"] = versioning
 
@@ -3710,7 +3719,9 @@ async def get_agent_version(request: Request, agent_id: str, version: int) -> JS
         found = await AgentVersionStore(services["graph_provider"]).get(current_org_id(), agent_id, version)
         if found is None:
             raise HTTPException(status_code=404, detail="This agent has no such version")
-        return JSONResponse(status_code=200, content={"version": found.wire()})
+        wire = found.wire()
+        await _hide_frozen_names(request, services["graph_provider"], wire["definition"], user_context["userId"])
+        return JSONResponse(status_code=200, content={"version": wire})
     except HTTPException:
         raise
     except Exception as e:
@@ -3845,6 +3856,15 @@ def _first_problem(error: ValidationError) -> str:
     return f"{where}: {first.get('msg', 'not valid')}"
 
 
+async def _hide_frozen_names(request: Request, graph: IGraphDBProvider, definition: dict[str, Any], user_id: str) -> None:
+    """A frozen definition's sources, named only where their connector's limit, as it is now, admits the reader."""
+    knowledge = definition.get("knowledge") or []
+    await with_current_limits(graph, knowledge)
+    await hide_names_the_viewer_cannot_open(
+        graph, [knowledge], user_id, current_org_id(), is_admin=is_request_admin(request),
+    )
+
+
 async def _exported_definition(
     store: AgentVersionStore, org_key: str, agent_id: str, draft: dict[str, Any], version: str | None,
 ) -> tuple[dict[str, Any], int | None, str | None]:
@@ -3876,6 +3896,9 @@ async def export_agent(request: Request, agent_id: str, version: str | None = No
         definition, number, digest = await _exported_definition(
             AgentVersionStore(graph), org_key, agent_id, draft, version,
         )
+        # A source hidden from the reader is named by its id, which the portable form leaves out as a gone source.
+        definition = copy.deepcopy(definition)
+        await _hide_frozen_names(request, graph, definition, user_context["userId"])
         llm_entries = await configured_llm_entries(services["config_service"], fresh=True)
         try:
             agent = portable_agent(definition, llm_entries)
@@ -3896,7 +3919,9 @@ async def export_agent(request: Request, agent_id: str, version: str | None = No
         raise HTTPException(status_code=500, detail=action_failed("export this agent")) from e
 
 
-async def _import_catalog(services: dict[str, Any], org_key: str, user_id: str) -> ImportCatalog:
+async def _import_catalog(
+    services: dict[str, Any], org_key: str, user_id: str, *, is_admin: bool = False,
+) -> ImportCatalog:
     """What the importer can bind to: the configured models, and the actions, MCP servers and sources they see.
     A store that cannot be read fails the import rather than reading as 'nothing here'."""
     from app.agents.mcp.service import load_visible_instances
@@ -3913,6 +3938,8 @@ async def _import_catalog(services: dict[str, Any], org_key: str, user_id: str) 
         services["graph_provider"].get_user_connector_instances(
             collection=CollectionNames.APPS.value, user_id=user_id, org_id=org_key,
             team_scope=ConnectorScope.TEAM.value, personal_scope=ConnectorScope.PERSONAL.value,
+            # A member binds, and is told of, only the connectors their limit admits; an admin sees every one.
+            apply_access_limit=not is_admin,
         ),
     )
     return ImportCatalog(
@@ -3999,7 +4026,9 @@ async def import_agent(request: Request) -> JSONResponse:
             raise InvalidRequestError("the body is {'agent': <portable agent>, 'bind'?: 'named' | 'sole_instance'}")
         services = await get_services(request)
         user_context = _get_user_context(request)
-        catalog = await _import_catalog(services, current_org_id(), user_context["userId"])
+        catalog = await _import_catalog(
+            services, current_org_id(), user_context["userId"], is_admin=is_request_admin(request),
+        )
         try:
             plan = plan_import(body["agent"], catalog, sole_instance=body.get("bind") == "sole_instance")
         except ValueError as e:
@@ -4366,6 +4395,14 @@ async def get_agents(
         else:
             agents = result.get("agents", [])
             total_items = int(result.get("totalItems", len(agents)))
+
+        await hide_names_the_viewer_cannot_open(
+            services["graph_provider"],
+            [agent.get("knowledge") or [] for agent in agents if isinstance(agent, dict)],
+            user_context["userId"],
+            org_key,
+            is_admin=is_request_admin(request),
+        )
 
         creator_keys = {
             str(agent["createdBy"])
@@ -4889,6 +4926,11 @@ async def _write_draft(
         knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []))
         await _refuse_limit_over_the_cap(
             knowledge_sources, services["graph_provider"], org_key, logger,
+        )
+        # A source the limit refuses this editor came to them without its saved titles: keep the stored ones.
+        await keep_hidden_titles(
+            services["graph_provider"], knowledge_sources, agent.get("knowledge") or [], user_context["userId"], org_key,
+            is_admin=is_request_admin(request),
         )
 
         graph_provider = services["graph_provider"]
@@ -5925,6 +5967,12 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 timer.mark("mcp_cfg")
 
                 agent_knowledge = agent.get("knowledge", [])
+                # The names reach the prompt and the answer: a limited connector a member cannot open is named by its id.
+                # Weighed by its limit as it is now: with the org harness on, agent_for_chat served a published version.
+                hidden_connector_ids = await hide_limited_names(
+                    graph_provider, agent_knowledge, user_context.get("userId", ""), org_key, logger,
+                    is_admin=is_request_admin(request),
+                )
                 # An unbound service agent would read a collection as its creator, so it reads none,
                 # the caller's project collection included (project_files_knowledge reads it from filters).
                 collections_allowed = not is_service_account or bool(agent.get("serviceAccountUserId"))
@@ -6011,9 +6059,11 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                         ),
                     ]
 
+                # A connector hidden above gets no config: its sync filters' labels (projects, folders, channels)
+                # would name it in the prompt. The configs only describe a source; they never set what is searched.
                 _stream_conn_ids = [
                     k["connectorId"] for k in agent_knowledge
-                    if isinstance(k, dict) and k.get("connectorId")
+                    if isinstance(k, dict) and k.get("connectorId") and k["connectorId"] not in hidden_connector_ids
                 ]
                 web_search_provider = _parse_web_search(agent.get("webSearch"))
                 if web_search_provider:

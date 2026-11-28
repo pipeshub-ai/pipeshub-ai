@@ -321,17 +321,24 @@ class InMemoryGraph:
     # templates
     async def get_user_connector_instances(
         self, collection: str, user_id: str, org_id: str, team_scope: str, personal_scope: str,
-        transaction: str | None = None,
+        transaction: str | None = None, *, apply_access_limit: bool = False,
     ) -> list[dict]:
         """As the providers answer: the org's team-scoped connectors, and the user's own personal ones; a failed read
-        is no connectors, as the real providers answer it."""
+        is no connectors, as the real providers answer it. With ``apply_access_limit``, only those whose limit admits
+        the user, as the real queries weigh it (membership read from the user's org here)."""
         try:
             self._enter("get_user_connector_instances", collection, user_id, org_id)
         except Exception:
             return []
+        member_of = {u.get("orgId") for u in USERS.values() if u["userId"] == user_id}
+
+        def admitted(doc: dict[str, Any]) -> bool:
+            limit = doc.get("accessLimit")
+            return (not apply_access_limit or limit is None or (limit == "CREATOR" and doc.get("createdBy") == user_id)
+                    or (limit == "ORG" and doc.get("orgId") in member_of))
         return [
             copy.deepcopy(doc) for doc in self.nodes.get(collection, {}).values()
-            if doc.get("orgId") == org_id
+            if doc.get("orgId") == org_id and admitted(doc)
             and (doc.get("scope") == team_scope or (doc.get("scope") == personal_scope and doc.get("createdBy") == user_id))
         ]
 

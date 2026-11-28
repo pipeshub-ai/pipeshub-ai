@@ -1002,19 +1002,22 @@ class ConnectorRegistry:
                 'createdBy': instance_data.get('createdBy'),
                 'updatedBy': instance_data.get('updatedBy'),
                 'isLocked': instance_data.get('isLocked', False),
+                # Set: only whom the limit admits may open it (see AccessLimit); an admin's list marks it.
+                'accessLimit': instance_data.get('accessLimit'),
                 'ownerDeviceId': instance_data.get('ownerDeviceId'),
                 'ownerDeviceName': instance_data.get('ownerDeviceName'),
             })
 
         return connector_info
 
-    async def _get_all_connector_instances(self, user_id: str, org_id: str) -> list[dict[str, Any]]:
+    async def _get_all_connector_instances(self, user_id: str, org_id: str, *, is_admin: bool = False) -> list[dict[str, Any]]:
         """
         Get all connector instances from the database.
 
         Returns:
             - All personal connectors created by the user
-            - All team connectors in the organization (regardless of creator)
+            - All team connectors in the organization (regardless of creator),
+              except, for a member, a limited one its limit does not admit them to
         """
         connectors = []
         graph_provider = await self._get_graph_provider()
@@ -1026,6 +1029,7 @@ class ConnectorRegistry:
             org_id=org_id,
             team_scope=ConnectorScope.TEAM.value,
             personal_scope=ConnectorScope.PERSONAL.value,
+            apply_access_limit=not is_admin,
         )
 
         for document in documents:
@@ -1245,6 +1249,8 @@ class ConnectorRegistry:
             is_configured=is_configured,
             is_agent_active=is_agent_active,
             allowed_connector_types=list(self._connectors),
+            # A member does not see a connector they cannot open under its limit; an admin sees it, marked.
+            apply_access_limit=not is_admin,
         )
 
         connector_instances = []
@@ -1290,6 +1296,8 @@ class ConnectorRegistry:
         self,
         user_id: str,
         org_id: str,
+        *,
+        is_admin: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Get all active connector instances (isActive = true) with scope-based filtering.
@@ -1297,10 +1305,11 @@ class ConnectorRegistry:
         Args:
             user_id: User ID requesting the instances
             org_id: Organization ID
+            is_admin: An admin sees every limited connector; a member only one its limit admits
         Returns:
             List of active connector instances
         """
-        result = await self._get_all_connector_instances(user_id, org_id)
+        result = await self._get_all_connector_instances(user_id, org_id, is_admin=is_admin)
 
         return [
             instance for instance in result
@@ -1345,6 +1354,8 @@ class ConnectorRegistry:
         self,
         user_id: str,
         org_id: str,
+        *,
+        is_admin: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Get all inactive connector instances (isActive = false) with scope-based filtering.
@@ -1352,10 +1363,11 @@ class ConnectorRegistry:
         Args:
             user_id: User ID requesting the instances
             org_id: Organization ID
+            is_admin: An admin sees every limited connector; a member only one its limit admits
         Returns:
             List of inactive connector instances
         """
-        result = await self._get_all_connector_instances(user_id, org_id)
+        result = await self._get_all_connector_instances(user_id, org_id, is_admin=is_admin)
 
         return [
             instance for instance in result

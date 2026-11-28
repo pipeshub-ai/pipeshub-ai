@@ -11,8 +11,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
-from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from app.services.graph_db.arango.arango_http_provider import (
+    ArangoHTTPProvider,
+    _aql_access_limit_filter,
+    _aql_access_limit_user,
+)
+from app.services.graph_db.neo4j.neo4j_provider import (
+    Neo4jProvider,
+    _cypher_access_limit_keeps,
+)
 
 ORG = "org-acme"
 NEO4J_ORG_PREDICATE = "EXISTS { MATCH (:Organization {id: $org_id})-[:ORG_APP_RELATION]->(doc) }"
@@ -111,3 +118,52 @@ class TestArangoConnectorListsAreOrgScoped:
         assert ARANGO_ORG_PREDICATE in call.args[0]
         assert call.kwargs["bind_vars"]["org_handle"] == f"organizations/{ORG}"
         assert call.kwargs["bind_vars"]["@org_edge_collection"] == "orgAppRelation"
+
+
+class TestTheAccessLimitIsAskedOnlyWhenTheCallerSaysSo:
+    """A member's connectors page asks the lists with ``apply_access_limit`` (the limit filter in count and page alike); an
+    admin's, and every other caller of the lists, without it, so they read as before. The filter's answers are checked on
+    real databases (``tests/permissions/test_access_limit_reach.py``)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kwargs", LISTING_CALLS)
+    @pytest.mark.parametrize("limited", [True, False])
+    async def test_neo4j_filtered_list(self, neo4j_provider: Neo4jProvider, kwargs: dict, limited: bool) -> None:
+        await neo4j_provider.get_filtered_connector_instances(
+            collection="apps", edge_collection="orgAppRelation", org_id=ORG, user_id="user-1", apply_access_limit=limited, **kwargs,
+        )
+        for call in neo4j_provider.client.execute_query.await_args_list:
+            assert (_cypher_access_limit_keeps("doc") in call.args[0]) is limited
+            assert call.kwargs["parameters"]["user_id"] == "user-1" and call.kwargs["parameters"]["org_id"] == ORG
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limited", [True, False])
+    async def test_neo4j_user_instances(self, neo4j_provider: Neo4jProvider, limited: bool) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.get_user_connector_instances(
+            collection="apps", user_id="user-1", org_id=ORG, team_scope="team", personal_scope="personal", apply_access_limit=limited,
+        )
+        assert (_cypher_access_limit_keeps("n") in neo4j_provider.client.execute_query.await_args.args[0]) is limited
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kwargs", LISTING_CALLS)
+    @pytest.mark.parametrize("limited", [True, False])
+    async def test_arango_filtered_list(self, arango_provider: ArangoHTTPProvider, kwargs: dict, limited: bool) -> None:
+        await arango_provider.get_filtered_connector_instances(
+            collection="apps", edge_collection="orgAppRelation", org_id=ORG, user_id="user-1", apply_access_limit=limited, **kwargs,
+        )
+        for call in arango_provider.execute_query.await_args_list:
+            query = call.args[0]
+            assert (query.startswith(_aql_access_limit_user()) and _aql_access_limit_filter() in query) is limited
+            assert call.kwargs["bind_vars"]["org_id"] == ORG and call.kwargs["bind_vars"]["user_id"] == "user-1"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limited", [True, False])
+    async def test_arango_user_instances(self, arango_provider: ArangoHTTPProvider, limited: bool) -> None:
+        arango_provider.execute_query = AsyncMock(return_value=[])
+        await arango_provider.get_user_connector_instances(
+            collection="apps", user_id="user-1", org_id=ORG, team_scope="team", personal_scope="personal", apply_access_limit=limited,
+        )
+        call = arango_provider.execute_query.await_args
+        assert (_aql_access_limit_filter() in call.args[0]) is limited
+        assert call.kwargs["bind_vars"].get("org_id") == (ORG if limited else None)

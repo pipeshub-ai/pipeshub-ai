@@ -5,7 +5,9 @@ store's answers.
 * entity search: every app it returns is one the oracle's gate admits (R4), a limited app (``accessLimit`` set) is returned
   exactly when the gate admits it, and every record group it returns belongs to one of the apps it returns;
 * team list: a limited team connector is listed exactly when it is of the request's org and its limit admits the viewer
-  (``oracle._limit_admits``, membership read from the edge to the app's own org); one of another org is never listed.
+  (``oracle._limit_admits``, membership read from the edge to the app's own org); one of another org is never listed;
+* connectors page lists (``list_findings``): with the limit applied, a member is listed every unlimited app of the org and a limited
+  one exactly when its limit admits them; with it not applied (an admin), every app of the org.
 
 The entity path reads fewer edges than the gate (no group or role edge to an app), so an unlimited app the gate admits may be
 missing from it: that is not a finding. A limited app is gated by its limit alone, so there it must be exact.
@@ -24,6 +26,8 @@ if TYPE_CHECKING:
 
 EntityFn = Callable[[str], Awaitable[dict | None]]  # the viewer's store id -> get_entity_access_context's answer
 TeamFn = Callable[[str], Awaitable[list[str]]]  # the viewer's store id -> the limited and unlimited team apps listed
+# the viewer's store id and whether the limit applies -> the apps each connector list query returns, by query
+ListFn = Callable[[str, bool], Awaitable[dict[str, set[str]]]]
 
 
 def _limited(store: oracle.Store, org: str) -> set[str]:
@@ -55,4 +59,27 @@ async def reach_findings(world: World, graph: Graph, ns: Namespace, entity: Enti
             admits = {a for a in limited if oracle._limit_admits(store, user, a)}
             found += [f"leak team {viewer}: limited app {ns.local(a)}" for a in sorted(listed - admits)]
             found += [f"gap team {viewer}: limited app {ns.local(a)}" for a in sorted(admits - listed)]
+    return found
+
+
+def org_apps(graph: Graph, ns: Namespace) -> list[str]:
+    """The world's apps of its own org: what the connector lists reach once each has the org's edge to it (``ORG_APP_RELATION``,
+    which the conformance worlds do not write; a test adds it)."""
+    return [n["id"] for n in graph["nodes"] if n["kind"] == "App" and n["props"].get("orgId") == ns.org]
+
+
+async def list_findings(world: World, graph: Graph, ns: Namespace, listed: ListFn) -> list[str]:
+    """Every disagreement of the connector lists with the limit, for every user of the world (``leak`` or ``gap`` first)."""
+    store = oracle.Store(graph)
+    apps = set(org_apps(graph, ns))
+    limited = _limited(store, ns.org)
+    found: list[str] = []
+    for viewer in world.users():
+        user = ns.id(viewer)
+        admits = {a for a in apps if a not in limited or oracle._limit_admits(store, user, a)}
+        for query, got in (await listed(user, True)).items():
+            found += [f"leak {query} {viewer}: app {ns.local(a)}" for a in sorted(got - admits)]
+            found += [f"gap {query} {viewer}: app {ns.local(a)}" for a in sorted(admits - got)]
+        for query, got in (await listed(user, False)).items():
+            found += [f"gap {query} unlimited {viewer}: app {ns.local(a)}" for a in sorted(apps - got)]
     return found

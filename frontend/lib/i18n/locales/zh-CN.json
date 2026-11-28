@@ -3820,7 +3820,9 @@
           "queuedTooltip": "正在等待空闲的同步名额。名额空出后将自动开始。",
           "removing": "正在移除",
           "removingTooltip": "此实例正在被删除。"
-        }
+        },
+        "limited": "受限",
+        "limitedTooltip": "此连接器的访问受到限制。只有其限制允许的人员才能看到它或打开其内容。作为管理员，您可以在此处看到它以便进行管理。"
       },
       "localFsDesktop": {
         "offlineToast": "请在拥有此文件夹的电脑上打开 PipesHub 桌面应用以进行同步。",

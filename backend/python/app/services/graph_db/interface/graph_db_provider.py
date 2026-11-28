@@ -6722,6 +6722,8 @@ class IGraphDBProvider(ABC):
         team_scope: str,
         personal_scope: str,
         transaction: str | None = None,
+        *,
+        apply_access_limit: bool = False,
     ) -> list[dict]:
         """
         Get all connector instances accessible to a user (personal + team).
@@ -6733,6 +6735,9 @@ class IGraphDBProvider(ABC):
             team_scope: Team scope value (e.g., "team")
             personal_scope: Personal scope value (e.g., "personal")
             transaction: Optional transaction ID
+            apply_access_limit: Leave out a limited connector (``accessLimit`` set) unless it is
+                of ``org_id`` and its limit admits the user, as the team list for a member does.
+                A connectors page for a member sets it; an admin's leaves it off.
 
         Returns:
             List[Dict]: List of connector instance documents
@@ -6761,6 +6766,7 @@ class IGraphDBProvider(ABC):
         is_agent_active: bool | None = None,
         allowed_connector_types: list[str] | None = None,
         transaction: str | None = None,
+        apply_access_limit: bool = False,
     ) -> tuple[list[dict], int]:
         """
         Get filtered connector instances with pagination.
@@ -6790,6 +6796,9 @@ class IGraphDBProvider(ABC):
             allowed_connector_types: When set, only connectors whose type is in
                 this list are counted and returned
             transaction: Optional transaction ID
+            apply_access_limit: Leave out a limited connector (``accessLimit`` set), in the
+                count too, unless it is of ``org_id`` and its limit admits the user, whatever
+                ``scope``. Independent of ``is_admin``, which only widens past edges.
 
         Returns:
             Tuple of (documents, total_count):

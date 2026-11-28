@@ -6,8 +6,11 @@ from __future__ import annotations
 
 import pytest
 
+from app.config.constants.arangodb import CollectionNames
+
 from . import gen
-from .limit_reach import TeamFn, reach_findings
+from .graph import TS
+from .limit_reach import ListFn, TeamFn, list_findings, org_apps, reach_findings
 from .scenario import load_all
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(3600)]
@@ -54,4 +57,38 @@ async def test_entity_search_and_the_team_list_reach_a_limited_connector_exactly
     assert limited, "no world carries an access limit: nothing was checked"
     for layer in graph_layers:
         found = await _check(layer, worlds, kind)
+        assert not found, "\n".join(found[:40])
+
+
+def _listed(provider, org: str) -> ListFn:
+    """The connectors page lists as the routes ask them, for a member (the limit applied) or an admin (not)."""
+    async def listed(user: str, limited: bool) -> dict[str, set[str]]:
+        mine = await provider.get_user_connector_instances(
+            collection=CollectionNames.APPS.value, user_id=user, org_id=org, team_scope="team", personal_scope="personal",
+            apply_access_limit=limited)
+        page, _ = await provider.get_filtered_connector_instances(
+            collection=CollectionNames.APPS.value, edge_collection=CollectionNames.ORG_APP_RELATION.value, org_id=org, user_id=user,
+            limit=10000, apply_access_limit=limited)
+        return {"instances": {a.get("_key") or a.get("id") for a in mine}, "filtered": {a.get("_key") or a.get("id") for a in page}}
+    return listed
+
+
+@pytest.mark.parametrize("kind", ["scenarios", *sorted(gen.GENERATORS)])
+async def test_the_connector_lists_show_a_limited_connector_exactly_as_its_limit_says(graph_layers, kind: str) -> None:
+    worlds = limit_worlds() if kind == "scenarios" else generated_worlds(kind)
+    for layer in graph_layers:
+        found: list[str] = []
+        for start in range(0, len(worlds), CHUNK):
+            chunk = worlds[start:start + CHUNK]
+            await layer.preload(chunk)
+            for offset, world in enumerate(chunk):
+                ns, graph = await layer._ns(world), layer._compiled(world)
+                if apps := org_apps(graph, ns):
+                    await layer._provider.batch_create_edges(
+                        [{"from_id": ns.org_node, "from_collection": CollectionNames.ORGS.value, "to_id": a,
+                          "to_collection": CollectionNames.APPS.value, "createdAtTimestamp": TS} for a in apps],
+                        collection=CollectionNames.ORG_APP_RELATION.value)
+                bad = await list_findings(world, graph, ns, _listed(layer._provider, ns.org))
+                found += [f"{layer.name} {kind}-{start + offset}: {b}" for b in bad]
+            await layer.release(chunk)
         assert not found, "\n".join(found[:40])

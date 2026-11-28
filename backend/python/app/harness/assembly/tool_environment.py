@@ -634,7 +634,13 @@ async def _agent_environment(
         previous_conversations=[dict(turn) for turn in run.previous_conversations],
         logger=logger,
     )
-    connector_ids = [k["connectorId"] for k in agent_knowledge if k.get("connectorId")]
+    # As chat_stream: a limited connector the caller cannot open is named by its id on the prompt, and gets no config
+    # (its sync filters' labels would name it). shortcut: a durable run carries no request role, so an org admin is
+    # weighed as a member here and sees the id; read the role into RunContext if admins need the names.
+    from app.modules.agents.knowledge_scope import hide_limited_names
+
+    hidden = await hide_limited_names(graph, agent_knowledge, run.actor_id, run.org_id, logger, is_admin=False)
+    connector_ids = [k["connectorId"] for k in agent_knowledge if k.get("connectorId") and k["connectorId"] not in hidden]
     web_search_config = (
         await resolve_web_search(config_service, logger, provider=web_provider)
         if web_provider

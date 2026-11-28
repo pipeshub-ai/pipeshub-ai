@@ -18070,13 +18070,15 @@ components:
             additionalProperties: false
             required:
               - id
-              - name
               - nodeType
             properties:
               id:
                 type: string
               name:
                 type: string
+                description: |
+                  Left out on GET when the source's access limit refuses a viewer who
+                  is not an admin. On update, the stored title is kept for such an editor.
               nodeType:
                 type: string
                 description: "`recordGroup`, `folder` or `record`."
@@ -18215,6 +18217,15 @@ components:
           type: string
         displayName:
           type: string
+        accessLimit:
+          type: string
+          nullable: true
+          enum: [CREATOR, ORG, null]
+          readOnly: true
+          description: |
+            The connector's access limit. When it refuses a viewer who is not an
+            admin, `name` and `displayName` are the connector id and the saved
+            node titles in `filters` and `filtersParsed` are left out.
         filters:
           $ref: '#/components/schemas/AgentFilters'
         filtersParsed:
@@ -21277,6 +21288,14 @@ components:
         isLocked:
           type: boolean
           description: A sync or deletion holds the connector
+        accessLimit:
+          type: string
+          nullable: true
+          enum: [CREATOR, ORG, null]
+          description: |
+            Set when only some people may open the connector: CREATOR its creator,
+            ORG the members of its organization. A member is never listed a limited
+            connector its limit refuses; an admin sees every one with this field.
         status:
           type: string
           description: Lifecycle status, for example SYNCING or DELETING

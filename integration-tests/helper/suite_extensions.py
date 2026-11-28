@@ -7,8 +7,8 @@ repository has needs rows that cannot live here. It puts them in a
 finds there:
 
 * ``admin_route_table.py`` may define ``NODE_ADMIN_ROUTES``,
-  ``PYTHON_ADMIN_ROUTES``, ``ADMIN_BODIES``, ``PYTHON_CONDITIONAL_ADMIN`` and
-  ``SWITCHED_OFF``;
+  ``PYTHON_ADMIN_ROUTES``, ``ADMIN_BODIES``, ``PYTHON_CONDITIONAL_ADMIN``,
+  ``PYTHON_CONDITIONAL_ADMIN_UNIT_ONLY`` and ``SWITCHED_OFF``;
 * ``admin_route_conditional_table.py`` may define ``CONDITIONAL_ROUTES`` and
   ``WORLD_GROUPS``;
 * ``admin_route_conditional_world.py`` may define ``BUILDERS``: a group name of

@@ -3665,7 +3665,9 @@
           "queuedTooltip": "Wartet auf einen freien Synchronisierungsplatz. Die Synchronisierung startet automatisch, sobald einer frei wird.",
           "removing": "Entfernen",
           "removingTooltip": "Diese Instanz wird gelöscht."
-        }
+        },
+        "limited": "Eingeschränkt",
+        "limitedTooltip": "Der Zugriff auf diesen Konnektor ist eingeschränkt. Nur Personen, die seine Beschränkung zulässt, können ihn sehen oder seine Inhalte öffnen. Als Administrator sehen Sie ihn hier, damit Sie ihn verwalten können."
       },
       "localFsDesktop": {
         "offlineToast": "Öffnen Sie die PipesHub-Desktop-App auf dem Rechner, dem dieser Ordner gehört, um zu synchronisieren.",

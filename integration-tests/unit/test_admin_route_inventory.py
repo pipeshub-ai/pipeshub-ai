@@ -14,12 +14,17 @@ the live cases ``permissions/test_conditional_admin_routes.py`` sends for each.
 The tests in the second half fail until every such handler has cases, and
 until those cases could not pass for the wrong reason.
 
+A conditional handler whose difference cannot be seen on a running stack is
+listed in ``PYTHON_CONDITIONAL_ADMIN_UNIT_ONLY`` with the unit test that checks
+it; the tests here fail unless that test exists.
+
 Source only, no stack, so they run on every pull request with the other helper
 unit tests.
 """
 
 from __future__ import annotations
 
+import ast
 import re
 import textwrap
 from pathlib import Path
@@ -32,12 +37,15 @@ from helper.admin_route_table import (
     PYTHON_ADMIN_ROUTES,
     PYTHON_BEHIND_NODE_ADMIN,
     PYTHON_CONDITIONAL_ADMIN,
+    PYTHON_CONDITIONAL_ADMIN_UNIT_ONLY,
+    PYTHON_LIVE_ACCESS_ONLY,
 )
 from helper.admin_routes import (
     NODE_SRC,
     admin_routes_in_file,
     discover_admin_routes,
     discover_python_admin_handlers,
+    discover_python_routes,
     router_mounts,
 )
 from helper.admin_route_conditional_table import (
@@ -94,7 +102,9 @@ def test_every_python_admin_check_is_classified() -> None:
         "reader has probably stopped matching the route code."
     )
     tested = {r.handler for r in PYTHON_ADMIN_ROUTES}
-    classified = tested | PYTHON_BEHIND_NODE_ADMIN | set(PYTHON_CONDITIONAL_ADMIN)
+    classified = (
+        tested | PYTHON_BEHIND_NODE_ADMIN | set(PYTHON_CONDITIONAL_ADMIN) | set(PYTHON_CONDITIONAL_ADMIN_UNIT_ONLY)
+    )
     missing = sorted(set(found) - classified)
     assert not missing, (
         "These Python handlers check for an org admin but are not in "
@@ -145,6 +155,38 @@ def _write(tmp_path: Path, name: str, body: str) -> Path:
     path = tmp_path / name
     path.write_text(textwrap.dedent(body), encoding="utf-8")
     return path
+
+
+def test_the_python_reader_follows_only_this_module_s_functions(tmp_path: Path) -> None:
+    (tmp_path / "routes.py").write_text(textwrap.dedent("""
+        @router.get("/{agent_id}")
+        async def get_agent(request):
+            await is_request_admin(request)
+
+        @router.delete("/{agent_id}")
+        async def delete_agent(request):
+            await services["graph_provider"].get_agent(request)
+
+        async def _helper(request):
+            await request.app.check_user_is_admin(request)
+
+        @router.post("/{agent_id}/run")
+        async def run_agent(request):
+            await _helper(request)
+
+        class Service:
+            async def _check(self, request):
+                await is_request_admin(request)
+
+            @router.put("/{agent_id}")
+            async def update(self, request):
+                await self._check(request)
+    """), encoding="utf-8")
+    assert discover_python_admin_handlers(tmp_path) == {
+        "routes.py::get_agent": "GET /{agent_id}",
+        "routes.py::run_agent": "POST /{agent_id}/run",
+        "routes.py::update": "PUT /{agent_id}",
+    }
 
 
 def test_the_reader_finds_inline_and_router_wide_admin_checks(tmp_path: Path) -> None:
@@ -256,7 +298,7 @@ def test_every_conditional_admin_handler_has_live_cases() -> None:
         "that they enforce their rule:\n"
         + "\n".join(f"  {key}  ({PYTHON_CONDITIONAL_ADMIN[key]})" for key in missing)
     )
-    stale = sorted(set(rows) - set(PYTHON_CONDITIONAL_ADMIN))
+    stale = sorted(set(rows) - set(PYTHON_CONDITIONAL_ADMIN) - set(PYTHON_LIVE_ACCESS_ONLY))
     assert not stale, f"These rows of live cases name handlers that are no longer conditional: {stale}"
     empty = sorted(key for key, route in rows.items() if not route.cases)
     assert not empty, f"These rows have no cases: {empty}"
@@ -265,8 +307,9 @@ def test_every_conditional_admin_handler_has_live_cases() -> None:
 def test_each_conditional_row_calls_the_route_its_handler_serves() -> None:
     """The gateway may serve a handler under a longer path; the end of it must match. A
     row the gateway serves under another path names the one it forwards to, which the
-    gateway's source must call."""
-    served = discover_python_admin_handlers()
+    gateway's source must call. Some rows name a handler with no admin check of its own,
+    so every route is looked up."""
+    served = discover_python_routes()
     node_source = "\n".join(path.read_text(encoding="utf-8") for path in NODE_SRC.rglob("*.ts"))
     wrong = []
     for handler, route in _conditional_rows().items():
@@ -368,6 +411,15 @@ def test_no_conditional_case_can_pass_for_the_wrong_reason() -> None:
     assert not problems, "\n".join(problems)
 
 
+def test_live_access_only_routes_have_live_cases_and_no_admin_check() -> None:
+    rows = _conditional_rows()
+    no_row = sorted(set(PYTHON_LIVE_ACCESS_ONLY) - set(rows))
+    assert not no_row, f"PYTHON_LIVE_ACCESS_ONLY names handlers with no row of live cases: {no_row}"
+    gated = sorted(set(PYTHON_LIVE_ACCESS_ONLY) & set(discover_python_admin_handlers()))
+    assert not gated, f"These now check for an admin; move them to PYTHON_CONDITIONAL_ADMIN: {gated}"
+    assert all(PYTHON_LIVE_ACCESS_ONLY.values()), "every PYTHON_LIVE_ACCESS_ONLY entry says why"
+
+
 def test_connector_rules_cover_every_kind_of_caller() -> None:
     """Whose connector it is and who is asking decide these rules, so each
     combination the rule tells apart needs its own case."""
@@ -448,3 +500,100 @@ def test_an_admin_router_whose_prefix_cannot_be_read_is_named(tmp_path: Path, mo
     """)
     with pytest.raises(AssertionError, match=r"mixed\.routes\.ts \(createGatedRouter\)"):
         discover_admin_routes(tmp_path)
+
+
+_REPO = Path(__file__).resolve().parents[2]
+_UNIT_TESTS = "backend/python/tests/unit/"
+
+
+def _defines(source: Path, names: list[str]) -> bool:
+    """Whether ``source`` defines the test ``names`` point at: a top-level test function, or a test class's method."""
+    nodes: list[ast.stmt] = ast.parse(source.read_text(encoding="utf-8-sig")).body
+    for depth, name in enumerate(names):
+        last = depth == len(names) - 1
+        kinds = (ast.FunctionDef, ast.AsyncFunctionDef) if last else (ast.ClassDef,)
+        found = next((n for n in nodes if isinstance(n, kinds) and n.name == name), None)
+        if found is None or not name.startswith("test" if last else "Test"):
+            return False
+        nodes = found.body
+    return bool(names)
+
+
+def _unit_test_problem(node_id: str, root: Path = _REPO) -> str | None:
+    path, _, rest = node_id.partition("::")
+    if not path.startswith(_UNIT_TESTS) or not path.endswith(".py") or not rest:
+        return f"{node_id!r} is not a test under {_UNIT_TESTS} written file::test or file::TestClass::test"
+    source = root / path
+    if not source.is_file():
+        return f"{path} does not exist"
+    if not _defines(source, rest.split("::")):
+        return f"{path} defines no {rest}"
+    return None
+
+
+def test_every_unit_only_handler_names_a_unit_test_that_exists() -> None:
+    problems = [
+        f"{handler}: {problem}" for handler, (_, _, node_id) in PYTHON_CONDITIONAL_ADMIN_UNIT_ONLY.items()
+        if (problem := _unit_test_problem(node_id))
+    ]
+    assert not problems, (
+        "PYTHON_CONDITIONAL_ADMIN_UNIT_ONLY names unit tests that are not there, so nothing checks "
+        "these handlers:\n  " + "\n  ".join(problems)
+    )
+
+
+def test_a_unit_only_handler_is_classified_once() -> None:
+    elsewhere = (
+        {r.handler for r in PYTHON_ADMIN_ROUTES} | PYTHON_BEHIND_NODE_ADMIN | set(PYTHON_CONDITIONAL_ADMIN)
+    )
+    twice = sorted(set(PYTHON_CONDITIONAL_ADMIN_UNIT_ONLY) & elsewhere)
+    assert not twice, f"These handlers are checked by unit test only and also classified elsewhere: {twice}"
+
+
+def test_every_unit_only_handler_still_checks_for_an_admin() -> None:
+    stale = sorted(set(PYTHON_CONDITIONAL_ADMIN_UNIT_ONLY) - set(discover_python_admin_handlers()))
+    assert not stale, f"These unit-only entries name handlers with no admin check any more: {stale}"
+
+
+def test_every_unit_only_handler_says_why() -> None:
+    unsaid = sorted(
+        handler for handler, reasons in PYTHON_CONDITIONAL_ADMIN_UNIT_ONLY.items()
+        if len(reasons) != 3 or not all(isinstance(r, str) and r.strip() for r in reasons)
+    )
+    assert not unsaid, (
+        "These unit-only entries do not give why the check is conditional, why it cannot be "
+        f"checked live, and the unit test that checks it: {unsaid}"
+    )
+
+
+def test_the_unit_test_check_finds_only_tests_that_are_there(tmp_path: Path) -> None:
+    (tmp_path / _UNIT_TESTS).mkdir(parents=True)
+    _write(tmp_path, _UNIT_TESTS + "test_sample.py", """
+        from other import test_imported
+
+        def test_top():
+            pass
+
+        async def test_async():
+            pass
+
+        class TestGroup:
+            def test_method(self):
+                pass
+
+        def helper():
+            def test_nested():
+                pass
+
+        test_assigned = test_top
+    """)
+    sample = _UNIT_TESTS + "test_sample.py"
+    for node_id in (f"{sample}::test_top", f"{sample}::test_async", f"{sample}::TestGroup::test_method"):
+        assert _unit_test_problem(node_id, tmp_path) is None, node_id
+    for node_id in (
+        f"{sample}::test_missing", f"{sample}::test_imported", f"{sample}::test_nested",
+        f"{sample}::test_assigned", f"{sample}::helper", f"{sample}::TestGroup::test_missing",
+        f"{sample}::TestGroup", f"{sample}::test_top[param]", f"{sample}::",
+        _UNIT_TESTS + "test_gone.py::test_top", "integration-tests/unit/test_x.py::test_top",
+    ):
+        assert _unit_test_problem(node_id, tmp_path) is not None, node_id

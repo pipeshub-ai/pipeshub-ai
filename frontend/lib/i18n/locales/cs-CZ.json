@@ -3973,7 +3973,9 @@
           "queuedTooltip": "Čeká na volný slot pro synchronizaci. Spustí se automaticky, jakmile se některý uvolní.",
           "removing": "Odebírání",
           "removingTooltip": "Tato instance se maže."
-        }
+        },
+        "limited": "Omezeno",
+        "limitedTooltip": "Přístup k tomuto konektoru je omezen. Vidět ho nebo otevřít jeho obsah mohou jen lidé, které jeho omezení povoluje. Jako správce ho vidíte zde, abyste ho mohli spravovat."
       },
       "localFsDesktop": {
         "offlineToast": "Pro synchronizaci otevřete desktopovou aplikaci PipesHub na počítači, který tuto složku vlastní.",

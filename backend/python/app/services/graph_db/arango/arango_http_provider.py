@@ -557,6 +557,18 @@ def _aql_limit_admits(app: str, user: str) -> str:
             f' OR ({app}.accessLimit == "{AccessLimit.ORG.value}" AND {app}.orgId != null AND {member}))')
 
 
+def _aql_access_limit_user() -> str:
+    """The requesting user (``@user_id`` is the userId) as ``kh_lu``, for ``_aql_access_limit_filter``; null when unknown."""
+    return (f"LET kh_lu = FIRST(FOR u IN {CollectionNames.USERS.value} FILTER u.userId == @user_id LIMIT 1 RETURN u)\n")
+
+
+def _aql_access_limit_filter() -> str:
+    """Keep ``doc`` unless it is limited and the limit does not admit ``kh_lu`` under the request's org (``@org_id``), as the
+    team list's limited arm (``_get_user_accessible_team_app_keys``) weighs it."""
+    return (f" FILTER doc.accessLimit == null OR (kh_lu != null AND doc.orgId == @org_id"
+            f" AND {_aql_limit_admits('doc', 'kh_lu')})\n")
+
+
 def _aql_below_seed_vertex(v: str) -> str:
     """The hop below a seed without the inheritance probe: OPEN, or PARENT_AND_GRANT and granted."""
     rule = _aql_access_rule(v)
@@ -2908,10 +2920,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         team_scope: str,
         personal_scope: str,
         transaction: str | None = None,
+        *,
+        apply_access_limit: bool = False,
     ) -> list[dict]:
         """Get all connector instances accessible to a user (personal + team)."""
         try:
-            query = """
+            query = (_aql_access_limit_user() if apply_access_limit else "") + """
             FOR doc IN @@collection
                 FILTER doc._id != null
                 FILTER LENGTH(
@@ -2924,6 +2938,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     doc.scope == @team_scope OR
                     (doc.scope == @personal_scope AND doc.createdBy == @user_id)
                 )
+            """ + (_aql_access_limit_filter() if apply_access_limit else "") + """
                 RETURN doc
             """
             bind_vars = {
@@ -2934,6 +2949,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "personal_scope": personal_scope,
                 "user_id": user_id,
             }
+            if apply_access_limit:
+                bind_vars["org_id"] = org_id
             results = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
             return results or []
 
@@ -3039,6 +3056,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         is_agent_active: bool | None = None,
         allowed_connector_types: list[str] | None = None,
         transaction: str | None = None,
+        apply_access_limit: bool = False,
     ) -> tuple[list[dict], int]:
         """Get filtered connector instances with pagination."""
         # No org, no listing: every query below is scoped by it.
@@ -3052,7 +3070,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             # The org edge is the tenant boundary: connector apps created before
             # August 2026 carry no orgId property.
-            query = """
+            query = (_aql_access_limit_user() if apply_access_limit else "") + """
             FOR doc IN @@collection
                 FILTER doc._id != null
                 FILTER LENGTH(
@@ -3083,6 +3101,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
                 bind_vars["org_id"] = org_id
                 bind_vars["@org_app"] = CollectionNames.ORG_APP_RELATION.value
+
+            if apply_access_limit:
+                query += _aql_access_limit_filter()
 
             # Exclude KB if requested
             if exclude_kb and kb_connector_type:
@@ -28608,7 +28629,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         RETURN {{
                             name: connector_instance.name,
                             type: connector_instance.type || "APP",
-                            displayName: connector_instance.name
+                            displayName: connector_instance.name,
+                            accessLimit: connector_instance.accessLimit
                         }}
                     ) : []
 
@@ -28625,7 +28647,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         filters: knowledge.filters,
                         name: display_info.name,
                         type: display_info.type,
-                        displayName: display_info.displayName || display_info.name
+                        displayName: display_info.displayName || display_info.name,
+                        accessLimit: display_info.accessLimit
                     }}
             )
 
@@ -29114,7 +29137,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 RETURN {{
                                     name: connector_instance2.name,
                                     type: connector_instance2.type || "APP",
-                                    displayName: connector_instance2.name
+                                    displayName: connector_instance2.name,
+                                    accessLimit: connector_instance2.accessLimit
                                 }}
                             ) : []
 
@@ -29131,7 +29155,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 filters: knowledge.filters,
                                 name: display_info.name,
                                 type: display_info.type,
-                                displayName: display_info.displayName || display_info.name
+                                displayName: display_info.displayName || display_info.name,
+                                accessLimit: display_info.accessLimit
                             }}
                     )
 

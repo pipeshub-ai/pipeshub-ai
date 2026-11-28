@@ -3847,7 +3847,9 @@
           "queuedTooltip": "Waiting for a free sync slot. It will start automatically when one frees up.",
           "removing": "Removing",
           "removingTooltip": "This instance is being deleted."
-        }
+        },
+        "limited": "Limited",
+        "limitedTooltip": "Access to this connector is limited. Only the people its limit admits can see it or open its content. As an admin, you see it here so you can manage it."
       },
       "localFsDesktop": {
         "offlineToast": "Open the PipesHub desktop app on the machine that owns this folder to sync.",
