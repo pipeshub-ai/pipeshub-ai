@@ -1,3 +1,8 @@
+# Copyright (c) 2026 PipesHub Inc.
+# Licensed under the PipesHub Enterprise License. See the LICENSE file in this
+# ee folder. Free for development, testing and evaluation. Production use needs
+# a PipesHub licence key.
+
 """OneDrive: reading who may see what from OneDrive, SharePoint and Entra ID.
 
 Item access lists, whether an item inherits its folder's access (SharePoint's unique-permission flag), the re-reads of
