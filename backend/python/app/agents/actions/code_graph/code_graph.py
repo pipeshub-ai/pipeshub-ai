@@ -281,7 +281,8 @@ class CodeGraph:
             for bound in bounds:
                 allowed = [app_id for app_id in allowed if app_id in bound["apps"]]
             self._allowed_connector_ids: tuple[str, ...] = tuple(allowed)
-            self._bounded = bool(bounds)
+            # Under strictScope an empty scope means nothing, as for the record-reading tools.
+            self._bounded = bool(bounds) or bool((state.get("filters") or {}).get("strictScope"))
         except Exception:
             # Fails closed: an empty list means "every connector", and a scope
             # the agent was meant to have must not widen because it could not
