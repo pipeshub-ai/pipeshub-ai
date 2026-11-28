@@ -125,6 +125,7 @@ import {
   type ViewerMessage,
 } from '../utils/viewer-redaction';
 import {
+  DEFAULT_CHECK_TIMEOUT_MS,
   idOf as idOfValue,
   includableRows,
   readerView,
@@ -446,6 +447,9 @@ async function checkedForViewer(
       ? { requestId: req.context.requestId }
       : {}),
     surface: 'conversation' as const,
+    // A read's own budget, as its reader check has: an authority that does not answer by then leaves the read's
+    // citations and files hidden (`checkFailed`), never the read waiting.
+    timeoutMs: DEFAULT_CHECK_TIMEOUT_MS,
   };
   const citations = checks.citations ?? unconfiguredCitations;
   const [access, withArtifacts] = await Promise.all([

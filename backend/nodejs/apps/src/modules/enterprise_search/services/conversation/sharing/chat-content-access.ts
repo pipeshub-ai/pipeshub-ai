@@ -13,6 +13,11 @@ import { AuthTokenService } from '../../../../../libs/services/authtoken.service
 import { Logger } from '../../../../../libs/services/logger.service';
 import { AppConfig } from '../../../../tokens_manager/config/config';
 import { AIServiceResponse } from '../../../types/conversation.interfaces';
+import {
+  CircuitBreaker,
+  timeoutOutcome,
+  type CheckOutcome,
+} from '../../../utils/access-check-breaker';
 
 const logger = Logger.getInstance({ service: 'ChatContentAccess' });
 
@@ -131,12 +136,23 @@ const requestConversationRecordPermissions = async ({
 const isSuccess = (statusCode: number): boolean =>
   statusCode >= 200 && statusCode < 300;
 
-// Best-effort: a failure is logged and never fails the share, the view, or an unshare already written.
+const isTimeout = (error: unknown): boolean => {
+  const name = (error as { name?: unknown } | null)?.name;
+  return name === 'TimeoutError' || name === 'AbortError';
+};
+
+/**
+ * Best-effort: a failure is logged and never fails the share, the view, or an unshare already written. Returns how the
+ * call went, for a breaker: any answer the service gave is `ok`, a 5xx or a transport failure `failed`, and a timeout
+ * counts as one only when its timer fired on time (`timeoutOutcome`).
+ */
 const syncConversationRecordPermissions = async (
   options: ConversationPermissionSyncOptions,
-): Promise<void> => {
+): Promise<CheckOutcome> => {
   const { requestId, conversationId, records, method } = options;
   const logContext = { requestId, conversationId, records, method };
+  const budget = options.timeoutMs ?? CONVERSATION_PERMISSION_SYNC_TIMEOUT_MS;
+  const sent = Date.now();
   try {
     const response = await requestConversationRecordPermissions(options);
     if (!isSuccess(response.statusCode)) {
@@ -146,11 +162,50 @@ const syncConversationRecordPermissions = async (
         response: response.data,
       });
     }
+    return response.statusCode >= 500 ? 'failed' : 'ok';
   } catch (error: unknown) {
     logger.warn('Conversation record permission sync failed', {
       ...logContext,
       error: error instanceof Error ? error.message : String(error),
     });
+    return isTimeout(error)
+      ? timeoutOutcome(budget, Date.now() - sent - budget)
+      : 'failed';
+  }
+};
+
+/**
+ * The breaker of this process's syncs on a view: while the query service keeps failing them, a viewer's read stops
+ * waiting on them (they are best effort), and the service gets room to recover.
+ */
+export const viewSyncBreaker = new CircuitBreaker();
+
+/** A view's sync, unless its breaker is open: then it is left for a later view, at once. */
+const syncOnView = async (
+  options: ConversationPermissionSyncOptions,
+): Promise<void> => {
+  const ticket = viewSyncBreaker.allow();
+  if (ticket === undefined) {
+    logger.debug(
+      'Conversation record permission sync skipped while the query service keeps failing',
+      {
+        requestId: options.requestId,
+        conversationId: options.conversationId,
+        records: options.records,
+      },
+    );
+    return;
+  }
+  const change = viewSyncBreaker.record(
+    ticket,
+    await syncConversationRecordPermissions(options),
+  );
+  if (change === 'opened') {
+    logger.warn(
+      'Conversation record permission syncs keep failing; views skip them for 15 s',
+    );
+  } else if (change === 'closed') {
+    logger.info('Conversation record permission syncs answer again');
   }
 };
 
@@ -314,38 +369,37 @@ export class RecordPermissionChatContentAccess implements IChatContentAccess {
     if (!ownerId || ownerId === viewerId) {
       return;
     }
+    const grantor = {
+      appConfig,
+      method: HttpMethod.POST,
+      grantorUserId: ownerId,
+      orgId,
+      requestId,
+      conversationId,
+      timeoutMs: CONVERSATION_VIEW_PERMISSION_SYNC_TIMEOUT_MS,
+      maxAttempts: 1,
+    } as const;
+    const syncs: ConversationPermissionSyncOptions[] = [];
     // Awaited so the edges exist before the client requests artifact content; older pages carry
     // no new artifacts and skip it.
     if (view.page === 1) {
-      await syncConversationRecordPermissions({
-        appConfig,
+      syncs.push({
+        ...grantor,
         records: 'artifacts',
-        method: HttpMethod.POST,
-        grantorUserId: ownerId,
-        orgId,
         body: { conversationId, userIds: [viewerId] },
-        requestId,
-        conversationId,
-        timeoutMs: CONVERSATION_VIEW_PERMISSION_SYNC_TIMEOUT_MS,
-        maxAttempts: 1,
       });
     }
     // On every page the viewer loads: an attachment added after the share can already sit on an older page.
     const attachmentRecordIds = collectChatAttachmentRecordIds(view.messages);
     if (attachmentRecordIds.length > 0) {
-      await syncConversationRecordPermissions({
-        appConfig,
+      syncs.push({
+        ...grantor,
         records: 'attachments',
-        method: HttpMethod.POST,
-        grantorUserId: ownerId,
-        orgId,
         body: { userIds: [viewerId], recordIds: attachmentRecordIds },
-        requestId,
-        conversationId,
-        timeoutMs: CONVERSATION_VIEW_PERMISSION_SYNC_TIMEOUT_MS,
-        maxAttempts: 1,
       });
     }
+    // Side by side: a slow service holds the read for one sync's budget, and none while they keep failing.
+    await Promise.all(syncs.map(syncOnView));
   }
 
   private async sync(

@@ -31,6 +31,8 @@ export interface CitationViewer {
   runId?: string;
   requestId?: string;
   surface: 'stream' | 'conversation' | 'admission' | 'memory';
+  /** How long this view's check may take: a read's own budget. The authority's when not given. */
+  timeoutMs?: number;
 }
 
 type Tally = { allowed: number; denied: number; unverifiable: number };
@@ -210,6 +212,7 @@ export class SharedCitationService {
       return await this.records.decide({
         authorization: viewer.authorization,
         sources: [...sources.values()],
+        ...(viewer.timeoutMs !== undefined && { timeoutMs: viewer.timeoutMs }),
       });
     } catch (error) {
       return error instanceof RecordAccessUnavailableError

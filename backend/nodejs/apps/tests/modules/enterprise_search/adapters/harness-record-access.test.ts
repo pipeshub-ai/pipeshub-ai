@@ -7,6 +7,7 @@ import {
   HarnessArtifactReadAccess,
   HarnessRecordReadAccess,
   RECORD_ACCESS_BATCH,
+  recordAccessBreaker,
 } from '../../../../src/modules/enterprise_search/adapters/harness-record-access';
 import { indexed, live } from '../../agent-harness/support/citations';
 
@@ -162,4 +163,52 @@ describe('HarnessArtifactReadAccess (SS0)', () => {
       expect.fail('Expected the check to reject');
     });
   }
+});
+
+describe('the record authorization while it keeps failing', () => {
+  beforeEach(() => recordAccessBreaker.reset());
+  afterEach(() => {
+    sinon.restore();
+    recordAccessBreaker.reset();
+  });
+
+  const timedOut = (): Error => Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+  const rejects = async (work: Promise<unknown>): Promise<RecordAccessUnavailableError> => {
+    try {
+      await work;
+    } catch (error) {
+      expect(error).to.be.instanceOf(RecordAccessUnavailableError);
+      return error as RecordAccessUnavailableError;
+    }
+    return expect.fail('Expected the check to reject');
+  };
+
+  it('is not asked again: every check fails closed at once, records and files alike', async () => {
+    const execute = sinon.stub(AIServiceCommand.prototype, 'execute').rejects(timedOut());
+    const records = new HarnessRecordReadAccess(() => 'http://query:8000');
+    for (let i = 0; i < 5; i += 1) await rejects(records.decide(query));
+    expect(execute.callCount).to.equal(5);
+
+    expect((await rejects(records.decide(query))).reason).to.equal('unavailable');
+    const files = new HarnessArtifactReadAccess(() => 'http://query:8000');
+    expect((await rejects(files.decide({ authorization: 'Bearer v', artifactIds: ['a1'] }))).reason).to.equal('unavailable');
+    expect(execute.callCount, 'nothing more was sent').to.equal(5);
+  });
+
+  it('a refusal is an answer: it keeps the authority asked', async () => {
+    const execute = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 403, data: {}, msg: '' } as never);
+    const records = new HarnessRecordReadAccess(() => 'http://query:8000');
+    for (let i = 0; i < 7; i += 1) expect((await rejects(records.decide(query))).reason).to.equal('refused');
+    expect(execute.callCount).to.equal(7);
+  });
+
+  it("a read's budget is one try within it; without one, the authority's own budget and a second try", async () => {
+    const execute = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { readable: [], decisions: [] }, msg: '' } as never);
+    const records = new HarnessRecordReadAccess(() => 'http://query:8000');
+    await records.decide({ ...query, timeoutMs: 2_500 });
+    await records.decide(query);
+    const [read, other] = execute.getCalls().map((call) => call.thisValue as unknown as { timeoutMs: number; maxAttempts: number });
+    expect([read?.timeoutMs, read?.maxAttempts]).to.deep.equal([2_500, 1]);
+    expect([other?.timeoutMs, other?.maxAttempts]).to.deep.equal([10_000, 2]);
+  });
 });
