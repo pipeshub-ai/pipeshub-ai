@@ -1,3 +1,8 @@
+// Copyright (c) 2026 PipesHub Inc.
+// Licensed under the PipesHub Enterprise License. See the LICENSE file in this
+// ee folder. Free for development, testing and evaluation. Production use needs
+// a PipesHub licence key.
+
 // Values a license is checked against. Constants, not env: anything the
 // operator could set here would be a way around the license.
 
