@@ -52,10 +52,9 @@ function clearTimer(): void {
 }
 
 async function refreshNow(): Promise<void> {
-  // Clear before awaiting so a second timer cannot stack on top of this one.
-  // The post-success setTokens will re-arm the timer via the zustand subscription.
-  timerId = null;
-  scheduledForToken = null;
+  // Cancel before awaiting: a pending timer (this refresh came from the tab returning) would fire a
+  // second refresh. The post-success setTokens will re-arm the timer via the zustand subscription.
+  clearTimer();
 
   // A refusal logs the user out, unless the session already ended meanwhile; then the timer may
   // already belong to the next person, so it is left alone. With no answer nothing changes:

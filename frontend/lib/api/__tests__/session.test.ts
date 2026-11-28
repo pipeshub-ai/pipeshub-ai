@@ -690,6 +690,30 @@ describe('the proactive refresh timer', () => {
     expect(logoutAndRedirect).not.toHaveBeenCalled();
   });
 
+  it('refreshes once when the tab comes back while the proactive timer is still pending', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(1);
+    const token = jwtExpiringIn(600);
+    useAuthStore.setState({ accessToken: token });
+    scheduler.initTokenRefreshScheduler();
+    scheduler.scheduleFromToken(token);
+    // A 401 whose refresh got no answer: a retry is waiting, and the proactive timer (at 510 s) is still armed.
+    fetchMock.mockResolvedValueOnce(jsonResponse(503, {}));
+    fakeServer({ status: 401 });
+    await expect(apiClient.get('/api/v1/users')).rejects.toMatchObject({ statusCode: 503 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    fetchMock.mockResolvedValue(jsonResponse(200, { accessToken: jwtExpiringIn(3600) }));
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // Past the old timer's 510 s; the new token's timer is not due until 3510 s.
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('re-arms a very long-lived token instead of firing early', async () => {
     vi.useFakeTimers();
     const token = jwtExpiringIn(60 * 60 * 24 * 30); // 30 days, past setTimeout's 24.8-day limit
