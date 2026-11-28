@@ -17,6 +17,7 @@ import { AdminRoleMigration } from './migrations/admin_role.migration';
 import { DocumentOrgIdBackfillMigration } from './migrations/document_orgid_backfill.migration';
 import { ChatSessionsMigration } from './migrations/chat_sessions.migration';
 import { UserGroupNameIndexMigration } from './migrations/user_group_name_index.migration';
+import { SupersededChatIndexesMigration } from './migrations/superseded_chat_indexes.migration';
 import { getOrgRepository } from '../../../libs/repositories/org';
 import { SignInMethodsRemovalMigration } from './migrations/sign_in_methods_removal.migration';
 import { DelegationLogRetentionMigration } from './migrations/delegation_log_retention.migration';
@@ -101,6 +102,7 @@ export class MigrationService {
     await this.adminRoleMigration();
     await this.userGroupNameIndexMigration();
     await this.delegationLogRetentionMigration();
+    await this.supersededChatIndexesMigration();
     await this.documentOrgIdMigration();
     this.logger.info('✅ Migration completed');
   }
@@ -230,6 +232,13 @@ export class MigrationService {
     // Changing the retention constant does not move an index that already
     // exists; this does. run() logs its own outcome and never throws.
     await new DelegationLogRetentionMigration(this.logger).run();
+  }
+
+  async supersededChatIndexesMigration(): Promise<void> {
+    // The chat indexes earlier schemas declared on MongoDB; PostgreSQL's come from its own migrations.
+    if (docStore() === 'postgres') return;
+    // run() logs its own outcome and never throws.
+    await new SupersededChatIndexesMigration(this.logger).run();
   }
 
   async chatKbFiltersMigration(): Promise<void> {

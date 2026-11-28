@@ -74,6 +74,7 @@ describe('MigrationService', () => {
       const documentOrgIdStub = sinon.stub(service, 'documentOrgIdMigration' as any).resolves()
       const groupNameIndexStub = sinon.stub(service, 'userGroupNameIndexMigration' as any).resolves()
       const delegationTtlStub = sinon.stub(service, 'delegationLogRetentionMigration' as any).resolves()
+      const chatIndexesStub = sinon.stub(service, 'supersededChatIndexesMigration' as any).resolves()
       const serviceAccountKindStub = sinon.stub(service, 'serviceAccountKindBackfillMigration' as any).resolves()
       const instanceAppStub = sinon.stub(service, 'instanceAppOwnerMigration' as any).resolves()
       const dynamicClientOrg = async () => 'org-1'
@@ -107,6 +108,9 @@ describe('MigrationService', () => {
       expect(documentOrgIdStub.calledOnce).to.be.true
       expect(groupNameIndexStub.calledOnce).to.be.true
       expect(delegationTtlStub.calledOnce).to.be.true
+      // After the conversations are migrated into the chat collections whose old indexes it drops.
+      expect(chatIndexesStub.calledOnce).to.be.true
+      expect(chatSessionsStub.calledBefore(chatIndexesStub)).to.be.true
       expect(serviceAccountKindStub.calledOnce).to.be.true
       expect(mockLogger.info.calledWith('✅ Migration completed')).to.be.true
     })
