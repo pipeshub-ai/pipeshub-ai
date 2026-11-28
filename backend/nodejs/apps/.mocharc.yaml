@@ -1,6 +1,7 @@
 require:
   - 'reflect-metadata'
   - 'ts-node/register'
+  - './tests/helpers/telemetry-env-global.ts'
   - './tests/helpers/mock-ioredis-global.ts'
   - './tests/helpers/mock-kafkajs-global.ts'
   - './tests/helpers/mock-mcp-global.ts'
@@ -10,7 +11,6 @@ require:
   - './tests/helpers/policy-write-observers-hooks.ts'
   - './tests/helpers/org-lifecycle-hooks.ts'
   - './tests/helpers/session-family-hooks.ts'
-  - './tests/helpers/telemetry-env-global.ts'
   - './tests/helpers/harness-switch-env-global.ts'
   - './tests/helpers/logger-isolation-global.ts'
   - './tests/helpers/stray-async-errors-global.ts'

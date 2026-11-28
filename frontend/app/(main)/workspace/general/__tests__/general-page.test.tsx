@@ -19,10 +19,11 @@ vi.mock('react-i18next', async (importOriginal) => ({
   ...(await importOriginal<typeof import('react-i18next')>()),
   useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en' } }),
 }));
-// The general page's extra cards as this repository binds them, whatever `@/config` a build supplies.
+// The general page's extra cards and Edition section as this repository binds them, whatever `@/config` a build supplies.
 vi.mock('@/config', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/config')>()),
   GeneralSettingsExtras: (await import('../components/general-settings-extras')).GeneralSettingsExtras,
+  WorkspaceEditionSection: (await import('../edition-section')).WorkspaceEditionSection,
 }));
 vi.mock('@/app/components/ui/lottie-loader', () => ({ LottieLoader: () => <div>loading</div> }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));

@@ -40,6 +40,7 @@ from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
 from app.models.entities import ArtifactType
 from app.services.artifact_registry.models import ArtifactMetadata
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from tests.support import edition_defaults
 from tests.support.config_service import FakeConfigurationService
 from tests.support.record_access import InMemoryRecordAccess
 from tests.unit.agents.adapter.support.scripted_transport import ScriptedTransport
@@ -426,10 +427,14 @@ def llm_for_chat(scenario: Scenario) -> AsyncMock:
 
 
 def prefetch_patches() -> list[tuple[str, object]]:
-    """The prefetch's blob-backed steps, answered with the refund policy's blocks."""
+    """The prefetch's blob-backed steps, answered with the refund policy's blocks, and the build's own
+    ``edition_defaults.golden_contract_patches()``: every golden driver applies these, so none can miss them."""
     from tests.support.knowledge_builder import builder_patches
 
-    return builder_patches("app.agents.chat_modes.prefetch.KnowledgeContextBuilder", _fake_flattened_results)
+    return [
+        *builder_patches("app.agents.chat_modes.prefetch.KnowledgeContextBuilder", _fake_flattened_results),
+        *edition_defaults.golden_contract_patches(),
+    ]
 
 
 async def record_stream(
@@ -470,6 +475,7 @@ async def record_stream(
         # the recording calls below it, in a test task a durable run before it may have bound to its own org.
         stack.callback(org_context.pop, org_context.push(None))
         stack.enter_context(org_context.bind(org_context.OrgContext(ORG_ID, USER_ID, "user", "jwt", "-")))
+        await edition_defaults.verify_loop_caller({"userId": USER_ID, "orgId": ORG_ID, "email": "user@corp.example"})
         for target, value in (
             ("app.agents.agent_loop.factory.LangChainTransport", lambda *a, **k: transport),
             ("app.agents.registry.toolset_registry.get_toolset_registry", scenario.toolset_registry()),

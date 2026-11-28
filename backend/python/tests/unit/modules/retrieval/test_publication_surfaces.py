@@ -17,13 +17,14 @@ import pytest
 
 from app.agents.actions.knowledge_graph.ops.search import execute_search
 from app.agents.actions.retrieval.retrieval import Retrieval
-from app.api.routes.agent import _resolve_service_account_caller_identity
+from app.api.routes import agent as agent_routes
 from app.harness.knowledge.caller import UNRESOLVED_CALLER, caller_user_id_of
 from harness_core.contracts import dump_contract, validate_contract
 from harness_core.contracts.generated.run_spec import RunSpec
 from harness_core.journal import InMemoryJournal
 from harness_core.journal.children import ChildGrantRequest, ChildRefused, ChildRequest
 from harness_core.testing.run_spec import minimal_run_spec
+from tests.support import edition_defaults
 
 
 def _state(retrieval_service: Any, user_info: dict[str, Any] | None = None) -> dict[str, Any]:  # noqa: ANN401
@@ -50,6 +51,13 @@ def _service() -> AsyncMock:
 
 
 async def test_sf1_a_service_account_request_keeps_the_real_caller() -> None:
+    assert caller_user_id_of({}) is None
+    assert caller_user_id_of({"callerUserId": ""}) is None
+    if edition_defaults.agents_run_as_the_caller():
+        # Every agent runs as the person asking, so no route swaps in the creator for the caller to bound.
+        assert not hasattr(agent_routes, "_resolve_service_account_caller_identity")
+        return
+    _resolve_service_account_caller_identity = agent_routes._resolve_service_account_caller_identity
     graph = AsyncMock()
     graph.get_user_by_user_id = AsyncMock(return_value={"email": "bob@example.com", "fullName": "Bob"})
     creator = {"userId": "creator", "orgId": "org-1"}
@@ -63,8 +71,6 @@ async def test_sf1_a_service_account_request_keeps_the_real_caller() -> None:
     # A request without a user: the creator's clearance is bounded by nobody's, so nothing (RS-6).
     anonymous = await _resolve_service_account_caller_identity(creator, unnamed, {"orgId": "org-1"}, graph, MagicMock())
     assert caller_user_id_of(anonymous) == UNRESOLVED_CALLER
-    assert caller_user_id_of({}) is None
-    assert caller_user_id_of({"callerUserId": ""}) is None
 
 
 @pytest.mark.parametrize(("user_info", "caller"), [({"callerUserId": "bob"}, "bob"), ({}, None)])
@@ -109,6 +115,13 @@ async def test_sf1_a_service_account_durable_run_acts_for_the_real_caller() -> N
     run = RunContext.from_claim(claim(pinned_spec(tool_ids=[]), caller={"email": "bob@example.com", "displayName": "Bob"}))
     graph = MagicMock()
     graph.get_document = AsyncMock(return_value={"_key": "creator-key", "userId": "creator", "orgId": ORG, "email": "c@x", "fullName": "C"})
+    if edition_defaults.agents_run_as_the_caller():
+        # The run is the caller's own: their identity, with no other caller to bound it.
+        graph.get_user_by_user_id = AsyncMock(return_value={"_key": "bob-key", "userId": run.actor_id, "orgId": ORG, "email": "bob@example.com"})
+        info, _ = await _identity(run, agent_doc(isServiceAccount=True, createdBy="creator-key"), graph, logging.getLogger("t"))
+        assert info["userId"] == run.actor_id
+        assert caller_user_id_of(info) is None
+        return
     graph.get_user_by_user_id = AsyncMock(return_value=None)
     info, service_account = await _identity(
         run, agent_doc(isServiceAccount=True, createdBy="creator-key"), graph, logging.getLogger("t")

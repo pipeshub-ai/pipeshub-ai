@@ -92,6 +92,7 @@ import { startFakeSmtpServer, FakeSmtpServer } from '../../../helpers/fake-smtp-
 import * as smtpTransportModule from '../../../../src/modules/mail/utils/smtp-transport'
 import { Logger } from '../../../../src/libs/services/logger.service'
 import { inRequestOrg } from '../../../helpers/request-org-context'
+import { useCommunitySignInLists } from '../../../helpers/sign-in-lists'
 
 /** The opt-out (ADR-OPS-06 as amended 2026-11-20): the switch is on by default, so off is said. */
 const HARNESS_OFF = { AGENT_HARNESS_WORKER_ENABLED: 'false' }
@@ -4743,6 +4744,9 @@ describe('ConfigurationManager Controller', () => {
   })
 
   describe('setMicrosoftAuthConfig (additional)', () => {
+    // The Azure AD fallback is the community sign-in lists' rename (azureAd -> microsoft).
+    useCommunitySignInLists()
+
     it('should default enableJit to true', async () => {
       const kvs = createMockKeyValueStore()
       const handler = setMicrosoftAuthConfig(kvs)
