@@ -104,6 +104,7 @@ def mock_data_entities_processor():
     proc.org_id = "org-123"
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
+    proc.skips_permission_writes = AsyncMock(return_value=False)
     proc.on_new_records = AsyncMock()
     proc.on_new_user_groups = AsyncMock()
     proc.on_record_deleted = AsyncMock()
@@ -1313,6 +1314,7 @@ def _make_connector():
     dep.on_new_app_users = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
+    dep.skips_permission_writes = AsyncMock(return_value=False)
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.reindex_existing_records = AsyncMock()
     dsp = MagicMock()
@@ -1731,6 +1733,7 @@ def mock_data_entities_processor_fullcov():
     proc.org_id = "org-123"
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
+    proc.skips_permission_writes = AsyncMock(return_value=False)
     proc.on_new_records = AsyncMock()
     proc.on_new_user_groups = AsyncMock()
     proc.on_record_deleted = AsyncMock()

@@ -352,6 +352,34 @@ async def test_a_suspended_person_is_not_in_the_audience(ws: Workspace) -> None:
     assert BOB not in {m.email for m in ws.records.user_groups["workspace-members"][1]}
 
 
+async def test_audience_groups_dropped_while_unlicensed_are_written_by_the_first_licensed_run(ws: Workspace) -> None:
+    """Without a licence the processor drops group writes without raising: the groups' new members must not be
+    recorded as written, or the first licensed run keeps the people the source no longer counts."""
+    await ws.sync()
+    new = "carol@example.com"
+    assert new not in {m.email for m in ws.records.user_groups["workspace-members"][1]}
+
+    licensed = False
+    write = ws.records.on_new_user_groups
+
+    async def gated_write(groups: list) -> None:
+        if licensed:
+            await write(groups)
+
+    async def skips(_: str | None) -> bool:
+        return not licensed
+
+    ws.records.on_new_user_groups = gated_write
+    ws.records.skips_permission_writes = skips
+    ws.world.add_user(new)
+    await ws.sync()
+    assert new not in {m.email for m in ws.records.user_groups["workspace-members"][1]}, "nothing written while unlicensed"
+
+    licensed = True
+    await ws.sync()
+    assert new in {m.email for m in ws.records.user_groups["workspace-members"][1]}
+
+
 async def test_a_members_only_drive_ignores_a_discoverable_share_and_a_domain_only_drive_keeps_it(ws: Workspace) -> None:
     ws.world.add_drive("sd-m", "Members", {ALICE: "organizer"}, MEMBERS_ONLY)
     ws.world.add_item("fm", "m.txt", parent="sd-m", perms=[discoverable("domain", domain="example.com")])
@@ -3961,9 +3989,9 @@ async def test_a_folder_turning_limited_takes_an_old_style_grant_off_the_items_b
 async def test_the_items_below_a_folder_turning_limited_are_checked_over_several_runs_past_the_bound(
     ws: Workspace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import app.connectors.sources.google.drive.team.connector as drive_connector
+    import app.ee.permission_sync.google_drive_workspace as drive_permissions
 
-    monkeypatch.setattr(drive_connector, "LIMITED_SUBTREE_MAX_CHECKS", 1)
+    monkeypatch.setattr(drive_permissions, "LIMITED_SUBTREE_MAX_CHECKS", 1)
     carol = "carol@example.com"
     ws.world.add_user(carol)
     ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader", carol: "reader"})
@@ -3992,9 +4020,9 @@ async def test_the_items_below_a_folder_turning_limited_are_checked_over_several
 async def test_no_member_keeps_a_stand_in_grant_below_a_limited_folder_past_the_run_it_turned_limited(
     ws: Workspace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import app.connectors.sources.google.drive.team.connector as drive_connector
+    import app.ee.permission_sync.google_drive_workspace as drive_permissions
 
-    monkeypatch.setattr(drive_connector, "LIMITED_SUBTREE_MAX_CHECKS", 1)
+    monkeypatch.setattr(drive_permissions, "LIMITED_SUBTREE_MAX_CHECKS", 1)
     ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
     ws.world.folder("dir", "Plans", parent="sd-1")
     items = [f"f{i}" for i in range(5)]
@@ -4055,9 +4083,9 @@ async def test_a_descendant_whose_read_keeps_failing_holds_back_none_after_it(ws
 async def test_a_descendant_check_that_fails_still_spends_the_runs_bound(
     ws: Workspace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import app.connectors.sources.google.drive.team.connector as drive_connector
+    import app.ee.permission_sync.google_drive_workspace as drive_permissions
 
-    monkeypatch.setattr(drive_connector, "LIMITED_SUBTREE_MAX_CHECKS", 1)
+    monkeypatch.setattr(drive_permissions, "LIMITED_SUBTREE_MAX_CHECKS", 1)
     ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
     for d in ("dirA", "dirB"):
         ws.world.folder(d, d, parent="sd-1")
@@ -4078,9 +4106,9 @@ async def test_a_descendant_check_that_fails_still_spends_the_runs_bound(
 async def test_a_folder_the_bound_never_reached_stays_pending_until_it_is_checked(
     ws: Workspace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import app.connectors.sources.google.drive.team.connector as drive_connector
+    import app.ee.permission_sync.google_drive_workspace as drive_permissions
 
-    monkeypatch.setattr(drive_connector, "LIMITED_SUBTREE_MAX_CHECKS", 1)
+    monkeypatch.setattr(drive_permissions, "LIMITED_SUBTREE_MAX_CHECKS", 1)
     ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
     for folder, item in (("dir-a", "fa"), ("dir-b", "fb")):
         ws.world.folder(folder, folder, parent="sd-1")

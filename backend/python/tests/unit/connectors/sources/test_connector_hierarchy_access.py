@@ -1,6 +1,6 @@
 """Decisions for Drive, BookStack, Dropbox, OneDrive, and SharePoint item access."""
 
-from app.connectors.sources.dropbox.access import (
+from app.ee.permission_sync.dropbox_access import (
     fallback_for_uncovered_user,
     member_is_direct,
 )

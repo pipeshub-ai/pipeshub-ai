@@ -12,10 +12,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.connectors.core.registry.filters import FilterCollection
-from app.connectors.sources.dropbox.connector import (
-    SHARING_CHANGE_EVENTS,
-    DropboxConnector,
-)
+from app.connectors.sources.dropbox.connector import DropboxConnector
+from app.ee.permission_sync.dropbox_team import SHARING_CHANGE_EVENTS
 from app.sources.client.dropbox.dropbox_ import DropboxResponse
 
 OWNER = ("dbmid:owner", "owner@acme.com")
@@ -65,6 +63,7 @@ def connector() -> DropboxConnector:
     conn.data_source = AsyncMock()
     conn.dropbox_cursor_sync_point = MagicMock()
     conn.dropbox_cursor_sync_point.update_sync_point = AsyncMock()
+    conn.data_entities_processor.skips_permission_writes = AsyncMock(return_value=False)
     return conn
 
 

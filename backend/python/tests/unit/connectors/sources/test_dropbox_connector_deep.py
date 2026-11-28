@@ -76,6 +76,7 @@ def _make_connector():
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
+    dep.skips_permission_writes = AsyncMock(return_value=False)
     dep.on_record_deleted = AsyncMock()
     dep.on_record_metadata_update = AsyncMock()
     dep.on_record_content_update = AsyncMock()
