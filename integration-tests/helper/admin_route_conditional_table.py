@@ -297,8 +297,10 @@ _NO_SUCH_ACCOUNT = "was not found in this organisation"
 _NOT_A_SERVICE_AGENT = "Only a service agent searches as a service account"
 _TOOLSET_DELETED = "Toolset instance deleted successfully"
 _OAUTH = f"/api/v1/oauth/{OAUTH_CONNECTOR_TYPE}"
-# agent-harness/transport/harness-switch.ts: every harness path answers this while the harness is off.
+# agent-harness/transport/harness-switch.ts: every harness path answers one of these while the harness
+# is off, for the whole install (the switch) or for the org (its Labs flag, off by default).
 HARNESS_OFF = "The agent harness is not enabled on this install."
+HARNESS_OFF_FOR_ORG = "The agent harness is not turned on for this organization."
 _SHARED_ORG_COMMAND = "This command is shared; only an organization admin can change it."
 _NOT_YOURS_TO_CHANGE = "You cannot change this skill."
 _NOT_YOUR_CANDIDATE = "Only the person it was learned for or an admin can decide this."
@@ -396,7 +398,7 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
                     "Configuration not found"),
     _on_a_connector("get_filter_field_options", "GET",
                     "/{target}/filters/it-no-such-filter/options", 404,
-                    "Filter field 'it-no-such-filter' not found"),
+                    "Filter field not found for connector"),
     _on_a_connector("save_connector_instance_filters", "POST", "/{target}/filters", 200,
                     "Filter selections saved",
                     body={"filters": {"it_probe": {"operator": "in", "value": ["x"]}}}),
@@ -817,7 +819,7 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
              {"version": "999"}, None),
             ("write_resource", "PUT", "/resource", "fresh_org_command", 200, '"status":"success"',
              {"path": "notes.md", "content": "Made by the conditional-admin tests."}, None),
-            ("remove_resource", "DELETE", "/resource", "org_command", 404, "not found for skill",
+            ("remove_resource", "DELETE", "/resource", "org_command", 404, "Resource not found for this skill",
              None, {"path": "it-cond-absent.md"}),
         )
     ),
@@ -851,15 +853,18 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
     ),
     # A learned proposal is decided by the person it was learned for or an org admin. A
     # proposal comes from a run, which the test world cannot make, so these aim at one that
-    # is not there: a member is refused before the lookup, an admin gets past it to the 404.
+    # is not there. The lookup comes first and is the org's own (skills.py _require_decider),
+    # so an id no proposal of the org has is a 404 whoever asks, before the decider check.
     *(
         ConditionalRoute(
             f"api/routes/skills.py::{name}", "POST", f"{_SKILLS}/candidates/{ABSENT_CANDIDATE}/{step}",
             cases=(
-                Case("org", MEMBER, False, 403, _NOT_YOUR_CANDIDATE),
-                Case("org", ADMIN, True, 404, "not found", absent=(_NOT_YOUR_CANDIDATE,)),
+                Case("org", MEMBER, True, 404, "Candidate not found", absent=(_NOT_YOUR_CANDIDATE,)),
+                Case("org", ADMIN, True, 404, "Candidate not found", absent=(_NOT_YOUR_CANDIDATE,)),
             ),
             body={},
+            same_for_everyone="a proposal comes from a run, which the test world cannot make, and an id "
+                              "the org has no proposal for is not found whoever asks",
         )
         for name, step in (("approve_candidate", "approve"), ("reject_candidate", "reject"))
     ),

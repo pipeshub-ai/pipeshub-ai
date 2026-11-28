@@ -140,6 +140,9 @@ async def two_copies(
             f"{second.virtual_record_id}): MD5 dedup did not happen, so there is no shared content to test."
         )
         await fp.wait_for_connector_records(graph_provider, kb_id, [first.name, second.name, neighbour.name])
+        # The neighbour owns its content, so enrichment still writes its taxonomy edges after it
+        # reads COMPLETED; its "before" count must include them, or the delete looks like it added them.
+        await fp.wait_for_connector_records(graph_provider, kb_id, [neighbour.name], enriched=True)
         within = records_folder(test_org_id, kb_id)
         vendor = await fp.storage_vendor(mongo_store, test_org_id, first.virtual_record_id, within=within)
 

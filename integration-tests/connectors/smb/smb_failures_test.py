@@ -2,7 +2,8 @@
 
 """SMB connector: what a failed or partial sync must leave behind, through the deployed product.
 
-Each test creates a personal connector limited to its own folder of the ``smb-source`` share, syncs, breaks
+Each test creates a team connector (the share is on a private address, which personal connectors cannot
+reach) limited to its own folder of the ``smb-source`` share, syncs, breaks
 something, syncs again and then checks, as the person who created the connector, that every record still
 opens and that the run was not recorded as a success. The cases (IDs in the audit's IT_CASES.md):
 
@@ -63,7 +64,7 @@ def succeeded(outcome: str | None) -> bool:
 
 
 class SmbWorld:
-    """One personal connector on one folder of the share; its creator must be able to open its records."""
+    """One team connector on one folder of the share; its creator must be able to open its records."""
 
     def __init__(self, client: PipeshubClient, storage: SmbStorageHelper) -> None:
         self.client = client
@@ -91,7 +92,8 @@ class SmbWorld:
             self.write(rel, data)
         config = smb_connector_config()
         created = self.client.create_connector(
-            connector_type="SMB", instance_name=f"smb-it-{uuid.uuid4().hex[:6]}", scope="personal",
+            # The test share is on a private address, which personal connectors cannot reach.
+            connector_type="SMB", instance_name=f"smb-it-{uuid.uuid4().hex[:6]}", scope="team",
             config=config, auth_type="BASIC_AUTH",
         )
         self.connector_id = created.connector_id

@@ -119,6 +119,7 @@ from connectors.google_drive_workspace.drive_workspace_test_utils import (  # no
     record_present,
     rename_drive_item,
     sync_and_wait,
+    sync_once_to_its_end,
     sync_until,
     resolve_my_drive_root_id,
     share_drive_item_with_user,
@@ -534,7 +535,9 @@ class TestDriveWorkspaceEntitySync:
         live = await count_drive_directory_groups_with_members(
             drive_workspace_admin_datasource
         )
-        graph = await graph_provider.count_user_groups(connector_id)
+        # The connector also writes its own audience groups (workspace-members and one
+        # domain-members:<domain> per verified domain), which are not directory groups.
+        graph = await graph_provider.count_user_groups_with_email_ids(connector_id)
         assert graph == live, (
             f"Graph UserGroup count {graph} != Directory groups with USER members {live}"
         )
@@ -1403,12 +1406,13 @@ class TestDriveWorkspaceEntitySync:
         users_client: UsersClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-DRIVE-010: parent shared with B; restricted nested folder keeps B
-        PERMISSION; child under the limited folder does not.
+        """TC-DRIVE-010: parent shared with B; neither the restricted nested folder nor
+        the child under it gives B PERMISSION.
 
         Drive limited access (``inheritedPermissionsDisabled``) applies to folders
-        only. The restricted folder itself stays visible to B; its children do not
-        inherit B's grant from the shared parent.
+        only. The restricted folder stays visible to B, but B is not on it and cannot
+        list its children, so B gets no grant on it: a stand-in grant would pass to
+        the children B cannot open (team connector ``_fetch_permissions``).
         """
         second_email = os.getenv(ENV_SECOND_USER, "").strip()
         if not second_email:
@@ -1478,37 +1482,57 @@ class TestDriveWorkspaceEntitySync:
                 description=f"{parent_name}/{restricted_name}/{child_name} in graph after restrict IT",
             )
 
-            async def _parent_and_restricted_have_b() -> bool:
-                parent_ok = await graph_provider.user_has_direct_record_permission(
+            async def _parent_has_b() -> bool:
+                return await graph_provider.user_has_direct_record_permission(
                     connector_id, second_email, parent_id
                 )
-                restricted_ok = await graph_provider.user_has_direct_record_permission(
-                    connector_id, second_email, restricted_id
-                )
-                return parent_ok and restricted_ok
 
             await wait_until_graph_condition(
                 connector_id,
-                check=_parent_and_restricted_have_b,
+                check=_parent_has_b,
                 timeout=_SYNC_TIMEOUT_SEC,
                 poll_interval=10,
-                description=(
-                    f"B ({second_email}) PERMISSION on parent + restricted folder"
-                ),
+                description=f"B ({second_email}) PERMISSION on parent",
             )
 
-            async def _child_lacks_b() -> bool:
-                return not await graph_provider.user_has_direct_record_permission(
-                    connector_id, second_email, child_id
-                )
+            # The owner's own grant on the restricted folder and the child shows their permission
+            # lists were written; only then does an absent grant for B mean anything.
+            owner_email = drive_workspace_entity_connector["test_user_email"]
+
+            async def _owner_granted_on_restricted_and_child() -> bool:
+                for external_id in (restricted_id, child_id):
+                    if not await graph_provider.user_has_direct_record_permission(
+                        connector_id, owner_email, external_id
+                    ):
+                        return False
+                return True
 
             await wait_until_graph_condition(
                 connector_id,
-                check=_child_lacks_b,
+                check=_owner_granted_on_restricted_and_child,
+                timeout=_SYNC_TIMEOUT_SEC,
+                poll_interval=10,
+                description=f"owner ({owner_email}) PERMISSION on restricted folder and its child",
+            )
+            # One more run, started now and recorded as finished: any permission an earlier run was
+            # still writing for this tree has landed before B's absence is checked.
+            await sync_once_to_its_end(pipeshub_client, connector_id)
+
+            async def _restricted_and_child_lack_b() -> bool:
+                for external_id in (restricted_id, child_id):
+                    if await graph_provider.user_has_direct_record_permission(
+                        connector_id, second_email, external_id
+                    ):
+                        return False
+                return True
+
+            await wait_until_graph_condition(
+                connector_id,
+                check=_restricted_and_child_lack_b,
                 timeout=_SYNC_TIMEOUT_SEC,
                 poll_interval=10,
                 description=(
-                    f"B ({second_email}) PERMISSION absent on child under restricted"
+                    f"B ({second_email}) PERMISSION absent on restricted folder and its child"
                 ),
             )
 

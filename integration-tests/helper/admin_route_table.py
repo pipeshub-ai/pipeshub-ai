@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from helper import suite_extensions
-from helper.admin_route_conditional_table import HARNESS_OFF
+from helper.admin_route_conditional_table import HARNESS_OFF, HARNESS_OFF_FOR_ORG
 
 # A well-formed Mongo ObjectId that no document has.
 ABSENT_ID = "65f0c0ffee00000000000000"
@@ -477,9 +477,12 @@ class SwitchedOff:
 
 
 SWITCHED_OFF: tuple[SwitchedOff, ...] = (
-    # agent-harness/transport/harness-switch.ts: off unless the install sets AGENT_HARNESS_WORKER_ENABLED.
+    # agent-harness/transport/harness-switch.ts: off unless the install sets AGENT_HARNESS_WORKER_ENABLED,
+    # and then off for an org until its admin turns on the Labs flag (the test org does not).
     SwitchedOff(_HARNESS, 404, HARNESS_OFF,
                 "the agent harness is off on this stack"),
+    SwitchedOff(_HARNESS, 404, HARNESS_OFF_FOR_ORG,
+                "the agent harness is off for the test org"),
 )
 
 # Rows a downstream build adds (helper/suite_extensions.py). Last, so the

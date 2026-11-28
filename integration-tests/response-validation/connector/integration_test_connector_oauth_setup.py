@@ -280,14 +280,16 @@ class TestSavedOAuthApps:
         assert resp.json()["error"]["code"] == "HTTP_BAD_REQUEST"
         assert_error_response_matches_openapi_operation(resp.json(), _UPDATE_OAUTH_CONFIG, 400)
 
-    def test_update_oauth_config_with_array_config_is_500(
+    def test_update_oauth_config_with_array_config_is_502(
         self, oauth_configs_api: ConnectorOAuthConfigsClient, jira_oauth_connector: Any
     ) -> None:
+        """The connector service fails on it; the API relays that as a 502 with generic words."""
         body = {"config": [None]}
         assert request_body_violations(body, _UPDATE_OAUTH_CONFIG)
         resp = oauth_configs_api.update_config("Jira", jira_oauth_connector.oauth_config_id, body)
-        assert resp.status_code == 500, f"{resp.status_code}: {resp.text}"
-        assert_error_response_matches_openapi_operation(resp.json(), _UPDATE_OAUTH_CONFIG, 500)
+        assert resp.status_code == 502, f"{resp.status_code}: {resp.text}"
+        assert resp.json()["error"]["code"] == "HTTP_BAD_GATEWAY"
+        assert_error_response_matches_openapi_operation(resp.json(), _UPDATE_OAUTH_CONFIG, 502)
 
     def test_update_oauth_config_saves_a_non_string_tenant_id(
         self, oauth_configs_api: ConnectorOAuthConfigsClient, jira_oauth_connector: Any

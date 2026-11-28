@@ -1307,10 +1307,9 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
         [
             ("missing chatMode", {}),
             ("empty chatMode", {"chatMode": ""}),
-            ("auto chatMode", {"chatMode": "auto"}),
-            ("deep chatMode", {"chatMode": "deep"}),
-            ("planExecute chatMode", {"chatMode": "planExecute"}),
-            ("verification chatMode", {"chatMode": "verification"}),
+            # Every agent mode is valid here; the assistant's own modes are not.
+            ("agent chatMode", {"chatMode": "agent"}),
+            ("internal_search chatMode", {"chatMode": "internal_search"}),
             ("empty modelKey", {"chatMode": "quick", "modelKey": ""}),
             ("empty modelName", {"chatMode": "quick", "modelName": ""}),
             (
@@ -1391,7 +1390,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
             self.agent_key,
             readonly_agent_conversation["conversation_id"],
             readonly_agent_conversation["bot_message_id"],
-            json={"chatMode": "auto"},
+            json={"chatMode": "agent"},
             stream=False,
             timeout=self.timeout,
         )
@@ -1461,13 +1460,14 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
 class TestAgentConversationRegenerateOpenApiRequestContract:
     """Offline OpenAPI request-body checks not covered by live gateway negatives."""
 
-    def test_requires_quick_chat_mode(self) -> None:
-        assert_request_body_matches_openapi_operation(
-            {"chatMode": "quick"},
-            "regenerateAgentConversationMessage",
-        )
+    def test_requires_an_agent_chat_mode(self) -> None:
+        for mode in ("quick", "auto", "react", "deep", "planExecute", "verification"):
+            assert_request_body_matches_openapi_operation(
+                {"chatMode": mode},
+                "regenerateAgentConversationMessage",
+            )
 
-        for payload in ({}, {"chatMode": "auto"}):
+        for payload in ({}, {"chatMode": "agent"}, {"chatMode": "internal_search"}):
             with pytest.raises(AssertionError):
                 assert_request_body_matches_openapi_operation(
                     payload,

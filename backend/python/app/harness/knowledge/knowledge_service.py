@@ -284,7 +284,14 @@ class KnowledgeService:
         records = state.get("virtual_record_id_to_result")
         if not isinstance(records, dict):
             records = state["virtual_record_id_to_result"] = {}
+        # The session's one mapper, in the session before the read awaits anything: reads the model runs side by
+        # side must number their blocks in it. Each read making its own would number both from ref1, and the
+        # last one stored would turn the other's refs into citations of its own blocks.
         mapper_in = state.get("citation_ref_mapper")
+        if mapper_in is None:
+            from app.utils.chat_helpers import CitationRefMapper
+
+            mapper_in = state["citation_ref_mapper"] = CitationRefMapper()
         output, mapper = await execute_fetch_record(
             context=context,  # type: ignore[arg-type]  # the attributes a read takes from its run
             virtual_records=records,

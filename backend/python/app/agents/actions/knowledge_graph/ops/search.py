@@ -1318,7 +1318,9 @@ async def _execute_search(
         record_id_shortener = get_record_id_shortener_if_enabled(state)
         ref_mapper = state.get("citation_ref_mapper")
         if not isinstance(ref_mapper, CitationRefMapper):
-            ref_mapper = CitationRefMapper()
+            # Stored at once, not after the render: the image warm-up below awaits, and a read running beside
+            # this search must mint its refs in this same mapper (see `KnowledgeService.fetch`).
+            ref_mapper = state["citation_ref_mapper"] = CitationRefMapper()
         image_budget = state.get("image_budget")
         if not isinstance(image_budget, ImageBudget):
             image_budget = state["image_budget"] = ImageBudget()

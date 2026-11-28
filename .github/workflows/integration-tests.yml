@@ -395,9 +395,10 @@ jobs:
       # simulator" step adds that file to every compose call through SHAREPOINT_SIM_COMPOSE, so no suite on that
       # shard may reach the real Microsoft 365: the live sharepoint suite (shard 1) and outlook (shard 2) stay off it.
       # Its own pin and image: CONNSIM_SHAREPOINT_REF is connectors-simulator's main with the SharePoint
-      # simulator (#7), while CONNSIM_REF is still the integration/notion-gmail branch, which has Confluence
-      # changes main lacks. One pin will do once that branch is on main.
-      CONNSIM_SHAREPOINT_REF: 7feca7cd6291a7a305073c08cf5d480cc6920c21
+      # simulator (#7) plus $count on GET /users (#116), which the connector's user listing sends, while
+      # CONNSIM_REF is still the integration/notion-gmail branch, which has Confluence changes main lacks.
+      # One pin will do once that branch is on main.
+      CONNSIM_SHAREPOINT_REF: 895a5db91181fed9f02b040e85e664ddf6f953c0
       SHAREPOINT_SIM_IMAGE: pipeshub/connectors-simulator:sharepoint-it
       NEEDS_SHAREPOINT_SIM: ${{ (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'sharepoint_sim')) && 'true' || 'false' }}
       # The local_fs_sim suite runs the desktop app's real Local FS code headless, on shard 1 next to local_fs:

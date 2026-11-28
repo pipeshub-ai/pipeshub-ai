@@ -53520,6 +53520,11 @@ paths:
                         type: string
                         enum: [private, project]
                         description: Who in the project sees the conversation. Absent when never set.
+                      durable:
+                        type: boolean
+                        description: |
+                          The conversation runs on the durable agent harness. A client reads
+                          which harness the chat is on from this, not from its latest answer.
                       forkedFrom:
                         $ref: '#/components/schemas/ConversationForkOrigin'
                       forks:
@@ -66810,7 +66815,8 @@ paths:
         `400`. Past that check, a `sync` value that is not an object, and a
         falsy `filters` value (`null`, `false`, `0`, `""` or `[]`), is
         skipped without an error; any other `filters` value that is not an object, such as
-        `true`, `[null]` or a non-empty string, is answered `500`. Fields
+        `true`, `[null]` or a non-empty string, is answered `502` (the connector
+        service fails on it). Fields
         other than `sync` and `filters`, `baseUrl`
         included, are dropped without an error.<br><br>
         The connector must be disabled (`400` otherwise).
@@ -66891,7 +66897,14 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Internal error, for example when `filters` is neither an object nor falsy, such as `true`, `[null]` or a non-empty string. A body the app-wide parsers refuse is not answered here: malformed JSON is a `400`, a body past the size limits a `413` and an unsupported encoding a `415` (see Body parsers in the introduction).
+            Internal error. A body the app-wide parsers refuse is not answered here: malformed JSON is a `400`, a body past the size limits a `413` and an unsupported encoding a `415` (see Body parsers in the introduction).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: |
+            The connector service failed (`HTTP_BAD_GATEWAY`), for example when `filters` is neither an object nor falsy, such as `true`, `[null]` or a non-empty string. The message is generic; the service's own words are in its log under the same request id (see Relayed failures in the introduction).
           content:
             application/json:
               schema:
@@ -77998,6 +78011,13 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '502':
+          description: |
+            The connector service failed (`HTTP_BAD_GATEWAY`), for example when `config` is not an object, such as `[null]`. The message is generic; the service's own words are in its log under the same request id (see Relayed failures in the introduction).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
         - OAuth Configuration

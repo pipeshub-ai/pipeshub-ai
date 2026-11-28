@@ -415,16 +415,28 @@ class TestSalesforceConnector:
         (salesforce_source.ids["fresh"],) = sim.ops(
             {"op": "add_case", "key": "fresh", "subject": "Fresh case", "owner": "admin", "account": "acme"})
         modified = {"modified": {"operator": "is_after", "type": "datetime", "value": {"start": cut, "end": None}}}
-        pipeshub_client.update_connector_filters_sync_safe(salesforce_connector, filters={"sync": {"values": modified}})
-        await wait_for_sync_completion(pipeshub_client, graph_provider, salesforce_connector, timeout=300)
-        await self._settle(salesforce_source, pipeshub_client, graph_provider, salesforce_connector,
-                           salesforce_users, org_id, "the narrowed filter", filters=modified)
-        admin_reads = await _readable(graph_provider, salesforce_connector,
-                                      salesforce_users[salesforce_source.admin_email], org_id)
-        assert salesforce_source.ids["fresh"] in admin_reads
-        assert salesforce_source.ids["login"] not in admin_reads, "a case outside the filter is still readable"
-        pipeshub_client.update_connector_filters_sync_safe(salesforce_connector, filters={"sync": {"values": {}}})
-        await wait_for_sync_completion(pipeshub_client, graph_provider, salesforce_connector, timeout=300)
+        was_active = bool(pipeshub_client.get_connector(salesforce_connector).get("isActive"))
+        try:
+            pipeshub_client.update_connector_filters_sync_safe(
+                salesforce_connector, filters={"sync": {"values": modified}})
+            await wait_for_sync_completion(pipeshub_client, graph_provider, salesforce_connector, timeout=300)
+            await self._settle(salesforce_source, pipeshub_client, graph_provider, salesforce_connector,
+                               salesforce_users, org_id, "the narrowed filter", filters=modified)
+            admin_reads = await _readable(graph_provider, salesforce_connector,
+                                          salesforce_users[salesforce_source.admin_email], org_id)
+            assert salesforce_source.ids["fresh"] in admin_reads
+            assert salesforce_source.ids["login"] not in admin_reads, "a case outside the filter is still readable"
+        finally:
+            # The later tests share this connector: a filter left narrowed hides every change they make,
+            # and a connector left disabled (a failed re-enable above) syncs nothing for them.
+            try:
+                pipeshub_client.update_connector_filters_sync_safe(
+                    salesforce_connector, filters={"sync": {"values": {}}})
+            finally:
+                if was_active and not pipeshub_client.get_connector(salesforce_connector).get("isActive"):
+                    pipeshub_client.toggle_sync(salesforce_connector, enable=True)
+                # Also on a failure: the next test's resync would meet this run still going.
+                await wait_for_sync_completion(pipeshub_client, graph_provider, salesforce_connector, timeout=300)
         await self._settle(salesforce_source, pipeshub_client, graph_provider, salesforce_connector,
                            salesforce_users, org_id, "the cleared filter")
 

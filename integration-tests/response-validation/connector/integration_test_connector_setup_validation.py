@@ -6,7 +6,7 @@ pipeshub-openapi.yaml: what the server refuses must be refused by the spec too
 returned, and a token holding the documented scopes must be let through.
 
 Malformed and unvalidated input is pinned to what the server answers today
-(500s and 200s, all documented), so the spec describes real responses. When the
+(502s and 200s, all documented), so the spec describes real responses. When the
 server starts refusing such input with 400, these tests and the spec change together.
 """
 
@@ -298,7 +298,8 @@ class TestDocumentedScopes:
 @pytest.mark.integration
 class TestMalformedBodies:
     """A body of the wrong JSON type: refused 400 by the JSON parser when it is not an object or
-    array, and inside an object answered 400 where the route checks the field, 500 where it does not."""
+    array, and inside an object answered 400 where the route checks the field, 502 where it does not (the
+    connector service fails on it and the API relays that as a 502)."""
 
     @pytest.mark.parametrize(
         ("operation_id", "method", "path"),
@@ -347,8 +348,10 @@ class TestMalformedBodies:
         resp = connectors_api.update_filters_sync_config(
             rss_connector.connector_id, {"filters": [None]}
         )
-        assert resp.status_code == 500, f"{resp.status_code}: {resp.text}"
-        assert_error_response_matches_openapi_operation(resp.json(), _UPDATE_FILTERS_SYNC, 500)
+        # The connector service fails on it; the API relays that as a 502 with generic words.
+        assert resp.status_code == 502, f"{resp.status_code}: {resp.text}"
+        assert resp.json()["error"]["code"] == "HTTP_BAD_GATEWAY"
+        assert_error_response_matches_openapi_operation(resp.json(), _UPDATE_FILTERS_SYNC, 502)
 
 
 @pytest.mark.integration

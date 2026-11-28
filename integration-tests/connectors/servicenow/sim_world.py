@@ -64,6 +64,9 @@ CONNECTOR_URL = os.getenv("SERVICENOW_SIM_CONNECTOR_URL", "http://servicenow-sim
 SYNC_USER, SYNC_PASSWORD = "pipeshub.sync", "sim"
 SYNC_TIMEOUT_SEC = int(os.getenv("SERVICENOW_SIM_SYNC_TIMEOUT_SEC", "600"))
 SYNC_POLL_SEC = 3
+# Indexing statuses of a record the indexing service will still write to on its own.
+INDEXING_IN_FLIGHT = frozenset({"NOT_STARTED", "QUEUED", "IN_PROGRESS"})
+INDEXING_QUIET_TIMEOUT_SEC = int(os.getenv("SERVICENOW_SIM_INDEXING_QUIET_TIMEOUT_SEC", "180"))
 SETTLE_TIMEOUT_SEC = int(os.getenv("SERVICENOW_SIM_SETTLE_TIMEOUT_SEC", "120"))
 SETTLE_POLL_SEC = 10
 OPEN_CONCURRENCY = 8
@@ -241,7 +244,25 @@ class ServiceNowWorld:
             self.client.update_connector_filters_sync_config(self.connector_id, filters=filters)
         return await self._run(lambda: self.client.toggle_sync(self.connector_id, enable=True))
 
+    async def _wait_indexing_quiet(self) -> None:
+        """Wait, for a bounded time, until the indexing service is done writing this connector's records.
+
+        A full sync rewrites every record, and on ArangoDB a rewrite racing the indexing service's own
+        writes to the same record can lose every retry to write-write conflicts. That race is not what
+        a sync test checks, so a full sync starts once the last run's records are indexed. Past the
+        bound it starts anyway: a record that never indexes is for the comparison to report."""
+        deadline = time.monotonic() + INDEXING_QUIET_TIMEOUT_SEC
+        while time.monotonic() < deadline:
+            busy = [r for r in await self.records() if r.get("indexingStatus") in INDEXING_IN_FLIGHT]
+            if not busy:
+                return
+            await asyncio.sleep(SYNC_POLL_SEC)
+        logger.warning("Records of %s still indexing after %ss; starting the full sync anyway",
+                       self.connector_id, INDEXING_QUIET_TIMEOUT_SEC)
+
     async def sync(self, *, full: bool = False) -> str | None:
+        if full:
+            await self._wait_indexing_quiet()
         return await self._run(lambda: self.client.resync_connector(
             self.connector_id, full_sync=full, connector_name=CONNECTOR_TYPE))
 
@@ -252,12 +273,13 @@ class ServiceNowWorld:
             rows = await self.graph.execute_query(
                 "FOR r IN records FILTER r.connectorId == @c RETURN {id: r._key, externalRecordId: "
                 "r.externalRecordId, externalParentId: r.externalParentId, recordName: r.recordName, "
-                "recordType: r.recordType, isDeleted: r.isDeleted}", bind_vars=params)
+                "recordType: r.recordType, isDeleted: r.isDeleted, indexingStatus: r.indexingStatus}",
+                bind_vars=params)
         else:
             rows = await self.graph.client.execute_query(
                 "MATCH (r:Record {connectorId: $c}) RETURN r.id AS id, r.externalRecordId AS externalRecordId, "
                 "r.externalParentId AS externalParentId, r.recordName AS recordName, r.recordType AS recordType, "
-                "r.isDeleted AS isDeleted", params)
+                "r.isDeleted AS isDeleted, r.indexingStatus AS indexingStatus", params)
         return [r for r in rows or [] if not r.get("isDeleted")]
 
     @staticmethod

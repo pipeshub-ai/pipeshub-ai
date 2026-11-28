@@ -161,8 +161,13 @@ class PermissionExpectation:
 
 
 def normalize_edge_doc(raw: dict[str, Any]) -> dict[str, Any]:
-    """Strip Arango system fields so the dict is ready for YAML validation."""
-    return {k: v for k, v in raw.items() if k not in _ARANGO_SYSTEM_KEYS}
+    """Strip Arango system fields and the backends' own bookkeeping properties (a hierarchy
+    edge's children order stamps, transient locks; ``app.schema.node_validator.INTERNAL_PROPERTIES``,
+    which no schema declares and no edge the product hands out carries) so the dict is ready
+    for YAML validation. The test providers read edges raw, so they still see them."""
+    from app.schema.node_validator import INTERNAL_PROPERTIES
+
+    return {k: v for k, v in raw.items() if k not in _ARANGO_SYSTEM_KEYS and k not in INTERNAL_PROPERTIES}
 
 
 # ---------------------------------------------------------------------------

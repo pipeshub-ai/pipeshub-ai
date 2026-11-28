@@ -170,6 +170,19 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         result = await self.http_client.execute_aql(query, {"cid": connector_id})
         return len(result) if result else 0
 
+    async def count_user_groups_with_email_ids(self, connector_id: str) -> int:
+        """Count user-group documents whose ``externalGroupId`` is an email address: the
+        directory's own groups, leaving out groups a connector makes itself (Drive's audience
+        groups, ``workspace-members`` and ``domain-members:<domain>``, whose ids have no ``@``)."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = (
+            f"FOR g IN {CollectionNames.GROUPS.value} "
+            "FILTER g.connectorId == @cid AND CONTAINS(g.externalGroupId, '@') RETURN 1"
+        )
+        result = await self.http_client.execute_aql(query, {"cid": connector_id})
+        return len(result) if result else 0
+
     async def count_record_group_edges(self, connector_id: str) -> int:
         """Count Record -> RecordGroup BELONGS_TO edges."""
         if not self.http_client:

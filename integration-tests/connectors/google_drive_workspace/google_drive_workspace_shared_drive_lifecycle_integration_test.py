@@ -87,14 +87,9 @@ class TestDriveWorkspaceSharedDriveLifecycle:
         state["group_shared"] = True
 
     @pytest.mark.order(1)
-    @pytest.mark.xfail(
-        strict=True,
-        # Only the fan-out assertion is B3. A sync that times out is a failure of its own.
-        raises=AssertionError,
-        reason="B3: a group member who can open the file but not read its permission list gets a "
-        "direct USER edge from the permissions fallback (team connector _fetch_permissions), "
-        "so the group share fans out to members who sync.",
-    )
+    # B3 (a group member who can open the file but not read its permission list got a direct
+    # USER edge from the permissions fallback) is fixed: the connector re-reads such a list as
+    # the shared drive's manager. This now guards against it coming back.
     async def test_tc_drv_sd_lc_001b_group_share_does_not_fan_out_to_members(
         self,
         drive_workspace_sd_lifecycle_connector: dict[str, Any],
@@ -108,11 +103,13 @@ class TestDriveWorkspaceSharedDriveLifecycle:
             pytest.skip("TC-DRV-SD-LC-001 did not share the file with the group")
         second_user = state.get("second_user_email")
         if not second_user:
-            # B3 only shows through a group member who syncs; without one the xfail would pass.
+            # B3 only shows through a group member who syncs; without one the check proves nothing.
             pytest.skip(f"{ENV_SECOND_USER} not set, so no group member syncs")
         connector_id = state["connector_id"]
         file_id = state["group_file_id"]
         organizer = state["test_user_email"].lower()
+        if second_user.lower() == organizer:
+            pytest.skip(f"{ENV_SECOND_USER} is the organizer, so no other group member syncs")
         members = await list_group_user_member_emails(drive_workspace_admin_datasource, state["group_email"])
         if second_user.lower() not in {address.lower() for address in members}:
             pytest.skip(f"{ENV_SECOND_USER} is not a direct member of {state['group_email']}")

@@ -109,12 +109,12 @@ class TestDirectory:
         assert result.is_error
         assert "userId" in result.text
 
-    def test_list_groups_includes_everyone(self, call: CallTool) -> None:
-        body = _ok(call("pipeshub_directory", action="list_groups"))
+    def test_list_groups_is_not_an_action(self, call: CallTool) -> None:
+        """@pipeshub-ai/mcp 4.11 dropped ``list_groups``, so no tool needs ``usergroup:read``."""
+        result = call("pipeshub_directory", action="list_groups")
 
-        types = [g.get("type") for g in body["groups"]]
-        assert "everyone" in types, types
-        assert all(isinstance(g.get("userCount"), int) for g in body["groups"]), body["groups"]
+        assert result.is_error, result.text[:2000]
+        assert "Invalid" in result.text, result.text[:2000]
 
     def test_list_my_teams_answers_a_page(self, call: CallTool) -> None:
         body = _ok(call("pipeshub_directory", action="list_my_teams"))
