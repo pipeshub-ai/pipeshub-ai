@@ -156,7 +156,8 @@ def test_stdio_mcp_server_setup_is_refused_to_a_token_only() -> None:
 
 # The routes in the class, by router. A route that loses its guard fails here.
 _ROUTE_WIDE = {
-    ("app.api.routes.api_toolsets", "router"): [("PUT", "/instances/{instance_id}")],
+    ("app.api.routes.api_toolsets", "router"): [("POST", "/instances"), ("PUT", "/instances/{instance_id}")],
+    ("app.api.routes.mcp_servers", "router"): [("PUT", "/instances/{instance_id}/oauth-config")],
     # An OAuth app holds a client secret and the URLs a grant is sent to; connectors link to it.
     ("app.connectors.api.router", "router"): [
         ("POST", "/api/v1/oauth/{connector_type}"),
@@ -183,6 +184,10 @@ _ALLOWLISTED = {
         ("POST", "/instances", {"instanceName": True, "toolsetType": True, "authType": True, "scope": True}),
         ("PUT", "/instances/{instance_id}", {"instanceName": True}),
     ],
+    ("app.api.routes.mcp_servers", "router"): [
+        ("POST", "/instances", {"name": True, "description": True, "typeId": True, "scope": True, "transport": True, "authMode": True, "useAdminAuth": True, "scopes": True}),
+        ("PUT", "/instances/{instance_id}", {"name": True, "description": True, "typeId": True, "scope": True, "transport": True, "authMode": True, "useAdminAuth": True, "scopes": True}),
+    ],
 }
 
 
@@ -196,6 +201,10 @@ _EMPTY_ALLOWED = {
         ("POST", "/api/v1/connectors/", ["config.auth"]),
     ],
     ("app.api.routes.toolsets", "router"): [
+        ("POST", "/instances", []),
+        ("PUT", "/instances/{instance_id}", []),
+    ],
+    ("app.api.routes.mcp_servers", "router"): [
         ("POST", "/instances", []),
         ("PUT", "/instances/{instance_id}", []),
     ],
@@ -245,6 +254,13 @@ def test_a_token_issued_with_config_write_loses_it() -> None:
 _C = "app.connectors.api.router"
 _T = "app.api.routes.toolsets"
 _TOOLSET = {"instanceName": "a", "toolsetType": "jira", "authType": "OAUTH"}
+_A = "app.api.routes.api_toolsets"
+_A_BODY = {
+    "name": "a", "baseUrl": "https://evil.example.invalid", "operations": ["op"],
+    "oauthClientId": "attacker-client", "oauthClientSecret": "attacker-secret",
+}
+_M = "app.api.routes.mcp_servers"
+_MCP = {"name": "m", "transport": "streamable_http", "authMode": "api_token"}
 _HTTP_ROUTES = [
     # The two bodies from review: an empty `auth` beside a top-level app link on the config save,
     # and a create whose `config.auth` carries credentials.
@@ -287,6 +303,16 @@ _HTTP_ROUTES = [
     (_T, "PUT", "/api/v1/toolsets/oauth-configs/slack/cfg1", {"authConfig": {"clientId": "x"}}),
     (_C, "DELETE", "/api/v1/oauth/JIRA/cfg1", {}),
     (_T, "DELETE", "/api/v1/toolsets/oauth-configs/slack/cfg1", {}),
+    # An API toolset names its host and OAuth app on create as on edit.
+    (_A, "POST", "/api/v1/api-toolsets/instances", _A_BODY),
+    (_A, "PUT", "/api/v1/api-toolsets/instances/i1", _A_BODY),
+    # An MCP server's URLs are where its credentials go; its OAuth app holds a secret.
+    (_M, "POST", "/api/v1/mcp-servers/instances", {**_MCP, "url": "https://evil.example.invalid/mcp"}),
+    (_M, "POST", "/api/v1/mcp-servers/instances", {**_MCP, "authMode": "oauth", "authorizationUrl": "https://evil.example.invalid/a", "tokenUrl": "https://evil.example.invalid/t"}),
+    (_M, "POST", "/api/v1/mcp-servers/instances", {**_MCP, "aKeyNoListHasSeen": "x"}),
+    (_M, "PUT", "/api/v1/mcp-servers/instances/i1", {**_MCP, "url": "https://evil.example.invalid/mcp"}),
+    (_M, "PUT", "/api/v1/mcp-servers/instances/i1", {**_MCP, "headerName": "X-Api-Key"}),
+    (_M, "PUT", "/api/v1/mcp-servers/instances/i1/oauth-config", {"clientId": "attacker-client", "clientSecret": "attacker-secret"}),
 ]
 _ALLOWED_FOR_A_TOKEN = [
     (_C, "PUT", "/api/v1/connectors/c1/config", {"sync": {"selectedStrategy": "MANUAL"}}),
@@ -297,6 +323,9 @@ _ALLOWED_FOR_A_TOKEN = [
     (_C, "POST", "/api/v1/connectors/registry/JIRA/test-connection", {"auth": {}, "connectorId": "c1"}),
     (_T, "POST", "/api/v1/toolsets/instances", {**_TOOLSET, "scope": "personal"}),
     (_T, "PUT", "/api/v1/toolsets/instances/i1", {"instanceName": "renamed"}),
+    # A catalog server, whose template fixes its URLs.
+    (_M, "POST", "/api/v1/mcp-servers/instances", {**_MCP, "typeId": "github", "scope": "personal"}),
+    (_M, "PUT", "/api/v1/mcp-servers/instances/i1", {**_MCP, "name": "renamed", "description": "d"}),
 ]
 
 
@@ -309,7 +338,11 @@ def _http_client(module: str) -> TestClient:
         request.state.user = SESSION if kind == "session" else DELEGATED.get(kind or "")
         return await call_next(request)
 
-    app.include_router(importlib.import_module(module).router)
+    mod = importlib.import_module(module)
+    for gate in ("_require_enabled", "_require_mcp_enabled"):  # feature flags read the config store
+        if hasattr(mod, gate):
+            app.dependency_overrides[getattr(mod, gate)] = lambda: None
+    app.include_router(mod.router)
     return TestClient(app, raise_server_exceptions=False)
 
 

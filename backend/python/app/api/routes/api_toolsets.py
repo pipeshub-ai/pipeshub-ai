@@ -245,14 +245,14 @@ async def _save(request: Request, body: InstanceRequest, instance_id: str, exist
     return await _admin_view(store, instance, user_id)
 
 
-@router.post("/instances", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+# Creating or editing an instance sets the host its stored credentials are sent to and the
+# OAuth app it signs in with, so both take an interactive session.
+@router.post("/instances", dependencies=[Depends(require_interactive_session), Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 async def create_api_toolset(request: Request, body: InstanceRequest) -> dict[str, Any]:
     await _require_admin(request, "add API actions")
     return await _save(request, body, uuid.uuid4().hex, None)
 
 
-# Editing an instance can point its stored credentials at another host, so it takes an
-# interactive session.
 @router.put("/instances/{instance_id}", dependencies=[Depends(require_interactive_session), Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 async def update_api_toolset(request: Request, instance_id: str, body: InstanceRequest) -> dict[str, Any]:
     await _require_admin(request, "change API actions")

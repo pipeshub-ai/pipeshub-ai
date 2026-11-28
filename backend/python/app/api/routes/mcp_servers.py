@@ -73,7 +73,12 @@ from app.agents.mcp.url_guard import (
     private_network_allowed,
 )
 from app.agents.mcp.www_authenticate import challenge_scopes
-from app.api.middlewares.auth import refuse_delegated_caller, require_scopes
+from app.api.middlewares.auth import (
+    refuse_delegated_caller,
+    require_interactive_session,
+    require_interactive_session_except,
+    require_scopes,
+)
 from app.api.middlewares.caller_role import CallerRoleStatus, fetch_caller_role
 from app.api.middlewares.request_log import (
     add_request_log_fields,
@@ -730,10 +735,25 @@ def _refuse_delegated_stdio(request: Request, payload: MCPServerInstanceConfig) 
         refuse_delegated_caller(request)
 
 
+# What a token may send when it adds or edits a server. Everything else (``url``,
+# ``authorizationUrl``, ``tokenUrl``, ``headerName``, the STDIO command fields, and any key added
+# later) sets where credentials are sent or what runs, so it takes an interactive session; a
+# catalog server takes those from its template. Allowed keys, and why each is safe:
+#   name, description: labels.
+#   typeId: which catalog server; its template fixes the URLs.
+#   scope: whose server it is (the handler checks the caller may use it).
+#   transport, authMode, useAdminAuth: how it connects and signs in; credentials are elsewhere.
+#   scopes: the OAuth scopes asked of the server's own sign-in.
+_MCP_INSTANCE_ALLOWED: dict[str, Any] = {
+    "name": True, "description": True, "typeId": True, "scope": True,
+    "transport": True, "authMode": True, "useAdminAuth": True, "scopes": True,
+}
+
+
 @router.post(
     "/instances",
     status_code=HttpStatusCode.CREATED.value,
-    dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))],
+    dependencies=[Depends(require_interactive_session_except(_MCP_INSTANCE_ALLOWED)), Depends(require_scopes(OAuthScopes.MCP_WRITE))],
 )
 async def create_instance(
     request: Request,
@@ -801,7 +821,7 @@ async def get_instance(request: Request, instance_id: str) -> dict[str, Any]:
     return instance
 
 
-@router.put("/instances/{instance_id}", dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))])
+@router.put("/instances/{instance_id}", dependencies=[Depends(require_interactive_session_except(_MCP_INSTANCE_ALLOWED)), Depends(require_scopes(OAuthScopes.MCP_WRITE))])
 async def update_instance(
     request: Request,
     instance_id: str,
@@ -2049,7 +2069,8 @@ def _mask_secret(value: Optional[str]) -> Optional[str]:
 
 @router.put(
     "/instances/{instance_id}/oauth-config",
-    dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))],
+    # An OAuth app holds a client secret, so setting one takes an interactive session.
+    dependencies=[Depends(require_interactive_session), Depends(require_scopes(OAuthScopes.MCP_WRITE))],
 )
 async def update_oauth_config(
     request: Request,
