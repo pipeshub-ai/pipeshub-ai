@@ -537,6 +537,9 @@ class KhListingMixin(PgBase):
             if await net.distrusted(tx, org, a):
                 return None
         wanted = set(apps)
+        # and after the last await: a check that read a connector's state let another task distrust one the loop had already passed
+        if any((org, a) in net.DISTRUSTED for a in wanted):
+            return None
         access = {"grantee_ids": gate["grantee_ids"], "gated_app_ids": apps, "linked": {c: hs for c, hs in gate["linked"].items() if c in wanted}}
         return KhGrants(frozenset(by.get(app_id) or ()), frozenset(sk for sks in by.values() for sk in sks), access, by_sk=True)
 

@@ -265,6 +265,26 @@ async def test_a_connector_distrusted_while_the_grants_are_read_takes_the_read_b
     assert reads and not any(reads) and "L1" in seen(got), (reads, got)
 
 
+async def test_a_connector_distrusted_while_another_ones_trust_is_read_takes_the_read_by_id(pg_db, monkeypatch, reads) -> None:
+    """The trust of app1 is decided without a read (the process holds no distrust of it); app2's needs one (an old distrust of it, since re-verified), and while that read
+    runs the process comes to distrust app1: the grants read are not used, the page reads them by id."""
+    from app.services.graph_db.postgres.kg import net
+    p, org = prov(pg_db), new_org()
+    await world(p, pg_db, org, [_perm("u1", "users", "L1"), _perm("u1", "users", "A1")])
+    monkeypatch.setattr(net, "DISTRUSTED", {(org, "app2"): "a verification before the last one"})
+    real = uow.Tx.fetchrow
+
+    async def fetchrow(self: Any, sql: str, *args: Any) -> Any:  # noqa: ANN401
+        if "pipeshub:kg.net_state */" in sql and args[1:] == ("app2",):
+            net.distrust(org, "app1")
+        return await real(self, sql, *args)
+    monkeypatch.setattr(uow.Tx, "fetchrow", fetchrow)
+    reads.clear()
+    got = await pages(p, org, "u1")
+    assert (org, "app2") not in net.DISTRUSTED and (org, "app1") in net.DISTRUSTED      # app2's old distrust cleared, app1's taken
+    assert reads and not any(reads) and {"L1", "A1"} <= seen(got), (reads, got)
+
+
 async def test_the_grant_blocks_a_browse_reads_grow_by_a_fraction_of_a_block_per_grant(pg_db, monkeypatch) -> None:
     """The viewer holds 100, then 1,000 grants in another connector. The grant statements of a browse of app1 (the grants, and the grants read per node by the check): kg's read
     is a range of members per principal, packed many to a block; the read by id read the edge and the graph node of each grant (about 3 blocks a grant: 325 -> 3,054)."""
