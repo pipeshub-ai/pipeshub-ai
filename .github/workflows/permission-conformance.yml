@@ -46,7 +46,7 @@ permissions:
 
 concurrency:
   # The event is part of the group, so a push to main cannot cancel the nightly run in progress.
-  group: permission-conformance-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.label.name }}
+  group: permission-conformance-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ (github.event_name != 'pull_request' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))) && 'heavy' || 'other' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -61,8 +61,9 @@ jobs:
   oracle:
     if: >-
       github.event_name != 'pull_request' ||
-      contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) ||
-      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))
+      (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))
     runs-on: ubuntu-latest
     # the test step took 9 to 19 minutes with the default xdist split, which parks the heavy tests on one worker; worksteal needs about 4
     timeout-minutes: 30
@@ -110,8 +111,9 @@ jobs:
     name: graph (shard ${{ matrix.shard }})
     if: >-
       (github.event_name != 'pull_request' ||
-       contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) ||
-       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))) &&
+       (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
+        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))) &&
       github.event_name != 'schedule'
     runs-on: ubuntu-latest
     # A hosted runner can be twice as slow as another (one run of the adversarial worlds took 34 minutes, another passed 58), so the shards are
@@ -284,8 +286,9 @@ jobs:
   kh-browse-cost:
     if: >-
       (github.event_name != 'pull_request' ||
-       contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) ||
-       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))) &&
+       (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
+        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))) &&
       github.event_name != 'schedule'
     runs-on: ubuntu-latest
     # The tests take about 12 minutes on a 4-CPU machine; most of it is the real-graph files, whose legacy statements take seconds to plan.
@@ -367,8 +370,9 @@ jobs:
   nightly:
     if: >-
       (github.event_name != 'pull_request' ||
-       contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) ||
-       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))) &&
+       (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
+        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))) &&
       (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 240

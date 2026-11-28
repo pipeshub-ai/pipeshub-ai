@@ -18,15 +18,16 @@ permissions:
 
 # Cancel an in-progress build when the PR gets new commits.
 concurrency:
-  group: electron-pr-${{ github.event.pull_request.number }}-${{ github.event.label.name }}
+  group: electron-pr-${{ github.event.pull_request.number }}-${{ (github.event_name != 'pull_request' || contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')))) && 'heavy' || 'other' }}
   cancel-in-progress: true
 
 jobs:
   build:
     if: >-
       github.event_name != 'pull_request' ||
-      contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name) ||
-      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')))
+      (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)))
     uses: ./.github/workflows/electron-build-reusable.yml
     with:
       targets: '["linux"]'

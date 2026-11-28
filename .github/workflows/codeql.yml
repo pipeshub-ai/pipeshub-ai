@@ -36,8 +36,9 @@ jobs:
   changes:
     if: >-
       github.event_name != 'pull_request' ||
-      contains(fromJSON('["ci:full","ci:security"]'), github.event.label.name) ||
-      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:security')))
+      (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:security"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:security')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:security"]'), github.event.label.name)))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -60,8 +61,9 @@ jobs:
     needs: changes
     if: >-
       (github.event_name != 'pull_request' ||
-       contains(fromJSON('["ci:full","ci:security"]'), github.event.label.name) ||
-       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:security')))) &&
+       (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:security"]'), github.event.label.name)) ||
+       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:security')) &&
+        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:security"]'), github.event.label.name)))) &&
       needs.changes.outputs.codeql_languages != '[]'
     # Runner size impacts CodeQL analysis time. To learn more, please see:
     #   - https://gh.io/recommended-hardware-resources-for-running-codeql

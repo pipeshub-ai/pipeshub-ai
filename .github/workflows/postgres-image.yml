@@ -39,15 +39,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: postgres-image-${{ github.ref }}-${{ github.event.label.name }}
+  group: postgres-image-${{ github.ref }}-${{ (github.event_name != 'pull_request' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))) && 'heavy' || 'other' }}
   cancel-in-progress: true
 
 jobs:
   postgres-image:
     if: >-
       github.event_name != 'pull_request' ||
-      contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) ||
-      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))
+      (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

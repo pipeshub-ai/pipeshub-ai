@@ -30,7 +30,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: helm-chart-${{ github.event.pull_request.number || github.run_id }}-${{ github.event.label.name }}
+  group: helm-chart-${{ github.event.pull_request.number || github.run_id }}-${{ (github.event_name != 'pull_request' || contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')))) && 'heavy' || 'other' }}
   cancel-in-progress: true
 
 env:
@@ -90,8 +90,9 @@ jobs:
     name: Install on kind (${{ matrix.variant }})
     if: >-
       github.event_name != 'pull_request' ||
-      contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name) ||
-      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')))
+      (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)))
     needs: check
     runs-on: ubuntu-latest
     timeout-minutes: 45

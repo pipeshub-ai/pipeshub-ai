@@ -379,7 +379,9 @@ workflow*, and (where the workflow has a push trigger) on every push to `main`.
 | (only `ci:full`) | Graph explorer tests |
 
 Adding a label starts its workflows on the current commit; while it stays on the pull request, each push re-runs
-them. Other labels do not re-run anything. Add the label that matches what you changed, or `ci:full` for a
+them. The workflows' own labels still start them too (`harness-fault`; `it-all`, `it-arango`, `it-neo4j`,
+`it-both` and `it-parallel` on the integration tests). Other labels do not re-run anything and do not cancel a
+running suite. Add the label that matches what you changed, or `ci:full` for a
 change that crosses areas, before asking for a merge. A maintainer adds labels on pull requests from forks.
 `scripts/test_ci_label_gate.py` checks that every heavy job carries the same gate.
 

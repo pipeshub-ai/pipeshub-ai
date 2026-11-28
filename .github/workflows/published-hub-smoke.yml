@@ -42,7 +42,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: published-hub-smoke-${{ github.event.pull_request.number || github.run_id }}-${{ github.event.label.name }}
+  group: published-hub-smoke-${{ github.event.pull_request.number || github.run_id }}-${{ (github.event_name != 'pull_request' || contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')))) && 'heavy' || 'other' }}
   cancel-in-progress: true
 
 jobs:
@@ -50,8 +50,9 @@ jobs:
     name: slim (Hub slim)
     if: >-
       (github.event_name != 'pull_request' ||
-       contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name) ||
-       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')))) &&
+       (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)) ||
+       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')) &&
+        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)))) &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
       && (github.event_name != 'workflow_dispatch' || contains(fromJSON('["all","slim"]'), github.event.inputs.profiles))
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
@@ -83,8 +84,9 @@ jobs:
     name: full (Hub latest)
     if: >-
       (github.event_name != 'pull_request' ||
-       contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name) ||
-       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')))) &&
+       (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)) ||
+       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')) &&
+        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)))) &&
       github.event_name != 'pull_request'
       && (github.event_name != 'workflow_dispatch' || contains(fromJSON('["all","full"]'), github.event.inputs.profiles))
     # 4 CPU is the installer floor. Full adds Kafka + Zookeeper on the same
@@ -118,8 +120,9 @@ jobs:
     name: eval (Hub slim)
     if: >-
       (github.event_name != 'pull_request' ||
-       contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name) ||
-       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')))) &&
+       (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)) ||
+       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')) &&
+        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)))) &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
       && (github.event_name != 'workflow_dispatch' || contains(fromJSON('["all","eval"]'), github.event.inputs.profiles))
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
@@ -153,8 +156,9 @@ jobs:
     name: slim on ArangoDB (Hub slim)
     if: >-
       (github.event_name != 'pull_request' ||
-       contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name) ||
-       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')))) &&
+       (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)) ||
+       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')) &&
+        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)))) &&
       github.event_name != 'pull_request'
       && (github.event_name != 'workflow_dispatch' || contains(fromJSON('["all","arango"]'), github.event.inputs.profiles))
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb

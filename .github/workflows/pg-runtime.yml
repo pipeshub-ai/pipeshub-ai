@@ -97,15 +97,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: pg-runtime-${{ github.ref }}-${{ github.event.label.name }}
+  group: pg-runtime-${{ github.ref }}-${{ (github.event_name != 'pull_request' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))) && 'heavy' || 'other' }}
   cancel-in-progress: true
 
 jobs:
   python:
     if: >-
       github.event_name != 'pull_request' ||
-      contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) ||
-      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))
+      (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))
     runs-on: ubuntu-latest
     # shard 1 is one test case of ~22-26 min serial (the not-current adversarial worlds), which no split can shorten
     timeout-minutes: ${{ matrix.shard == 1 && 60 || 45 }}
@@ -333,8 +334,9 @@ jobs:
   faults:
     if: >-
       github.event_name != 'pull_request' ||
-      contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) ||
-      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))
+      (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -402,8 +404,9 @@ jobs:
   node:
     if: >-
       github.event_name != 'pull_request' ||
-      contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) ||
-      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))
+      (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:

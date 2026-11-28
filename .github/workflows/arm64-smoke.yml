@@ -38,7 +38,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: arm64-smoke-${{ github.event.pull_request.number || github.run_id }}-${{ github.event.label.name }}
+  group: arm64-smoke-${{ github.event.pull_request.number || github.run_id }}-${{ (github.event_name != 'pull_request' || contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')))) && 'heavy' || 'other' }}
   cancel-in-progress: true
 
 env:
@@ -50,8 +50,9 @@ jobs:
     name: Build and start slim (arm64)
     if: >-
       github.event_name != 'pull_request' ||
-      contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name) ||
-      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')))
+      (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)))
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     steps:

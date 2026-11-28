@@ -238,7 +238,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: backend-matrix-${{ github.event.pull_request.number || github.run_id }}-${{ github.event.label.name }}
+  group: backend-matrix-${{ github.event.pull_request.number || github.run_id }}-${{ (github.event_name != 'pull_request' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))) && 'heavy' || 'other' }}
   cancel-in-progress: true
 
 jobs:
@@ -249,8 +249,9 @@ jobs:
   changes:
     if: >-
       github.event_name != 'pull_request' ||
-      contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) ||
-      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))
+      (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -277,8 +278,9 @@ jobs:
     name: ${{ matrix.suite }} · ${{ matrix.backend }}${{ matrix.shard && format(' ({0})', matrix.shard) || '' }}
     if: >-
       github.event_name != 'pull_request' ||
-      contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) ||
-      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))
+      (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))
     needs: changes
     runs-on: ubuntu-latest
     # One graph job per store reached 37-43 minutes; its shards take about 15 each (scripts/graph_shards.py).
@@ -521,8 +523,9 @@ jobs:
     needs: changes
     if: >-
       (github.event_name != 'pull_request' ||
-       contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) ||
-       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))) &&
+       (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
+        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))) &&
       needs.changes.outputs.matrix_storage == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30

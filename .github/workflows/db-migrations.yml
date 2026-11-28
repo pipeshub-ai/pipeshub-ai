@@ -36,8 +36,9 @@ jobs:
     name: migrations (${{ matrix.pg }}, ${{ matrix.shard }})
     if: >-
       github.event_name != 'pull_request' ||
-      contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) ||
-      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))
+      (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))
     runs-on: ubuntu-latest
     # The tests run in shards, each with its own PostgreSQL (the tests drop and recreate the cluster's roles, so two runs must not share a
     # cluster). tests/test_unit.py::test_every_test_file_is_in_exactly_one_shard keeps the lists complete. Each shard checks its run
