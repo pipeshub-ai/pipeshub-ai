@@ -1,10 +1,10 @@
 /**
  * The answer-share writes of the conversation repository on MongoDB: a member's ask added to an answer, asks closed, a
  * share written, a share ended. Each is one atomic update, guarded by what must still hold (the answer's version, the
- * share it was read with, the asks the same person already made) rather than by the row's change stamp, so concurrent
- * asks never refuse each other or the asker's own share, dismiss or stop. Each gives the row a fresh change stamp, as
- * the row writer (`modules/enterprise_search/utils/utils.ts`) does for every row it writes, so the chat's feed sees the
- * change; the row-writer inventory lists this file beside it.
+ * share it was read with and the people it keeps from it, the asks the same person already made) rather than by the
+ * row's change stamp, so concurrent asks never refuse each other or the asker's own share, dismiss or stop. Each gives
+ * the row a fresh change stamp, as the row writer (`modules/enterprise_search/utils/utils.ts`) does for every row it
+ * writes, so the chat's feed sees the change; the row-writer inventory lists this file beside it.
  */
 import mongoose from 'mongoose';
 import { ChatSession } from '../../../../modules/enterprise_search/schema/chat.session.schema';
@@ -225,10 +225,22 @@ export async function setAnswerConsent(
     ver: consent.ver,
     ...(share.covers !== 'everyone' && { by: share.covers }),
   };
+  // The people it names beside those it adds come from the share it read. A stop for one of them changes no field of
+  // that share, so each must still be named: else this write would name again someone just stopped.
+  const adds = share.covers === 'everyone' ? undefined : share.covers;
+  const kept =
+    consentTo && adds ? consentTo.filter((e) => !adds.includes(e.userId)) : [];
   const guard = {
     ...rowFilter(row),
     ...atVersion(labelVer),
     ...shareIs(expected),
+    ...(kept.length > 0 && {
+      $and: kept.map((e) => ({
+        consentTo: {
+          $elemMatch: { userId: oid(e.userId), memberSince: e.memberSince },
+        },
+      })),
+    }),
   };
   const written = {
     consent: { ...consent, by: oid(consent.by) },

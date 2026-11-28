@@ -797,6 +797,28 @@ export function describeConversationContract(fx: ConversationFixture): void {
       expect(await repo.closeShareRequests(ref, { ver: v, state: 'dismissed' }), 'no ask is left open').to.deep.equal([]);
     });
 
+    it('a share with people names again nobody whose share was stopped since it was read', async () => {
+      const org = fx.newId(), dana = fx.newId(), bob = fx.newId(), carol = fx.newId(), zed = fx.newId();
+      const { ref, ver } = await answerOf(org, dana);
+      const v = ver ?? 'legacy';
+      const entry = (userId: string) => ({ userId, memberSince: `direct:${userId}` });
+      const toBob = { by: dana, at: new Date(), ver: v, scope: 'people' as const };
+      await repo.setAnswerConsent(ref, { labelVer: ver, expected: null, consent: toBob, consentTo: [entry(bob)], covers: [bob] });
+      // Carol added: the share as read names Bob, who is still named.
+      const andCarol = { by: dana, at: new Date(toBob.at.getTime() + 1), ver: v, scope: 'people' as const };
+      await repo.setAnswerConsent(ref, { labelVer: ver, expected: toBob, consent: andCarol, consentTo: [entry(bob), entry(carol)], covers: [carol] });
+      expect(await shareOf(org, ref.messageId)).to.deep.equal({ by: dana, scope: 'people', people: [bob, carol] });
+      // Zed added from that same read, after Bob's share was stopped: nothing is written.
+      expect(await repo.changeAnswerConsent(ref, { labelVer: ver, expected: andCarol, stop: true, people: [bob] })).to.equal(true);
+      const andZed = { by: dana, at: new Date(andCarol.at.getTime() + 1), ver: v, scope: 'people' as const };
+      const stale = { labelVer: ver, expected: andCarol, consent: andZed, consentTo: [entry(bob), entry(carol), entry(zed)], covers: [zed] };
+      expect(await repo.setAnswerConsent(ref, stale), 'read before the stop').to.equal(null);
+      expect(await shareOf(org, ref.messageId)).to.deep.equal({ by: dana, scope: 'people', people: [carol] });
+      // Read again, as a writer does on a miss.
+      expect(await repo.setAnswerConsent(ref, { ...stale, consentTo: [entry(carol), entry(zed)] })).to.deep.equal([]);
+      expect(await shareOf(org, ref.messageId)).to.deep.equal({ by: dana, scope: 'people', people: [carol, zed] });
+    });
+
     it('ending a share answers the share it ended and whom it covered, once', async () => {
       const org = fx.newId(), dana = fx.newId(), bob = fx.newId();
       const { ref, ver } = await answerOf(org, dana);

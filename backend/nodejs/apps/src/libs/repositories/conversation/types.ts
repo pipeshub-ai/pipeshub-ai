@@ -284,7 +284,10 @@ export interface NewAnswerShare {
   /** The share as read (null: none): written only over that one. */
   expected: AnswerConsentDto | null;
   consent: AnswerConsentDto;
-  /** A share with people names them; a share with everyone stores no one. */
+  /**
+   * A share with people names them; a share with everyone stores no one. Those named beside `covers` are kept from the
+   * share as read: it is written only while each of them is still named there.
+   */
   consentTo?: AnswerConsentEntryDto[];
   /** Whose open asks for `consent.ver` this share answers. */
   covers: 'everyone' | readonly string[];
