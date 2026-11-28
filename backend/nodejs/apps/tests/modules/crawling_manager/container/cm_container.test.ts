@@ -210,8 +210,11 @@ describe('CrawlingManagerContainer - coverage', () => {
     } as any)
   })
 
-  afterEach(() => {
-    (CrawlingManagerContainer as any).instance = originalInstance
+  afterEach(async () => {
+    // A container a test here initialised runs a crawling worker and the schedule sweep: close them, or their start-up
+    // errors and polls go on logging into whichever test runs next in this process.
+    if ((CrawlingManagerContainer as any).instance !== originalInstance) await CrawlingManagerContainer.dispose()
+    ;(CrawlingManagerContainer as any).instance = originalInstance
     sinon.restore()
   })
 

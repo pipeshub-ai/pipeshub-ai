@@ -10,6 +10,7 @@ import {
 import { CONVERSATION_TYPES } from '../../../../src/modules/enterprise_search/services/conversation/conversation.types'
 import { CONVERSATION_ERROR_CODES } from '../../../../src/modules/enterprise_search/services/conversation/domain/errors'
 import { Project } from '../../../../src/modules/projects/schema/project.schema'
+import { ProjectService } from '../../../../src/modules/projects/services/project.service'
 import { FakeAIBackend, InMemoryChatStore, oid } from '../controller/chat-test-harness'
 import { realGuards, stopAfterGuard } from './guarded-chat'
 import { turnDeps } from './turn-deps'
@@ -80,6 +81,9 @@ export function seed(over: Record<string, unknown> = {}, questionAuthor?: Types.
     ],
   }
   sinon.stub(Project, 'findOne').callsFake((() => Object.assign(Promise.resolve(project), { lean: () => Promise.resolve(project) })) as never)
+  // A turn bumps its project's activity without waiting for it. The world's project is a stand-in, so is the bump:
+  // a real one would wait out Mongoose's buffer with no database, then warn into whichever test runs then.
+  sinon.stub(ProjectService, 'touchActivity').resolves()
   const base = {
     orgId: ORG,
     userId: ACTORS.A.userId,
