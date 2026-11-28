@@ -143,7 +143,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           log,
         }).catch((e: Error) => e);
         expect(
-          String((blocked as Error).message ?? JSON.stringify(blocked)),
+          (blocked as Error).message ?? JSON.stringify(blocked),
         ).to.contain('run `rollback` again first');
         const before = await epoch();
         const again = await rollback(w.rt, {
