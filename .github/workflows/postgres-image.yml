@@ -20,6 +20,7 @@ on:
       - 'deployment/docker-compose/scripts/pg-restore-reach.pl'
       - 'deployment/docker-compose/tests/pg_backup_schedule_test.sh'
       - 'deployment/docker-compose/docker-compose.postgres-only.yml'
+      - 'deployment/docker-compose/install.sh'
       - 'backend/db/**'
       - 'deployment/docker-compose/tests/pg_entrypoint_layout_test.sh'
       - 'deployment/docker-compose/tests/pg_restore_reach_test.sh'
@@ -89,6 +90,9 @@ jobs:
 
       - name: Migration job and the document-store override
         run: bash deployment/docker-compose/tests/postgres_migrate_test.sh
+
+      - name: A fresh install's metrics exporters log in
+        run: bash deployment/docker-compose/tests/postgres_metrics_test.sh
 
       - name: The PostgreSQL-only override starts no other store
         run: bash deployment/docker-compose/tests/postgres_only_test.sh

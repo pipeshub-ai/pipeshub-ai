@@ -565,10 +565,19 @@ wizard="$(awk '/PostgreSQL profile \(opt-in\): kept across/{g=1} g{print} g&&/^ 
   gen_secret() { printf 'x%.0s' $(seq 1 "${1:-32}"); }
   eval "$wizard"
   check "wizard keeps an existing PG password" "$PG_NODE_PASSWORD" "kept"
-  check "wizard generates the others" "$PG_BACKUP_PASSWORD:$PG_ADMIN_PASSWORD" "xxxxxxxxxxxxxxxx:xxxxxxxxxxxxxxxx"
+  check "wizard generates the others" "$PG_BACKUP_PASSWORD:$PG_ADMIN_PASSWORD:$PG_MONITOR_PASSWORD" "xxxxxxxxxxxxxxxx:xxxxxxxxxxxxxxxx:xxxxxxxxxxxxxxxx"
   check "wizard pins the major" "$PG_MAJOR" "18"
 )
-check ".env writer lists all nine PG passwords" "$(grep -c '^PG_[A-Z]*_PASSWORD=\${PG_' "$INNER_INSTALLER")" "9"
+# The metrics login was set by hand before the installer wrote it, so an exported value is the one its role may hold already.
+(
+  get_existing_val() { echo "${2:-}"; }
+  gen_secret() { printf 'x%.0s' $(seq 1 "${1:-32}"); }
+  PG_MONITOR_EXPORTED=exportedmonitor PG_NODE_PASSWORD=exportednode
+  eval "$wizard"
+  check_exact "wizard takes an exported monitoring password" "$PG_MONITOR_PASSWORD" "exportedmonitor"
+  check_exact "wizard still generates the other PG passwords" "$PG_NODE_PASSWORD" "xxxxxxxxxxxxxxxx"
+)
+check ".env writer lists all ten PG passwords" "$(grep -cE "^PG_[A-Z]*_PASSWORD='?\\\$\{PG_" "$INNER_INSTALLER")" "10"
 
 # --reconfigure rebuilds COMPOSE_PROFILES from the wizard's choices; the saved override needs the PostgreSQL profiles, so they must
 # survive it, and the project must still render afterwards.
@@ -608,7 +617,7 @@ check ".env writer lists all nine PG passwords" "$(grep -c '^PG_[A-Z]*_PASSWORD=
   summary="$(printf '%s\n' "$out" | grep -E '^  (Graph DB|KV store|Broker):' | tr -s ' ')"
   check_exact "the summary names PostgreSQL for every store" "$summary" "$(printf ' Graph DB: postgres (docker-compose.postgres-only.yml)\n KV store: postgres (docker-compose.postgres-only.yml)\n Broker: postgres (docker-compose.postgres-only.yml)')"
   check "the printed command lists the PostgreSQL-only override" "$out" "docker-compose.postgres-only.yml"
-  check ".env has all nine PG passwords" "$(grep -cE '^PG_(ADMIN|NODE|CONNECTORS|INDEXING|QUERY|JOBS|MIGRATE|BACKUP|KV)_PASSWORD=.+' "$work/.env")" "9"
+  check ".env has all ten PG passwords" "$(grep -cE '^PG_(ADMIN|NODE|CONNECTORS|INDEXING|QUERY|JOBS|MIGRATE|BACKUP|KV|MONITOR)_PASSWORD=.+' "$work/.env")" "10"
   if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     services="$(cd "$work" && docker compose --env-file .env -f docker-compose.yml -f docker-compose.postgres-only.yml config --services 2>&1)"
     check_exact "the project renders with no other store" "$(printf '%s\n' "$services" | grep -cE '^(mongodb|qdrant|redis|neo4j|arango|etcd|zookeeper|kafka-1)$')" "0"
@@ -617,6 +626,79 @@ check ".env writer lists all nine PG passwords" "$(grep -c '^PG_[A-Z]*_PASSWORD=
     pass "the project renders with no other store (skipped: no docker compose here)"
   fi
 )
+
+# A reused .env from before the metrics login gets PG_MONITOR_PASSWORD once (the exporters cannot log in without it); later runs and
+# a value set by hand keep theirs.
+(
+  work="$TMP_ROOT/monitor-backfill"; mkdir -p "$work"
+  cp "$INNER_INSTALLER" "$work/install.sh"
+  cp "$COMPOSE_DIR/docker-compose.yml" "$COMPOSE_DIR/env.template" "$work/"
+  base='IMAGE_TAG=0.6.0-slim\nSECRET_KEY=abc\nMONGO_PASSWORD=m\nREDIS_PASSWORD=r\nNEO4J_PASSWORD=n\nAPP_PORT=3000\nPROJECT_NAME=testproj\nDATA_STORE=neo4j\nCOMPOSE_PROFILES=graph-neo4j,sandbox\n'
+  # The value as the installer reads it back (it sources .env with bash) and as Compose reads it; both must be the password.
+  bash_reads() { (unset PG_MONITOR_PASSWORD; set -a; . "$work/.env"; printf '%s' "${PG_MONITOR_PASSWORD-}"); }
+  printf 'services:\n  x:\n    image: busybox\n    environment:\n      - P=${PG_MONITOR_PASSWORD}\n' >"$work/reads.yml"
+  compose_reads() {
+    (cd "$work" && env -u PG_MONITOR_PASSWORD docker compose -f reads.yml --env-file .env config 2>/dev/null) \
+      | sed -n 's/^ *P: //p' | sed -E 's/^"(.*)"$/\1/'
+  }
+  have_compose=false; command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 && have_compose=true
+  printf "$base" >"$work/.env"
+  (cd "$work" && bash ./install.sh --yes --print-env-only >/dev/null 2>&1) && pass "reusing an old .env exits 0" || fail "reusing an old .env exits 0"
+  first="$(grep '^PG_MONITOR_PASSWORD=' "$work/.env")"
+  check_exact "a reused .env gets one monitoring password line" "$(grep -c '^PG_MONITOR_PASSWORD=' "$work/.env")" "1"
+  [[ "$(bash_reads)" =~ ^[0-9a-f]{32}$ ]] && pass "a reused .env gets a 32-character monitoring password" || fail "a reused .env gets a 32-character monitoring password"
+  (cd "$work" && bash ./install.sh --yes --print-env-only >/dev/null 2>&1)
+  check_exact "the next run keeps it" "$(grep '^PG_MONITOR_PASSWORD=' "$work/.env")" "$first"
+  printf "${base}PG_MONITOR_PASSWORD=mine\n" >"$work/.env"
+  (cd "$work" && bash ./install.sh --yes --print-env-only >/dev/null 2>&1)
+  check_exact "a value set by hand is kept" "$(bash_reads)" "mine"
+  (cd "$work" && PG_MONITOR_PASSWORD=exportedmonitor bash ./install.sh --yes --print-env-only >/dev/null 2>&1)
+  check_exact "a value in .env wins over an exported one" "$(bash_reads)" "mine"
+  printf "$base" >"$work/.env"
+  (cd "$work" && PG_MONITOR_PASSWORD=exportedmonitor bash ./install.sh --yes --print-env-only >/dev/null 2>&1)
+  check_exact "a reused .env takes the exported monitoring password" "$(bash_reads)" "exportedmonitor"
+  printf "$base" >"$work/.env"
+  (cd "$work" && PG_MONITOR_PASSWORD=exportedmonitor bash ./install.sh --reconfigure --yes --print-env-only >/dev/null 2>&1)
+  check_exact "--reconfigure takes the exported monitoring password" "$(bash_reads)" "exportedmonitor"
+  # An empty PG_MONITOR_PASSWORD= line is no saved value: sourcing .env must not drop the exported one.
+  for mode in "" --upgrade; do
+    printf "${base}PG_MONITOR_PASSWORD=\n" >"$work/.env"
+    (cd "$work" && PG_MONITOR_PASSWORD=exportedmonitor bash ./install.sh $mode --yes --print-env-only >/dev/null 2>&1)
+    check_exact "an empty saved line takes the exported password ${mode:-on reuse}" "$(bash_reads)" "exportedmonitor"
+    check_exact "an empty saved line leaves one password line ${mode:-on reuse}" "$(grep -c '^PG_MONITOR_PASSWORD=' "$work/.env")" "1"
+  done
+  # A leading ~ is allowed by the server rule; an unquoted ~ in .env would be read by bash as the home directory.
+  for mode in "" --upgrade --reconfigure; do
+    printf "$base" >"$work/.env"
+    (cd "$work" && PG_MONITOR_PASSWORD='~' bash ./install.sh $mode --yes --print-env-only >/dev/null 2>&1)
+    check_exact "an exported ~ password is read back as ~ ${mode:-on reuse}" "$(bash_reads)" "~"
+    if $have_compose; then
+      check_exact "Compose reads the same ~ password ${mode:-on reuse}" "$(compose_reads)" "~"
+    else
+      pass "Compose reads the same ~ password ${mode:-on reuse} (skipped: no docker compose here)"
+    fi
+  done
+  (cd "$work" && bash ./install.sh --reconfigure --yes --print-env-only >/dev/null 2>&1)
+  check_exact "a saved quoted password survives --reconfigure" "$(bash_reads)" "~"
+  check_exact "a saved quoted password is not quoted twice" "$(grep -c "^PG_MONITOR_PASSWORD='~'$" "$work/.env")" "1"
+  # A value the server would refuse at start is refused here first, before .env changes, and never echoed.
+  for mode in "" --reconfigure; do
+    printf "$base" >"$work/.env"; cp "$work/.env" "$work/env.before"
+    status=0
+    out="$(cd "$work" && PG_MONITOR_PASSWORD='bad@pw:/x' bash ./install.sh $mode --yes --print-env-only 2>&1)" || status=$?
+    [[ $status -ne 0 ]] && pass "a bad exported monitoring password is refused ${mode:-on reuse}" || fail "a bad exported monitoring password is refused ${mode:-on reuse}"
+    check "the refusal names the variable and the rule ${mode:-on reuse}" "$out" "PG_MONITOR_PASSWORD may contain only letters, digits and . _ ~ -"
+    [[ "$out" != *'bad@pw'* ]] && pass "the refusal does not print the value ${mode:-on reuse}" || fail "the refusal does not print the value ${mode:-on reuse}"
+    cmp -s "$work/.env" "$work/env.before" && pass ".env is unchanged after the refusal ${mode:-on reuse}" || fail ".env is unchanged after the refusal ${mode:-on reuse}"
+  done
+  printf "$base" >"$work/.env"
+  (cd "$work" && PG_MONITOR_PASSWORD='a.b_c~d-E9' bash ./install.sh --yes --print-env-only >/dev/null 2>&1)
+  check_exact "an exported password using every allowed character is kept" "$(bash_reads)" "a.b_c~d-E9"
+)
+# The installer checks exported PostgreSQL passwords with the server's own rule: both files must hold the same character class.
+_rule_installer="$(extract_fn pg_password_ok "$INNER_INSTALLER" | grep -oE '\*\[![^]]*\]\*')"
+_rule_server="$(extract_fn check_password <(sed 's/^  //' "$COMPOSE_DIR/postgres/pg-entrypoint.sh") | grep -oE '\*\[![^]]*\]\*')"
+check_exact "the installer and the PostgreSQL entrypoint use one password rule" "$_rule_installer|$_rule_server" '*[!A-Za-z0-9._~-]*|*[!A-Za-z0-9._~-]*'
 
 # When docker needs root the installer runs itself again through sudo, which resets the environment: every setting the installer
 # reads must be named in --preserve-env, or a fresh install falls back to the default stores. The recording sudo acts like one with
@@ -657,7 +739,7 @@ STUB
 # Every variable the installer reads before it first sets it (so a value from the caller's environment counts) is in the list it keeps
 # across sudo. Not inputs: bash's own variables, internal flags read inside functions defined before they are set (the platform
 # probes, IMAGE_SOURCE, SANDBOX_PLAN), and the secrets the installer reads from .env or generates (SECRET_KEY, SECRET_KEY_PREVIOUS,
-# the PostgreSQL passwords set with printf -v), never from the environment.
+# the PostgreSQL passwords set with printf -v), never from the environment. PG_MONITOR_PASSWORD is the one exception (kept: checked below).
 _read="$(awk '
   { a=""; rest=$0
     if (match($0, /^[[:space:]]*(export |local |readonly )?[A-Z][A-Z0-9_]*=/)) { a=substr($0, RSTART, RLENGTH); sub(/^[[:space:]]*(export |local |readonly )?/, "", a); sub(/=$/, "", a); rest=substr($0, RSTART+RLENGTH) }
@@ -666,6 +748,7 @@ _read="$(awk '
 _kept="$(awk '/^    _keep=""/{g=1} g&&/; do$/{print; exit} g{print}' "$INNER_INSTALLER" | grep -oE '\b[A-Z][A-Z0-9_]*\b' | sort -u)"
 check_exact "the sudo re-exec list covers every setting the installer reads" "$(comm -23 <(printf '%s\n' "$_read") <(printf '%s\n' "$_kept"))" ""
 check "the guard finds settings without the PIPESHUB_ prefix" "$_read" "HEALTH_WAIT_SECS"
+check "the sudo re-exec keeps an exported monitoring password" "$_kept" "PG_MONITOR_PASSWORD"
 
 # --uninstall keeps the PostgreSQL volume unless --delete-postgres is given, also with --yes (checked with a recording docker).
 (
@@ -1048,12 +1131,38 @@ echo "== In-tree installer: --upgrade honours --version / PIPESHUB_VERSION =="
   # must survive it, or a small machine silently goes back to the defaults.
   sizing=(NEO4J_HEAP_INITIAL=256M NEO4J_HEAP_MAX=1536M NEO4J_PAGECACHE=256M
           NEO4J_MEMORY_LIMIT=2688M NEO4J_MEMORY_RESERVATION=1G
-          MONGO_MEMORY_RESERVATION=256M QDRANT_MEMORY_RESERVATION=512M)
+          MONGO_MEMORY_RESERVATION=256M QDRANT_MEMORY_RESERVATION=512M
+          PG_MEMORY_LIMIT=16G PG_SHARED_BUFFERS=4GB PG_SHM=2g)
   seed_env "0.6.0-slim"
   printf '%s\n' "${sizing[@]}" >>"$work/.env"
   run_installer "--reconfigure with datastore sizing" -- --reconfigure --yes
   for kv in "${sizing[@]}"; do
     check "--reconfigure keeps ${kv%%=*}" "$(cat "$work/.env")" $'\n'"$kv"$'\n'
+  done
+
+  # Datastore tuning exported for a scripted fresh install is written to .env;
+  # a value already saved in .env still wins over the environment.
+  tuning=("${sizing[@]}" MONGO_MEMORY_LIMIT=3G MONGO_CACHE_GB=2 MONGO_IMAGE_TAG=8.0.99
+             MONGO_GLIBC_TUNABLES=glibc.pthread.rseq=0)
+  env_tuning=(NEO4J_HEAP_INITIAL=128M NEO4J_HEAP_MAX=512M NEO4J_PAGECACHE=128M
+              NEO4J_MEMORY_LIMIT=1G NEO4J_MEMORY_RESERVATION=512M
+              MONGO_MEMORY_RESERVATION=128M QDRANT_MEMORY_RESERVATION=256M
+              PG_MEMORY_LIMIT=2G PG_SHARED_BUFFERS=512MB PG_SHM=256m
+              MONGO_MEMORY_LIMIT=1G MONGO_CACHE_GB=1 MONGO_IMAGE_TAG=8.0.1
+              MONGO_GLIBC_TUNABLES=glibc.pthread.rseq=1)
+  rm -f "$work/.env"
+  run_installer "a fresh install with datastore tuning exported" PIPESHUB_DEPLOY_TYPE=slim \
+    PIPESHUB_IMAGE_SOURCE=prebuilt PIPESHUB_VERSION=0.7.0-slim PIPESHUB_PROJECT=installer-test-tuning \
+    PIPESHUB_GVISOR=skip "${tuning[@]}" -- --yes
+  for kv in "${tuning[@]}"; do
+    check "a fresh install writes the exported ${kv%%=*}" "$(cat "$work/.env")" $'\n'"$kv"$'\n'
+  done
+  seed_env "0.6.0-slim"
+  printf '%s\n' "${tuning[@]}" >>"$work/.env"
+  run_installer "--reconfigure with datastore tuning in .env and the environment" \
+    "${env_tuning[@]}" -- --reconfigure --yes
+  for kv in "${tuning[@]}"; do
+    check "the saved ${kv%%=*} wins over the environment" "$(cat "$work/.env")" $'\n'"$kv"$'\n'
   done
 
   seed_env "0.6.0-slim"

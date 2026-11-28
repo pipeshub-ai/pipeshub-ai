@@ -62,12 +62,14 @@ if [[ $EUID -ne 0 ]] && \
               PIPESHUB_NO_PULL PIPESHUB_PORT PIPESHUB_PROJECT PIPESHUB_PUBLIC_URL PIPESHUB_IMAGE PIPESHUB_COMPOSE_OVERRIDES \
               PIPESHUB_ENV_EXTRA PIPESHUB_INSTALL_REF PIPESHUB_BLOCK_PRIVATE_ADDRESSES HEALTH_WAIT_SECS APP_MEMORY_LIMIT \
               APP_MEMSWAP_LIMIT APP_VERSION GIT_COMMIT IMAGE_TAG DEPLOY_TYPE DATA_STORE KV_STORE_TYPE MESSAGE_BROKER \
-              COMPOSE_PROFILES QDRANT_MEMORY_LIMIT SANDBOX_DOCKER_IMAGE \
+              COMPOSE_PROFILES QDRANT_MEMORY_LIMIT QDRANT_MEMORY_RESERVATION PG_MEMORY_LIMIT PG_SHARED_BUFFERS PG_SHM \
+              NEO4J_HEAP_INITIAL NEO4J_HEAP_MAX NEO4J_PAGECACHE NEO4J_MEMORY_LIMIT NEO4J_MEMORY_RESERVATION \
+              MONGO_GLIBC_TUNABLES MONGO_IMAGE_TAG MONGO_CACHE_GB MONGO_MEMORY_LIMIT MONGO_MEMORY_RESERVATION SANDBOX_DOCKER_IMAGE \
               PIPESHUB_AGENT_HARNESS PIPESHUB_HARDENED PIPESHUB_BIND_ADDRESS PIPESHUB_SANDBOX_IMAGE \
               PIPESHUB_IMAGE_CAPABILITIES PIPESHUB_OFFLINE_BUNDLE PIPESHUB_IMAGE_VERIFY PIPESHUB_IMAGE_VERIFY_NO_TLOG \
               PIPESHUB_IMAGE_PUBKEY PIPESHUB_SIGNER_REPOSITORY PIPESHUB_SIGNER_WORKFLOW PIPESHUB_GVISOR \
               PIPESHUB_GVISOR_RELEASE PIPESHUB_GVISOR_BASE_URL PIPESHUB_GVISOR_BIN_DIR PIPESHUB_GVISOR_SHA512 \
-              SANDBOX_MODE SANDBOX_BROKER_WAIT_SECS DOCKER_HOST MONGO_URI; do
+              SANDBOX_MODE SANDBOX_BROKER_WAIT_SECS DOCKER_HOST MONGO_URI PG_MONITOR_PASSWORD; do
       [[ -n "${!_v+x}" ]] && _keep="${_keep:+$_keep,}$_v"
     done
     # With nothing set the call stays plain sudo, which needs no permission to keep variables.
@@ -525,6 +527,18 @@ secure_secret_key() { # args: hardened(true|false); reads and may set SECRET_KEY
 # the supplied default when the key is absent or empty.  Used during
 # --reconfigure to preserve secrets that were already used to initialise
 # database volumes — regenerating them would break authentication.
+
+# The PostgreSQL password rule of postgres/pg-entrypoint.sh (check_password); tests/installer_test.sh pins the two together.
+pg_password_ok() {
+  [[ "$1" != *[!A-Za-z0-9._~-]* ]]
+}
+
+# A value saved in .env quoted, as Compose allows ('x' or "x"), read back bare.
+env_unquote() {
+  local v="$1"
+  if (( ${#v} >= 2 )) && [[ ( "$v" == \'*\' ) || ( "$v" == \"*\" ) ]]; then v="${v:1:${#v}-2}"; fi
+  printf '%s' "$v"
+}
 
 get_existing_val() {
   local key="$1" default="$2" val=""
@@ -1456,6 +1470,13 @@ if $FLAG_UNINSTALL; then
   exit 0
 fi
 
+# An exported metrics password is saved to .env when .env has none: refuse one the server would refuse, before anything is written.
+# Kept apart because sourcing a .env with an empty PG_MONITOR_PASSWORD= line below would clear it.
+PG_MONITOR_EXPORTED="${PG_MONITOR_PASSWORD:-}"
+if [[ -n "$PG_MONITOR_EXPORTED" && -z "$(get_existing_val PG_MONITOR_PASSWORD "")" ]] && ! pg_password_ok "$PG_MONITOR_EXPORTED"; then
+  die "PG_MONITOR_PASSWORD may contain only letters, digits and . _ ~ - (it goes into connection URLs). Change or unset the exported value."
+fi
+
 # ==============================================================================
 # 2c. EXISTING DEPLOYMENT
 # Fresh install (nothing running as pipeshub-ai): unchanged, that project, port 3000.
@@ -2004,27 +2025,34 @@ if ! ${SKIP_WIZARD:-false}; then
   KAFKA_PASSWORD="$(get_existing_val KAFKA_PASSWORD "$(gen_secret 24)")"
   # PostgreSQL profile (opt-in): kept across --reconfigure like the other credentials.
   PG_MAJOR="$(get_existing_val PG_MAJOR "18")"
-  for _pg in ADMIN NODE CONNECTORS INDEXING QUERY KV JOBS MIGRATE BACKUP; do
-    printf -v "PG_${_pg}_PASSWORD" '%s' "$(get_existing_val "PG_${_pg}_PASSWORD" "$(gen_secret 16)")"
+  for _pg in ADMIN NODE CONNECTORS INDEXING QUERY KV JOBS MIGRATE BACKUP MONITOR; do
+    _pw="$(gen_secret 16)"
+    # The metrics login was set by hand before the installer wrote it, so an exported value may be what its role already holds.
+    [[ "$_pg" == MONITOR ]] && _pw="${PG_MONITOR_EXPORTED:-$_pw}"
+    printf -v "PG_${_pg}_PASSWORD" '%s' "$(get_existing_val "PG_${_pg}_PASSWORD" "$_pw")"
   done
+  PG_MONITOR_PASSWORD="$(env_unquote "$PG_MONITOR_PASSWORD")"
 
   # Optional MongoDB knobs from env.template. The wizard never asks about these,
   # but .env is rewritten in full below, so read back anything the operator set
   # by hand -- otherwise --reconfigure silently reverts their tuning and MongoDB
   # goes back to the defaults that made them set it in the first place.
-  MONGO_GLIBC_TUNABLES="$(get_existing_val MONGO_GLIBC_TUNABLES "")"
-  MONGO_IMAGE_TAG="$(get_existing_val MONGO_IMAGE_TAG "")"
-  MONGO_CACHE_GB="$(get_existing_val MONGO_CACHE_GB "")"
-  MONGO_MEMORY_LIMIT="$(get_existing_val MONGO_MEMORY_LIMIT "")"
-  MONGO_MEMORY_RESERVATION="$(get_existing_val MONGO_MEMORY_RESERVATION "")"
+  MONGO_GLIBC_TUNABLES="$(get_existing_val MONGO_GLIBC_TUNABLES "${MONGO_GLIBC_TUNABLES:-}")"
+  MONGO_IMAGE_TAG="$(get_existing_val MONGO_IMAGE_TAG "${MONGO_IMAGE_TAG:-}")"
+  MONGO_CACHE_GB="$(get_existing_val MONGO_CACHE_GB "${MONGO_CACHE_GB:-}")"
+  MONGO_MEMORY_LIMIT="$(get_existing_val MONGO_MEMORY_LIMIT "${MONGO_MEMORY_LIMIT:-}")"
+  MONGO_MEMORY_RESERVATION="$(get_existing_val MONGO_MEMORY_RESERVATION "${MONGO_MEMORY_RESERVATION:-}")"
   # Datastore memory sizing (docs/deployment/vector-db-sizing.md): an operator
   # lowers these on a small machine, so a rewrite must not put the defaults back.
-  NEO4J_HEAP_INITIAL="$(get_existing_val NEO4J_HEAP_INITIAL "")"
-  NEO4J_HEAP_MAX="$(get_existing_val NEO4J_HEAP_MAX "")"
-  NEO4J_PAGECACHE="$(get_existing_val NEO4J_PAGECACHE "")"
-  NEO4J_MEMORY_LIMIT="$(get_existing_val NEO4J_MEMORY_LIMIT "")"
-  NEO4J_MEMORY_RESERVATION="$(get_existing_val NEO4J_MEMORY_RESERVATION "")"
-  QDRANT_MEMORY_RESERVATION="$(get_existing_val QDRANT_MEMORY_RESERVATION "")"
+  NEO4J_HEAP_INITIAL="$(get_existing_val NEO4J_HEAP_INITIAL "${NEO4J_HEAP_INITIAL:-}")"
+  NEO4J_HEAP_MAX="$(get_existing_val NEO4J_HEAP_MAX "${NEO4J_HEAP_MAX:-}")"
+  NEO4J_PAGECACHE="$(get_existing_val NEO4J_PAGECACHE "${NEO4J_PAGECACHE:-}")"
+  NEO4J_MEMORY_LIMIT="$(get_existing_val NEO4J_MEMORY_LIMIT "${NEO4J_MEMORY_LIMIT:-}")"
+  NEO4J_MEMORY_RESERVATION="$(get_existing_val NEO4J_MEMORY_RESERVATION "${NEO4J_MEMORY_RESERVATION:-}")"
+  QDRANT_MEMORY_RESERVATION="$(get_existing_val QDRANT_MEMORY_RESERVATION "${QDRANT_MEMORY_RESERVATION:-}")"
+  PG_MEMORY_LIMIT="$(get_existing_val PG_MEMORY_LIMIT "${PG_MEMORY_LIMIT:-}")"
+  PG_SHARED_BUFFERS="$(get_existing_val PG_SHARED_BUFFERS "${PG_SHARED_BUFFERS:-}")"
+  PG_SHM="$(get_existing_val PG_SHM "${PG_SHM:-}")"
   # Qdrant's memory limit decides search speed once the index grows
   # (docs/deployment/vector-db-sizing.md); keep an operator's value.
   QDRANT_MEMORY_LIMIT="$(get_existing_val QDRANT_MEMORY_LIMIT "${QDRANT_MEMORY_LIMIT:-}")"
@@ -2218,6 +2246,12 @@ PG_KV_PASSWORD=${PG_KV_PASSWORD}
 PG_JOBS_PASSWORD=${PG_JOBS_PASSWORD}
 PG_MIGRATE_PASSWORD=${PG_MIGRATE_PASSWORD}
 PG_BACKUP_PASSWORD=${PG_BACKUP_PASSWORD}
+# The login of the postgres-metrics exporters (pg_monitor only, reads no data).
+PG_MONITOR_PASSWORD='${PG_MONITOR_PASSWORD}'
+# Server memory: the container limit, shared_buffers (about a quarter of the limit) and /dev/shm for parallel index builds.
+$(optional_env_line PG_MEMORY_LIMIT "$PG_MEMORY_LIMIT" "4G")
+$(optional_env_line PG_SHARED_BUFFERS "$PG_SHARED_BUFFERS" "1GB")
+$(optional_env_line PG_SHM "$PG_SHM" "1g")
 
 # ── MongoDB ──────────────────────────────────────────────────────────────────
 MONGO_USERNAME=${MONGO_USERNAME}
@@ -2360,6 +2394,10 @@ fi
 
 # Keep .env and -p in sync so later --stop / --uninstall only tear down this copy.
 persist_env_var "COMPOSE_PROJECT_NAME" "$PROJECT_NAME"
+# A .env written before the metrics login existed (reused, or --upgrade) gets its password once: the exported one, if any, as
+# pg-roles.sh may have created the role with it; else a new one. A value already in .env is kept. Single-quoted, as in the writer
+# above: bash, which reads .env back, expands a leading ~ (an allowed character), and Compose reads quotes as literal.
+[[ -n "$(get_existing_val PG_MONITOR_PASSWORD "")" ]] || persist_env_var PG_MONITOR_PASSWORD "'${PG_MONITOR_EXPORTED:-$(gen_secret 16)}'"
 
 # ==============================================================================
 # 14. DEPLOYMENT SUMMARY
