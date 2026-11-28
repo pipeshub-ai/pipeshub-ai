@@ -330,8 +330,9 @@ async def test_new_oauth_app_with_a_readable_list_keeps_the_others() -> None:
     assert [c["_id"] for c in stored[OAUTH_APPS_PATH]] == ["oc-9", new_id]
 
 
-@pytest.mark.parametrize("unreadable", ["in-use check", "app list"])
-async def test_delete_oauth_config_with_an_unreadable_read_is_500_and_overwrites_nothing(unreadable: str) -> None:
+# The in-use check reads the instance list (a 503, retry); the app list is re-read inside the write's own catch-all.
+@pytest.mark.parametrize(("unreadable", "status"), [("in-use check", 503), ("app list", 500)])
+async def test_delete_oauth_config_with_an_unreadable_read_fails_and_overwrites_nothing(unreadable: str, status: int) -> None:
     cs, store, _stored = _service(reads=False)
     patches = [
         patch(f"{T}._check_user_is_admin", new_callable=AsyncMock, return_value=True),
@@ -345,11 +346,11 @@ async def test_delete_oauth_config_with_an_unreadable_read_is_500_and_overwrites
             stack.enter_context(p)
         with pytest.raises(HTTPException) as exc:
             await delete_toolset_oauth_config("jira", "oc-1", _make_request(), cs)
-    assert exc.value.status_code == 500
+    assert exc.value.status_code == status
     store.create_key.assert_not_awaited()
 
 
-async def test_update_oauth_config_with_an_unreadable_instance_list_is_500_and_keeps_the_app() -> None:
+async def test_update_oauth_config_with_an_unreadable_instance_list_is_503_and_keeps_the_app() -> None:
     cs, store, _stored = _service(reads=False)
     save_app = AsyncMock(return_value="oc-1")
     with patch(f"{T}._check_user_is_admin", new_callable=AsyncMock, return_value=True), \
@@ -358,7 +359,7 @@ async def test_update_oauth_config_with_an_unreadable_instance_list_is_500_and_k
          patch(f"{T}._create_or_update_toolset_oauth_config", new=save_app):
         with pytest.raises(HTTPException) as exc:
             await update_toolset_oauth_config("jira", "oc-1", _make_request(body_dict={"authConfig": {}}), cs)
-    assert exc.value.status_code == 500
+    assert exc.value.status_code == 503
     save_app.assert_not_awaited()
     store.create_key.assert_not_awaited()
 

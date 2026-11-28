@@ -23,9 +23,11 @@ async def get_mcp_instance(
     config_service: ConfigurationService,
     org_id: str,
     user_id: Optional[str] = None,
+    *,
+    raise_on_error: bool = False,
 ) -> Optional[dict[str, Any]]:
     """Single MCP instance by ID: an org instance, or `user_id`'s own personal one."""
-    return await mcp_service.get_instance(instance_id, config_service, org_id, user_id)
+    return await mcp_service.get_instance(instance_id, config_service, org_id, user_id, raise_on_error=raise_on_error)
 
 
 async def mcp_instance_visible_to_org(

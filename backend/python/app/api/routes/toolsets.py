@@ -47,6 +47,8 @@ from app.core.org_context import current_org_id, org_of
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthConfig,
     OAuthProvider,
+    read_oauth_app_list,
+    read_oauth_config,
 )
 from app.connectors.core.constants import AuthFieldKeys
 from app.connectors.core.registry.auth_builder import OAuthScopeType
@@ -92,7 +94,7 @@ from app.utils.desktop_state import mark_desktop_state, strip_desktop_state
 from app.utils.oauth_errors import authorization_error_class, authorization_error_code
 from app.utils.oauth_redirect import resolve_oauth_base_url
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_lookup import get_user_or_503, raise_if_unavailable
+from app.utils.user_lookup import await_or_503, get_user_or_503, raise_if_unavailable
 from app.utils.user_messages import not_found
 
 # Re-export for client builders / token refresh .
@@ -568,8 +570,6 @@ async def _save_auth_record(
 async def _load_toolset_instances(
     org_id: str,
     config_service: ConfigurationService,
-    *,
-    raise_on_error: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Load toolset instances from etcd with proper validation and error handling.
@@ -577,24 +577,23 @@ async def _load_toolset_instances(
     Args:
         org_id: Organization ID
         config_service: Configuration service for etcd access
-        raise_on_error: Fail on an unreadable store instead of reading it as no instances,
-            for a caller that acts on the list (a write, or a check that guards one)
 
     Returns:
         List of toolset instance dictionaries
 
     Raises:
-        HTTPException: If loading fails or data is invalid
+        HTTPException: 503 when the store could not answer (never read as no instances), else 500
     """
     instances_path = _get_instances_path(org_id)
     try:
-        instances_data = await config_service.get_config(instances_path, default=[], raise_on_error=raise_on_error)
+        instances_data = await config_service.get_config(instances_path, default=[], raise_on_error=True)
         instances = _validate_list(value=instances_data, field_name="toolset instances")
         logger.debug(f"Loaded {len(instances)} toolset instances from {instances_path}")
         return [i for i in instances if i.get("orgId") == org_id]
     except HTTPException:
         raise
     except Exception as e:
+        raise_if_unavailable(e)
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail="Failed to access toolset instances. Please try again or contact support."
@@ -610,7 +609,7 @@ async def _find_instance(
     instances = await _load_toolset_instances(org_id, config_service)
     instance = next((i for i in instances if i.get("_id") == instance_id and i.get("orgId") == org_id), None)
     if instance is None and user_id:
-        instance = await toolset_store.get_personal_instance(config_service, org_id, user_id, instance_id)
+        instance = await await_or_503(toolset_store.get_personal_instance(config_service, org_id, user_id, instance_id))
     if instance is None:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
     return instance
@@ -872,15 +871,13 @@ async def _get_oauth_configs_for_type(
 ) -> list[dict[str, Any]]:
     """Get the list of OAuth configs stored for a toolset type.
 
-    ``raise_on_error`` for a read that is written back: the list is shared by every org,
-    so an unreadable one saved back as empty would delete every OAuth app of the type."""
+    Unset or undecodable reads as []; a store that could not answer is a 503. ``raise_on_error``, for a read
+    that is written back, raises any failure as it is: the list is shared by every org, so an unreadable one
+    saved back as empty would delete every OAuth app of the type."""
     path = _get_toolset_oauth_config_path(toolset_type)
-    try:
-        configs = await config_service.get_config(path, default=[], use_cache=False, raise_on_error=raise_on_error)
-    except Exception:
-        if raise_on_error:
-            raise
-        return []
+    if not raise_on_error:
+        return await await_or_503(read_oauth_app_list(config_service, path))
+    configs = await config_service.get_config(path, default=[], use_cache=False, raise_on_error=True)
     return configs if isinstance(configs, list) else []
 
 
@@ -1806,9 +1803,9 @@ async def update_toolset_instance(
     A personal instance is updated by its owner only (`_update_personal_instance`).
     """
     user_context = _get_user_context(request)
-    personal = await toolset_store.get_personal_instance(
+    personal = await await_or_503(toolset_store.get_personal_instance(
         config_service, user_context["org_id"], user_context["user_id"], instance_id
-    )
+    ))
     if personal is not None:
         return await _update_personal_instance(request, personal, config_service)
     is_admin = await _check_user_is_admin(
@@ -1966,9 +1963,9 @@ async def delete_toolset_instance(
     tool rules go with it.
     """
     user_context = _get_user_context(request)
-    personal = await toolset_store.get_personal_instance(
+    personal = await await_or_503(toolset_store.get_personal_instance(
         config_service, user_context["org_id"], user_context["user_id"], instance_id
-    )
+    ))
     if personal is not None:
         await _assert_instance_not_in_use(request, personal)
         try:
@@ -3007,7 +3004,7 @@ async def update_toolset_oauth_config(
     auth_config["type"] = "OAUTH"
 
     # Read before changing the app: an unreadable list must fail the update, not sign nobody out.
-    instances = await _load_toolset_instances(org_id, config_service, raise_on_error=True)
+    instances = await _load_toolset_instances(org_id, config_service)
 
     registry = _get_registry(request)
     new_oauth_id = await _create_or_update_toolset_oauth_config(
@@ -3068,7 +3065,7 @@ async def delete_toolset_oauth_config(
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="OAuth configuration not found.")
 
     # Safe-delete: reject if any instance references this oauth config
-    instances = await _load_toolset_instances(org_id, config_service, raise_on_error=True)
+    instances = await _load_toolset_instances(org_id, config_service)
 
     using_instances = [i for i in instances if i.get("oauthConfigId") == oauth_config_id and i.get("orgId") == org_id]
     if using_instances:
@@ -3117,11 +3114,7 @@ async def get_instance_status(
     # Verify instance exists
     instance = await _find_instance(instance_id, org_id, user_id, config_service)
 
-    auth_path = _get_user_auth_path(instance_id, user_id)
-    try:
-        user_auth = await config_service.get_config(auth_path, default=None)
-    except Exception:
-        user_auth = None
+    user_auth = await await_or_503(read_oauth_config(config_service, _get_user_auth_path(instance_id, user_id)))
 
     return {
         "status": "success",
@@ -3146,10 +3139,7 @@ async def _github_token(instance_id: str, request: Request, config_service: Conf
     instance = await _find_instance(instance_id, current_org_id(), user_id, config_service)
     if str(instance.get("toolsetType") or "").strip().lower() != _GITHUB_TOOLSET:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This GitHub connection"))
-    try:
-        user_auth = await config_service.get_config(_get_user_auth_path(instance_id, user_id), default=None)
-    except Exception:
-        user_auth = None
+    user_auth = await await_or_503(read_oauth_config(config_service, _get_user_auth_path(instance_id, user_id)))
     credentials = user_auth.get("credentials") if isinstance(user_auth, dict) else None
     token = credentials.get("access_token") if isinstance(credentials, dict) else None
     if not (isinstance(user_auth, dict) and user_auth.get("isAuthenticated")) or not isinstance(token, str) or not token:

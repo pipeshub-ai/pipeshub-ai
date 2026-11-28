@@ -109,7 +109,7 @@ def _as(store: FakeConfigService, user_id: str, body: dict[str, Any] | None = No
 
 class _RecordDeleteAnswersFalse(FakeConfigService):
     """Deleting alice-jira's record answers False: ``removed`` says whether it really went (etcd: a delete
-    retried after its answer was lost); ``unreadable`` fails the read-back that checks."""
+    retried after its answer was lost); ``unreadable`` fails the read-back that checks, after the delete."""
 
     RECORD = USER_PATH.format("u-alice", "alice-jira")
 
@@ -127,7 +127,7 @@ class _RecordDeleteAnswersFalse(FakeConfigService):
 
     async def get_config(self, key: str, default: Any = None, use_cache: bool = False, *,  # noqa: ANN401
                          raise_on_error: bool = False, keep_in_cache: bool = True) -> Any:  # noqa: ANN401
-        if key == self.RECORD and raise_on_error and self.unreadable:
+        if key == self.RECORD and raise_on_error and self.unreadable and self.deletes:
             raise ConnectionError("store down")
         return await super().get_config(key, default, use_cache, raise_on_error=raise_on_error, keep_in_cache=keep_in_cache)
 

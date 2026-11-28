@@ -375,12 +375,12 @@ class TestGetOAuthConfigsForType:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_is_raised(self):
         from app.api.routes.toolsets import _get_oauth_configs_for_type
         cs = AsyncMock()
         cs.get_config = AsyncMock(side_effect=Exception("fail"))
-        result = await _get_oauth_configs_for_type("jira", cs)
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await _get_oauth_configs_for_type("jira", cs)
 
 
 class TestBuildOAuthConfig:

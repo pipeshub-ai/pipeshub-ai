@@ -243,11 +243,12 @@ def _get_config_service(request: Request) -> ConfigurationService:
 
 async def _require_mcp_enabled(request: Request) -> None:
     """FastAPI dependency — rejects the request with 403 when the ``ENABLE_MCP``
-    platform feature flag is disabled for the calling org.  Applied to every MCP
+    platform feature flag is disabled for the calling org, and 503 when the store
+    could not answer the read.  Applied to every MCP
     endpoint so that visibility, auth, and runtime are gated consistently."""
     from app.agents.mcp.service import is_mcp_enabled
 
-    if not await is_mcp_enabled(_get_config_service(request)):
+    if not await await_or_503(is_mcp_enabled(_get_config_service(request), raise_on_error=True)):
         raise HTTPException(
             status_code=HttpStatusCode.FORBIDDEN.value,
             detail="MCP servers are disabled for this organization.",
@@ -355,7 +356,13 @@ def _dcr_client_fits(record: dict[str, Any], redirect_uri: str) -> bool:
 
 
 _load_org_instances = load_mcp_instances
-_get_org_instance = get_mcp_instance_resolved
+
+
+async def _get_org_instance(
+    instance_id: str, config_service: ConfigurationService, org_id: str, user_id: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """The instance as the caller sees it, or None; a store that could not answer is a 503, not "not found"."""
+    return await await_or_503(get_mcp_instance_resolved(instance_id, config_service, org_id, user_id, raise_on_error=True))
 
 
 async def _visible_instances(
@@ -1225,7 +1232,9 @@ async def auto_authenticate_instance(request: Request, instance_id: str) -> dict
     if not mcp_service.uses_shared_credential(instance):
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="This instance does not use a shared admin credential.")
 
-    admin_record = await mcp_service.resolve_effective_user_auth(instance, user_context["user_id"], config_service)
+    admin_record = await await_or_503(
+        mcp_service.resolve_effective_user_auth(instance, user_context["user_id"], config_service, raise_on_error=True)
+    )
     if not isinstance(admin_record, dict) or not admin_record.get("isAuthenticated"):
         raise HTTPException(
             status_code=HttpStatusCode.CONFLICT.value,
@@ -2330,7 +2339,7 @@ async def get_instance_tools(request: Request, instance_id: str, *, cached: bool
     if not instance:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
 
-    effective_auth = await _resolve_effective_user_auth(instance, user_id, config_service)
+    effective_auth = await await_or_503(_resolve_effective_user_auth(instance, user_id, config_service, raise_on_error=True))
     if effective_auth is None:
         raise HTTPException(status_code=HttpStatusCode.CONFLICT.value, detail="Not authenticated for this MCP server instance.")
 

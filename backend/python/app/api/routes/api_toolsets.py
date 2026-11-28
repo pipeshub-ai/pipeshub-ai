@@ -67,7 +67,7 @@ async def _require_admin(request: Request, action: str) -> None:
 
 
 async def _require_enabled(request: Request) -> None:
-    if not await is_api_toolsets_enabled(_get_config_service(request)):
+    if not await await_or_503(is_api_toolsets_enabled(_get_config_service(request), raise_on_error=True)):
         raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail="API Toolsets are disabled for this organization.")
 
 

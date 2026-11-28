@@ -1303,12 +1303,17 @@ class TestGetOAuthConfigsForType:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self) -> None:
+    async def test_a_store_outage_is_503_and_any_other_failure_raises(self) -> None:
+        """Read as [], an outage showed no apps and let a delete answer "not found"."""
         from app.api.routes.toolsets import _get_oauth_configs_for_type
         cs = AsyncMock()
-        cs.get_config = AsyncMock(side_effect=RuntimeError("etcd down"))
-        result = await _get_oauth_configs_for_type("jira", cs)
-        assert result == []
+        cs.get_config = AsyncMock(side_effect=ConnectionError("etcd down"))
+        with pytest.raises(HTTPException) as caught:
+            await _get_oauth_configs_for_type("jira", cs)
+        assert caught.value.status_code == 503
+        cs.get_config = AsyncMock(side_effect=RuntimeError("a bug"))
+        with pytest.raises(RuntimeError):
+            await _get_oauth_configs_for_type("jira", cs)
 
     @pytest.mark.asyncio
     async def test_default_empty_list(self) -> None:
@@ -4260,12 +4265,12 @@ class TestGetOauthConfigsForType:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_exception(self) -> None:
+    async def test_exception_is_raised(self) -> None:
         from app.api.routes.toolsets import _get_oauth_configs_for_type
         cs = AsyncMock()
         cs.get_config = AsyncMock(side_effect=Exception("fail"))
-        result = await _get_oauth_configs_for_type("jira", cs)
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await _get_oauth_configs_for_type("jira", cs)
 
 
 class TestGetOauthConfigById:
@@ -5051,12 +5056,12 @@ class TestGetOauthConfigByIdEdge:
     """Cover edge cases for _get_oauth_config_by_id."""
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self) -> None:
+    async def test_exception_is_raised_not_read_as_missing(self) -> None:
         from app.api.routes.toolsets import _get_oauth_config_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(side_effect=Exception("fail"))
-        result = await _get_oauth_config_by_id("jira", "c1", "o1", cs)
-        assert result is None
+        with pytest.raises(Exception, match="fail"):
+            await _get_oauth_config_by_id("jira", "c1", "o1", cs)
 
 
 class TestCreateOrUpdateOauthConfigUpdateNotFoundFallsThrough:
@@ -6330,8 +6335,8 @@ class TestGetInstanceStatusRoute:
         assert result["isAuthenticated"] is True
 
     @pytest.mark.asyncio
-    async def test_get_status_exception_returns_false(self) -> None:
-        """Cover lines 2639-2640 (config exception)."""
+    async def test_get_status_with_the_sign_in_unreadable_is_503_not_signed_out(self) -> None:
+        """A sign-in record that could not be read is not "not signed in" (read_oauth_config's rule)."""
         from app.api.routes.toolsets import get_instance_status
         cs = AsyncMock()
         cs.get_config = AsyncMock(side_effect=Exception("fail"))
@@ -6340,9 +6345,10 @@ class TestGetInstanceStatusRoute:
         req = _make_request()
 
         with patch("app.api.routes.toolsets._load_toolset_instances", return_value=instances):
-            result = await get_instance_status("i1", req, cs)
+            with pytest.raises(HTTPException) as caught:
+                await get_instance_status("i1", req, cs)
 
-        assert result["isAuthenticated"] is False
+        assert caught.value.status_code == 503
 
 
 class TestGetInstanceDetailRoute:
@@ -6807,7 +6813,7 @@ class TestListToolsetOAuthConfigsNonAdmin:
             {"_id": "oc-1", "orgId": "o1", "config": {"clientId": "cid", "clientSecret": "secret"}}
         ]
 
-        async def config_side_effect(path, default=None, use_cache=True):
+        async def config_side_effect(path, default=None, use_cache=True, **_kwargs):
             if "oauths/" in path:
                 return configs
             return default
@@ -7128,12 +7134,12 @@ class TestGetOAuthConfigsForTypeFullCoverage:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self) -> None:
+    async def test_exception_is_raised(self) -> None:
         from app.api.routes.toolsets import _get_oauth_configs_for_type
         cs = AsyncMock()
         cs.get_config = AsyncMock(side_effect=Exception("fail"))
-        result = await _get_oauth_configs_for_type("jira", cs)
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await _get_oauth_configs_for_type("jira", cs)
 
 
 class TestBuildOAuthConfigFullCoverage:

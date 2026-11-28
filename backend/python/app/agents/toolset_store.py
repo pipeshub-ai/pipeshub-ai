@@ -78,7 +78,11 @@ def _personal_record(record: object, org_id: str | None, owner_id: str | None = 
     )
 
 
-async def _read(config_service: ConfigurationService, key: str) -> dict[str, Any] | None:
+async def _read(config_service: ConfigurationService, key: str, *, raise_on_error: bool = False) -> dict[str, Any] | None:
+    """The record at ``key``, or None; ``raise_on_error`` raises a failed read instead of reading it as none."""
+    if raise_on_error:
+        data = await config_service.get_config(key, default=None, use_cache=False, raise_on_error=True)
+        return data if isinstance(data, dict) else None
     try:
         data = await config_service.get_config(key, default=None, use_cache=False)
     except Exception as e:
@@ -102,8 +106,9 @@ async def load_user_instances(config_service: ConfigurationService, org_id: str,
 async def get_personal_instance(
     config_service: ConfigurationService, org_id: str, user_id: str, instance_id: str,
 ) -> dict[str, Any] | None:
-    """`user_id`'s own personal instance `instance_id`, or None: anyone else's reads as missing."""
-    record = await _read(config_service, get_toolset_user_instance_path(org_id, user_id, instance_id))
+    """`user_id`'s own personal instance `instance_id`, or None: anyone else's reads as missing. A failed read
+    raises: read as none, the owner would be told the instance is gone or that only administrators may change it."""
+    record = await _read(config_service, get_toolset_user_instance_path(org_id, user_id, instance_id), raise_on_error=True)
     return record if _personal_record(record, org_id, user_id) and record.get("_id") == instance_id else None
 
 
@@ -115,10 +120,7 @@ async def find_personal_instance(
     `org_id` None searches every org. `raise_on_error` makes a store failure raise rather than
     read as "none", for a caller that would otherwise let something through on it."""
     async def read(key: str) -> dict[str, Any] | None:
-        if not raise_on_error:
-            return await _read(config_service, key)
-        data = await config_service.get_config(key, default=None, use_cache=False, raise_on_error=True)
-        return data if isinstance(data, dict) else None
+        return await _read(config_service, key, raise_on_error=raise_on_error)
 
     def match(record: dict[str, Any] | None) -> dict[str, Any] | None:
         return record if _personal_record(record, org_id) and record.get("_id") == instance_id else None
