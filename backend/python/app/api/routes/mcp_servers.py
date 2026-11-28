@@ -735,7 +735,7 @@ def _refuse_delegated_stdio(request: Request, payload: MCPServerInstanceConfig) 
         refuse_delegated_caller(request)
 
 
-# What a token may send when it adds or edits a server. Everything else (``url``,
+# What a token may send when it adds a server. Everything else (``url``,
 # ``authorizationUrl``, ``tokenUrl``, ``headerName``, the STDIO command fields, and any key added
 # later) sets where credentials are sent or what runs, so it takes an interactive session; a
 # catalog server takes those from its template. Allowed keys, and why each is safe:
@@ -821,7 +821,9 @@ async def get_instance(request: Request, instance_id: str) -> dict[str, Any]:
     return instance
 
 
-@router.put("/instances/{instance_id}", dependencies=[Depends(require_interactive_session_except(_MCP_INSTANCE_ALLOWED)), Depends(require_scopes(OAuthScopes.MCP_WRITE))])
+# An edit replaces the whole record, so any body can change where credentials are sent or clear
+# the shared one; it takes an interactive session.
+@router.put("/instances/{instance_id}", dependencies=[Depends(require_interactive_session), Depends(require_scopes(OAuthScopes.MCP_WRITE))])
 async def update_instance(
     request: Request,
     instance_id: str,

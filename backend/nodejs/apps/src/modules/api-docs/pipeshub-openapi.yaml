@@ -71912,7 +71912,7 @@ paths:
           description: |
             Forbidden — one of:
             - the OAuth token lacks the `mcp:write` scope
-            - the bearer token is an OAuth access token, a personal access token or a service token and the body sets a key other than `name`, `description`, `typeId`, `scope`, `transport`, `authMode`, `useAdminAuth` or `scopes`, or sets `transport` to `stdio` (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds
+            - the bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds
             - the caller may not manage this instance, or a custom `stdio` server was requested and the deployment does not allow them (`MCP_ALLOW_CUSTOM_STDIO`)
             - MCP servers are disabled for this organization (`ENABLE_MCP` feature flag is off)
           content:

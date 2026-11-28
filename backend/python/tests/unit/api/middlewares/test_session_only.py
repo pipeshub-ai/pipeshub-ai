@@ -157,7 +157,10 @@ def test_stdio_mcp_server_setup_is_refused_to_a_token_only() -> None:
 # The routes in the class, by router. A route that loses its guard fails here.
 _ROUTE_WIDE = {
     ("app.api.routes.api_toolsets", "router"): [("POST", "/instances"), ("PUT", "/instances/{instance_id}")],
-    ("app.api.routes.mcp_servers", "router"): [("PUT", "/instances/{instance_id}/oauth-config")],
+    ("app.api.routes.mcp_servers", "router"): [
+        ("PUT", "/instances/{instance_id}"),
+        ("PUT", "/instances/{instance_id}/oauth-config"),
+    ],
     # An OAuth app holds a client secret and the URLs a grant is sent to; connectors link to it.
     ("app.connectors.api.router", "router"): [
         ("POST", "/api/v1/oauth/{connector_type}"),
@@ -186,7 +189,6 @@ _ALLOWLISTED = {
     ],
     ("app.api.routes.mcp_servers", "router"): [
         ("POST", "/instances", {"name": True, "description": True, "typeId": True, "scope": True, "transport": True, "authMode": True, "useAdminAuth": True, "scopes": True}),
-        ("PUT", "/instances/{instance_id}", {"name": True, "description": True, "typeId": True, "scope": True, "transport": True, "authMode": True, "useAdminAuth": True, "scopes": True}),
     ],
 }
 
@@ -206,7 +208,6 @@ _EMPTY_ALLOWED = {
     ],
     ("app.api.routes.mcp_servers", "router"): [
         ("POST", "/instances", []),
-        ("PUT", "/instances/{instance_id}", []),
     ],
 }
 
@@ -312,6 +313,8 @@ _HTTP_ROUTES = [
     (_M, "POST", "/api/v1/mcp-servers/instances", {**_MCP, "aKeyNoListHasSeen": "x"}),
     (_M, "PUT", "/api/v1/mcp-servers/instances/i1", {**_MCP, "url": "https://evil.example.invalid/mcp"}),
     (_M, "PUT", "/api/v1/mcp-servers/instances/i1", {**_MCP, "headerName": "X-Api-Key"}),
+    # An edit replaces the record: a rename alone would reset the shared credential and header.
+    (_M, "PUT", "/api/v1/mcp-servers/instances/i1", {**_MCP, "typeId": "github", "name": "renamed"}),
     (_M, "PUT", "/api/v1/mcp-servers/instances/i1/oauth-config", {"clientId": "attacker-client", "clientSecret": "attacker-secret"}),
 ]
 _ALLOWED_FOR_A_TOKEN = [
@@ -325,7 +328,6 @@ _ALLOWED_FOR_A_TOKEN = [
     (_T, "PUT", "/api/v1/toolsets/instances/i1", {"instanceName": "renamed"}),
     # A catalog server, whose template fixes its URLs.
     (_M, "POST", "/api/v1/mcp-servers/instances", {**_MCP, "typeId": "github", "scope": "personal"}),
-    (_M, "PUT", "/api/v1/mcp-servers/instances/i1", {**_MCP, "name": "renamed", "description": "d"}),
 ]
 
 
