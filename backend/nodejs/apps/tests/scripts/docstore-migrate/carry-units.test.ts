@@ -6,7 +6,7 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import { Binary, Int32, Long, ObjectId } from 'mongodb';
-import { sourceDoc, canonicalText } from '../../../src/scripts/docstore-migrate/carry/plain';
+import { sourceDoc, canonicalText, withObjectIds } from '../../../src/scripts/docstore-migrate/carry/plain';
 import { DocTable } from '../../../src/scripts/docstore-migrate/carry/doc-table';
 import { DATA_KEY_AND_WORKSPACE_TABLES } from '../../../src/scripts/docstore-migrate/carry/keys-workspaces';
 import { CODING_ENGINE_CHOICES } from '../../../src/scripts/docstore-migrate/carry/choices';
@@ -63,6 +63,45 @@ describe('docstore-migrate carriers without a database (R45-CARRY)', () => {
       });
       expect(d.refused).to.equal(undefined);
       expect(d.doc).to.deep.equal({ codingEngine: 'codex', orgId: fx.ORG });
+    });
+
+    it('with oids, reads every ObjectId as hex and lists where it was, and withObjectIds gives the same document back', () => {
+      const [a, b, c] = [new ObjectId(), new ObjectId(), new ObjectId()];
+      const raw = { _id: new ObjectId(), orgId: a, name: a.toHexString(), refs: [b, 'x', { deep: c }], at: new Date(7) };
+      const d = sourceDoc(raw, 'c', { oids: true });
+      expect(d.refused).to.equal(undefined);
+      expect(d.doc).to.deep.equal({ orgId: a.toHexString(), name: a.toHexString(), refs: [b.toHexString(), 'x', { deep: c.toHexString() }], at: new Date(7) });
+      // a string that looks like an id stays a string: only the places that held an ObjectId are listed
+      expect(d.oidPaths).to.deep.equal([['orgId'], ['refs', 0], ['refs', 2, 'deep']]);
+      const rest: Partial<typeof raw> = { ...raw };
+      delete rest._id;
+      expect(withObjectIds(structuredClone(d.doc), d.oidPaths!)).to.deep.equal(rest);
+      expect(sourceDoc(raw, 'c').refused, 'without oids an ObjectId inside is still refused').to.contain('orgId');
+      expect(() => withObjectIds({ a: 'nope' }, [['a']])).to.throw(/holds no ObjectId/);
+      expect(() => withObjectIds({ a: {} }, [['a', 'b', 'c']])).to.throw(/holds no ObjectId/);
+    });
+
+    it('a key named __proto__ is kept as a field of its own (read and given back), never set through the prototype accessor', () => {
+      const id = new ObjectId();
+      const raw = JSON.parse(`{"_id": "x", "__proto__": "${id.toHexString()}", "inner": {"__proto__": {"n": 1}}}`) as Record<string, unknown>;
+      Object.defineProperty(raw, '__proto__', { value: id, enumerable: true, writable: true, configurable: true });
+      const d = sourceDoc(raw, 'c', { oids: true });
+      expect(Object.prototype.hasOwnProperty.call(d.doc, '__proto__'), 'an own field').to.equal(true);
+      expect(Object.getOwnPropertyDescriptor(d.doc, '__proto__')?.value).to.equal(id.toHexString());
+      expect(Object.getOwnPropertyDescriptor(d.doc.inner as object, '__proto__')?.value).to.deep.equal({ n: 1 });
+      expect(d.oidPaths).to.deep.equal([['__proto__']]);
+      const back = withObjectIds(d.doc, d.oidPaths!);
+      expect(Object.getOwnPropertyDescriptor(back, '__proto__')?.value).to.be.instanceOf(ObjectId);
+      // without oids it is refused, as any ObjectId inside a document
+      expect(sourceDoc(raw, 'c').refused).to.contain('__proto__');
+    });
+
+    it('with oids, an ObjectId at an idPaths path is listed too, so it is given back as an ObjectId', () => {
+      const org = new ObjectId();
+      const d = sourceDoc({ _id: 'x', orgId: org, other: new ObjectId() }, 'c', { oids: true, idPaths: ['orgId'] });
+      expect(d.doc.orgId).to.equal(org.toHexString());
+      expect(d.oidPaths).to.deep.equal([['orgId'], ['other']]);
+      expect(withObjectIds(d.doc, d.oidPaths!).orgId).to.be.instanceOf(ObjectId);
     });
   });
 
