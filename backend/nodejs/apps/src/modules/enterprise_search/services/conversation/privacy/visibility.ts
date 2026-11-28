@@ -143,8 +143,10 @@ export interface RowVerdict {
    * last two still pass the per-record view.
    */
   basis?: 'label' | 'asker' | 'before_labels';
-  /** A question that answers a card the reader may not see: the question shows, the card's words in it do not. */
+  /** A question that answers a card, read by anyone but its author: the question shows, the card's words in it do not. */
   cardWithheld?: true;
+  /** With `cardWithheld`: the reader may see the card, which then reads as answered, with none of the picks. */
+  cardShown?: true;
 }
 
 /**
@@ -671,11 +673,30 @@ export const answersACard = (row: {
   (row.answersCard != null ||
     (typeof row.content === 'string' && CARD_ANSWER_TEXT.test(row.content)));
 
-/** What a reader who may not see a card gets of a question that answers it: that it was answered, never with what. */
+/** What anyone but its author gets of a question that answers a card: that it was answered, never with what. */
 export const CARD_ANSWER_WITHHELD = 'Answered a question from the assistant.';
 
-const withheldCardAnswer = <T extends object>(row: T): T => {
-  const view: Plain = { ...(row as Plain), content: CARD_ANSWER_WITHHELD };
+/**
+ * The same, to a reader who may see the card: still in the form the app answers a question card with, so the card reads
+ * as answered, with no line that says what was picked.
+ */
+export const CARD_PICKS_WITHHELD = `User selections:\n${CARD_ANSWER_WITHHELD}`;
+
+/** The app's answer to a question card, as Python reads it (`CARD_ANSWER_TEXT`). */
+const SELECTIONS_TEXT =
+  // eslint-disable-next-line no-control-regex -- matching those characters is the point
+  /^[\s\x1c-\x1f\x85]*User selections:/u;
+
+const withheldCardAnswer = <T extends object>(row: T, cardShown = false): T => {
+  const r = row as Plain;
+  const picks =
+    cardShown &&
+    typeof r.content === 'string' &&
+    SELECTIONS_TEXT.test(r.content);
+  const view: Plain = {
+    ...r,
+    content: picks ? CARD_PICKS_WITHHELD : CARD_ANSWER_WITHHELD,
+  };
   return view as T;
 };
 
@@ -4056,9 +4077,9 @@ async function judgeRows(
       validUntil: forever,
     });
   });
-  // A question that answers a card holds the card's words: anyone but its author reads them only while they may read
-  // the card. The card is the one it was bound to; for one stored before that was recorded, the card before it in its
-  // turn among the rows, else none, which withholds it.
+  // A question that answers a card holds the card's words and what its author picked: anyone else reads only that the
+  // card was answered, as the card reads to them when they may see it. The card is the one it was bound to; for one
+  // stored before that was recorded, the card before it in its turn among the rows, else none.
   const cardBefore = (i: number): ReaderRow | undefined => {
     for (let j = i - 1; j >= 0; j -= 1) {
       if ((turns[j] ?? 0) !== (turns[i] ?? 0)) return undefined;
@@ -4079,10 +4100,10 @@ async function judgeRows(
         ? undefined
         : ((cardId !== undefined ? out.get(cardId) : undefined) ??
           cardVerdict(card, undefined));
-    if (shown?.verdict === 'visible') return;
     out.set(id, {
       verdict: 'visible',
       cardWithheld: true,
+      ...(shown?.verdict === 'visible' && { cardShown: true }),
       validUntil: shown?.validUntil ?? forever,
     });
   });
@@ -5654,7 +5675,12 @@ export async function readerView<M extends object>(
       ) as M;
     }
     const shown = shownView(viewed[i] ?? m, row);
-    return verdict.cardWithheld === true ? withheldCardAnswer(shown) : shown;
+    return verdict.cardWithheld === true
+      ? withheldCardAnswer(
+          { ...shown, content: row.content },
+          verdict.cardShown === true,
+        )
+      : shown;
   });
   return { rows: out, verdicts };
 }

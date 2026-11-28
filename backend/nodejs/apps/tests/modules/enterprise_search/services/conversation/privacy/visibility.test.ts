@@ -1594,6 +1594,8 @@ describe('the reader check: who may see an answer', () => {
     const CARD_TEXT = 'Which figure from the board deck should lead: CANARY-R-4.2M or 3.9M?'
     const SELECTIONS = `User selections:\n1. "${CARD_TEXT}" → CANARY-R-4.2M`
     const WITHHELD_TEXT = 'Answered a question from the assistant.'
+    // To who may see the card: still a card's answer, so the card reads as answered, with nothing of what was picked.
+    const PICKS_WITHHELD = `User selections:\n${WITHHELD_TEXT}`
     type Row = ReaderRow & Record<string, unknown>
     const perRecordView = async <M extends object>(rows: M[]): Promise<M[]> => rows
 
@@ -1620,13 +1622,15 @@ describe('the reader check: who may see an answer', () => {
       (await readerView(reader(who), session, rows, { deps: w.deps, member: true, perRecordView })).rows as Row[]
     const byId = (rows: Row[], id: unknown) => rows.find((r) => String(r._id) === String(id)) as Row
 
-    it("Bob, who can't read the card, gets Dana's answer to it without its selections; Carol and Dana get it whole", async () => {
+    it("Bob, who can't read the card, gets only that Dana answered it; Carol, who can, gets it answered with none of her picks; Dana gets it whole", async () => {
       const t = cardTurn()
       const w = world(t.rows)
       const bob = await view(BOB, t.rows, w)
       expect(byId(bob, t.reply._id).content).to.equal(WITHHELD_TEXT)
       expect(JSON.stringify(bob)).to.not.include('CANARY-R')
-      expect(byId(await view(CAROL, t.rows, w), t.reply._id).content).to.equal(SELECTIONS)
+      const carol = await view(CAROL, t.rows, w)
+      expect(byId(carol, t.reply._id).content).to.equal(PICKS_WITHHELD)
+      expect(JSON.stringify(byId(carol, t.reply._id))).to.not.include('CANARY-R')
       expect(byId(await view(DANA, t.rows, w), t.reply._id).content).to.equal(SELECTIONS)
     })
 
@@ -1654,14 +1658,16 @@ describe('the reader check: who may see an answer', () => {
       expect(JSON.stringify(byId(alone, card._id).tools), 'in a chat of her own the card goes whole').to.include(CARD_TEXT)
     })
 
-    it("Bob's model gets the same line in its place; Carol's gets the selections", async () => {
+    it("Bob's model and Carol's get the same line in its place: what Dana picked reaches no one else's model", async () => {
       const t = cardTurn()
       const w = world(t.rows)
       const bobs = (await includableRows(reader(BOB), session, t.rows, { deps: w.deps })) as Row[]
       expect(byId(bobs, t.reply._id).content).to.equal(WITHHELD_TEXT)
       expect(JSON.stringify(bobs)).to.not.include('CANARY-R')
       const carols = (await includableRows(reader(CAROL), session, t.rows, { deps: w.deps })) as Row[]
-      expect(byId(carols, t.reply._id).content).to.equal(SELECTIONS)
+      expect(byId(carols, t.reply._id).content).to.equal(WITHHELD_TEXT)
+      const danas = (await includableRows(reader(DANA), session, t.rows, { deps: w.deps })) as Row[]
+      expect(byId(danas, t.reply._id).content).to.equal(SELECTIONS)
     })
 
     it("a feed page in change order: the card is judged by its own run's answer, never by another turn's", async () => {
@@ -1681,7 +1687,7 @@ describe('the reader check: who may see an answer', () => {
       const t = cardTurn()
       const w = world(t.rows)
       expect(byId(await view(BOB, [t.reply], w), t.reply._id).content).to.equal(WITHHELD_TEXT)
-      expect(byId(await view(CAROL, [t.reply], w), t.reply._id).content).to.equal(SELECTIONS)
+      expect(byId(await view(CAROL, [t.reply], w), t.reply._id).content).to.equal(PICKS_WITHHELD)
     })
 
     it("a card whose run left no answer is its asker's alone, and so is what answers it", async () => {
@@ -1699,7 +1705,7 @@ describe('the reader check: who may see an answer', () => {
       const rows = [t.asked, t.card, t.waiting, legacy]
       const w = world(rows)
       expect(byId(await view(BOB, rows, w), legacy._id).content).to.equal(WITHHELD_TEXT)
-      expect(byId(await view(CAROL, rows, w), legacy._id).content).to.equal(SELECTIONS)
+      expect(byId(await view(CAROL, rows, w), legacy._id).content).to.equal(PICKS_WITHHELD)
       expect(byId(await view(CAROL, [legacy], w), legacy._id).content).to.equal(WITHHELD_TEXT)
       expect(byId(await view(DANA, [legacy], w), legacy._id).content).to.equal(SELECTIONS)
     })

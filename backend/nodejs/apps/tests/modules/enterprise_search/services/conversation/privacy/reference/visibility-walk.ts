@@ -2354,9 +2354,9 @@ async function judgeRows(
       validUntil: forever,
     });
   });
-  // A question that answers a card holds the card's words: anyone but its author reads them only while they may read
-  // the card. The card is the one it was bound to; for one stored before that was recorded, the card before it in its
-  // turn among the rows, else none, which withholds it.
+  // A question that answers a card holds the card's words and what its author picked: anyone else reads only that the
+  // card was answered. The card is the one it was bound to; for one stored before that was recorded, the card before it
+  // in its turn among the rows, else none.
   const cardBefore = (i: number): ReaderRow | undefined => {
     for (let j = i - 1; j >= 0; j -= 1) {
       if ((turns[j] ?? 0) !== (turns[i] ?? 0)) return undefined;
@@ -2377,7 +2377,6 @@ async function judgeRows(
         ? undefined
         : ((cardId !== undefined ? out.get(cardId) : undefined) ??
           cardVerdict(card, undefined));
-    if (shown?.verdict === 'visible') return;
     out.set(id, {
       verdict: 'visible',
       cardWithheld: true,
