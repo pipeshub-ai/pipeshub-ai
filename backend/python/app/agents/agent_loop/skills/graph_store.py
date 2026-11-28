@@ -4,7 +4,7 @@ against either `ArangoHTTPProvider` or `Neo4jProvider` since it only calls
 the generic, backend-agnostic surface of that interface (`get_document`,
 `create_node_if_absent`, `update_node_if_match`, `update_node_fields_if_match`,
 `delete_node_if_match`, `batch_upsert_nodes`, `delete_nodes`, `batch_create_edges`,
-`delete_edges_from`, `get_nodes_by_filters`) — never
+`batch_delete_edges`, `get_edges_from_node`, `get_nodes_by_filters`) — never
 `execute_query` (that method is explicitly database-specific: AQL for
 Arango, Cypher for Neo4j, so using it here would silently break whichever
 backend isn't the one currently deployed).
@@ -1475,11 +1475,13 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         """Re-derives every `agentSkillRelation` edge from `metadata`'s
         `related`/`requires`/`replaced_by` — called on every create/update
         so the graph never drifts from the frontmatter that's supposed to
-        describe it. Simplest correct approach for a catalog this size:
-        drop and recreate, rather than diffing."""
+        describe it. Edges already as derived are left alone; otherwise the
+        derived ones are written first (one edge per pair, so a write replaces
+        its pair's edge in place) and only then are edges to other targets
+        removed: with no transaction, a failure in between never leaves a
+        required skill without its `requires` edge."""
         from_key = self._key(name)
-        await self._graph.delete_edges_from(from_key, _SKILLS, _RELATION)
-
+        required_docs: dict[str, dict] = {}
         edges: list[dict[str, Any]] = []
         for related_name in metadata.related:
             edges.append({
@@ -1498,6 +1500,7 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
                 "to_id": self._key(required_name), "to_collection": _SKILLS,
                 "type": "requires", "createdAtTimestamp": now,
             }
+            required_docs[edge["to_id"]] = required
             if required.get("generation") is not None:
                 edge["toGeneration"] = required["generation"]
             else:
@@ -1510,8 +1513,23 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
                 "to_id": self._key(metadata.replaced_by), "to_collection": _SKILLS,
                 "type": "replaced_by", "createdAtTimestamp": now,
             })
+        wanted = {e["to_id"]: e for e in edges}  # one edge per pair: the last one written for a target holds
+        held = {
+            str(e.get("to_id") or (e.get("_to") or "").split("/", 1)[-1]): e
+            for e in await self._graph.get_edges_from_node(f"{_SKILLS}/{from_key}", _RELATION)
+        }
+        if held.keys() == wanted.keys() and all(
+            held[k].get("type") == e["type"] and (e["type"] != "requires" or _requires_bound_to(held[k], required_docs[k]))
+            for k, e in wanted.items()
+        ):
+            return
         if edges:
             await self._graph.batch_create_edges(edges, _RELATION)
+        stale = [k for k in held if k not in wanted]
+        if stale:
+            await self._graph.batch_delete_edges([
+                {"from_id": from_key, "from_collection": _SKILLS, "to_id": k, "to_collection": _SKILLS} for k in stale
+            ], _RELATION)
 
     # ---- SkillCandidateStore ----------------------------------------------
 

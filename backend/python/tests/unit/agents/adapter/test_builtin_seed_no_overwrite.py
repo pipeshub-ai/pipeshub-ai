@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from app.agent_loop_lib.modules.providers.skills.base import SkillSource
 from app.agents.agent_loop.skills.builtin_seeder import (
     SEED_IDENTITY,
@@ -95,3 +97,58 @@ async def test_a_builtin_left_without_its_edges_gets_them_at_the_next_sync(tmp_p
 
     assert await seeder.sync(skill_store(graph, "org-1", SEED_IDENTITY)) is True
     assert [(e["to_id"], e["type"]) for e in graph._edges["agentSkillRelation"]] == [("org-1_pack-z", "related")]
+
+
+_PACK_REQUIRING = _PACK_A_V1.replace("    pack_version: 1.0.0\n", "    pack_version: 1.0.0\n    requires: [helper]\n")
+_HELPER_MD = "---\nname: helper\ndescription: Use helper for shared steps\n---\n\nHelp.\n"
+
+
+class _EdgeWritesFail(FakeGraphProvider):
+    """Every relation-edge write fails once `failing` is set, as a process stopped mid-sync would leave it."""
+
+    failing = False
+
+    async def batch_create_edges(self, edges, collection, transaction=None) -> bool:  # type: ignore[no-untyped-def]
+        if self.failing and collection == "agentSkillRelation":
+            raise RuntimeError("edge write failed")
+        return await super().batch_create_edges(edges, collection, transaction)
+
+
+async def _seeded_requiring(tmp_path) -> tuple[_EdgeWritesFail, BuiltinSkillSeeder]:
+    root = str(tmp_path / "packs")
+    _write_pack(root, "pack-a", _PACK_REQUIRING)
+    seeder, graph = BuiltinSkillSeeder(root), _EdgeWritesFail()
+    await skill_store(graph, "org-1", "user-a").create_skill("helper", _HELPER_MD)
+    assert await seeder.sync(skill_store(graph, "org-1", SEED_IDENTITY)) is True
+    return graph, seeder
+
+
+def _requires_edges(graph: FakeGraphProvider) -> list[tuple[str, str]]:
+    return [(e["to_id"], e["type"]) for e in graph._edges.get("agentSkillRelation", [])]
+
+
+async def test_a_sync_of_an_up_to_date_builtin_leaves_its_edges_alone(tmp_path) -> None:
+    graph, seeder = await _seeded_requiring(tmp_path)
+    assert _requires_edges(graph) == [("org-1_helper", "requires")]
+
+    graph.failing = True  # nothing to write: a sync that would write fails
+    assert await seeder.sync(skill_store(graph, "org-1", SEED_IDENTITY)) is True
+    assert _requires_edges(graph) == [("org-1_helper", "requires")]
+    usage = await skill_store(graph, "org-1", "user-a").get_referential_usage("helper")
+    assert usage.required_by_skills == ["pack-a"]
+
+
+async def test_a_failed_edge_rewrite_keeps_the_edges_it_would_replace(tmp_path) -> None:
+    graph, _ = await _seeded_requiring(tmp_path)
+    await skill_store(graph, "org-1", "user-a").create_skill("other", _HELPER_MD.replace("helper", "other"))
+    store = skill_store(graph, "org-1", SEED_IDENTITY)
+    meta = (await store.get_skill("pack-a")).metadata  # type: ignore[union-attr]
+
+    graph.failing = True
+    with pytest.raises(RuntimeError):
+        await store.finish_relations(meta.model_copy(update={"requires": ["helper", "other"]}))
+    assert _requires_edges(graph) == [("org-1_helper", "requires")]
+
+    graph.failing = False
+    await store.finish_relations(meta.model_copy(update={"requires": ["other"]}))
+    assert _requires_edges(graph) == [("org-1_other", "requires")]

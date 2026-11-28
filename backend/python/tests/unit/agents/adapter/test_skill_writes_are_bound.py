@@ -37,8 +37,8 @@ ALLOWED = {
         "a revision doc in agentSkillVersions, keyed by skill, generation, version and archived state; never a skill doc",
     ("_create_owner_permission_edge", "batch_create_edges"):
         "runs only after create_node_if_absent created the skill in this call",
-    ("_sync_relation_edges", "delete_edges_from"):
-        "relation edges are re-derived after the bound write landed; not bound to the generation (a known gap: relation edges are written by name)",
+    ("_sync_relation_edges", "batch_delete_edges"):
+        "stale relation edges, removed after the bound write landed and the new ones are written; not bound to the generation (a known gap: relation edges are written by name)",
     ("_sync_relation_edges", "batch_create_edges"):
         "as above",
     ("_with_generation", "batch_upsert_nodes"):
