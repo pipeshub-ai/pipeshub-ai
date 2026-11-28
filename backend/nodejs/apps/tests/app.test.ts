@@ -1,4 +1,5 @@
 import { editionBoot } from '../src/config';
+import { setSeatGuard } from '../src/libs/edition/seat-guard';
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
@@ -405,6 +406,8 @@ describe('Application', () => {
 
   afterEach(() => {
     sandbox.restore();
+    // initialize() installs the edition's seat guard; later tests in this worker expect the no-op one.
+    setSeatGuard();
   });
 
   // =========================================================================

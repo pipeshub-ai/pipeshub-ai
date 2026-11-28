@@ -96,6 +96,7 @@ import {
 } from './config';
 import { installOrgLifecycle } from './libs/org-lifecycle';
 import type { EditionContainers } from './libs/edition/edition-boot';
+import { setSeatGuard } from './libs/edition/seat-guard';
 import { NotificationContainer } from './modules/notification/container/notification.container';
 import { NotificationConsumer } from './modules/notification/service/notification.consumer';
 import { MailConsumer } from './modules/mail/services/mail.consumer';
@@ -425,6 +426,7 @@ export class Application {
       shareUserDeactivation(this.esAgentContainer, this.knowledgeBaseContainer);
 
       await editionBoot.initialize(configurationManagerConfig, appConfig);
+      setSeatGuard(editionBoot.seatGuard);
 
       this.mailServiceContainer =
         await MailServiceContainer.initialize(appConfig, configurationManagerConfig);

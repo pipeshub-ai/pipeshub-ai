@@ -978,7 +978,7 @@ components:
     LicenseStatus:
       type: object
       additionalProperties: false
-      required: [status, license, upcoming, permissionSync, ignored, upgradeGrace]
+      required: [status, license, upcoming, permissionSync, ignored, upgradeGrace, seatLimit]
       properties:
         status:
           type: string
@@ -1012,6 +1012,24 @@ components:
           properties:
             endsAt: { type: string, format: date-time, nullable: true }
             affected: { type: boolean, nullable: true }
+        seatLimit:
+          type: object
+          nullable: true
+          description: |
+            Null when nothing limits seats: no licence in force, or unlimited seats. Seats are held by every
+            account that is not removed, invited ones included; service accounts hold none. Once the count goes
+            above the seats, admins are warned for 14 days; after that new users are refused (those already here
+            keep working) until the count is back within the licence, which clears `overSince`.
+          additionalProperties: false
+          required: [seats, used, over, overSince, refuseFrom, daysLeft, refusing]
+          properties:
+            seats: { type: integer, description: The seats of the licence in force. }
+            used: { type: integer, description: Accounts holding a seat now. }
+            over: { type: integer, description: How many `used` is above `seats`; 0 when within. }
+            overSince: { type: string, format: date-time, nullable: true, description: When the count first went above the seats; null when within. }
+            refuseFrom: { type: string, format: date-time, nullable: true, description: 'When new users start being refused, 14 days after `overSince`.' }
+            daysLeft: { type: integer, nullable: true, description: 'Whole days left before refusal, rounded up; 0 once refusing, null when within.' }
+            refusing: { type: boolean, description: New users are refused now. }
     AgentHarnessDependencyStatus:
       type: object
       additionalProperties: false
@@ -35793,7 +35811,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The account cannot sign in (a disabled or service account).
+          description: |
+            The account cannot sign in. Possible causes:
+            - A disabled or service account
+            - A first sign-in that would create the account (single sign-on provisioning) when the installation has had
+              more users than its licence covers for 14 days (`Your organization's licence has no free seats. Ask your
+              administrator to remove users or add seats.`); people who already have an account still sign in
           content:
             application/json:
               schema:
@@ -37483,6 +37506,10 @@ paths:
             The caller is not an admin of this organization (`You need admin access to do this...`).
             An OAuth access token without the `user:invite` scope is also refused with `403`
             (`Insufficient scope. Required: user:invite`), before the request is validated.
+
+            The installation has had more users than its licence covers for 14 days, so new users are
+            refused until the count is back within it (`Your licence covers N users. Remove users or add
+            seats to invite more.`). Nothing is created.
           content:
             application/json:
               schema:
@@ -38523,6 +38550,11 @@ paths:
            invitation email.
         4. **Active accounts already logged in** — skipped and counted in `alreadyActive`.
 
+        New and restored accounts each take a licence seat. Once the installation has had more users
+        than its licence covers for 14 days, they are refused, whole and in the order given, beyond
+        the seats left, and listed in `refused` with the reason in `refusedReason`; re-invites still go
+        out. If nothing else was done, the request is refused with `403` and that reason.
+
         Optional `groupIds` adds new/restored users to the specified groups via `$addToSet`.
 
         Addresses are trimmed and lower-cased before they are matched, so an existing account is
@@ -38610,7 +38642,7 @@ paths:
               schema:
                 type: object
                 additionalProperties: false
-                required: [message, queued, invited, reinvited, restored, alreadyActive]
+                required: [message, queued, invited, reinvited, restored, alreadyActive, refused]
                 properties:
                   message:
                     type: string
@@ -38635,6 +38667,13 @@ paths:
                     type: integer
                     minimum: 0
                     description: Addresses skipped because they already belong to an active account
+                  refused:
+                    type: array
+                    items: { type: string }
+                    description: Addresses not added or restored because the licence has no seat left
+                  refusedReason:
+                    type: string
+                    description: Present when `refused` is not empty, such as `Your licence covers 10 users. Remove users or add seats to invite more.`
         '409':
           description: |
             No invitation was sent: every address already belongs to an active account
@@ -38668,6 +38707,9 @@ paths:
           description: |
             A member (not an org admin) asked to invite as `admin` (`Members can only invite users as member`)
             or to assign `groupIds` (`Members cannot assign groups when inviting`).
+
+            Every new or restored address was refused because the licence has no seat left, and nothing
+            else was done (`Your licence covers N users. Remove users or add seats to invite more.`).
 
             An OAuth access token without the `user:invite` scope is also refused with `403`
             (`Insufficient scope. Required: user:invite`), before the request is validated.
@@ -38736,7 +38778,8 @@ paths:
         Invalid email addresses are skipped (not rejected); valid ones follow the same
         new/restored/pending logic as `POST /users/bulk/invite`. When the batch finishes, a
         notification is sent to the uploading admin summarizing the result
-        (invited / re-invited / restored / already-members / invalid / failed-to-email).
+        (invited / re-invited / restored / already-members / invalid / failed-to-email, and how many were
+        not added because the licence has no seat left, with the reason).
 
         Exactly one file, under the form field `file`. The declared part type must be `text/csv`,
         `application/vnd.ms-excel`, the `.xlsx` type or `application/octet-stream`; it is parsed as a

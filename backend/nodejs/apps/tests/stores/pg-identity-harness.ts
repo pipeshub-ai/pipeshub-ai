@@ -137,7 +137,7 @@ export const USER_SPEC: Spec = {
   ...first([
     'getLive', 'getForEdit', 'getEmail', 'getAny', 'getAuthSnapshot', 'getRoleSnapshot', 'getLiveFields', 'getByIdOrEmail', 'getOldestId', 'getLiveByEmail',
     'listLiveByIds', 'listNamesByIds', 'listAllLive', 'listSummariesByIds', 'listWithGroups', 'listByEmails', 'listAdminIds', 'listServiceAccounts',
-    'getServiceAccount', 'serviceAccountIdsAmong', 'countActiveAdmins', 'emailTakenByOther', 'hasRemovedAccount', 'create', 'createMany', 'updateProfile', 'markDeleted',
+    'getServiceAccount', 'serviceAccountIdsAmong', 'countActiveAdmins', 'countLive', 'emailTakenByOther', 'hasRemovedAccount', 'create', 'createMany', 'updateProfile', 'markDeleted',
     'restoreByEmails', 'promoteToAdmin', 'setRole', 'lockOrgAdminChanges', 'withAdminLease', 'deleteRemoved', 'listRemovedIdsByEmail', 'setDisabledByEmailDomain',
     'restoreServiceAccount', 'enableServiceAccount', 'updateServiceAccount',
   ]),

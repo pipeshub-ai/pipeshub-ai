@@ -16,6 +16,7 @@ import {
 import { evaluateLicenses, licenseTime, neverInForce } from './license-state';
 import {
   type LicenseEvaluation,
+  type LicensePayload,
   type LicenseStatus,
   type SignedLicense,
   type VerifiedLicense,
@@ -118,6 +119,15 @@ async function loadLicenses(store: LicenseStore, now: Date): Promise<Loaded> {
 const evaluate = (valid: VerifiedLicense[], now: Date): LicenseEvaluation =>
   // shortcut: no saved clock mark, so a clock set back counts only down to the newest issue date; add one if that matters.
   evaluateLicenses(valid, licenseTime(now, null, valid));
+
+/** The `seats` of the license in force (active, expiring or in grace), or null when none is. */
+export async function seatsInForce(
+  store: LicenseStore,
+  now: Date,
+): Promise<LicensePayload['seats'] | null> {
+  const { valid } = await loadLicenses(store, now);
+  return evaluate(valid, now).effective?.payload.seats ?? null;
+}
 
 /** When the upgrade grace ends, or null for an install known not to need one. */
 export function upgradeGraceEnd(upgrade: UpgradeRecord): Date | null {

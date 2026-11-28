@@ -249,6 +249,8 @@ export interface UserRepository {
   serviceAccountIdsAmong(orgId: string, ids: string[]): Promise<string[]>;
   getServiceAccount(orgId: string, id: string): Promise<UserDto | null>;
   countActiveAdmins(orgId: string, tx?: Tx): Promise<number>;
+  /** Accounts not removed, invited ones too; service accounts only when `withServiceAccounts`. */
+  countLive(orgId: string, withServiceAccounts: boolean): Promise<number>;
 
   // --- address checks
   existsLiveEmail(email: string): Promise<boolean>;

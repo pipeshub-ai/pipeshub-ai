@@ -9,6 +9,7 @@ import { authRefusal } from '../utils/sign-in-audit';
 // already registered, which is the same object the barrel would give.
 import { getUserRepository } from '../../../libs/repositories/user';
 import { getGroupRepository } from '../../../libs/repositories/group';
+import { assertSeatFor, getSeatGuard } from '../../../libs/edition/seat-guard';
 import {
   EntitiesEventProducer,
   EventType,
@@ -57,6 +58,8 @@ export class JitProvisioningService {
       );
     }
 
+    await assertSeatFor('signIn');
+
     const newUser = await getUserRepository().create(orgId, {
       email,
       ...userDetails,
@@ -92,6 +95,7 @@ export class JitProvisioningService {
       await this.eventService.stop();
     }
 
+    await getSeatGuard().afterChange();
     audit('auth.jit_provision', {
       actor: newUser._id,
       org: orgId,

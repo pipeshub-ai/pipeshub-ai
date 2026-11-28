@@ -109,6 +109,7 @@ import {
 import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { isServiceAccountEmail } from '../constants/service-account.constants';
+import { assertSeatFor, getSeatGuard } from '../../../libs/edition/seat-guard';
 import type {
   GraphUserListResponse,
   UserGroupSummary,
@@ -273,6 +274,9 @@ export interface InviteResult {
   mailFailed: string[];
   mailErrorCode?: number;
   limitExceededRestorations?: string[];
+  /** Addresses not added or restored because the licence has no seat left, and why. */
+  refused: string[];
+  refusedReason?: string;
 }
 
 // The store names the violated key; only the email key is a duplicate address.
@@ -960,20 +964,20 @@ export class UserController {
         typeof fields.email === 'string'
           ? fields.email.toLowerCase().trim()
           : '';
-      if (email !== '') {
-        if (await users.existsLiveEmail(email)) {
-          throw userRefusal(
-            new BadRequestError('A user with this email already exists'),
-            'email_taken',
-          );
-        }
-        if (isDemoAccountEmail(email)) {
-          // The cleanup hard-deletes a removed sample account, so a create the
-          // cap will refuse must not get this far. The locked check at the
-          // write stays the one that counts.
-          if (fields.role === 'admin') await assertCanPromoteAdmin(orgId);
-          await clearRemovedSampleAccount(email, orgId);
-        }
+      if (email !== '' && (await users.existsLiveEmail(email))) {
+        throw userRefusal(
+          new BadRequestError('A user with this email already exists'),
+          'email_taken',
+        );
+      }
+      // Before the removed sample account is cleared: a refused or failed check must leave it for a later invite to restore.
+      await assertSeatFor();
+      if (isDemoAccountEmail(email)) {
+        // The cleanup hard-deletes a removed sample account, so a create the
+        // cap will refuse must not get this far. The locked check at the
+        // write stays the one that counts.
+        if (fields.role === 'admin') await assertCanPromoteAdmin(orgId);
+        await clearRemovedSampleAccount(email, orgId);
       }
 
       // Persist the account and its credential before anything that is hard
@@ -1184,6 +1188,7 @@ export class UserController {
       } finally {
         await this.eventService.stop();
       }
+      await getSeatGuard().afterChange();
       auditUserChange(
         'user.create',
         newUser._id,
@@ -1216,6 +1221,7 @@ export class UserController {
         'User account deleted by admin. Please contact your admin to restore your account.',
       );
     }
+    await assertSeatFor('signIn');
 
     const newUser = await getUserRepository().create(orgId, {
       email,
@@ -1253,6 +1259,7 @@ export class UserController {
       await this.eventService.stop();
     }
 
+    await getSeatGuard().afterChange();
     logger.info(`User auto-provisioned successfully via ${provider}`, {
       userId: newUser._id,
     });
@@ -2058,6 +2065,7 @@ export class UserController {
         );
       }
       auditUserChange('user.delete', userId);
+      await getSeatGuard().afterChange();
 
       await this.eventService.start();
       const event: Event = {
@@ -2366,6 +2374,9 @@ export class UserController {
         result.restored === 0 &&
         result.reinvited === 0
       ) {
+        if (result.refusedReason !== undefined) {
+          throw new ForbiddenError(result.refusedReason);
+        }
         throw new ConflictError(
           'All provided emails already have active accounts',
         );
@@ -2386,6 +2397,8 @@ export class UserController {
         reinvited: result.reinvited,
         restored: result.restored,
         alreadyActive: result.alreadyActive,
+        refused: result.refused,
+        refusedReason: result.refusedReason,
       });
     } catch (error) {
       auditUserRefusal('user.invite', error);
@@ -2591,9 +2604,23 @@ export class UserController {
     const foundGroups = hasGroups
       ? await foundGroupIds(groupIds, (id) => groups.get(orgId, id))
       : new Set<string>();
-    const existingUsers = (await users.listByEmails(orgId, emails)).filter(
+    const found = (await users.listByEmails(orgId, emails)).filter(
       (user) => user.kind !== 'service',
     );
+    // Restoring counts as adding. In the order given, those without a live
+    // account get a seat while the licence has room; the rest are refused
+    // whole, before anything is written for them.
+    const live = new Set(
+      found.filter((user) => !user.isDeleted).map((user) => user.email),
+    );
+    const seats = await getSeatGuard().check();
+    const refused = emails
+      .filter((email) => !live.has(email))
+      .slice(seats.room);
+    if (refused.length > 0) {
+      emails = emails.filter((email) => !refused.includes(email));
+    }
+    const existingUsers = found.filter((user) => !refused.includes(user.email));
     const activeUsers = existingUsers.filter((user) => !user.isDeleted);
     const deletedUsers = existingUsers.filter((user) => user.isDeleted);
 
@@ -2733,6 +2760,11 @@ export class UserController {
         auditUserChange('user.role.change', created._id, 'new_admin');
       }
     }
+
+    if (newUsers.length + restoredUsers.length > 0) {
+      await getSeatGuard().afterChange();
+    }
+
     if (inviteRole === 'admin') {
       const restoredMembers = restoredUsers.filter(
         (user) => normalizeUserRole(user.role) !== 'admin',
@@ -2873,6 +2905,8 @@ export class UserController {
       alreadyActive: activeUsers.length - pendingUsersToReinvite.length,
       mailFailed,
       mailErrorCode,
+      refused,
+      refusedReason: refused.length > 0 ? seats.refusal.admin : undefined,
     };
   }
 
@@ -2933,8 +2967,15 @@ export class UserController {
     if (summary.mailFailed.length > 0) {
       parts.push(`${summary.mailFailed.length} failed to email`);
     }
+    if (summary.refused.length > 0) {
+      parts.push(
+        `${summary.refused.length} not added: ${summary.refusedReason ?? ''}`,
+      );
+    }
     const severity =
-      summary.mailFailed.length > 0 || summary.invalid.length > 0
+      summary.mailFailed.length > 0 ||
+      summary.invalid.length > 0 ||
+      summary.refused.length > 0
         ? 'warning'
         : 'success';
     await this.publishInviteNotification(
@@ -2943,7 +2984,11 @@ export class UserController {
       'Bulk invite finished',
       parts.join(', '),
       severity,
-      { invalid: summary.invalid, mailFailed: summary.mailFailed },
+      {
+        invalid: summary.invalid,
+        mailFailed: summary.mailFailed,
+        refused: summary.refused,
+      },
     );
   }
 
