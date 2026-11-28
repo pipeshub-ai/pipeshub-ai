@@ -1046,7 +1046,7 @@ jobs:
 
 
       # A simulator suite reads what was synced and who may read it, not what the model said, so a fake model that
-      # died or stopped answering after set-up leaves every test green. This step makes that run fail.
+      # died, restarted or failed calls after set-up leaves every test green. This step makes that run fail.
       - name: 'Neo4j: Check the fake model stayed up'
         if: ${{ !cancelled() && env.SIM_JOB == '1' && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
         working-directory: deployment/docker-compose
@@ -1060,7 +1060,15 @@ jobs:
             echo "::error::The fake model did not stay up through the tests (status, restarts, health: ${state:-no container}). The suites cannot see this: their model calls failed unseen. See the fakellm log in this leg's docker logs."
             exit 1
           fi
-          echo "Fake model stayed up: $state"
+          # A call the fake could not answer leaves it running and healthy; it logs each one (FAILED in
+          # integration-tests/fake_model/server.py).
+          failed=$(docker logs "$id" 2>&1 | grep -c '^fake-model FAILED' || true)
+          if [ "$failed" != "0" ]; then
+            echo "::error::The fake model failed $failed call(s) during the tests. The suites cannot see this. The first ones:"
+            docker logs "$id" 2>&1 | grep '^fake-model FAILED' | head -20
+            exit 1
+          fi
+          echo "Fake model stayed up and failed no call: $state"
 
       - name: 'Neo4j: Run Playwright e2e tests'
         if: ${{ !cancelled() && steps.neo4j-ready.outcome == 'success' && env.RUN_PLAYWRIGHT == 'true' }}
@@ -1283,7 +1291,7 @@ jobs:
             --junitxml=reports/arango-results.xml 2>&1
 
       # A simulator suite reads what was synced and who may read it, not what the model said, so a fake model that
-      # died or stopped answering after set-up leaves every test green. This step makes that run fail.
+      # died, restarted or failed calls after set-up leaves every test green. This step makes that run fail.
       - name: 'ArangoDB: Check the fake model stayed up'
         if: ${{ !cancelled() && env.SIM_JOB == '1' && steps.arango-ready.outcome == 'success' }}
         working-directory: deployment/docker-compose
@@ -1297,7 +1305,15 @@ jobs:
             echo "::error::The fake model did not stay up through the tests (status, restarts, health: ${state:-no container}). The suites cannot see this: their model calls failed unseen. See the fakellm log in this leg's docker logs."
             exit 1
           fi
-          echo "Fake model stayed up: $state"
+          # A call the fake could not answer leaves it running and healthy; it logs each one (FAILED in
+          # integration-tests/fake_model/server.py).
+          failed=$(docker logs "$id" 2>&1 | grep -c '^fake-model FAILED' || true)
+          if [ "$failed" != "0" ]; then
+            echo "::error::The fake model failed $failed call(s) during the tests. The suites cannot see this. The first ones:"
+            docker logs "$id" 2>&1 | grep '^fake-model FAILED' | head -20
+            exit 1
+          fi
+          echo "Fake model stayed up and failed no call: $state"
 
       - name: 'ArangoDB: Run Playwright e2e tests'
         if: ${{ !cancelled() && steps.arango-ready.outcome == 'success' && matrix.graph_db == 'arango' && env.RUN_PLAYWRIGHT == 'true' }}

@@ -354,7 +354,8 @@ Each listed suite also says which of its cases run when
   to the run's slot. The `setup` job picks the slot once per run
   (`sim_slot` in `scripts/nightly_setup.py`), so re-running a failed job tests
   the same cases. Every case runs once in each Monday-to-Sunday week on each
-  graph database (ArangoDB three nights after Neo4j), and on a different
+  graph database (never both the same night: ArangoDB takes the slot three
+  ahead of Neo4j's), and on a different
   weekday each week, so over seven weeks it meets each weekday's setup, the
   message broker included. `"rotate_legs": ["neo4j"]` keeps a suite's rotation
   to one database.

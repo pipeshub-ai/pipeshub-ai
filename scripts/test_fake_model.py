@@ -14,12 +14,15 @@ import subprocess
 import sys
 import threading
 import unittest
+import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from typing import Any, ClassVar
 
 REPO = Path(__file__).resolve().parent.parent
 SERVER = REPO / "integration-tests" / "fake_model" / "server.py"
+WORKFLOW = REPO / ".github" / "workflows" / "integration-tests.yml"
 APP = REPO / "backend" / "python" / "app" / "modules"
 # Where each answer's prompt lives, by the answer's name in the fake's log.
 PROMPT_FILES = {
@@ -68,6 +71,22 @@ def _load():
     return module
 
 
+def within(value: Any, schema: dict[str, Any]) -> bool:
+    """Whether a number keeps every bound of its schema, numeric or draft 4's boolean exclusive flags."""
+    low, high = schema.get("minimum"), schema.get("maximum")
+    low_open, high_open = schema.get("exclusiveMinimum"), schema.get("exclusiveMaximum")
+    if low_open is True:
+        low, low_open = None, low
+    if high_open is True:
+        high, high_open = None, high
+    return all((
+        low is None or value >= low,
+        high is None or value <= high,
+        low_open in (None, False) or value > low_open,
+        high_open in (None, False) or value < high_open,
+    ))
+
+
 class ImportIsSafe(unittest.TestCase):
     def test_importing_starts_no_server(self) -> None:
         problem = import_problem()
@@ -83,8 +102,15 @@ class FakeModelServer(unittest.TestCase):
         cls.fake = fake = _load()
 
         class Quiet(fake.Handler):
+            failures: ClassVar[list[str]] = []
+
             def _log(self, *_args: object) -> None:
                 """No request lines in the test output."""
+
+            def _log_failure(self, detail: str) -> None:
+                Quiet.failures.append(detail)
+
+        cls.handler = Quiet
 
         cls.server = ThreadingHTTPServer(("127.0.0.1", 0), Quiet)
         cls.base = f"http://127.0.0.1:{cls.server.server_address[1]}"
@@ -106,6 +132,62 @@ class FakeModelServer(unittest.TestCase):
         )
         with urllib.request.urlopen(request, timeout=5) as response:
             return response.status, response.headers.get("Content-Type", ""), response.read()
+
+    def _status(self, path: str, data: bytes, method: str = "POST") -> int:
+        request = urllib.request.Request(self.base + path, data=data, headers={"Content-Type": "application/json"}, method=method)
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status
+        except urllib.error.HTTPError as error:
+            return error.code
+
+    def test_a_call_it_cannot_answer_is_answered_500_and_logged_as_failed(self) -> None:
+        before = len(self.handler.failures)
+        self.assertEqual(self._status("/api/chat", b"[1, 2]"), 500)
+        self.assertEqual(self._status("/api/embed", b"{not json"), 500)
+        self.assertEqual(len(self.handler.failures), before + 2, self.handler.failures)
+        self.assertEqual(self._get("/api/version")[0], 200)
+
+    def test_a_request_http_server_refuses_is_logged_as_failed(self) -> None:
+        before = len(self.handler.failures)
+        self.assertEqual(self._status("/api/chat", b"{}", method="PUT"), 501)
+        self.assertEqual(len(self.handler.failures), before + 1, self.handler.failures)
+
+    def test_a_failed_call_is_one_line_the_workflow_check_counts(self) -> None:
+        line = self.fake.failure_line("POST", "/api/chat", "error=AttributeError")
+        self.assertTrue(line.startswith(self.fake.FAILED + " "), line)
+        self.assertEqual(line.count("\n"), 1, line)
+        self.assertTrue(line.endswith("\n"), line)
+        counted = WORKFLOW.read_text(encoding="utf-8").count(f"grep -c '^{self.fake.FAILED}'")
+        self.assertEqual(counted, 2, "each leg's health check counts the fake's failed calls")
+
+    def test_a_number_keeps_every_bound_and_an_integer_stays_whole(self) -> None:
+        cases = [
+            ({"type": "integer", "maximum": -1}, -1),
+            ({"type": "integer", "exclusiveMaximum": 0}, -1),
+            ({"type": "integer", "minimum": 0, "exclusiveMinimum": 5}, 6),
+            ({"type": "integer", "minimum": 2, "maximum": 5}, 2),
+            ({"type": "integer", "exclusiveMinimum": 3}, 4),
+            ({"type": "integer", "minimum": 0.5}, 1),
+            ({"type": "integer", "minimum": -4, "exclusiveMaximum": 2.5}, -4),
+            ({"type": "integer", "maximum": 5}, 0),
+            ({"type": "integer", "minimum": 0, "exclusiveMinimum": True}, 1),
+            ({"type": "integer", "maximum": 0, "exclusiveMaximum": True}, -1),
+            ({"type": "integer"}, 0),
+            ({"type": "number", "maximum": -2.5}, -2.5),
+            ({"type": "number", "exclusiveMaximum": 0}, -1),
+            ({"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1}, 0.5),
+            ({"type": "number", "exclusiveMinimum": 0, "maximum": 0.5}, 0.25),
+            ({"type": "number", "minimum": 2}, 2),
+            ({"type": "number"}, 0),
+        ]
+        for schema, expected in cases:
+            with self.subTest(schema=schema):
+                value = self.fake.schema_instance(schema, {})
+                self.assertEqual(value, expected)
+                self.assertTrue(within(value, schema), value)
+                if schema["type"] == "integer":
+                    self.assertIs(type(value), int)
 
     def test_discovery_routes_answer(self) -> None:
         status, _, body = self._get("/api/tags")

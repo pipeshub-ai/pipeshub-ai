@@ -12,7 +12,8 @@ and that no other guard sees (shard_balance.py checks the shard lists and core's
   ``SIM_TIER`` (to the tier each event uses) and ``SIM_SLOT`` (from the ``setup`` job) at step level, where no env
   file loaded into GITHUB_ENV can override them;
 - every docker compose line that adds a simulator's compose file also adds the fake model's;
-- each leg checks after its tests that the fake model is still running, healthy and never restarted.
+- each leg checks, after its own tests and on its own stack, that the fake model is still running, healthy and
+  never restarted, and that its log holds no failed call.
 
 A rule whose line it cannot find is a problem too, so a renamed or reshaped step fails the check instead of
 passing it.
@@ -45,6 +46,10 @@ TIER_BY_EVENT = (
 )
 _PYTEST_CALL = re.compile(r"(?:^|[\s!;&|(/])pytest\s")
 HEALTH_CHECK = "ps -a -q fakellm"
+# Each test step and the compose file of its stack, which that leg's health check must read.
+LEG_STACKS = dict(zip(TEST_STEPS, ("docker-compose.integration.neo4j.yml", "docker-compose.integration.arango.yml")))
+FAILURE_MARK = "fake-model FAILED"  # FAILED in integration-tests/fake_model/server.py
+FAILED_CALLS_CHECK = f"grep -c '^{FAILURE_MARK}'"
 
 
 def needs_flag(suite: str, shard: str) -> str:
@@ -139,11 +144,23 @@ def problems(text: str, tiers: dict) -> list[str]:
             elif call.count("--sim-tier") != 1 or call.count("--sim-slot") != 1:
                 found.append(f"'{name}' runs `{call[:60]}...` with a second --sim-tier or --sim-slot, which wins.")
 
-    leg_checks = [step for step in steps if HEALTH_CHECK in str(step.get("run") or "")]
-    if len(leg_checks) != len(TEST_STEPS):
-        found.append(f"expected a fake-model health check after each leg's tests ({len(TEST_STEPS)}), found "
-                     f"{len(leg_checks)}: a model that died mid-run would pass unseen.")
-    for step in leg_checks:
+    names = [step.get("name") for step in steps]
+    leg_checks = [(index, step) for index, step in enumerate(steps) if HEALTH_CHECK in str(step.get("run") or "")]
+    for test_name, stack in LEG_STACKS.items():
+        leg = test_name.split(":", 1)[0]
+        mine = [(index, step) for index, step in leg_checks if stack in str(step.get("run") or "")]
+        if len(mine) != 1:
+            found.append(f"expected a fake-model health check after each leg's tests, on that leg's stack ({stack}); "
+                         f"the {leg} leg has {len(mine)}: a model that died mid-run would pass unseen.")
+            continue
+        index, step = mine[0]
+        if test_name in names and index < names.index(test_name):
+            found.append(f"'{step.get('name')}' runs before '{test_name}', so it cannot see a model that stops during "
+                         f"the tests.")
+        if FAILED_CALLS_CHECK not in str(step.get("run") or ""):
+            found.append(f"'{step.get('name')}' does not fail on the fake model's failed calls (`{FAILED_CALLS_CHECK}` on "
+                         f"its log): a model that stays up but fails calls would pass unseen.")
+    for _, step in leg_checks:
         if "env.SIM_JOB == '1'" not in str(step.get("if", "")):
             found.append(f"'{step.get('name')}' does not run on simulator jobs (`env.SIM_JOB == '1'`).")
 

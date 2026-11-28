@@ -160,5 +160,22 @@ class SimWiring(unittest.TestCase):
             "does not run on simulator jobs",
         )
 
+    def test_a_health_check_moved_before_its_legs_tests(self) -> None:
+        start = TEXT.index("      # A simulator suite reads what was synced")
+        end = TEXT.index("      - name: 'Neo4j: Run Playwright e2e tests'")
+        rest = TEXT[:start] + TEXT[end:]
+        anchor = "      - name: 'Neo4j: Run integration tests'"
+        moved = rest.replace(anchor, TEXT[start:end] + anchor, 1)
+        self.assertCaught(moved, "runs before 'Neo4j: Run integration tests'")
+
+    def test_both_health_checks_reading_one_legs_stack(self) -> None:
+        old = "id=$(docker compose -f docker-compose.integration.arango.yml $FAKE_MODEL_COMPOSE ps -a -q fakellm)"
+        self.assertCaught(mutate(old, old.replace("arango", "neo4j")), "the ArangoDB leg has 0")
+
+    def test_a_health_check_that_ignores_the_models_failed_calls(self) -> None:
+        old = "grep -c '^fake-model FAILED'"
+        self.assertCaught(mutate(old, "grep -c '^fake-model OK'", last=True), "does not fail on the fake model's failed calls")
+
+
 if __name__ == "__main__":
     unittest.main()

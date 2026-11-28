@@ -9,7 +9,7 @@ pytest.ini) gives each suite two tiers, and this plugin deselects at collection 
   of a failed nightly tests the same cases (``sim_slot`` in scripts/nightly_setup.py: every case runs once in each
   Monday-to-Sunday week, on a different weekday each week, so over seven weeks it meets every weekday's setup, the
   message broker included). Each leg a suite rotates on (``rotate_legs``, both graph databases unless it says
-  otherwise) takes its own slot, ArangoDB's three days after Neo4j's.
+  otherwise) takes its own slot, ArangoDB's three ahead of Neo4j's, so the two never run a case the same night.
 
 The workflow passes ``--sim-tier pr|nightly|all`` and ``--sim-slot``; without them every case runs, so a local run
 or another shard is unchanged. Cases of suites the file does not name are never touched.
@@ -41,7 +41,8 @@ NIGHTLY_TIERS = ("all", "rotate")
 LEGS = ("neo4j", "arango")
 DEFAULT_LEG = "neo4j"
 SLOTS = 7
-# ArangoDB's slice runs three nights after Neo4j's, so a case is not on both legs the same night.
+# ArangoDB keeps the slot three ahead of Neo4j's. The slot rises by one each night within a Monday-to-Sunday week, so
+# ArangoDB runs a case three weekdays before Neo4j does, counted around the week, and never the same night.
 LEG_OFFSET = {"neo4j": 0, "arango": 3}
 
 

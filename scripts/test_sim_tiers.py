@@ -12,11 +12,13 @@ import importlib.util
 import re
 import sys
 import unittest
+from datetime import date, timedelta
 from pathlib import Path
 from typing import ClassVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import nightly_setup
 import sim_shard_env
 
 REPO = Path(__file__).resolve().parent.parent
@@ -147,6 +149,21 @@ class Select(unittest.TestCase):
             self.assertNotEqual(neo4j[case_id], arango[case_id], case_id)
         per_slot = [sum(1 for slots in neo4j.values() if slots == [slot]) for slot in range(7)]
         self.assertLess(max(per_slot), 2 * min(per_slot), per_slot)
+
+    def test_on_real_nights_a_case_runs_once_a_week_on_each_leg_never_both_the_same_night(self) -> None:
+        # nightly_setup.sim_slot gives each night its slot. ArangoDB keeps the slot three ahead of Neo4j's, so within a
+        # Monday-to-Sunday week it runs a case three weekdays before Neo4j does, counted around the week.
+        for start in (date(2026, 11, 30), date(2026, 12, 28), date(2027, 3, 3)):
+            monday = start - timedelta(days=start.weekday())
+            slots = [nightly_setup.sim_slot(monday + timedelta(days=night)) for night in range(7)]
+            for case_id in self.case_ids:
+                nights = {
+                    leg: [night for night, slot in enumerate(slots)
+                          if self.keep({"rot_sim"}, case_id=case_id, tier="nightly", slot=slot, leg=leg)]
+                    for leg in ("neo4j", "arango")
+                }
+                self.assertEqual([len(nights["neo4j"]), len(nights["arango"])], [1, 1], (monday, case_id, nights))
+                self.assertEqual((nights["neo4j"][0] - nights["arango"][0]) % 7, 3, (monday, case_id, nights))
 
     def test_a_suite_can_rotate_on_one_leg_only(self) -> None:
         arango = self.slots_kept("neo_sim", "arango", range(7))

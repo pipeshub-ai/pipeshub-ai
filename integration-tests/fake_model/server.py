@@ -17,6 +17,9 @@ AI-model health check make, quickly and the same way every time.
   ``DIMENSIONS`` numbers derived from a hash of the text, so equal texts get equal vectors.
 * ``POST /v1/chat/completions``: the same answers in the OpenAI shape; a JSON schema can come in
   ``response_format.json_schema.schema`` or in ``format``.
+* A call it cannot answer (an error in a route, or a request http.server refuses) is answered 500 and logged as
+  one ``fake-model FAILED`` line. The suites cannot see a failed model call, so the workflow fails the leg when
+  the fake's log holds one (``Check the fake model stayed up`` in .github/workflows/integration-tests.yml).
 
 Each chat, generate and embedding call is logged as one line (method, path, model, which answer or how
 many texts), so a stack's logs show what the model was asked. Run: ``python3 -I server.py [--host 0.0.0.0] [--port 11434]``. Importing this module
@@ -29,9 +32,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import random
 import re
 import sys
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -39,6 +44,7 @@ DIMENSIONS = 64
 MAX_SCHEMA_DEPTH = 12
 MODELS = ("qwen2.5:0.5b", "nomic-embed-text", "nomic-embed-text:latest")
 PLAIN_ANSWER = "OK. This is a test reply."
+FAILED = "fake-model FAILED"
 # A valid DocumentClassification (backend/python/app/modules/transformers/document_extraction.py).
 CLASSIFICATION_ANSWER = {
     "departments": [],
@@ -119,6 +125,48 @@ def embedding(text: str) -> list[float]:
     return [x / norm for x in vector]
 
 
+def failure_line(command: Any, path: Any, detail: str) -> str:
+    """The log line for a call the fake did not answer; the workflow counts these after each leg's tests."""
+    return f"{FAILED} {command} {path} {detail}\n"
+
+
+def _bound(value: Any) -> int | float | None:
+    """A numeric bound; None when missing, and for draft 4's boolean ``exclusiveMinimum``/``exclusiveMaximum``."""
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def number_instance(schema: dict[str, Any], integer: bool) -> int | float:
+    """The lowest value a number schema allows (a whole one for an integer schema), or 0 when it has no lower
+    bound and allows 0. Exclusive bounds count, numeric or draft 4's boolean flags."""
+    low, low_open = _bound(schema.get("minimum")), False
+    exclusive = schema.get("exclusiveMinimum")
+    if exclusive is True:
+        low_open = low is not None
+    elif _bound(exclusive) is not None and (low is None or exclusive >= low):
+        low, low_open = exclusive, True
+    high, high_open = _bound(schema.get("maximum")), False
+    exclusive = schema.get("exclusiveMaximum")
+    if exclusive is True:
+        high_open = high is not None
+    elif _bound(exclusive) is not None and (high is None or exclusive <= high):
+        high, high_open = exclusive, True
+    if integer:
+        if low is not None:
+            return math.floor(low) + 1 if low_open else math.ceil(low)
+        if high is not None:
+            return min(0, math.ceil(high) - 1 if high_open else math.floor(high))
+        return 0
+    if low is not None:
+        if not low_open:
+            return low
+        if high is None or low + 1 < high or (low + 1 == high and not high_open):
+            return low + 1
+        return (low + high) / 2
+    if high is not None and (high < 0 or (high == 0 and high_open)):
+        return high - 1 if high_open else high
+    return 0
+
+
 def _resolve(ref: str, defs: dict[str, Any]) -> dict[str, Any]:
     return defs.get(ref.rsplit("/", 1)[-1], {})
 
@@ -157,8 +205,7 @@ def schema_instance(schema: Any, defs: dict[str, Any], depth: int = 0) -> Any:
     if kind == "string":
         return "text".ljust(schema.get("minLength", 0), "x")[: schema.get("maxLength", 10**6)]
     if kind in ("integer", "number"):
-        low = schema.get("minimum", schema.get("exclusiveMinimum", 0))
-        return low + (1 if "exclusiveMinimum" in schema else 0)
+        return number_instance(schema, kind == "integer")
     if kind == "boolean":
         return False
     if kind == "array":
@@ -236,6 +283,26 @@ class Handler(BaseHTTPRequestHandler):
     def _log_embed(self, model: Any, count: int) -> None:
         sys.stderr.write(f"fake-model {self.command} {self.path} model={model} texts={count}\n")
 
+    def _log_failure(self, detail: str) -> None:
+        sys.stderr.write(failure_line(getattr(self, "command", None), getattr(self, "path", None), detail))
+
+    def log_error(self, format: str, *args: Any) -> None:
+        """http.server's own refusals (a bad request line, an unsupported method) are failed calls too."""
+        self._log_failure(format % args)
+
+    def _answer_or_fail(self, route: Callable[[], None]) -> None:
+        """Runs one route. An error is a failed call: logged, and answered 500 rather than left as the dropped
+        connection http.server would leave, which a client can read as an empty answer or retry unseen."""
+        try:
+            route()
+        except Exception as error:  # noqa: BLE001 - any error in a route is a failed call, reported like the rest
+            self._log_failure(f"error={type(error).__name__}")
+            self.close_connection = True
+            try:
+                self._send({"error": type(error).__name__}, code=500)
+            except OSError:
+                pass
+
     def _send(self, body: Any, code: int = 200, content_type: str = "application/json") -> None:
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
         self.send_response(code)
@@ -245,9 +312,15 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_HEAD(self) -> None:
-        self._send(b"")
+        self._answer_or_fail(lambda: self._send(b""))
 
     def do_GET(self) -> None:
+        self._answer_or_fail(self._get)
+
+    def do_POST(self) -> None:
+        self._answer_or_fail(self._post)
+
+    def _get(self) -> None:
         if self.path.startswith("/api/tags"):
             self._send({"models": [{"name": name, "model": name} for name in MODELS]})
         elif self.path.startswith("/api/version"):
@@ -255,7 +328,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(b"Ollama is running", content_type="text/plain")
 
-    def do_POST(self) -> None:
+    def _post(self) -> None:
         length = int(self.headers.get("Content-Length") or 0)
         request = json.loads(self.rfile.read(length) or b"{}")
         path = self.path
