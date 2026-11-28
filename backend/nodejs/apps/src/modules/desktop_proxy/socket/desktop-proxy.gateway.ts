@@ -11,6 +11,11 @@ import {
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import { Logger } from '../../../libs/services/logger.service';
+import {
+  HANDSHAKE_REFUSAL,
+  authRefusal,
+  sessionCheckUnavailable,
+} from '../../../libs/utils/socket-handshake-refusal';
 import { findSessionRefusal, findSessionRefusals } from '../../../config';
 import { LocalFsRelay } from './local-fs-relay';
 import { classifyError } from '../../../libs/utils/error-class';
@@ -221,15 +226,19 @@ export class DesktopProxySocketGateway {
 
   /**
    * Resolves to the error refusing the handshake, or undefined to accept it.
-   * Refusals that mean "sign in again" carry an auth-looking message: the
-   * desktop client stops on those and retries the rest after a delay.
+   * Its `data` says whether retrying can help (`retryable`). Refusals that mean
+   * "sign in again" also keep an auth-looking message, which clients that do
+   * not read `data` stop on; they retry the rest after a delay.
    */
   private async authenticateHandshake(
     socket: RestProxySocket,
   ): Promise<Error | undefined> {
     const extractedToken = this.extractToken(this.getHandshakeToken(socket));
     if (!extractedToken) {
-      return new BadRequestError('Authentication token missing');
+      return authRefusal(
+        new BadRequestError('Authentication token missing'),
+        HANDSHAKE_REFUSAL.TOKEN_MISSING,
+      );
     }
 
     let decoded: Awaited<ReturnType<AuthTokenService['verifyToken']>>;
@@ -241,7 +250,10 @@ export class DesktopProxySocketGateway {
         error_class: classifyError(error),
         error,
       });
-      return new BadRequestError('Authentication token expired');
+      return authRefusal(
+        new BadRequestError('Authentication token expired'),
+        HANDSHAKE_REFUSAL.TOKEN_INVALID,
+      );
     }
 
     const userId = String(decoded.userId ?? '');
@@ -249,7 +261,10 @@ export class DesktopProxySocketGateway {
     if (!userId || !orgId) {
       // Otherwise the socket connects but can never be addressed,
       // which reads as "desktop offline" forever.
-      return new BadRequestError('Token is missing userId or orgId');
+      return authRefusal(
+        new BadRequestError('Token is missing userId or orgId'),
+        HANDSHAKE_REFUSAL.TOKEN_INVALID,
+      );
     }
 
     // The same rules as every HTTP request: a signature that still verifies
@@ -265,10 +280,13 @@ export class DesktopProxySocketGateway {
         org_id: orgId,
         target_user_id: userId,
       });
-      return new Error('Unable to check the session right now');
+      return sessionCheckUnavailable();
     }
     if (refusal) {
-      return new UnauthorizedError(`Authentication refused: ${refusal}`);
+      return authRefusal(
+        new UnauthorizedError(`Authentication refused: ${refusal}`),
+        HANDSHAKE_REFUSAL.SESSION_REFUSED,
+      );
     }
 
     socket.data.userId = userId;

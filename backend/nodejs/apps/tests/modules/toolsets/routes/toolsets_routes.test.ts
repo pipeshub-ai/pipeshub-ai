@@ -71,7 +71,7 @@ describe('toolsets/routes/toolsets_routes', () => {
   describe('POST /instances', () => {
     async function validated(body: Record<string, unknown>) {
       const route = findRoute(createToolsetsRouter(makeContainer().container), '/instances', 'post')
-      // [authenticate, requireScopes, validate, controller]: the body the controller gets is the validator's.
+      // [authenticate, session guard, requireScopes, validate, controller]: the body the controller gets is the validator's.
       const validate = route!.handlers[route!.handlers.length - 2].handle
       const req: any = { body, query: {}, params: {}, headers: {} }
       const next = sinon.spy()

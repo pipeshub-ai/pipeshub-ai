@@ -3,6 +3,7 @@ import { Container } from 'inversify';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
+import { requireSessionAuth } from '../../../libs/middlewares/require-session-auth.middleware';
 import { createOAuthClientRateLimiter } from '../../../libs/middlewares/rate-limit.middleware';
 import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -61,8 +62,11 @@ export function createServiceAccountsRouter(container: Container): Router {
     (req, res, next) => controller.list(req, res, next),
   );
 
+  // Creating or changing an account takes an interactive session, as minting its
+  // tokens does. Listing, reading and removing stay open to tokens.
   router.post(
     '/',
+    requireSessionAuth,
     requireScopes(OAuthScopeNames.USER_INVITE),
     userAdminCheck,
     ValidationMiddleware.validate(createServiceAccountSchema),
@@ -79,6 +83,7 @@ export function createServiceAccountsRouter(container: Container): Router {
 
   router.patch(
     '/:id',
+    requireSessionAuth,
     requireScopes(OAuthScopeNames.USER_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(updateServiceAccountSchema),

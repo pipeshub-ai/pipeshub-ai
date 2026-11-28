@@ -1351,6 +1351,40 @@ class TestRefreshAccessToken:
         assert not isinstance(exc_info.value, RefreshTokenInvalidError)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("status, permanent", [(401, True), (400, False), (500, False)])
+    async def test_refresh_zoom_invalid_request_is_permanent_only_as_a_401(self, mock_config_service, status, permanent) -> None:
+        """Zoom refuses a replaced, revoked or removed-app refresh token with 401 and invalid_request."""
+        config = _make_oauth_config(token_url="https://zoom.us/oauth/token")
+        provider = OAuthProvider(config, mock_config_service, "/path")
+        provider._make_token_request = AsyncMock(
+            side_effect=OAuthTokenRequestError(
+                f'OAuth token request failed with status {status}. Response: {{"reason":"Invalid Token!","error":"invalid_request"}}',
+                status=status,
+                error_code="invalid_request",
+            )
+        )
+
+        with pytest.raises(Exception) as exc_info:
+            await provider.refresh_access_token("replaced-refresh")
+        assert isinstance(exc_info.value, RefreshTokenInvalidError) is permanent
+
+    @pytest.mark.asyncio
+    async def test_refresh_invalid_request_on_another_provider_is_not_permanent(self, mock_config_service) -> None:
+        config = _make_oauth_config(token_url="https://login.example.com/oauth/token")
+        provider = OAuthProvider(config, mock_config_service, "/path")
+        provider._make_token_request = AsyncMock(
+            side_effect=OAuthTokenRequestError(
+                'OAuth token request failed with status 401. Response: {"error":"invalid_request"}',
+                status=401,
+                error_code="invalid_request",
+            )
+        )
+
+        with pytest.raises(Exception) as exc_info:
+            await provider.refresh_access_token("refresh")
+        assert not isinstance(exc_info.value, RefreshTokenInvalidError)
+
+    @pytest.mark.asyncio
     async def test_refresh_non_403_error_reraises(self, mock_config_service):
         """Non-403 errors are re-raised without modification."""
         config = _make_oauth_config()

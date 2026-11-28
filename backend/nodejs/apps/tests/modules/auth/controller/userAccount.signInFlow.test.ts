@@ -906,7 +906,7 @@ describe('UserAccountController sign-in flow', () => {
       expect(res.body).to.be.undefined;
     });
 
-    it('still refreshes when the sign-out lookup fails, and logs the failure', async () => {
+    it('refuses to refresh when the sign-out lookup fails: a server error, no token, no user lookup', async () => {
       stubLatestInvalidation(async () => {
         throw new Error('mongo timeout');
       });
@@ -917,9 +917,11 @@ describe('UserAccountController sign-in flow', () => {
 
       await controller.getAccessTokenFromRefreshToken(refreshReq(), fakeResponse(res), next);
 
-      expect(next.called).to.be.false;
-      expect(res.body?.accessToken).to.be.a('string');
-      expect(logger.error.calledWithMatch('Failed to fetch session-invalidating activity on refresh')).to.be.true;
+      expect(next.firstCall.args[0]).to.be.instanceOf(Error);
+      expect(next.firstCall.args[0].message).to.equal('mongo timeout');
+      expect(next.firstCall.args[0]).to.not.be.instanceOf(UnauthorizedError);
+      expect(res.body).to.be.undefined;
+      expect(iamService.getUserById.called).to.be.false;
     });
 
     it('refuses a refresh token issued before the account was deleted, without a lookup', async () => {

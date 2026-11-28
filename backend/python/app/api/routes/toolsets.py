@@ -31,7 +31,11 @@ from app.agents.actions.github import repository_picker
 from app.agents.mcp.tool_kind import toolset_tool_kind
 from app.agents.registry.toolset_registry import ToolsetRegistry
 from app.agents.capability_sync import sync_capabilities
-from app.api.middlewares.auth import require_scopes
+from app.api.middlewares.auth import (
+    require_interactive_session,
+    require_interactive_session_except,
+    require_scopes,
+)
 from app.api.middlewares.caller_role import CallerRoleStatus, fetch_caller_role
 from app.api.middlewares.request_log import (
     add_request_log_fields,
@@ -107,6 +111,19 @@ router = APIRouter(
     prefix="/api/v1/toolsets", tags=["toolsets"],
     dependencies=[Depends(path_log_fields(instance_id="toolset_id", agent_key="agent_id"))],
 )
+
+# What a token may send when it creates or renames a toolset instance. Everything else the
+# handlers read (``authConfig``, ``baseUrl``, ``oauthConfigId``, ``oauthInstanceName``, top-level
+# ``clientId``/``clientSecret``, and any key added later) holds a credential, creates or links an
+# OAuth app, or names the host credentials are sent to, so it takes an interactive session.
+# Allowed keys, and why each is safe:
+#   instanceName: a label.
+#   toolsetType, authType: which toolset and which sign-in form; credentials are elsewhere.
+#   scope: whose instance it is (the handler checks the caller may use it).
+_TOOLSET_INSTANCE_CREATE_ALLOWED: dict[str, Any] = {
+    "instanceName": True, "toolsetType": True, "authType": True, "scope": True,
+}
+_TOOLSET_INSTANCE_UPDATE_ALLOWED: dict[str, Any] = {"instanceName": True}
 
 # Constants
 MAX_AGENT_NAMES_DISPLAY = 3
@@ -1366,7 +1383,7 @@ async def _create_personal_instance(
     }
 
 
-@router.post("/instances", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@router.post("/instances", dependencies=[Depends(require_interactive_session_except(_TOOLSET_INSTANCE_CREATE_ALLOWED)), Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 @inject
 async def create_toolset_instance(
     request: Request,
@@ -1783,7 +1800,7 @@ async def _update_personal_instance(
     }
 
 
-@router.put("/instances/{instance_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@router.put("/instances/{instance_id}", dependencies=[Depends(require_interactive_session_except(_TOOLSET_INSTANCE_UPDATE_ALLOWED)), Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 @inject
 async def update_toolset_instance(
     instance_id: str,
@@ -2971,7 +2988,7 @@ async def list_toolset_oauth_configs(
     return {"status": "success", "oauthConfigs": org_configs, "total": len(org_configs)}
 
 
-@router.put("/oauth-configs/{toolset_type}/{oauth_config_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@router.put("/oauth-configs/{toolset_type}/{oauth_config_id}", dependencies=[Depends(require_interactive_session), Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 @inject
 async def update_toolset_oauth_config(
     toolset_type: str,
@@ -3042,7 +3059,7 @@ async def update_toolset_oauth_config(
     return {"status": "success", "oauthConfigId": new_oauth_id, "message": msg, "deauthenticatedUserCount": total_deauthed}
 
 
-@router.delete("/oauth-configs/{toolset_type}/{oauth_config_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE))])
+@router.delete("/oauth-configs/{toolset_type}/{oauth_config_id}", dependencies=[Depends(require_interactive_session), Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE))])
 @inject
 async def delete_toolset_oauth_config(
     toolset_type: str,

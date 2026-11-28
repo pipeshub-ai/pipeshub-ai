@@ -33,10 +33,12 @@ one deliberate difference (what is shared through an agent) above.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 from typing import TYPE_CHECKING, Any
 
+from app.agent_loop_lib.core.exceptions import RegistryError
 from app.agent_loop_lib.modules.providers.skills.base import SkillSource
 from app.agent_loop_lib.modules.providers.skills.evaluator import RubricSkillEvaluator
 from app.agent_loop_lib.modules.providers.skills.extractor import LLMSkillExtractor
@@ -45,6 +47,7 @@ from app.agent_loop_lib.modules.providers.skills.governor import (
     ManualReviewGovernor,
     SkillGovernor,
 )
+from app.agent_loop_lib.modules.providers.skills.loader import iter_skill_dirs
 from app.agent_loop_lib.modules.providers.skills.manager import (
     SkillManager,
     SkillManagerConfig,
@@ -264,6 +267,17 @@ async def sync_builtin_skills(
         await manager.refresh()
 
 
+@functools.cache
+def _reserved_skill_names() -> frozenset[str]:
+    """Names of the builtin packs: only the seeder may create a skill under one. Read from the pack
+    directories, not the loaded packs, so a pack that fails to load or validate still keeps its name. With no pack
+    directory at all the names are unknown, so creating a skill is refused (an error is not cached, so a later call
+    reads the directory again)."""
+    if not os.path.isdir(_BUILTIN_PACKS_ROOT):
+        raise RegistryError("The built-in skill packs are unavailable, so no skill can be created yet")
+    return frozenset(os.path.basename(path) for path, _category, _sub in iter_skill_dirs(_BUILTIN_PACKS_ROOT))
+
+
 async def _build_manager(
     graph_provider: "IGraphDBProvider",
     org_id: str,
@@ -275,9 +289,11 @@ async def _build_manager(
     visibility: SkillVisibility,
     rights: SharedSkillRights | None = None,
     provenance: Callable[[], SkillProvenance] | None = None,
+    is_admin: bool = False,
 ) -> SkillManager:
     store = GraphSkillStore(
         graph_provider, org_id, user_id, visibility=visibility, rights=rights, provenance=provenance,
+        is_admin=is_admin, reserved_names=_reserved_skill_names,
     )
     index = SemanticSkillIndex(retrieval_service)
     tracker = GraphUsageTracker(graph_provider, org_id, user_id)
@@ -337,13 +353,18 @@ async def build_management_skill_manager(
     *,
     visibility: SkillVisibility | None = None,
     rights: SharedSkillRights | None = None,
+    is_admin: bool = False,
 ) -> SkillManager:
     """Management profile for the REST API: creator-scoped reads (see
     `SkillVisibility`; the routes widen them to the caller's team and org
     commands), no learning-loop extractor, no
     builtin-pack seeding side effect. Never returns `None` — routes call
     this only once `graph_provider` is already known to exist (same
-    `get_services()` guard every other agent route uses)."""
+    `get_services()` guard every other agent route uses).
+
+    `is_admin` is passed only by a route that has checked the caller's live
+    organization role. An admin's manager sees every skill in the org, so it
+    can change the availability of, or delete, one a member created."""
     config = skills_manager_config()
     return await _build_manager(
         graph_provider, org_id, user_id, config,
@@ -351,4 +372,5 @@ async def build_management_skill_manager(
         extractor_transport=None,
         visibility=visibility or SkillVisibility.of([user_id]),
         rights=rights,
+        is_admin=is_admin,
     )

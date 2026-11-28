@@ -1,4 +1,5 @@
 import { BadRequestError } from '../libs/errors/http.errors';
+import { DROPPED_KEYS } from '../libs/utils/dropped-keys';
 
 /**
  * XSS (Cross-Site Scripting) sanitization utilities
@@ -332,7 +333,10 @@ export function sanitizeForResponse(value: any): any {
   if (typeof value === 'object') {
     const sanitized: Record<string, any> = {};
     for (const key in value) {
-      if (Object.prototype.hasOwnProperty.call(value, key)) {
+      if (
+        Object.prototype.hasOwnProperty.call(value, key) &&
+        !DROPPED_KEYS.has(key)
+      ) {
         sanitized[key] = sanitizeForResponse(value[key]);
       }
     }

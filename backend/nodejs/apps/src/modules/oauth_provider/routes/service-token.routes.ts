@@ -8,6 +8,7 @@ import { ServiceTokenController } from '../controller/service-token.controller';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
+import { requireSessionAuth } from '../../../libs/middlewares/require-session-auth.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import {
   createServiceTokenSchema,
@@ -51,8 +52,11 @@ export function createServiceTokenRouter(container: Container): Router {
     (req, res, next) => controller.listTokens(req, res, next),
   );
 
+  // Minting takes an interactive session: a token that could mint a service token
+  // would outlive its own revocation. Listing and revoking stay open to tokens.
   router.post(
     '/',
+    requireSessionAuth,
     requireScopes(OAuthScopeNames.USER_INVITE),
     ValidationMiddleware.validate(createServiceTokenSchema),
     (req, res, next) => controller.createToken(req, res, next),

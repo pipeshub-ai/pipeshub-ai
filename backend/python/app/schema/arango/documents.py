@@ -1951,6 +1951,9 @@ agent_skills_schema = {
             "changeNote": {"type": ["string", "null"]},
             "createdBy": {"type": ["string", "null"]},
             "updatedBy": {"type": ["string", "null"]},
+            # Random id drawn when the skill is created; its revisions carry it, so a
+            # name created again never inherits the previous skill's history.
+            "generation": {"type": "string"},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
             # Usage tracking (GraphUsageTracker / MUSE-Autoskill pattern) —
@@ -2006,6 +2009,13 @@ agent_skill_versions_schema = {
             "resources": {"type": "object"},
             "summary": {"type": "string", "default": ""},
             "updatedBy": {"type": ["string", "null"]},
+            "generation": {"type": "string"},  # the generation of the skill this revises
+            # The revised skill's author and scope as archived, so an erased author's revisions are found after a delete.
+            "createdBy": {"type": ["string", "null"]},
+            "scope": {"type": "string"},
+            # The archived state's own updatedAtTimestamp: a version superseded in more than one state (a resource
+            # write keeps the version) has a row per state, and readers take the latest.
+            "stateUpdatedAtTimestamp": {"type": "number"},
             "createdAtTimestamp": {"type": "number"},
         },
         "required": ["orgId", "skillKey", "name", "version", "content", "createdAtTimestamp"],
@@ -2014,6 +2024,14 @@ agent_skill_versions_schema = {
     "level": "strict",
     "message": "Document does not match the agent skill versions schema.",
 }
+
+# Raised by one with every change to ``agent_skills_schema`` or ``agent_skill_versions_schema``; applied as
+# ``RECORD_SCHEMA_GENERATION`` is, so an older start that put its schema back is repaired by a newer process's poll.
+AGENT_SKILLS_SCHEMA_GENERATION = 1
+agent_skills_schema["rule"]["$comment"] = f"pipeshub-agent-skills-schema gen={AGENT_SKILLS_SCHEMA_GENERATION}"
+agent_skill_versions_schema["rule"]["$comment"] = (
+    f"pipeshub-agent-skill-versions-schema gen={AGENT_SKILLS_SCHEMA_GENERATION}"
+)
 
 # Agent Skill Candidates Node Schema — learning-loop candidates pending
 # governance review (`SkillCandidateStore`, `manager.py`). Rows are deleted

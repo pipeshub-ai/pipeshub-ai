@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.core.exceptions import RegistryError
 from app.agent_loop_lib.modules.providers.skills.base import (
@@ -26,6 +27,9 @@ from app.agent_loop_lib.modules.providers.skills.validator import (
     SkillFormatError,
     SkillValidator,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 """Filesystem `SkillStore` — multi-root with exactly one writable primary
 (mirrors Hermes's `external_dirs` pattern):
@@ -271,7 +275,7 @@ class FilesystemSkillStore(SkillStore):
         self._persist(skill_dir, skill.model_copy(update={"body": new_body}))
         return True
 
-    async def delete_skill(self, name: str) -> bool:
+    async def delete_skill(self, name: str, *, expected: Mapping[str, Any] | None = None) -> bool:
         skill_dir = self._locations.get(name)
         if skill_dir is None or not self._is_writable(skill_dir):
             return False

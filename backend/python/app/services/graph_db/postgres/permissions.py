@@ -27,7 +27,11 @@ from app.services.graph_db.postgres.base import _VALIDATOR, PgBase, _arango, _do
 from app.services.graph_db.postgres.identity import _AGENT_CAN, _soft
 from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import read as kg_read
-from app.services.graph_db.postgres.kh_listing import UNDECIDED_MAX, class_sets
+from app.services.graph_db.postgres.kh_listing import (
+    UNDECIDED_MAX,
+    KhGrants,
+    class_sets,
+)
 from app.services.graph_db.taxonomy import own_record_labels
 from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -455,7 +459,7 @@ class PermissionsMixin(PgBase):
         return [r["id"] for r in rows]
 
     async def get_gated_apps(self, user_key: str, org_id: str, transaction: str | None = None) -> list[dict]:
-        return await self.get_user_apps(user_key, transaction) if org_id == current_org_id() else []
+        return await self.get_user_apps(user_key, transaction=transaction) if org_id == current_org_id() else []
 
     async def get_knowledge_hub_access_context_v2(self, user_key: str, org_id: str, *, transaction: str | None = None) -> dict[str, list[str]]:
         """Who the user is and the apps they pass the gate for: the gate part of ``get_knowledge_hub_access_v3``, without reading the grants."""
@@ -920,7 +924,7 @@ async def _kg_admitted(tx: Tx, org: str, apps: list[str], access: dict[str, Any]
     connector, and one with more undecided rows or classes than a listing evaluates, is left to the walk (the second value)."""
     if not kg_read.enabled() or current_or_system().kind == "system":
         return {}, apps
-    held = {g for ids in access["by_connector"].values() for g in ids}
+    held = KhGrants(held=frozenset(g for ids in access["by_connector"].values() for g in ids))
     out: dict[str, tuple[set[str], set[str]]] = {}
     rest: list[str] = []
     for a in apps:

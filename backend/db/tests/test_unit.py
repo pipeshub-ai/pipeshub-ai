@@ -525,7 +525,7 @@ def test_pooler_is_refused(monkeypatch):
 
 def test_schema_requirements_from_the_tree():
     from db import schema_requirements
-    assert schema_requirements.requirements(["kernel"]) == {"kernel": {"requires": 23, "code": 23}}
+    assert schema_requirements.requirements(["kernel"]) == {"kernel": {"requires": 24, "code": 24}}
     with pytest.raises(SystemExit):
         schema_requirements.requirements(["nope"])
 
@@ -908,3 +908,4 @@ def test_lint_reads_backslash_escapes_in_an_e_string(tmp_path, sql, flagged):
     py = tmp_path / "0003_x.py"
     py.write_text('revision = "graph_0003"\n\n\ndef upgrade():\n    op.execute(' + repr(sql) + ')\n')
     assert any("may DROP INDEX" in m for m in lint.lint_revision(py, {"graph": 2})) is flagged, sql
+

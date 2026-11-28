@@ -10,8 +10,12 @@ import { Theme } from '@radix-ui/themes';
 
 import en from '@/lib/i18n/locales/en-US.json';
 
+// An admin sees their own pages in Personal settings and the org's in Workspace settings.
+const WORKSPACE_PATH = '/workspace/general';
+const PERSONAL_PATH = '/workspace/profile';
+let currentPath = WORKSPACE_PATH;
 vi.mock('next/navigation', () => ({
-  usePathname: () => '/workspace/general',
+  usePathname: () => currentPath,
 }));
 
 let userState = { profile: { isAdmin: false } as { isAdmin: boolean } | null };
@@ -59,7 +63,11 @@ afterEach(() => {
   probe.mockClear();
 });
 
-const renderSidebar = () => render(<Theme><WorkspaceSidebar /></Theme>);
+const renderSidebar = (path = WORKSPACE_PATH) => {
+  cleanup();
+  currentPath = path;
+  return render(<Theme><WorkspaceSidebar /></Theme>);
+};
 const href = (label: string) => screen.getByText(label).closest('a')?.getAttribute('href');
 
 describe('WorkspaceSidebar — U4 screens', () => {
@@ -67,14 +75,15 @@ describe('WorkspaceSidebar — U4 screens', () => {
     gates = { scheduledRuns: false, harness: false, resume: false };
     for (const isAdmin of [false, true]) {
       userState = { profile: { isAdmin } };
-      renderSidebar();
-      for (const label of [
-        NAV.schedules, NAV.memories,
-        NAV.aiAccounts, NAV.aiSettings,
-      ]) {
-        expect(screen.queryByText(label)).toBeNull();
+      for (const path of [WORKSPACE_PATH, PERSONAL_PATH]) {
+        renderSidebar(path);
+        for (const label of [
+          NAV.schedules, NAV.memories,
+          NAV.aiAccounts, NAV.aiSettings,
+        ]) {
+          expect(screen.queryByText(label)).toBeNull();
+        }
       }
-      cleanup();
     }
   });
 
@@ -92,6 +101,7 @@ describe('WorkspaceSidebar — U4 screens', () => {
     userState = { profile: { isAdmin: true } };
     renderSidebar();
     expect(href(NAV.aiSettings)).toMatch(/^\/workspace\/ai-access\/?$/);
+    renderSidebar(PERSONAL_PATH);
     expect(screen.queryByText(NAV.schedules)).toBeNull();
     expect(probe).not.toHaveBeenCalled();
   });
@@ -99,9 +109,10 @@ describe('WorkspaceSidebar — U4 screens', () => {
   it('kill switch / infrastructure not ready + Labs on: Memories, Schedules and AI settings stay, though no run resumes', () => {
     gates = { scheduledRuns: true, harness: true, resume: false };
     userState = { profile: { isAdmin: true } };
-    renderSidebar();
+    renderSidebar(PERSONAL_PATH);
     expect(href(NAV.memories)).toMatch(/^\/workspace\/memories\/?$/);
     expect(href(NAV.schedules)).toMatch(/^\/workspace\/schedules\/?$/);
+    renderSidebar();
     expect(href(NAV.aiSettings)).toMatch(/^\/workspace\/ai-access\/?$/);
   });
 });

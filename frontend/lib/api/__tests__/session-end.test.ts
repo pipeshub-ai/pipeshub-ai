@@ -393,6 +393,21 @@ describe('a token refresh that overlaps a sign-out', () => {
     expect(storage.has(SESSION_HINT_KEY)).toBe(false);
   });
 
+  it("signs this tab out without removing the mark of the account another tab signed in as meanwhile", async () => {
+    useAuthStore.setState({ accessToken: jwtExpiringIn(20, { userId: 'user-a', orgId: 'o1' }) });
+    storage.set(SESSION_HINT_KEY, 'user-a:o1');
+    const answer = deferredRefresh();
+    const refresh = refreshOrSignOut();
+
+    // Another tab signed in as someone else; this tab has not handled the event yet.
+    storage.set(SESSION_HINT_KEY, 'user-b:o1');
+    answer(jsonResponse(200, { accessToken: jwtExpiringIn(3600, { userId: 'user-b', orgId: 'o1' }) }));
+
+    expect(await refresh).toBe('signed-out');
+    expect(logoutAndRedirect).toHaveBeenCalledTimes(1);
+    expect(storage.get(SESSION_HINT_KEY)).toBe('user-b:o1');
+  });
+
   it("never lets the next person wait on the last person's refresh", async () => {
     deferredRefresh();
     void refreshAccessToken();

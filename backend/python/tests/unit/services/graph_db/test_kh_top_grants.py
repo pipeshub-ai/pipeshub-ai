@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.graph_db.postgres.kh_listing import TopGrants
+from app.services.graph_db.postgres.kh_listing import KhGrants, TopGrants
 
 IDS = {1: "a", 2: "b", 3: "c", 4: "d", 5: "e"}
 
@@ -25,7 +25,7 @@ def _top(by_group: dict | None, granted: set[str], loose: dict | None = None) ->
     async def keys(sks: list[int]) -> dict[int, str]:
         read.append(sorted(sks))
         return {s: IDS[s] for s in sks}
-    return TopGrants(granted, by_group, loose or {}, keys), read
+    return TopGrants(KhGrants(frozenset(granted)), by_group, loose or {}, keys), read
 
 
 async def test_from_the_marks_the_walk_gets_the_asked_groups_and_those_of_no_group_and_only_granted_ids() -> None:

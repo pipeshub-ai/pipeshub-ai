@@ -47,6 +47,24 @@ function checkedRing(): ReturnType<typeof secretKeyRing> {
   }
 }
 
+const PLACEHOLDER_SECRET_KEYS = [
+  'my-secret',
+  'your_random_encryption_secret_key',
+];
+const MIN_SECRET_KEY_LENGTH = 16;
+// A generated key of 16+ characters has far more; this catches `aaaa…` and `abab…` repeats.
+const MIN_DISTINCT_CHARACTERS = 8;
+
+/** True for the shipped example values (or one with a suffix), and anything too short or repetitive to be a generated key. */
+export const isPlaceholderSecretKey = (value: string): boolean => {
+  const key = value.trim();
+  return (
+    PLACEHOLDER_SECRET_KEYS.some((p) => key.toLowerCase().startsWith(p)) ||
+    key.length < MIN_SECRET_KEY_LENGTH ||
+    new Set(key).size < MIN_DISTINCT_CHARACTERS
+  );
+};
+
 export const loadConfigurationManagerConfig =
   (): ConfigurationManagerConfig => {
     // Determine store type from KV_STORE_TYPE env variable (defaults to redis)

@@ -171,8 +171,10 @@ describe('service account routes are gated for machine credentials too', () => {
     expect(isAdmin.called).to.equal(false);
   });
 
-  it('lets an OAuth token through when it does carry the scope', async () => {
-    const { router } = buildRouter();
+  it('refuses an OAuth token on create even when it carries the scope', async () => {
+    // Creating an account takes an interactive session; a token holding
+    // user:invite is still a token.
+    const { router, controller } = buildRouter();
     const post = routesOf(router).find(
       (r) => r.method === 'POST' && r.path === '/',
     )!;
@@ -183,6 +185,28 @@ describe('service account routes are gated for machine credentials too', () => {
       user: { userId, orgId, isOAuth: true, oauthScopes: ['user:invite'] },
       body: { slug: 'nightly-sync', fullName: 'Nightly sync' },
       params: {},
+      query: {},
+    });
+
+    expect(outcome.error?.statusCode ?? outcome.error?.status).to.equal(403);
+    expect(String(outcome.error?.message)).to.contain(
+      'interactive user session',
+    );
+    expect(controller.create.called).to.equal(false);
+  });
+
+  it('lets an OAuth token through when it does carry the scope', async () => {
+    const { router } = buildRouter();
+    const remove = routesOf(router).find(
+      (r) => r.method === 'DELETE' && r.path === '/:id',
+    )!;
+
+    stubUserLookup({ role: 'admin' });
+
+    const outcome = await runChain(remove.stack, {
+      user: { userId, orgId, isOAuth: true, oauthScopes: ['user:delete'] },
+      body: {},
+      params: { id: '64b000000000000000000003' },
       query: {},
     });
 

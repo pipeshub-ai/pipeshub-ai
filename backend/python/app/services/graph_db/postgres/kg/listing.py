@@ -248,12 +248,17 @@ def undecided_sql(where: str, classes_param: str, keys: str | None = None) -> st
             f"UNION ALL (SELECT r.id FROM unnest({classes_param}::bigint[]) AS c(id) CROSS JOIN LATERAL ({rows} AND {DECIDED} AND r.class_id = c.id LIMIT $3) r LIMIT $3)) u LIMIT $3")
 
 
-def count_sql(where: str, plain: str, own: str, granted: str, unvouched: str, keys: str | None = None) -> str:
+def own_grant(a: str, granted: str, *, by_sk: bool) -> str:
+    """Row ``a`` is one of the viewer's own grants ``granted``: kg keys (``by_sk``: grants read from kg, ``KhGrants``) or node ids."""
+    return f"{a}.sk = ANY({granted}::bigint[])" if by_sk else f"{a}.id = ANY({granted}::text[])"
+
+
+def count_sql(where: str, plain: str, own: str, granted: str, unvouched: str, keys: str | None = None, *, by_sk: bool = False) -> str:
     """The rows kg admits, by type, each branch stopping at ``$3`` (the cap): a row whose class a clause of the viewer's grants meets with no grant of the row's own, or one that needs it and the row is granted.
     ``keys``: a scope's sks, its rows read by their keys (:func:`keyed_rows`)."""
     rows = f"{keyed_rows(keys)} WHERE r.app_sk = $2" if keys is not None else "kg.records r WHERE r.org_id = $1 AND r.app_sk = $2"
     return (f"/* pipeshub:kg.listing_count */ SELECT t.kind, t.folder, count(*) AS n FROM (SELECT r.kind, r.folder FROM {rows} AND {LIVE}{where} AND {DECIDED} "
-            f"AND NOT r.class_id = ANY({unvouched}::bigint[]) AND (r.class_id = ANY({plain}::bigint[]) OR (r.class_id = ANY({own}::bigint[]) AND r.id = ANY({granted}::text[]))) LIMIT $3) t GROUP BY t.kind, t.folder")
+            f"AND NOT r.class_id = ANY({unvouched}::bigint[]) AND (r.class_id = ANY({plain}::bigint[]) OR (r.class_id = ANY({own}::bigint[]) AND {own_grant('r', granted, by_sk=by_sk)})) LIMIT $3) t GROUP BY t.kind, t.folder")
 
 
 def class_admit(alias: str, p: Params, viewer: dict[str, Any], *, raw: bool = False) -> str:
@@ -262,7 +267,7 @@ def class_admit(alias: str, p: Params, viewer: dict[str, Any], *, raw: bool = Fa
     a = alias
     has_path, unfenced = (f"{a}.path IS NOT NULL", f"{a}.fence_job IS NULL") if raw else (f"{a}.has_path", f"NOT {a}.fenced")
     return (f"(({a}.r13 IS FALSE AND {has_path} AND {a}.class_id IS NOT NULL AND {unfenced} AND NOT {a}.class_id = ANY({p.add(viewer['unvouched'])}::bigint[]) "
-            f"AND ({a}.class_id = ANY({p.add(viewer['plain'])}::bigint[]) OR ({a}.class_id = ANY({p.add(viewer['own'])}::bigint[]) AND {a}.id = ANY({p.add(viewer['granted'])}::text[])))) "
+            f"AND ({a}.class_id = ANY({p.add(viewer['plain'])}::bigint[]) OR ({a}.class_id = ANY({p.add(viewer['own'])}::bigint[]) AND {own_grant(a, p.add(viewer['granted']), by_sk=viewer.get('by_sk', False))}))) "
             f"OR {a}.id = ANY({p.add(sorted(viewer['walked']))}::text[]))")
 
 
@@ -401,24 +406,24 @@ def browse_classes_sql(where: str, links: str | None) -> str:
     return f"/* pipeshub:kg.browse_classes */ SELECT coalesce(array_agg(DISTINCT r.class_id) FILTER (WHERE r.class_id IS NOT NULL), '{{}}') AS ids FROM ({_children('r.class_id', where, links)}) r"
 
 
-def _browse_admitted(plain: str, own: str, granted: str, unvouched: str, app: str, a: str = "r") -> str:
+def _browse_admitted(plain: str, own: str, granted: str, unvouched: str, app: str, a: str = "r", *, by_sk: bool = False) -> str:
     """A child (a row ``a`` with the columns of :data:`COLS`) the classes admit, of :func:`browse_count_sql`."""
     return (f"(NOT {a}.placeholder AND {a}.r13 IS FALSE AND {a}.has_path AND {a}.class_id IS NOT NULL AND NOT {a}.fenced AND NOT {a}.class_id = ANY({unvouched}::bigint[]) "
             f"AND {a}.app_sk = {app}::bigint AND "
-            f"({a}.class_id = ANY({plain}::bigint[]) OR ({a}.class_id = ANY({own}::bigint[]) AND {a}.id = ANY({granted}::text[]))))")
+            f"({a}.class_id = ANY({plain}::bigint[]) OR ({a}.class_id = ANY({own}::bigint[]) AND {own_grant(a, granted, by_sk=by_sk)})))")
 
 
-def browse_count_sql(where: str, plain: str, own: str, granted: str, unvouched: str, app: str, links: str | None) -> str:
+def browse_count_sql(where: str, plain: str, own: str, granted: str, unvouched: str, app: str, links: str | None, *, by_sk: bool = False) -> str:
     """:func:`count_sql` over the children of the start: the ones of the connector ``app`` kg admits by class, by type, ``$3`` at most (another connector's child is the access
     check's, as :func:`browse_undecided_sql` hands it over: a class can be shared by two connectors)."""
-    admitted = _browse_admitted(plain, own, granted, unvouched, app, "c")
-    cols = "r.kind, r.folder, r.id, r.placeholder, r.r13, r.path IS NOT NULL AS has_path, r.class_id, r.fence_job IS NOT NULL AS fenced, r.app_sk"
+    admitted = _browse_admitted(plain, own, granted, unvouched, app, "c", by_sk=by_sk)
+    cols = "r.kind, r.folder, r.sk, r.id, r.placeholder, r.r13, r.path IS NOT NULL AS has_path, r.class_id, r.fence_job IS NOT NULL AS fenced, r.app_sk"
     return (f"/* pipeshub:kg.browse_count */ SELECT t.kind, t.folder, count(*) AS n FROM (SELECT c.kind, c.folder FROM ({_children(cols, where, links, _FENCE)}) c "
             f"WHERE {admitted} LIMIT $3) t GROUP BY t.kind, t.folder")
 
 
 def browse_once_sql(field_: str, sort_dir: str, direction: str, where: str, branches: list[str] | None, links: str | None, undecided: tuple[str, str, str],
-                    admitted: tuple[str, str, str, str, str, str], known: str | None = None) -> str:
+                    admitted: tuple[str, str, str, str, str, str], known: str | None = None, *, by_sk: bool = False) -> str:
     """A wide node's first window, its undecided children and its count in one read of its children: the children (as :func:`browse_scopes` reads them, each by its own range or
     key) are read once into a materialized set, and the three are taken from it: ``undecided`` (:func:`browse_undecided_sql`: the unvouched classes, the connector, the limit)
     as an array of sks, ``admitted`` (:func:`browse_count_sql`: plain, own, granted, unvouched, the connector, the cap) as counts by type, and the window past ``branches`` in
@@ -431,7 +436,7 @@ def browse_once_sql(field_: str, sort_dir: str, direction: str, where: str, bran
     return (f"/* pipeshub:kg.browse_once */ WITH r AS MATERIALIZED ({_children(COLS, where, links, _FENCE)}) "
             f"SELECT x.undecided, x.counts, w.* FROM (SELECT u.undecided, CASE WHEN cardinality(u.undecided) < {ulim} THEN "
             f"(SELECT coalesce(json_agg(json_build_array(t.kind, t.folder, t.n)), '[]') FROM (SELECT z.kind, z.folder, count(*) AS n FROM "
-            f"(SELECT r.kind, r.folder FROM r WHERE {_browse_admitted(plain, own, granted, unvouched, capp)} LIMIT {cap}) z GROUP BY z.kind, z.folder) t) END AS counts FROM "
+            f"(SELECT r.kind, r.folder FROM r WHERE {_browse_admitted(plain, own, granted, unvouched, capp, by_sk=by_sk)} LIMIT {cap}) z GROUP BY z.kind, z.folder) t) END AS counts FROM "
             f"(SELECT (SELECT coalesce(array_agg(u.sk), '{{}}') FROM (SELECT r.sk FROM r WHERE {_browse_undecided(unv, app, known)} LIMIT {ulim}) u) AS undecided) u) x "
             f"LEFT JOIN LATERAL (SELECT r.* FROM r WHERE cardinality(x.undecided) < {ulim} AND ({past}) ORDER BY {order(field_, sort_dir, direction)} LIMIT $3) w ON true")
 

@@ -9,7 +9,12 @@ from urllib.parse import urlsplit
 import httpx
 
 from app.agents.mcp.errors import MCPUrlBlockedError
-from app.agents.mcp.url_guard import GuardedTransport, _env_proxy_for
+from app.agents.mcp.url_guard import (
+    GuardedTransport,
+    _env_proxy_for,
+    bracket_ipv6_through_proxy,
+    proxy_tls_context,
+)
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.http.http_resilient_transport import ResilientHTTPTransport
@@ -109,7 +114,11 @@ class NextcloudRESTClientViaUsernamePassword(HTTPClient):
     async def _ensure_client(self) -> httpx.AsyncClient:
         if self.client is None:
             proxy = _env_proxy_for(httpx.URL(self.base_url))
-            inner = ResilientHTTPTransport(self.resilience, proxy=proxy) if self.resilience else None
+            # Through a proxy the guard connects to the checked address; this check names the host.
+            extra = {"verify": proxy_tls_context(self.base_url)} if proxy else {}
+            inner = ResilientHTTPTransport(self.resilience, proxy=proxy, **extra) if self.resilience else None
+            if inner is not None and proxy:
+                inner = bracket_ipv6_through_proxy(inner)
             self.client = httpx.AsyncClient(
                 timeout=self.timeout,
                 follow_redirects=self.follow_redirects,

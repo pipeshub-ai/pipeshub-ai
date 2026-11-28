@@ -1957,6 +1957,7 @@
   "workspaceMenu": {
     "appearance": "外觀",
     "language": "語言",
+    "personalSettings": "個人設定",
     "workspaceSettings": "工作區設定",
     "logOut": "登出",
     "system": "系統",
@@ -2991,6 +2992,9 @@
       "sections": {
         "overview": "總覽",
         "workspace": "工作區",
+        "ai": "AI",
+        "integrations": "整合",
+        "system": "系統",
         "usageAndCredits": "用量和帳單",
         "security": "安全性",
         "personal": "個人",
@@ -3651,7 +3655,14 @@
         "createError": "無法建立連接器",
         "createSuccess": "已成功建立連接器執行個體「{{name}}」",
         "authSaveError": "無法儲存驗證設定",
-        "configSaveError": "無法儲存設定"
+        "configSaveError": "無法儲存設定",
+        "syncTurningOn": "正在為 {{name}} 開啟同步",
+        "syncTurningOnDescription": "正在檢查與 {{source}} 的連線，可能需要幾秒鐘。",
+        "syncTurningOff": "正在為 {{name}} 關閉同步",
+        "syncTurnedOn": "{{name}} 的同步已開啟",
+        "syncTurnedOff": "{{name}} 的同步已關閉",
+        "syncToggleFailed": "無法變更 {{name}} 的同步",
+        "syncToggleFailedDescription": "請再試一次。如果仍然失敗，請檢查連接器的設定。"
       },
       "tabs": {
         "authenticate": "驗證執行個體",
@@ -3951,7 +3962,9 @@
         "removing": "正在移除此連接器。",
         "configureFirst": "請先完成設定，才能啟用同步。",
         "authenticateFirst": "請先驗證此連接器，才能啟用同步。",
-        "selected": "已選取 {{field}}"
+        "selected": "已選取 {{field}}",
+        "turningOn": "正在開啟…",
+        "turningOff": "正在關閉…"
       },
       "instanceStatus": {
         "setup": {
@@ -5040,6 +5053,7 @@
         "deleteTitle": "要刪除「{{name}}」嗎？",
         "deleteBody": "確定要刪除此技能嗎？此操作無法復原。",
         "cannotDeleteTitle": "無法刪除此技能",
+        "notVisibleCount": "{{count}} 個您無法檢視的項目",
         "requiredBy": "此技能為其他技能所需：{{names}}。請改為棄用，讓相依項目仍可解析。",
         "usedByAgents": "此技能已指派給：{{names}}。刪除後將從這些項目中取消指派。"
       },
@@ -7155,6 +7169,9 @@
     "appLimited_other": "{{appName}} 只能查看其建立者選擇的 {{count}} 個項目，且僅限您可見的部分。"
   },
   "errorToast": {
+    "reconnecting": "正在重新連線…",
+    "reconnectingDescription": "目前無法檢查您的工作階段。您仍保持登入狀態。我們會在幾分鐘內重試，之後會在您返回或重新連線時再次嘗試。",
+    "sessionUnavailable": "目前無法檢查您的工作階段。正在重新連線…",
     "accessDenied": "存取遭拒",
     "invalidRequest": "無效的請求",
     "notFound": "找不到",

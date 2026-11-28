@@ -189,11 +189,13 @@ async def load_known_children(tx: Tx, org: str, keys: set[Key], focus: set[Key],
     return out & keys
 
 
-async def snapshot(tx: Tx, org: str, focus: set[Key], allocate, *, known_children: bool = False) -> Snapshot:  # noqa: ANN001
+async def snapshot(tx: Tx, org: str, focus: set[Key], allocate, *, known_children: bool = False, closure_only: bool = False) -> Snapshot:  # noqa: ANN001
     """The graph around ``focus``: their documents, their edges, the endpoint documents, and for a source account the edges of its own (the
     badge groups). ``allocate(keys)`` returns the sks of the keys that exist as nodes, creating them (the vetted node-key writer). ``known_children``: a parent's ``leaf`` counts the
     children kg knows of (:func:`load_known_children`) instead of those the graph holds; the projection of changes, which finds a parent from its child's rows, asks for it, a
-    backfill and a verify read the graph."""
+    backfill and a verify read the graph. ``closure_only``: the snapshot serves the users' closure alone (``Derived.closure``), which reads no record or record group, so the
+    ends in those collections are not read: a page of users of a large org has permissions on hundreds of thousands of records, and reading each one's document, key and
+    children made the principals' verify outlast its statement budget. Their edges stay, and the grants derived from them are not complete."""
     focus = {k for k in focus if k[0] in COLL_CODE}
     nodes = await load_nodes(tx, org, focus)
     to, frm = await load_edges(tx, org, focus)
@@ -202,6 +204,8 @@ async def snapshot(tx: Tx, org: str, focus: set[Key], allocate, *, known_childre
     sources = {e.to for e in frm if e.coll == "authenticatedAs"}
     s_to, s_frm = await load_edges(tx, org, sources - focus) if sources - focus else ([], [])
     ends |= {e.to for e in s_frm} | {e.frm for e in s_frm} | {e.frm for e in s_to} | {e.to for e in s_to}
+    if closure_only:      # after the source accounts' ends too: their permissions reach records as well
+        ends = {k for k in ends if k[0] not in ("records", "recordGroups")}
     ends |= {("apps", c) for e in frm if e.coll == "authenticatedAs" and isinstance(c := e.doc.get("connectorId"), str)}      # the connector a source account is linked in
     nodes.update(await load_nodes(tx, org, ends - set(nodes)))
     apps = {("apps", c) for k, d in nodes.items() if k[0] in RECORD_COLLS and (c := app_id_of(k, d))}        # the app of every node: its sk is the node's app_sk

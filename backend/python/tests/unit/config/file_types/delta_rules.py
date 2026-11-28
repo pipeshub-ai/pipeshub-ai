@@ -48,12 +48,15 @@ REASONS: dict[str, str] = {
                      "application/vnd.ms-excel is read as XLS)",
     "package-not-text": "a FILE stored as text/plain whose bytes are a package (msg, odt, rtf, xlsm, docm, dotx, "
            "potx, pptm) is read as that package, not as text (listed cell by cell below)",
+    "sheets-reconciled": "csv, tsv, xlsx and xls are reconciled block by block: an update keeps the record's copy and "
+                         "diffs it, so it no longer replaces the whole record (clears_embeddings_first is false)",
 }
 
 # The lists a reason changes; each list test checks the change is only that.
 GLOBAL_REASONS: dict[str, str] = {
     "ExtensionTypes": "new-type", "MimeTypes": "new-type",
     "EXCLUDABLE_FILE_EXTENSIONS": "filter-options", "file_extension_filter": "filter-options", "libreoffice_probe_inputs": "new-type",
+    "RECONCILIATION_ENABLED_EXTENSIONS": "sheets-reconciled", "RECONCILIATION_ENABLED_MIME_TYPES": "sheets-reconciled",
 }
 
 # The only cells main already indexed (gate ok, a handler reached) whose decision may change, each
@@ -207,8 +210,18 @@ def _read_by_its_name(row: list[Any], name_ext: str | None, new: object) -> bool
     )
 
 
+# The spellings a spreadsheet update is reconciled by, exactly as ``clears_embeddings_first`` matches them.
+_SHEET_EXTENSIONS = frozenset({"csv", "tsv", "xlsx", "xls"})
+_SHEET_MIMES = frozenset({
+    "text/csv", "text/tab-separated-values", "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+})
+
+
 def classify_cell(oracle: Oracle, row: list[Any], column: str, new: object) -> str | None:
     """The reason a row's *column* may now read *new*, or None when no reviewed reason covers it."""
+    if column == "clears_embeddings_first" and new is False and (row[0] in _SHEET_EXTENSIONS or row[1] in _SHEET_MIMES):
+        return "sheets-reconciled"
     decided, expected = oracle.reader_value(row, column)
     if decided:
         # Binding: no other reason may accept a tier or kind the labels' reader does not have.

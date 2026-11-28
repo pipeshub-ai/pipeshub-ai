@@ -4,6 +4,8 @@ name: Graph explorer tests
 # against the explorer with an in-browser fake backend (frontend/tests/graph-explorer). No stack, no secrets.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    # Heavy: on a pull request its jobs run only with the ci:full label (CONTRIBUTING.md).
     branches:
       - 'main'
     paths:
@@ -16,17 +18,24 @@ on:
       - 'frontend/package-lock.json'
       - '.github/workflows/graph-explorer-tests.yml'
   workflow_dispatch:
+  schedule:
+    - cron: '10 8 * * *'
 
 permissions:
   contents: read
 
 concurrency:
-  group: graph-explorer-${{ github.event.pull_request.number || github.run_id }}
+  group: graph-explorer-${{ github.event_name == 'pull_request' && format('pr-{0}-{1}', github.event.pull_request.number, (contains(fromJSON('["ci:full"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full')))) && 'heavy' || format('other-{0}', github.run_id)) || format('{0}-{1}-{2}', github.event_name, github.ref, github.run_id) }}
   cancel-in-progress: true
 
 jobs:
   graph-explorer:
     name: Graph explorer (unit and browser)
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full"]'), github.event.label.name)) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full')) &&
+       (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full"]'), github.event.label.name)))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:

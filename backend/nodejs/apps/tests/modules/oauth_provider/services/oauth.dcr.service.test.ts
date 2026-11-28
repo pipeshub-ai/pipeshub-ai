@@ -12,7 +12,7 @@ import { setIdentityPort } from '../../../../src/libs/repositories/identity'
 import { createMockLogger, createSnakeCaseLogKeyGuard, MockLogger } from '../../../helpers/mock-logger'
 import { NO_APP_CREATOR, setOAuthAppRepository } from '../../../../src/libs/repositories/oauth-app'
 import { setClientMetadataGetter } from '../../../../src/modules/oauth_provider/services/client_metadata_document'
-import { InvalidClientError } from '../../../../src/libs/errors/oauth.errors'
+import { InvalidClientError, InvalidScopeError } from '../../../../src/libs/errors/oauth.errors'
 import { ScopeValidatorService } from '../../../../src/modules/oauth_provider/services/scope.validator.service'
 import { mcpDiscoveryScopes } from '../../../../src/modules/oauth_provider/config/scopes.config'
 
@@ -450,6 +450,18 @@ describe('OAuthDcrService', () => {
       const { app } = await service.resolveAuthorizeClient(CID)
 
       expect(app.allowedScopes).to.deep.equal(['offline_access', 'kb:read', 'user:read'])
+    })
+
+    it('refuses a document that names only a retired scope instead of giving it the default', async () => {
+      setClientMetadataGetter(async () => JSON.stringify({ ...doc, scope: 'config:write' }))
+      try {
+        await service.resolveAuthorizeClient(CID)
+        expect.fail('should have thrown')
+      } catch (e) {
+        expect(e).to.be.instanceOf(InvalidScopeError)
+      }
+      expect(setDynamicGrant.called).to.be.false
+      expect(mockOAuthAppService.createDynamicClient.called).to.be.false
     })
 
     it('surfaces a create failure that is not a lost race', async () => {

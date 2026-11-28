@@ -11,6 +11,8 @@ from unittest.mock import MagicMock
 import pytest
 from gitlab_world import ALICE, API, BOB, CONNECTOR_ID, WEB, build_acme
 
+from app.connectors.core.base.connector.failure_notices import ReconnectRequiredError
+
 
 def test_the_gitlab_sdk_and_http_clients_are_real_imports_not_test_doubles() -> None:
     import gitlab
@@ -68,7 +70,7 @@ async def test_a_revoked_personal_access_token_fails_the_sync_and_leaves_stored_
     records_before = set(db.records)
 
     gitlab.valid_tokens.clear()
-    with pytest.raises(Exception, match="fetching projects"):
+    with pytest.raises(ReconnectRequiredError, match="GitLab rejected this connector's sign-in"):
         await harness.sync(connector)
 
     assert token_refresher.calls == []

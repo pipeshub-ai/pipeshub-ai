@@ -20,6 +20,7 @@ import {
   redactSecretsInText,
 } from '../utils/log-redaction.utils';
 import { getProvider } from './structured-logging';
+import { setOwnKey } from '../utils/dropped-keys';
 
 const redactMetadata = winston.format((info) => {
   if (info.metadata !== undefined) {
@@ -645,14 +646,19 @@ export class Logger {
       if (key === 'parent' || key === '_readableState' || key === 'pipes') {
         continue;
       }
+      // A log line keeps every key as data; setOwnKey stops a `__proto__` key from becoming the prototype.
       if (isSensitiveKey(key)) {
-        sanitized[key] = typeof value === 'number' ? value : REDACTED;
+        setOwnKey(sanitized, key, typeof value === 'number' ? value : REDACTED);
         continue;
       }
       try {
-        sanitized[key] = this.sanitizeForLogging(value, seen, withStack);
+        setOwnKey(
+          sanitized,
+          key,
+          this.sanitizeForLogging(value, seen, withStack),
+        );
       } catch (error) {
-        sanitized[key] = '[Unable to serialize]';
+        setOwnKey(sanitized, key, '[Unable to serialize]');
       }
     }
     return sanitized;

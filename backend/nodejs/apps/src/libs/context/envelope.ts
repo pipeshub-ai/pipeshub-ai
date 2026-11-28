@@ -214,7 +214,7 @@ export function computeSig(
   return createHmac('sha256', key).update(canon).digest('base64url');
 }
 
-/** Producer side: serialise the payload once and sign that exact string. */
+/** Producer side: serialise the payload once and sign that exact string. The event id is a new UUID unless *eventId* names one. */
 export function sign(
   key: Buffer,
   topic: string,
@@ -222,12 +222,13 @@ export function sign(
   ctx: OrgContext,
   issuedAt?: number,
   eventType = '',
+  eventId?: string,
 ): { eventType?: string; ctx: EnvelopeCtx; payload: string } {
   if (ctx.orgId === null) throw new Error('cannot sign a system context');
   const body = JSON.stringify(payload);
   const c: EnvelopeCtx = {
     v: 2,
-    eventId: randomUUID(),
+    eventId: eventId || randomUUID(),
     orgId: ctx.orgId,
     userId: ctx.userId,
     requestId: ctx.requestId,
@@ -541,6 +542,11 @@ export function signMessage<T extends Record<string, unknown>>(
   const { payload: _p, ctx: _c, ...rest } = message;
   const eventType =
     typeof message.eventType === 'string' ? message.eventType : '';
+  // A producer that names the event (a job it may publish again) keeps that id when signed, so the consumer's inbox still matches it.
+  const eventId =
+    typeof message.eventId === 'string' && message.eventId
+      ? message.eventId
+      : undefined;
   return {
     ...rest,
     ...sign(
@@ -550,6 +556,7 @@ export function signMessage<T extends Record<string, unknown>>(
       ctx,
       undefined,
       eventType,
+      eventId,
     ),
   };
 }

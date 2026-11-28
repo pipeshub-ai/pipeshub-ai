@@ -65,6 +65,7 @@ _PROVIDER_BUILDERS: dict[str, Callable[[MultimodalProviderConfig], IMultimodalEm
         region_name=config.region_name,
         aws_access_key_id=config.aws_access_key_id,
         aws_secret_access_key=config.aws_secret_access_key,
+        allow_ambient=config.allow_ambient_credentials,
         embedding_size=config.embedding_size,
         normalize_fn=config.normalize_fn,
         logger=config.logger,

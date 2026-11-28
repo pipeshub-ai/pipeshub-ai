@@ -141,7 +141,8 @@ describe('MCP access settings routes', () => {
     const scopes = (p: string, method: string) =>
       spec.paths[p]?.[method]?.security?.find((s) => s.oauth2)?.oauth2
     expect(scopes('/configurationManager/mcp/access', 'get')).to.deep.equal(['config:read'])
-    expect(scopes('/configurationManager/mcp/access', 'put')).to.deep.equal(['config:write'])
+    // Changing the policy takes an interactive session, so tokens are not offered a scope for it.
+    expect(scopes('/configurationManager/mcp/access', 'put')).to.equal(undefined)
     expect(scopes('/configurationManager/mcp/access/tools', 'get')).to.deep.equal(['config:read'])
   })
 })

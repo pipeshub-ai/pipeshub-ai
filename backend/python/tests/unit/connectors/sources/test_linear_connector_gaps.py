@@ -613,6 +613,7 @@ class TestProjectStreaming:
     ])
     async def test_process_project_blockgroups_api_failure(self, response, expected_status, expected_calls) -> None:
         conn = _make_connector()
+        conn.config_service.get_config = AsyncMock(return_value={"auth": {"authType": "API_TOKEN"}})  # a key is not renewed
         record = ProjectRecord(
             id="rec-p1",
             org_id="org-linear-gaps",
@@ -946,6 +947,7 @@ class TestIssueStreaming:
     ])
     async def test_process_issue_blockgroups_api_failure(self, response, expected_status, expected_calls) -> None:
         conn = _make_connector()
+        conn.config_service.get_config = AsyncMock(return_value={"auth": {"authType": "API_TOKEN"}})  # a key is not renewed
         record = TicketRecord(
             id="rec-i1",
             org_id="org-linear-gaps",
@@ -1095,6 +1097,7 @@ class TestSyncAttachmentsEdgeCases:
     @pytest.mark.asyncio
     async def test_sync_attachments_auth_failure_stops_the_sync(self) -> None:
         conn = _make_connector()
+        conn.config_service.get_config = AsyncMock(return_value={"auth": {"authType": "API_TOKEN"}})  # a key is not renewed
         conn.data_source = MagicMock()
         conn.notify = AsyncMock()
         conn.sync_filters = None
@@ -2256,6 +2259,7 @@ class TestDeletionSyncExtended:
     @pytest.mark.asyncio
     async def test_deleted_projects_api_failure(self):
         conn = _make_connector()
+        conn.config_service.get_config = AsyncMock(return_value={"auth": {"authType": "API_TOKEN"}})  # a key is not renewed
         conn.data_source = MagicMock()
         rg, perms = _make_team_rg()
         conn.data_entities_processor.get_records_by_record_type = AsyncMock(

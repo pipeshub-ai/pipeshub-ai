@@ -28,7 +28,7 @@ from app.agents.openapi.models import (
 from app.agents.openapi.request_builder import RequestBuildError
 from app.agents.openapi.spec_compiler import MAX_SPEC_BYTES, SpecError, compile_spec
 from app.agents.openapi.store import ApiToolsetStore
-from app.api.middlewares.auth import require_scopes
+from app.api.middlewares.auth import require_interactive_session, require_scopes
 from app.api.middlewares.caller_role import fetch_caller_role
 from app.api.middlewares.request_log import path_log_fields
 from app.config.constants.http_status_code import HttpStatusCode
@@ -245,13 +245,15 @@ async def _save(request: Request, body: InstanceRequest, instance_id: str, exist
     return await _admin_view(store, instance, user_id)
 
 
-@router.post("/instances", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+# Creating or editing an instance sets the host its stored credentials are sent to and the
+# OAuth app it signs in with, so both take an interactive session.
+@router.post("/instances", dependencies=[Depends(require_interactive_session), Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 async def create_api_toolset(request: Request, body: InstanceRequest) -> dict[str, Any]:
     await _require_admin(request, "add API actions")
     return await _save(request, body, uuid.uuid4().hex, None)
 
 
-@router.put("/instances/{instance_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@router.put("/instances/{instance_id}", dependencies=[Depends(require_interactive_session), Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 async def update_api_toolset(request: Request, instance_id: str, body: InstanceRequest) -> dict[str, Any]:
     await _require_admin(request, "change API actions")
     _, org_id = _get_user_context(request)
