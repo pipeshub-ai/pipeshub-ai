@@ -578,7 +578,7 @@ class TestBedrockClientRegion:
             mock_session = MagicMock()
             mock_session_cls.return_value = mock_session
             from app.utils.aimodels import _create_bedrock_client
-            _create_bedrock_client(config)
+            _create_bedrock_client(config, allow_ambient=True)
             mock_session_cls.assert_called_once_with(region_name="eu-west-1")
 
     def test_empty_keys_treated_as_no_keys(self):
@@ -592,7 +592,7 @@ class TestBedrockClientRegion:
             mock_session = MagicMock()
             mock_session_cls.return_value = mock_session
             from app.utils.aimodels import _create_bedrock_client
-            _create_bedrock_client(config)
+            _create_bedrock_client(config, allow_ambient=True)
             mock_session_cls.assert_called_once_with(region_name="us-east-1")
 
     def test_custom_service_name(self):
@@ -602,7 +602,7 @@ class TestBedrockClientRegion:
             mock_session = MagicMock()
             mock_session_cls.return_value = mock_session
             from app.utils.aimodels import _create_bedrock_client
-            _create_bedrock_client(config, service_name="bedrock")
+            _create_bedrock_client(config, allow_ambient=True, service_name="bedrock")
             service_name, kwargs = mock_session.client.call_args
             assert service_name == ("bedrock",)
             assert kwargs["config"].connect_timeout <= 15
