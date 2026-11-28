@@ -188,7 +188,7 @@ NO_BUMP = {
     "connectors/sources/bookstack/connector.py::_withdraw_user_roles": SYNC,
     "connectors/sources/notion/connector.py::_remove_departed_workspace_users": SYNC,
     "connectors/sources/notion/connector.py::remove_leavers": SYNC,
-    "connectors/sources/salesforce/connector.py::write_permissions": "connector writer: the sync bumps for the orgs it narrowed",
+    "ee/permission_sync/salesforce.py::write_permissions": "connector writer: the sync bumps for the orgs it narrowed",
     "migrations/nextcloud_user_app_edges_migration.py::migrate":
         "one-off startup repair of a connector's user edges; a scope cached before it expires with its entry TTL",
     "migrations/nextcloud_user_app_edges_migration.py::migrate_org":
@@ -277,7 +277,7 @@ CREATE_NO_BUMP = {
     "services/artifact_registry/versioning.py::create": NEW_RECORD,
     "services/artifact_registry/versioning.py::create_from_existing_document": NEW_RECORD,
     "connectors/sources/localKB/handlers/kb_service.py::write_kb": HELPER,
-    "connectors/sources/salesforce/connector.py::write_permissions": SYNC,
+    "ee/permission_sync/salesforce.py::write_permissions": SYNC,
     **{f"connectors/core/base/data_processor/data_source_entities_processor.py::{f}": SYNC for f in (
         "_give_every_copy_all_stored_members", "_link_kb_record_to_app", "_write_permission_edges",
         "migrate_group_permissions_to_user", "upsert_permission_edge")},
