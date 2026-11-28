@@ -25,6 +25,7 @@ const LLM_PROVIDER_ICON_FILE: Record<string, string> = {
   minimax: 'minimax.svg',
   xai: 'xai.svg',
   fireworks: 'fireworks-color.svg',
+  atlascloud: 'atlascloud.svg',
   mistral: 'mistral-color.svg',
   sentenceTransformers: 'sentence-transformers.png',
   jinaAI: 'jina.svg',
