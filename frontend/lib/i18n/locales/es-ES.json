@@ -7295,7 +7295,8 @@
   },
   "errorToast": {
     "reconnecting": "Reconectando…",
-    "reconnectingDescription": "Ahora mismo no podemos comprobar tu sesión. Sigues con la sesión iniciada; seguiremos intentándolo.",
+    "reconnectingDescription": "Ahora mismo no podemos comprobar tu sesión. Sigues con la sesión iniciada. Lo reintentaremos durante unos minutos y después cuando vuelvas o te reconectes.",
+    "sessionUnavailable": "Ahora mismo no podemos comprobar tu sesión. Reconectando…",
     "accessDenied": "Acceso denegado",
     "invalidRequest": "Solicitud no válida",
     "notFound": "No encontrado",

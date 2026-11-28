@@ -1,6 +1,6 @@
 import axios, { AxiosError, InternalAxiosRequestConfig, isAxiosError } from 'axios';
 import { useAuthStore, logoutAndRedirect } from '@/config';
-import { busyMessage, ErrorType, extractApiErrorMessage, processError, ProcessedError } from './api-error';
+import { ErrorType, extractApiErrorMessage, processError, ProcessedError } from './api-error';
 import { showErrorToast } from './error-toast';
 import {
   refreshOrSignOut,
@@ -11,6 +11,7 @@ import {
   REFRESH_TOKEN_ENDPOINT,
 } from './token-refresh';
 import { captureSession } from './session-cache';
+import { sessionUnavailableMessage } from './session-notice';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { applyElectronOverrides } from '@/lib/electron';
 import { generateRequestId } from '@/lib/utils/request-id';
@@ -42,11 +43,14 @@ const sessionEnded = (config: { sessionCurrent?: () => boolean } | undefined): b
  */
 const dropped = (): Promise<never> => new Promise<never>(() => {});
 
-/** The refresh got no answer: the request was not retried, and nothing says the session is over. */
-const sessionServiceBusy = (error: AxiosError): ProcessedError => ({
+/**
+ * The refresh got no answer for its whole retry cycle: the request was not sent (or not
+ * replayed), and nothing says the session is over. The "Reconnecting…" notice is showing.
+ */
+const sessionUnavailable = (error?: AxiosError): ProcessedError => ({
   type: ErrorType.SERVER_ERROR,
   statusCode: 503,
-  message: busyMessage(),
+  message: sessionUnavailableMessage(),
   originalError: error,
 });
 
@@ -144,13 +148,14 @@ apiClient.interceptors.request.use(
       const outcome = await refreshOrSignOut(accessToken);
       if (sessionOver(outcome)) return dropped();
       if (outcome === 'account-changed') return cancelledForAccount();
-      // No answer: send with the token we have and let the server decide.
       if (outcome === 'refreshed') {
         // Read and checked in one step: the store may have changed since refreshOrSignOut checked it.
         const refreshed = useAuthStore.getState().accessToken;
         if (accountChanged(accessToken, refreshed)) return cancelledForAccount();
         accessToken = refreshed;
       }
+      // No answer: send with the token we have and let the server decide, unless it has run out.
+      else if (isTokenExpired(accessToken, 0)) return rejectShown(sessionUnavailable(), config);
     }
 
     if (accessToken) {
@@ -210,7 +215,7 @@ apiClient.interceptors.response.use(
       const sentAuth = originalRequest.headers?.Authorization;
       const sentWith = typeof sentAuth === 'string' && sentAuth.startsWith('Bearer ') ? sentAuth.substring(7) : null;
       const outcome = await refreshOrSignOut(sentWith);
-      if (outcome === 'unreachable') return rejectShown(sessionServiceBusy(error), originalRequest);
+      if (outcome === 'unreachable') return rejectShown(sessionUnavailable(error), originalRequest);
       if (outcome === 'account-changed') return cancelledForAccount();
       if (outcome !== 'refreshed') return dropped();
       // A write is never sent twice: the server may have acted on it before it answered 401.

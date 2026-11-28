@@ -78,6 +78,9 @@ class ResilientHTTPTransport(httpx.AsyncHTTPTransport):
                     # Not retried here (a connector with its own retry sets max_retries 0), but the throttle
                     # still holds back every other caller of the connector and of its shared budget.
                     policy.pause(policy.base_delay if retry_after is None else retry_after)
+                    outlasted = getattr(policy, "on_throttle_outlasted", None)
+                    if outlasted is not None:
+                        outlasted()
                 return response
 
             note_status = getattr(policy, "note_response_status", None)

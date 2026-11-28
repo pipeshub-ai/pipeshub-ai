@@ -7291,7 +7291,8 @@
   },
   "errorToast": {
     "reconnecting": "Reconnecting…",
-    "reconnectingDescription": "We can’t check your session right now. You stay signed in; we’ll keep trying.",
+    "reconnectingDescription": "We can’t check your session right now. You stay signed in. We’ll retry for a few minutes, then again when you come back or reconnect.",
+    "sessionUnavailable": "We can’t check your session right now. Reconnecting…",
     "accessDenied": "Access denied",
     "invalidRequest": "Invalid request",
     "notFound": "Not found",

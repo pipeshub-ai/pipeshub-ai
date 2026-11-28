@@ -21,6 +21,12 @@ vi.mock('@/config', async () => {
   return { useAuthStore: auth.useAuthStore, logoutAndRedirect: () => logoutAndRedirect() };
 });
 
+// One attempt per refresh here; the retry cycle has its own tests in session-check-retry.test.ts.
+vi.mock('../refresh-retry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../refresh-retry')>()),
+  REFRESH_MAX_TOTAL_WAIT_MS: 0,
+}));
+
 const { useAuthStore } = await import('@/config');
 const {
   streamSSERequest,

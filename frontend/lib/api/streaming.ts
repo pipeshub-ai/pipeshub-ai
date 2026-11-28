@@ -48,6 +48,7 @@ import { streamingFetch, isElectron } from '@/lib/electron';
 import { generateRequestId } from '@/lib/utils/request-id';
 import { uiLanguageHeader } from './ui-language';
 import { busyMessage, parseRetryAfter } from './api-error';
+import { sessionUnavailableMessage } from './session-notice';
 
 /**
  * WP-100: the revision of the durable stream's frames this app reads (`projection/frame-version.ts`): version 2 adds
@@ -164,6 +165,8 @@ async function ensureFreshToken(): Promise<
     if (sessionOver(outcome)) {
       return { token: null, sessionExpired: true };
     }
+    // No answer keeps the token we have; one that has run out fails this stream, not the session.
+    if (outcome === 'unreachable' && isTokenExpired(token, 0)) throw new StreamError(sessionUnavailableMessage());
     // Read and checked in one step: the store may have changed since refreshOrSignOut checked it.
     const refreshed = useAuthStore.getState().accessToken;
     if (outcome === 'account-changed' || accountChanged(token, refreshed)) {

@@ -4704,6 +4704,8 @@ class TestFallbackPermissionsForForbiddenSchemeDC:
     async def test_works_for_both_401_and_403(self):
         conn = _make_connector()
         conn.creator_email = "e@x.com"
+        # A 401 falls back only once Jira confirms the sign-in still works.
+        conn.data_source = MagicMock(get_current_user_v2=AsyncMock(return_value=_ok_resp({})))
         for status in (401, 403):
             result = await conn._fallback_permissions_for_forbidden_scheme("P", status, "grants")
             assert len(result) == 1
@@ -4720,7 +4722,7 @@ class TestFetchProjectPermissionScheme401403DC:
     @pytest.mark.asyncio
     async def test_scheme_401_returns_fallback_with_email(self):
         conn = _make_connector()
-        conn.data_source = MagicMock()
+        conn.data_source = MagicMock(get_current_user_v2=AsyncMock(return_value=_ok_resp({})))
         conn.creator_email = "admin@example.com"
         ds = MagicMock()
         ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=_err_resp(401, "Unauthorized"))
@@ -4780,7 +4782,7 @@ class TestFetchProjectPermissionScheme401403DC:
     @pytest.mark.asyncio
     async def test_grants_401_returns_fallback(self):
         conn = _make_connector()
-        conn.data_source = MagicMock()
+        conn.data_source = MagicMock(get_current_user_v2=AsyncMock(return_value=_ok_resp({})))
         conn.creator_email = "admin@example.com"
         ds = MagicMock()
         ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=_ok_resp({"id": 3}))

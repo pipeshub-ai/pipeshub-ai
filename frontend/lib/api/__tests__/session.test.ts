@@ -22,17 +22,23 @@ vi.mock('@/config', async () => {
   };
 });
 
+// One attempt per refresh here; the retry cycle has its own tests in session-check-retry.test.ts.
+vi.mock('../refresh-retry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../refresh-retry')>()),
+  REFRESH_MAX_TOTAL_WAIT_MS: 0,
+}));
+
 const { useAuthStore } = await import('@/lib/store/auth-store');
 const { SESSION_HINT_KEY } = await import('@/lib/auth/session-credential');
 const { apiClient } = await import('../axios-instance');
-const { ErrorType, busyMessage } = await import('../api-error');
+const { ErrorType } = await import('../api-error');
+const { sessionUnavailableMessage } = await import('../session-notice');
+const { REFRESH_MAX_COOLDOWN_CYCLES } = await import('../refresh-retry');
 const { refreshAccessToken, refreshOrSignOut, isTokenExpired, decodeJwtPayload, REFRESH_TOKEN_ENDPOINT } = await import(
   '../token-refresh'
 );
 const scheduler = await import('../token-refresh-scheduler');
 const { useToastStore } = await import('@/lib/store/toast-store');
-const { stopReconnecting } = await import('../session-reconnect');
-await import('@/lib/i18n');
 
 interface FakeReply {
   status: number;
@@ -123,7 +129,6 @@ beforeEach(() => {
 
 afterEach(() => {
   scheduler.cancel();
-  stopReconnecting();
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -175,8 +180,7 @@ describe('the shared refresh lock', () => {
     ['the account is locked', () => {}, jsonResponse(400, {}), 'refused'],
     ['the origin check refuses', () => {}, jsonResponse(403, {}), 'refused'],
     ['a 4xx above 429 comes back', () => {}, jsonResponse(431, {}), 'refused'],
-    // Our server never sends 408 on this route; reading it as a refusal is a deliberate choice.
-    ['a request timeout (408) comes back', () => {}, jsonResponse(408, {}), 'refused'],
+    ['a request timeout (408) comes back', () => {}, jsonResponse(408, {}), 'unreachable'],
     ['the reply has no token', () => {}, jsonResponse(200, {}), 'refused'],
     ['the network is down', () => {}, new TypeError('Failed to fetch'), 'unreachable'],
     ['the server fails', () => {}, jsonResponse(500, {}), 'unreachable'],
@@ -389,7 +393,7 @@ describe('a 401 from the server', () => {
     await expect(apiClient.get('/api/v1/users/me')).rejects.toMatchObject({
       type: ErrorType.SERVER_ERROR,
       statusCode: 503,
-      message: busyMessage(),
+      message: sessionUnavailableMessage(),
     });
 
     expect(sent).toHaveLength(1);
@@ -652,60 +656,18 @@ describe('the proactive refresh timer', () => {
     expect(logoutAndRedirect).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps the session when that refresh gets no answer, and tries again with growing waits, not in a loop', async () => {
+  it('keeps the session when that refresh gets no answer, and does not retry in a loop', async () => {
     vi.useFakeTimers();
-    vi.spyOn(Math, 'random').mockReturnValue(1);
     fetchMock.mockResolvedValue(jsonResponse(503, {}));
     scheduler.scheduleFromToken(jwtExpiringIn(30));
     await vi.advanceTimersByTimeAsync(0);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(1_999);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    await vi.advanceTimersByTimeAsync(4_000);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    // Then 8, 16 and 32 s, and every 60 s after that: 12 more in the next 600 s.
+    // A bounded number of later tries, then it waits for activity (a request, the tab, the network).
     await vi.advanceTimersByTimeAsync(600_000);
-    expect(fetchMock).toHaveBeenCalledTimes(15);
+    expect(fetchMock).toHaveBeenCalledTimes(1 + REFRESH_MAX_COOLDOWN_CYCLES);
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1 + REFRESH_MAX_COOLDOWN_CYCLES);
     expect(logoutAndRedirect).not.toHaveBeenCalled();
-  });
-
-  it('shows one reconnecting notice while it gets no answer, and removes it once a try succeeds', async () => {
-    vi.useFakeTimers();
-    const fresh = jwtExpiringIn(3600);
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse(503, {}))
-      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
-      .mockResolvedValueOnce(jsonResponse(200, { accessToken: fresh }));
-    scheduler.scheduleFromToken(jwtExpiringIn(30));
-    await vi.advanceTimersByTimeAsync(0);
-    const notices = () => useToastStore.getState().toasts.filter((t) => t.variant === 'loading' && !t.isExiting);
-    expect(notices()).toHaveLength(1);
-    expect(notices()[0].title).toBe('Reconnecting…');
-    await vi.advanceTimersByTimeAsync(2_000);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(notices()).toHaveLength(1);
-    await vi.advanceTimersByTimeAsync(4_000);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(useAuthStore.getState().accessToken).toBe(fresh);
-    expect(notices()).toHaveLength(0);
-    expect(errorToasts()).toHaveLength(0);
-    await vi.advanceTimersByTimeAsync(600_000);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-  });
-
-  it('signs out when a later try is refused, and the notice goes', async () => {
-    vi.useFakeTimers();
-    fetchMock.mockResolvedValueOnce(jsonResponse(503, {})).mockResolvedValueOnce(jsonResponse(401, {}));
-    scheduler.scheduleFromToken(jwtExpiringIn(30));
-    await vi.advanceTimersByTimeAsync(0);
-    expect(logoutAndRedirect).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(2_000);
-    expect(logoutAndRedirect).toHaveBeenCalledTimes(1);
-    expect(useToastStore.getState().toasts.filter((t) => t.variant === 'loading' && !t.isExiting)).toHaveLength(0);
-    await vi.advanceTimersByTimeAsync(600_000);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('tries at once when the tab comes back while it waits to try again', async () => {

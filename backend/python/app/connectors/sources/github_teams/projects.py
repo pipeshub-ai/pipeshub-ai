@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from app.config.constants.arangodb import PermissionModel
 from app.sources.external.github.github_async import GhObject
 
+from app.connectors.core.base.connector.failure_notices import ReconnectRequiredError, listed
 from app.connectors.core.registry.filters import FilterOperator, SyncFilterKey
 from app.models.entities import RecordGroup, RecordGroupType
 from app.models.permission import EntityType, Permission, PermissionType
@@ -74,6 +75,8 @@ class ProjectsSync:
         self._org_record_group_meta: dict[int, str] = {}
         # Orgs whose accumulated permissions changed since the last flush.
         self._dirty_org_ids: set[int] = set()
+        # Private repositories whose readers GitHub will not list to this account.
+        self._unlistable_repos: list[str] = []
         # What could not be completed this sync (read by the connector to fail it).
         self.failures: list[str] = []
 
@@ -96,6 +99,7 @@ class ProjectsSync:
         self._org_record_group_meta = {}
         self._dirty_org_ids = set()
         self.failures = []
+        self._unlistable_repos = []
 
         repos, complete = await self.resolve_repo_scope()
         orgs_removable = complete
@@ -112,22 +116,48 @@ class ProjectsSync:
             # Without a complete answer, a missing repository may only be unreachable
             # for now: nothing is removed.
             self.failures.append("the repository scope could not be resolved completely")
+            c.run_state.raise_if_rejected()
+            if not c.run_state.rate_limited:
+                c.run_state.note(
+                    "Some repositories in the filter could not be read. Check that the connected account can read "
+                    "them; the next sync tries again."
+                )
         if not repos:
             self.logger.warning("No GitHub repositories to sync after applying filters")
             if orgs_removable:
                 await c.repo_scope.remove_empty_orgs(set())
             return
 
+        failed_repos: list[str] = []
         for repo in repos:
+            c.run_state.raise_if_rejected()
             try:
                 if not await self._sync_repo(repo):
+                    failed_repos.append(str(getattr(repo, "full_name", "?")))
                     self.failures.append(f"{getattr(repo, 'full_name', '?')} did not sync completely")
+            except ReconnectRequiredError:
+                raise
             except Exception as e:
+                failed_repos.append(str(getattr(repo, "full_name", "?")))
                 self.failures.append(f"{getattr(repo, 'full_name', '?')}: {e}")
                 self.logger.error(
                     "Unhandled error syncing GitHub repo %s (id=%s); continuing: %s",
                     getattr(repo, "full_name", "?"), getattr(repo, "id", "?"), e, exc_info=True,
                 )
+
+        c.run_state.raise_if_rejected()
+        if self._unlistable_repos:
+            c.run_state.note(
+                f"Not synced, because GitHub lists who can read a private repository only to accounts with push "
+                f"access: {listed(self._unlistable_repos)}. Give the connected account push access, or remove them "
+                "from the repository filter."
+            )
+        failed_repos = [name for name in failed_repos if name not in self._unlistable_repos]
+        if failed_repos and not c.run_state.rate_limited:
+            c.run_state.note(
+                f"These repositories did not sync completely: {listed(failed_repos)}. The next sync tries again; "
+                "if it keeps failing, check that the connected account can read them."
+            )
 
         # Each repo already flushed its own org, so this is normally a no-op; it
         # exists to retry an org left dirty by a failed mid-sync flush.
@@ -183,6 +213,7 @@ class ProjectsSync:
             ("code", lambda: c.repos.run(repo)),
             ("pull_requests", lambda: c.pull_requests.fetch_prs_batched(repo)),
         ):
+            c.run_state.raise_if_rejected()
             try:
                 if await step() is False:
                     ok = False
@@ -262,6 +293,7 @@ class ProjectsSync:
         complete = True
 
         if repo_in:
+            gone: list[str] = []
             for full_name in repo_in:
                 if "/" not in full_name:
                     self.logger.error("Skipping malformed repo filter value (expected owner/repo): %s", full_name)
@@ -270,6 +302,7 @@ class ProjectsSync:
                 res = await c.runtime.ds_call(c.data_source.get_repo, owner, name)
                 if not res.success or not res.data:
                     if res.status_code == HTTP_NOT_FOUND:
+                        gone.append(full_name)
                         self.logger.warning(
                             "Repository %s is gone or no longer readable by this token (404); "
                             "it leaves the sync's scope.", full_name,
@@ -279,6 +312,11 @@ class ProjectsSync:
                         self.logger.error("Repository not found or inaccessible: %s (%s)", full_name, res.error)
                     continue
                 by_id[int(res.data.id)] = res.data
+            if gone:
+                c.run_state.note(
+                    f"These selected repositories were deleted, renamed, or are no longer readable by the connected "
+                    f"account: {listed(gone)}. Give the account access, or remove them from the repository filter."
+                )
         else:
             if org_in:
                 orgs, orgs_ok = org_in, True
@@ -402,6 +440,7 @@ class ProjectsSync:
                 "the repo filter.",
                 repo.full_name, error, getattr(repo, "visibility", "private"),
             )
+            self._unlistable_repos.append(str(repo.full_name))
             return None
 
         self.logger.error(

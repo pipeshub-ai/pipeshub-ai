@@ -14,13 +14,13 @@
 
 import { useAuthStore, logoutAndRedirect } from '@/config';
 import { onSessionEnd, captureSession } from '@/lib/api/session-cache';
-import { reconnectLater, stopReconnecting } from '@/lib/api/session-reconnect';
 import {
   REFRESH_TOKEN_ENDPOINT,
   accountOfToken,
   requestAccessToken,
   signedInMark,
 } from '@/lib/auth/session-credential';
+import { nextRetryDelayMs, REFRESH_MAX_TOTAL_WAIT_MS, setSessionReconnecting } from '@/lib/api/refresh-retry';
 
 /** Endpoint that issues a new access token from the session's refresh token. */
 export { REFRESH_TOKEN_ENDPOINT };
@@ -70,8 +70,8 @@ export function isTokenExpired(
 }
 
 /**
- * What one refresh attempt found: a new token, a session the server refused, no answer, or a token
- * for another account than this page's (someone else signed in to this browser meanwhile).
+ * What one refresh found: a new token, a session the server refused, no answer, or a token for
+ * another account than this page's (someone else signed in to this browser meanwhile).
  */
 export type RefreshAnswer = 'refreshed' | 'refused' | 'unreachable' | 'account-changed';
 
@@ -91,6 +91,8 @@ export function accountChanged(before: string | null | undefined, after: string 
 // call to /refresh/token is never duplicated within a tab.
 let refreshPromise: Promise<RefreshAnswer> | null = null;
 
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 /** True while a refresh network call is in flight. Used by the axios response interceptor. */
 export function isRefreshInProgress(): boolean {
   return refreshPromise !== null;
@@ -102,9 +104,15 @@ export function isRefreshInProgress(): boolean {
  *
  * Returns `'refreshed'` when the auth store holds a fresh access token;
  * `'refused'` when the server refused the session (or it ended while the
- * refresh was out); `'unreachable'` when the server gave no verdict (network
- * failure, 5xx, 429, or a throw before it answered), so the session may still
- * be good. Callers own the failure path (`refreshOrSignOut`).
+ * refresh was out); `'unreachable'` when the server gave no verdict for the
+ * whole retry cycle (network failure, 5xx, 408, 429, or a throw before it
+ * answered), so the session may still be good. Callers own the failure path
+ * (`refreshOrSignOut`).
+ *
+ * An answer that is known to be temporary is retried with capped, jittered
+ * backoff that honours `Retry-After`, for at most `REFRESH_MAX_TOTAL_WAIT_MS`;
+ * then the cycle ends `'unreachable'` and the "Reconnecting…" notice shows. Any
+ * final answer ends it at once.
  *
  * Concurrent calls collapse onto the same in-flight promise.
  */
@@ -115,25 +123,44 @@ export async function refreshAccessToken(): Promise<RefreshAnswer> {
 
   const current = captureSession();
   const mark = signedInMark();
+  // Signed out while the refresh was out, here or in another tab this one has not heard
+  // from yet: storing the token would sign the last user back in.
+  const over = () => !current() || signedInMark() !== mark;
   const tokenBefore = useAuthStore.getState().accessToken;
   const promise = (async (): Promise<RefreshAnswer> => {
+    const startedAt = Date.now();
     try {
-      const answer = await requestAccessToken();
-      if (answer.outcome !== 'issued') {
-        console.log('Token refresh failed:', answer.outcome);
-        return answer.outcome === 'unreachable' ? 'unreachable' : 'refused';
+      // shortcut: each tab keeps its own backoff (the session lock only serialises attempts), so N open tabs
+      // make up to N attempts per window during an outage; share the backoff across tabs if that load matters.
+      for (let attempt = 0; ; attempt += 1) {
+        const answer = await requestAccessToken();
+        if (over()) return 'refused';
+        if (answer.outcome === 'issued') {
+          // Another account's token: storing it would hand this page, its caches and its open requests to
+          // them. The page reloads instead, as when another tab signs in as someone else.
+          if (accountChanged(tokenBefore, answer.accessToken)) {
+            setSessionReconnecting(false);
+            window.location.assign('/chat/');
+            return 'account-changed';
+          }
+          useAuthStore.getState().setAccessToken(answer.accessToken);
+          setSessionReconnecting(false);
+          return 'refreshed';
+        }
+        if (answer.outcome === 'refused') {
+          console.log('Token refresh failed:', answer.outcome);
+          setSessionReconnecting(false);
+          return 'refused';
+        }
+        const wait = nextRetryDelayMs(attempt, answer.retryAfterMs);
+        if (Date.now() - startedAt + wait > REFRESH_MAX_TOTAL_WAIT_MS) {
+          console.log('Token refresh failed:', answer.outcome);
+          setSessionReconnecting(true);
+          return 'unreachable';
+        }
+        await sleep(wait);
+        if (over()) return 'refused';
       }
-      // Signed out while the refresh was out, here or in another tab this one has not heard
-      // from yet: storing the token would sign the last user back in.
-      if (!current() || signedInMark() !== mark) return 'refused';
-      // Another account's token: storing it would hand this page, its caches and its open requests to
-      // them. The page reloads instead, as when another tab signs in as someone else.
-      if (accountChanged(tokenBefore, answer.accessToken)) {
-        window.location.assign('/chat/');
-        return 'account-changed';
-      }
-      useAuthStore.getState().setAccessToken(answer.accessToken);
-      return 'refreshed';
     } catch (error) {
       console.error('Error refreshing token:', error);
       // The server never answered (for example the cross-tab lock was aborted): no verdict.
@@ -152,7 +179,6 @@ export async function refreshAccessToken(): Promise<RefreshAnswer> {
 // The next person must not wait on, or be answered by, the last person's refresh.
 onSessionEnd(() => {
   refreshPromise = null;
-  stopReconnecting();
 });
 
 /**
@@ -169,28 +195,20 @@ export const sessionOver = (outcome: RefreshOutcome): boolean =>
 /**
  * Refreshes the access token. On a refusal it signs out, unless the session that
  * asked has already ended: then signing out again would sign out the next person.
- * With no answer (`'unreachable'`) it keeps the session, shows the reconnecting notice and tries
- * again later with backoff (`session-reconnect.ts`); the caller fails only what needed the token.
+ * With no answer for the whole retry cycle (`'unreachable'`) it keeps the session:
+ * the caller fails only what needed the token, and the "Reconnecting…" notice shows.
  * `madeWith` is the token the caller's request was made with, when it has one.
  */
 export async function refreshOrSignOut(madeWith?: string | null): Promise<RefreshOutcome> {
   const current = captureSession();
   const answer = await refreshAccessToken();
-  if (answer === 'account-changed') {
-    stopReconnecting();
-    return 'account-changed';
-  }
+  if (answer === 'account-changed') return 'account-changed';
   if (answer === 'refreshed') {
-    stopReconnecting();
     return accountChanged(madeWith, useAuthStore.getState().accessToken) ? 'account-changed' : 'refreshed';
   }
   if (!current()) return 'session-ended';
-  // No answer is no verdict: the session may still be good, so it is kept and tried again later.
-  if (answer === 'unreachable') {
-    reconnectLater(() => void refreshOrSignOut());
-    return 'unreachable';
-  }
-  stopReconnecting();
+  // No answer is no verdict: the session may still be good, so it is kept.
+  if (answer === 'unreachable') return 'unreachable';
   logoutAndRedirect();
   return 'signed-out';
 }

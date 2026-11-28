@@ -18,7 +18,7 @@
  * 3. `visibilitychange` — when the tab returns to foreground (e.g. after
  *    laptop sleep, where setTimeout firing is unreliable) the scheduler
  *    re-checks expiry and refreshes immediately if needed, or at once while
- *    a refresh that got no answer is waiting to be tried again.
+ *    the session could not be checked (the Reconnecting… notice shows).
  */
 
 import { restoreSession } from '@/lib/store/auth-store';
@@ -30,7 +30,9 @@ import {
   getTokenExpirySeconds,
   DEFAULT_EXPIRY_BUFFER_SECONDS,
 } from './token-refresh';
-import { isReconnecting } from './session-reconnect';
+import { createCooldownRetrier, isSessionReconnecting, setSessionReconnecting } from '@/lib/api/refresh-retry';
+// Registers the Reconnecting… notice the refresh retries show.
+import '@/lib/api/session-notice';
 /**
  * `setTimeout` accepts a 32-bit signed delay; values larger than this wrap
  * to a near-zero delay and would fire immediately. We clamp and chain.
@@ -51,18 +53,43 @@ function clearTimer(): void {
   scheduledForToken = null;
 }
 
+// After a refresh cycle gives up (server temporarily unable to check the
+// session), try again later a bounded number of times. Not a sign-out.
+const cooldownRetry = createCooldownRetrier(() => {
+  void refreshNow();
+});
+
 async function refreshNow(): Promise<void> {
   // Cancel before awaiting: a pending timer (this refresh came from the tab returning) would fire a
   // second refresh. The post-success setTokens will re-arm the timer via the zustand subscription.
   clearTimer();
 
   // A refusal logs the user out, unless the session already ended meanwhile; then the timer may
-  // already belong to the next person, so it is left alone. With no answer nothing changes:
-  // the next request's pre-send check, or the tab becoming visible, tries again.
-  if ((await refreshOrSignOut()) === 'signed-out') {
+  // already belong to the next person, so it is left alone.
+  const outcome = await refreshOrSignOut();
+  if (outcome === 'unreachable') {
+    // No answer for the whole retry cycle. Stay signed in; the "Reconnecting…" notice is
+    // already showing. Try again later, a bounded number of times; the next request's
+    // pre-send check, the tab becoming visible or the browser going online also try again.
+    cooldownRetry.arm();
+    return;
+  }
+  cooldownRetry.reset();
+  if (outcome === 'signed-out') {
     // Hard stop: clear any state that may have been re-armed concurrently by an inbound `storage` event.
     clearTimer();
   }
+}
+
+/**
+ * Every path that installs a token goes through the store (this timer, a request or a stream that
+ * refreshed, a new sign-in). A token that does not need refreshing yet means the session was
+ * checked: the Reconnecting… notice goes and the next outage gets the full retry schedule.
+ */
+function noteTokenInstalled(token: string | null): void {
+  if (!token || isTokenExpired(token)) return;
+  cooldownRetry.reset();
+  setSessionReconnecting(false);
 }
 
 /**
@@ -78,7 +105,12 @@ export function scheduleFromToken(token: string | null): void {
 
   clearTimer();
 
-  if (!token) return;
+  if (!token) {
+    // Signed out: nothing left to reconnect, and the notice must not outlive the session.
+    cooldownRetry.reset();
+    setSessionReconnecting(false);
+    return;
+  }
 
   const exp = getTokenExpirySeconds(token);
   if (exp === null) {
@@ -113,6 +145,7 @@ export function scheduleFromToken(token: string | null): void {
 /** Public alias matching the plan's contract. Cancels any pending timer. */
 export function cancel(): void {
   clearTimer();
+  cooldownRetry.reset();
 }
 
 function handleStorageEvent(event: StorageEvent): void {
@@ -140,14 +173,24 @@ function handleStorageEvent(event: StorageEvent): void {
   if (before && before !== event.newValue) window.location.assign('/chat/');
 }
 
+function handleOnline(): void {
+  const token = useAuthStore.getState().accessToken;
+  if (!token) return;
+  // Back on the network: a refresh that was waiting on it can go now.
+  cooldownRetry.reset();
+  if (isTokenExpired(token)) void refreshNow();
+}
+
 function handleVisibilityChange(): void {
   if (typeof document === 'undefined' || document.visibilityState !== 'visible') {
     return;
   }
   const token = useAuthStore.getState().accessToken;
   if (!token) return;
-  // Back in front while a refresh got no answer: try now rather than wait out the backoff.
-  if (isTokenExpired(token) || isReconnecting()) {
+  // Back in front while the session could not be checked: try now rather than wait out the cooldown.
+  if (isTokenExpired(token) || isSessionReconnecting()) {
+    // Back in front of the person: a refresh that was waiting out the outage can go now.
+    cooldownRetry.reset();
     void refreshNow();
   } else {
     // Re-arm in case the timer was throttled or never fired during sleep.
@@ -164,12 +207,14 @@ export function initTokenRefreshScheduler(): void {
   if (typeof window === 'undefined') return;
   initialized = true;
 
-  useAuthStore.subscribe((state) => {
+  useAuthStore.subscribe((state, previous) => {
+    if (state.accessToken !== previous.accessToken) noteTokenInstalled(state.accessToken);
     scheduleFromToken(state.accessToken);
   });
 
   window.addEventListener('storage', handleStorageEvent);
   document.addEventListener('visibilitychange', handleVisibilityChange);
+  window.addEventListener('online', handleOnline);
 
   // Arm for whatever token the store has right now (post-hydration).
   scheduleFromToken(useAuthStore.getState().accessToken);
