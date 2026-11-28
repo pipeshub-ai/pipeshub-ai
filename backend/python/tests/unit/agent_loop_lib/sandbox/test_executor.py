@@ -248,8 +248,13 @@ class _Gate:
         opener = asyncio.ensure_future(asyncio.to_thread(os.open, self._path, os.O_WRONLY))
         await asyncio.wait({opener, run}, return_when=asyncio.FIRST_COMPLETED)
         if not opener.done():
-            os.close(os.open(self._path, os.O_RDONLY | os.O_NONBLOCK))
-            os.close(await opener)
+            # Hold a read end open until the opener is through: opened and closed at once, it can come and go before the
+            # opener's thread reaches its blocking open, which then waits forever (and the worker hangs at exit on it).
+            reader = os.open(self._path, os.O_RDONLY | os.O_NONBLOCK)
+            try:
+                os.close(await opener)
+            finally:
+                os.close(reader)
             result = run.result()
             pytest.fail(f"the run ended before reaching its gate: {result.stdout}{result.stderr}")
         self._fd = opener.result()
