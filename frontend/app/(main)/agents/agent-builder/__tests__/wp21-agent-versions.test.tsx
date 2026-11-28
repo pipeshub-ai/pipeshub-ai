@@ -243,8 +243,7 @@ describe('WP-21 OWD-14: where the agent stands', () => {
     expect(key).toBe('agent-1');
     expect(payload).toMatchObject({ name: 'Support triage' });
     // The builder shows its own errors, so it also asks for no toast.
-    expect(options).toMatchObject({ publish: false });
-    expect(options).not.toHaveProperty('versionNote');
+    expect(options).toEqual({ publish: false, suppressErrorToast: true });
     await waitFor(() =>
       expect(useToastStore.getState().toasts.map((t) => t.title)).toContain(
         'Draft saved. Chats keep running version 4 until you publish.',
@@ -267,8 +266,7 @@ describe('WP-21 OWD-14: where the agent stands', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: /^publish$/i }));
 
     await waitFor(() => expect(agentsApi.updateAgent).toHaveBeenCalledTimes(1));
-    expect(agentsApi.updateAgent.mock.calls[0][2]).toMatchObject({ versionNote: 'Renamed.' });
-    expect(agentsApi.updateAgent.mock.calls[0][2]).not.toHaveProperty('publish');
+    expect(agentsApi.updateAgent.mock.calls[0][2]).toEqual({ versionNote: 'Renamed.', suppressErrorToast: true });
     expect(agentsApi.publishAgentVersion).not.toHaveBeenCalled();
     expect(await screen.findByRole('dialog', { name: 'Version 5 published' })).toBeTruthy();
     expect(within(status()).getByText('Live: version 5')).toBeTruthy();

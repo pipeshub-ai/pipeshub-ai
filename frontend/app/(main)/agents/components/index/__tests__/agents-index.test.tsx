@@ -195,6 +195,26 @@ describe('the Agents index', () => {
     expect(lastRequest()).toEqual({ page: 1, limit: 10, search: undefined });
   });
 
+  it('searches once the person has typed at least two characters', async () => {
+    agentsApi.getAgents.mockImplementation(async ({ search }: { search?: string }) =>
+      page([agent(search ? 'match' : 'any', ME, { name: search ? 'Ops' : 'Any agent' })]),
+    );
+    renderInTheme(<AgentsIndex />);
+    expect(await screen.findByText('Any agent')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Find' }));
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search agents' }), { target: { value: 'o' } });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+    expect(agentsApi.getAgents).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Any agent')).toBeTruthy();
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search agents' }), { target: { value: 'ops' } });
+    expect(await screen.findByText('Ops')).toBeTruthy();
+    expect(lastRequest()).toEqual({ page: 1, limit: 50, search: 'ops' });
+  });
+
   it('opens on the search, page and page size a link carries', async () => {
     url.query = 'search=QA&page=2&limit=10';
     agentsApi.getAgents.mockResolvedValue(page([agent('qa', ME)], 12, 10));

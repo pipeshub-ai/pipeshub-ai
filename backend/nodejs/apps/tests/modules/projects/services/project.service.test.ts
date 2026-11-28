@@ -5,6 +5,8 @@ import mongoose from 'mongoose';
 import { ProjectService } from '../../../../src/modules/projects/services/project.service';
 import { Project } from '../../../../src/modules/projects/schema/project.schema';
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema';
+import { readFilter } from '../../../../src/modules/enterprise_search/services/conversation/http/default-conversation-guards';
+import { matchesFilter } from '../../enterprise_search/controller/chat-test-harness';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { useConversationExtensions } from '../../../../src/modules/enterprise_search/services/conversation/conversation-extensions';
 import { testAcl } from '../../enterprise_search/helpers/test-extensions';
@@ -259,6 +261,42 @@ describe('ProjectService', () => {
     function filterOf(stub: sinon.SinonStub): any {
       return stub.firstCall.args[0][0].$match;
     }
+
+    it('counts only the chats the caller can open: their own and project-shared ones', async () => {
+      const projectId = new mongoose.Types.ObjectId();
+      stubFindChain([
+        { _id: projectId, orgId: new mongoose.Types.ObjectId(ORG_ID), userId: new mongoose.Types.ObjectId(OWNER_ID), members: [], visibility: 'private' },
+      ]);
+      sinon.stub(Project, 'countDocuments').resolves(1);
+      const org = new mongoose.Types.ObjectId(ORG_ID);
+      const chats = [
+        { orgId: org, userId: new mongoose.Types.ObjectId(MEMBER_ID), projectId, isDeleted: false, title: 'mine' },
+        { orgId: org, userId: new mongoose.Types.ObjectId(OWNER_ID), projectId, isDeleted: false, projectVisibility: 'project', title: 'shared to the project' },
+        { orgId: org, userId: new mongoose.Types.ObjectId(OWNER_ID), projectId, isDeleted: false, projectVisibility: 'private', title: 'someone else\'s own' },
+        { orgId: org, userId: new mongoose.Types.ObjectId(MEMBER_ID), projectId, isDeleted: true, title: 'deleted' },
+      ];
+      // The count as the store runs it: the `$match` over the chats, grouped by project.
+      sinon.stub(ChatSession, 'aggregate').callsFake((async (pipeline: Array<{ $match: Record<string, unknown> }>) => {
+        const matched = chats.filter((chat) => matchesFilter(chat as never, pipeline[0]!.$match as never))
+        return matched.length > 0 ? [{ _id: projectId, count: matched.length }] : []
+      }) as never);
+      // The project list's own list scope (`shareRows: 'extendedOnly'`): owned chats and those of projects the caller sees.
+      const visibleConversations = readFilter(
+        { userId: MEMBER_ID, orgId: ORG_ID, teamIds: [] },
+        { kind: 'any' },
+        { accessibleProjectIds: [String(projectId)], includeOwned: true, includeShared: true, includeShareRows: false },
+      ) as never;
+
+      const { projects } = await ProjectService.list(ORG_ID, MEMBER_ID, {
+        page: 1,
+        limit: 20,
+        scope: 'all',
+        includeArchived: false,
+        visibleConversations,
+      });
+
+      expect(projects[0]?.conversationCount).to.equal(2);
+    });
 
     it('includes only the owner branch in scope "mine"', async () => {
       const findStub = stubFindChain([]);

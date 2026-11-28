@@ -13,6 +13,8 @@ import {
 } from '../../../../src/modules/artifacts/controllers/artifacts.controller';
 import { ConversationTitleService } from '../../../../src/modules/artifacts/services/conversation-title.service';
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema';
+import { readFilter } from '../../../../src/modules/enterprise_search/services/conversation/http/default-conversation-guards';
+import { matchesFilter } from '../../enterprise_search/controller/chat-test-harness';
 import { setConversationContext } from '../../../../src/modules/enterprise_search/services/conversation/http/conversation-context';
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils';
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config';
@@ -478,6 +480,105 @@ describe('ConversationTitleService', () => {
       agentKey: 'agent-7',
       conversationArchived: true,
     });
+  });
+});
+
+/**
+ * Who gets a chat's title in the artifact gallery, as main pinned it: over a store that applies the filter, with the
+ * read filter the gallery's list scope gives (`listScope('any')`: own chats, chats shared with the caller, and chats
+ * of the projects they may view).
+ */
+describe('ConversationTitleService: who gets a title, over the filter as the store applies it', () => {
+  const ORG = '507f1f77bcf86cd799439012';
+  const OTHER_USER_ID = '507f1f77bcf86cd799439022';
+
+  afterEach(() => {
+    sinon.restore();
+  });
+
+  const titlesFor = async (doc: Record<string, unknown>, accessibleProjectIds: string[] = []) => {
+    sinon.stub(ChatSession, 'find').callsFake(((filter: Record<string, unknown>) => ({
+      lean: () => Promise.resolve([doc].filter((row) => matchesFilter(row, filter as never))),
+    })) as never);
+    const caller = { userId: CALLER_ID, orgId: ORG, teamIds: [] };
+    return ConversationTitleService.batchTitles([CONVERSATION_ID], {
+      readFilter: readFilter(caller, { kind: 'any' }, {
+        accessibleProjectIds,
+        includeOwned: true,
+        includeShared: true,
+        includeShareRows: true,
+      }) as never,
+      userId: CALLER_ID,
+      accessibleProjectIds,
+    });
+  };
+
+  const chat = (fields: Record<string, unknown>) => ({
+    _id: new Types.ObjectId(CONVERSATION_ID),
+    orgId: new Types.ObjectId(ORG),
+    userId: new Types.ObjectId(OTHER_USER_ID),
+    isDeleted: false,
+    ...fields,
+  });
+
+  it('yields no title when isShared is true but sharedWith is a different user', async () => {
+    const titles = await titlesFor(chat({ isShared: true, sharedWith: [{ userId: new Types.ObjectId(OTHER_USER_ID) }], title: 'Shared with someone else' }));
+    expect(titles.size).to.equal(0);
+  });
+
+  it('returns a title when the caller is on sharedWith', async () => {
+    const titles = await titlesFor(chat({ isShared: true, sharedWith: [{ userId: new Types.ObjectId(CALLER_ID) }], title: 'Shared with me' }));
+    expect(titles.get(CONVERSATION_ID)).to.deep.equal({ title: 'Shared with me' });
+  });
+
+  it('yields no title for a chat that lists the caller but is no longer shared', async () => {
+    const titles = await titlesFor(chat({ isShared: false, sharedWith: [{ userId: new Types.ObjectId(CALLER_ID) }], title: 'Unshared' }));
+    expect(titles.size).to.equal(0);
+  });
+
+  it('returns a title for a project-visible chat in a project the caller can view', async () => {
+    const doc = chat({ projectId: new Types.ObjectId(PROJECT_ID), projectVisibility: 'project', isShared: false, sharedWith: [], title: 'Project chat' });
+    expect((await titlesFor(doc, [PROJECT_ID])).get(CONVERSATION_ID)).to.deep.equal({ title: 'Project chat', projectId: PROJECT_ID });
+    sinon.restore();
+    expect((await titlesFor(doc, [])).size, 'a project the caller cannot view').to.equal(0);
+  });
+
+  it('leaves out the project of an own chat whose project the caller can no longer view', async () => {
+    const titles = await titlesFor(chat({ userId: new Types.ObjectId(CALLER_ID), projectId: new Types.ObjectId(PROJECT_ID), title: 'Old project chat' }));
+    expect(titles.get(CONVERSATION_ID)).to.deep.equal({ title: 'Old project chat' });
+  });
+
+  const archived = (fields: Record<string, unknown>) => chat({ isArchived: true, title: 'Archived by its owner', ...fields });
+
+  it('keeps an archived assistant chat for a viewer it is shared with', async () => {
+    const titles = await titlesFor(archived({ isShared: true, sharedWith: [{ userId: new Types.ObjectId(CALLER_ID) }] }));
+    expect(titles.get(CONVERSATION_ID)).to.deep.equal({ title: 'Archived by its owner', conversationArchived: true });
+  });
+
+  it('drops an archived agent chat for a viewer it is shared with', async () => {
+    const titles = await titlesFor(archived({ sessionType: 'agent', agentKey: 'agent-7', isShared: true, sharedWith: [{ userId: new Types.ObjectId(CALLER_ID) }] }));
+    expect(titles.size).to.equal(0);
+  });
+
+  it('drops an archived project chat for other project members', async () => {
+    const titles = await titlesFor(archived({ projectId: new Types.ObjectId(PROJECT_ID), projectVisibility: 'project' }), [PROJECT_ID]);
+    expect(titles.size).to.equal(0);
+  });
+
+  it('marks an own archived chat so the gallery opens it from the archive', async () => {
+    const titles = await titlesFor(chat({ userId: new Types.ObjectId(CALLER_ID), isArchived: true, sessionType: 'agent', agentKey: 'agent-7', title: 'Archived agent chat' }));
+    expect(titles.get(CONVERSATION_ID)).to.deep.equal({ title: 'Archived agent chat', agentKey: 'agent-7', conversationArchived: true });
+  });
+
+  it('returns the agent of an own agent chat so the gallery can open it there', async () => {
+    const titles = await titlesFor(chat({ userId: new Types.ObjectId(CALLER_ID), sessionType: 'agent', agentKey: 'agent-7', title: 'Agent chat' }));
+    expect(titles.get(CONVERSATION_ID)).to.deep.equal({ title: 'Agent chat', agentKey: 'agent-7' });
+  });
+
+  it("yields no title for another org's chat or a deleted one", async () => {
+    expect((await titlesFor(chat({ userId: new Types.ObjectId(CALLER_ID), orgId: new Types.ObjectId(OTHER_USER_ID), title: 'x' }))).size).to.equal(0);
+    sinon.restore();
+    expect((await titlesFor(chat({ userId: new Types.ObjectId(CALLER_ID), isDeleted: true, title: 'x' }))).size).to.equal(0);
   });
 });
 

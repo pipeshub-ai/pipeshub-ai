@@ -91,6 +91,19 @@ describe('SidebarBase navigation drawer', () => {
     expect(useMobileSidebarStore.getState().registeredCount).toBe(0);
   });
 
+  it('ignores an Escape that a menu inside the drawer already handled', () => {
+    const onClose = vi.fn();
+    render(drawer(onClose));
+
+    const handled = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true });
+    handled.preventDefault();
+    document.dispatchEvent(handled);
+    expect(onClose).not.toHaveBeenCalled();
+    // The same Escape, unhandled, closes it.
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('lets Escape in an inline rename field cancel the rename, not close the drawer', () => {
     const onClose = vi.fn();
     render(
