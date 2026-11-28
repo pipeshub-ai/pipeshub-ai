@@ -19,7 +19,7 @@ import {
 import { ownerLabel, sharedByText } from '@/chat/components/chat-panel/slash-command-menu';
 import { useCanHover } from '@/lib/hooks/use-can-hover';
 import { locateMentionNames, mentionLabel, withheldSourceSpans, withWithheldSpans, type MentionNode } from '@/chat/utils/node-mentions';
-import { CHAT_LINK_STYLE, findUrls, shortLinkLabel } from '@/chat/utils/link-label';
+import { CHAT_LINK_STYLE, cutOutsideUrl, findUrls, shortLinkLabel } from '@/chat/utils/link-label';
 import { parseQuotedSelection, readableQuotedSelection } from '@/chat/utils/quoted-selection';
 import { chatExtension, chatSlots } from '@/config';
 import { questionDisplay } from './question-display';
@@ -46,6 +46,9 @@ export interface ExpandableUserQueryProps {
 }
 
 const NO_MENTIONS: readonly MentionNode[] = [];
+
+/** Clips a long question for its heading without cutting a URL in half (the URL is kept whole), then as the extension clips. */
+const clipHeading = (text: string, limit: number) => chatExtension.question.truncate(text, cutOutsideUrl(text, limit));
 
 /** The question's tracking at each of its two sizes. */
 const HEADLINE_TRACKING = { '4': '-0.04px', '5': '-0.08px' } as const;
@@ -380,7 +383,7 @@ export function ExpandableUserQuery({
 
   // A follow-up that quotes an answer is stored with the excerpt first: the excerpt shows as a quote card above it.
   const quoted = parseQuotedSelection(question);
-  const display = questionDisplay(chatSlots.useQuestionHeading(quoted.question), chatExtension.question.truncate);
+  const display = questionDisplay(chatSlots.useQuestionHeading(quoted.question), clipHeading);
 
   // While the turn streams the server's record is not back yet: the chip comes from the menu's list.
   const sentCommand = command ?? (isStreaming ? liveSentCommand(question, catalog) : null);

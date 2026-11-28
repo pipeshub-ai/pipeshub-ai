@@ -96,6 +96,25 @@ describe('ExpandableUserQuery', () => {
     expect(screen.getByTestId('user-query-heading').textContent).toContain(', please');
   });
 
+  it('links URLs around a mention chip', () => {
+    renderQuery({
+      question: 'See https://example.com/a then compare report.pdf with https://github.com/o/r/issues/7',
+      mentions: [{ id: 'n1', name: 'report.pdf', nodeType: 'record', connector: 'KB' }],
+    });
+    expect(screen.getByText('report.pdf')).toBeTruthy();
+    expect(screen.getByRole('link', { name: '#7' }).getAttribute('href')).toBe('https://github.com/o/r/issues/7');
+    expect(screen.getByRole('link', { name: 'example.com/a' }).getAttribute('href')).toBe('https://example.com/a');
+  });
+
+  it('does not cut a URL in half when it clips a long question for its heading', () => {
+    const url = 'https://example.com/docs/guide';
+    // One long line: its heading is clipped at 140 characters, which falls inside the URL.
+    const q = 'x'.repeat(130) + ' ' + url + ' ' + 'y'.repeat(600);
+    renderQuery({ question: q });
+    const heading = screen.getByTestId('user-query-heading');
+    expect(Array.from(heading.querySelectorAll('a')).map((a) => a.getAttribute('href'))).toEqual([url]);
+  });
+
   it('copies the original URL, not its short label', () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
