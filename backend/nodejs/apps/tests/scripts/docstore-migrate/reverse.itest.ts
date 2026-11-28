@@ -15,6 +15,8 @@ import { reverseFollow } from '../../../src/scripts/docstore-migrate/reverse-fol
 import { reverseSpecial } from '../../../src/scripts/docstore-migrate/reverse-special';
 import { rollback } from '../../../src/scripts/docstore-migrate/reverse';
 import { rollbackOnline } from '../../../src/scripts/docstore-migrate/reverse-follow';
+import { CARRIERS } from '../../../src/scripts/docstore-migrate/carry';
+import type { Carrier } from '../../../src/scripts/docstore-migrate/carry/types';
 import { haveMongod } from './mongo-harness';
 import { World, startWorld } from './world';
 
@@ -435,6 +437,48 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       expect(r.out.message).to.contain('MongoDB is the store again').and.to.contain('job record could not be finished');
       expect(await fence()).to.equal('active');
       expect(await storeEpoch()).to.include({ backend: 'mongo', readonly: true });
+    });
+
+    it('a carrier that does not let go is named even when the job cannot be finished, and a rollback run again releases only it', async () => {
+      let reject = true;
+      const calls: string[] = [];
+      const carrier: Carrier = {
+        name: 'qa-reject',
+        reason: 'test: does not let go the first time',
+        collections: [],
+        fields: {},
+        tables: ['identity.users'],
+        write: async () => undefined,
+        remove: async () => undefined,
+        expected: () => [],
+        actual: async () => new Map(),
+        restore: async () => ({ written: 0, removed: 0 }),
+        clear: async () => undefined,
+        async released() {
+          calls.push(reject ? 'rejected' : 'released');
+          if (reject) throw new Error('still holding');
+        },
+      };
+      (CARRIERS as Carrier[]).push(carrier);
+      try {
+        expect((await run(['migrate', '--online'], ONLINE)).code).to.equal(0);
+        expect((await cut()).out.ok).to.equal(true);
+        const r = await run(['rollback', '--online', '--fail-at', 'finalize-checkpoint'], ONLINE);
+        expect(r.code).to.equal(0);
+        expect(r.out.message).to.contain('job record could not be finished').and.to.contain('qa-reject: still holding').and.to.contain('run `rollback` again');
+        expect((await JobState.current(w.rt))?.progress.releasePending).to.deep.equal(['qa-reject']);
+        const before = await storeEpoch();
+        reject = false;
+        const again = await run(['rollback']);
+        expect(again.code, JSON.stringify(again.out)).to.equal(0);
+        expect(again.out).to.include({ ok: true, mode: 'released' });
+        expect(again.out.message).to.contain('qa-reject');
+        expect(calls).to.deep.equal(['rejected', 'released']);
+        expect(await storeEpoch(), 'nothing but the release ran again').to.deep.equal(before);
+        expect(await JobState.current(w.rt), 'the job ended').to.equal(null);
+      } finally {
+        (CARRIERS as Carrier[]).splice(CARRIERS.indexOf(carrier), 1);
+      }
     });
 
     it('a second rollback, with MongoDB already the store, is refused and changes nothing', async () => {

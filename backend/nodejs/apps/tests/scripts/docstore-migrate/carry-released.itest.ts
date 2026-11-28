@@ -8,6 +8,7 @@ import { PG_BINS, haveStack } from '../../stores/pg-store-harness';
 import { migrateOffline } from '../../../src/scripts/docstore-migrate/offline';
 import { rollback } from '../../../src/scripts/docstore-migrate/reverse';
 import { readMongoFence } from '../../../src/scripts/docstore-migrate/fence';
+import { JobState } from '../../../src/scripts/docstore-migrate/state';
 import { CARRIERS } from '../../../src/scripts/docstore-migrate/carry';
 import type { Carrier } from '../../../src/scripts/docstore-migrate/carry/types';
 import { identityDocs } from './fixtures/identity';
@@ -25,6 +26,8 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       this.timeout(300_000);
       let w: World;
       const released: string[] = [];
+      const other: string[] = [];
+      let failNext = false;
       const carrier: Carrier = {
         name: 'qa-released',
         reason: 'test: records when it is released',
@@ -40,20 +43,43 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         async released() {
           // after the hand-over: MongoDB's fence is active again (it is retired or read-only until then)
           released.push((await readMongoFence(w.rt)).mode);
+          if (failNext) {
+            failNext = false;
+            throw new Error('not this time');
+          }
         },
       };
+      const ok: Carrier = {
+        ...carrier,
+        name: 'qa-released-ok',
+        async released() {
+          other.push('ok');
+        },
+      };
+      const epoch = async (): Promise<unknown> =>
+        (
+          await w.stack.admin((c) =>
+            c.query(
+              'SELECT backend, epoch, readonly FROM platform.store_epoch',
+            ),
+          )
+        ).rows;
 
       before(async () => {
         w = await startWorld(bin, 'migrate_released', DB);
-        (CARRIERS as Carrier[]).push(carrier);
+        (CARRIERS as Carrier[]).push(carrier, ok);
       });
       after(async () => {
-        const i = CARRIERS.indexOf(carrier);
-        if (i >= 0) (CARRIERS as Carrier[]).splice(i, 1);
+        for (const c of [carrier, ok]) {
+          const i = CARRIERS.indexOf(c);
+          if (i >= 0) (CARRIERS as Carrier[]).splice(i, 1);
+        }
         await w?.stop();
       });
       beforeEach(async () => {
         released.length = 0;
+        other.length = 0;
+        failNext = false;
         await w.reseed(identityDocs());
         await w.truncate();
         await w.stack.admin((c) =>
@@ -83,6 +109,63 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect(released).to.deep.equal(['active']);
       });
 
+      it('a carrier that does not let go keeps the job open; a rollback run again releases only it, and nothing else runs again', async () => {
+        expect(
+          (
+            await migrateOffline(w.rt, {
+              dryRun: false,
+              allowWriters: false,
+              log,
+            })
+          ).ok,
+        ).to.equal(true);
+        failNext = true;
+        const r = await rollback(w.rt, {
+          reverse: false,
+          allowWriters: false,
+          log,
+        });
+        expect(r, r.message).to.include({ ok: true, mode: 'no_pg_writes' });
+        expect(r.message)
+          .to.contain('qa-released: not this time')
+          .and.contain('run `rollback` again');
+        expect(
+          (await JobState.current(w.rt))?.progress.releasePending,
+        ).to.deep.equal(['qa-released']);
+        // no other command attaches to the open job
+        const blocked = await migrateOffline(w.rt, {
+          dryRun: false,
+          allowWriters: false,
+          log,
+        }).catch((e: Error) => e);
+        expect(
+          String((blocked as Error).message ?? JSON.stringify(blocked)),
+        ).to.contain('run `rollback` again first');
+        const before = await epoch();
+        const again = await rollback(w.rt, {
+          reverse: false,
+          allowWriters: false,
+          log,
+        });
+        expect(again, again.message).to.include({ ok: true, mode: 'released' });
+        expect(again.verify, 'no verify ran again').to.equal(undefined);
+        expect(released).to.deep.equal(['active', 'active']);
+        expect(
+          other,
+          'a carrier that let go is not released again',
+        ).to.deep.equal(['ok']);
+        expect(await epoch(), 'no hand-over ran again').to.deep.equal(before);
+        expect(await JobState.current(w.rt), 'the job ended').to.equal(null);
+        // nothing is pending any more: a third rollback is refused as before (MongoDB is the store)
+        const third = await rollback(w.rt, {
+          reverse: false,
+          allowWriters: false,
+          log,
+        });
+        expect(third).to.include({ ok: false, mode: 'refused' });
+        expect(released).to.have.length(2);
+      });
+
       it('a refused rollback releases nothing', async () => {
         expect(
           (
@@ -105,6 +188,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         });
         expect(r.ok).to.equal(false);
         expect(released).to.deep.equal([]);
+        expect(other).to.deep.equal([]);
       });
     },
   );

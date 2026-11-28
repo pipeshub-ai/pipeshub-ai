@@ -42,7 +42,7 @@ MONGO_COLLECTIONS; // loading it registers every model
 
 export interface RollbackReport {
   ok: boolean;
-  mode: 'no_pg_writes' | 'reverse' | 'refused';
+  mode: 'no_pg_writes' | 'reverse' | 'released' | 'refused';
   message: string;
   verify?: VerifyReport;
   reversed?: Record<string, { written: number; removed: number }>;
@@ -441,6 +441,62 @@ export async function handOver(
   return { kind: 'done', note: await restoreAppWrites(rt) };
 }
 
+const RETRY_RELEASE = 'run `rollback` again: it retries only them';
+
+/**
+ * After a hand-over: the carriers let go of what only the move held. The ones that do not are named in the running job, which stays open
+ * for them (`attach` refuses every other command until then); the returned sentence says so ('' when all let go).
+ */
+export async function releaseAfterHandOver(
+  rt: MigrationRuntime,
+  o: { js?: JobState; failAt?: string } = {},
+): Promise<string> {
+  const failed = await releaseCarried(
+    carryPg(rt),
+    carriersFor(),
+    hookOn(o.failAt, 'released'),
+  );
+  if (failed.length === 0) return '';
+  const which = failed.map((f) => `${f.name}: ${f.why}`).join('; ');
+  // MongoDB is already the store: whatever happens here, the rollback reports done, and this sentence is what is left to do
+  try {
+    const js = o.js ?? (await JobState.attach(rt));
+    js.progress.releasePending = failed.map((f) => f.name);
+    await js.checkpoint();
+    return ` Some carriers did not let go of what the move held in PostgreSQL (${which}); job ${String(js.id)} stays open for them: ${RETRY_RELEASE}.`;
+  } catch (e) {
+    return ` Some carriers did not let go of what the move held in PostgreSQL (${which}), and that could not be recorded (${errText(e)}): remove what they hold by hand before a move again.`;
+  }
+}
+
+/**
+ * A rollback run again after one that handed the store back but left carriers that did not let go: only their release runs again (null
+ * when none is pending). All released, the job ends.
+ */
+export async function resumeRelease(
+  rt: MigrationRuntime,
+): Promise<{ ok: boolean; message: string } | null> {
+  const pending = (await JobState.current(rt))?.progress.releasePending ?? [];
+  if (pending.length === 0) return null;
+  const js = await JobState.attach(rt, { releasing: true });
+  const failed = await releaseCarried(
+    carryPg(rt),
+    carriersFor().filter((c) => pending.includes(c.name)),
+  );
+  js.progress.releasePending = failed.map((f) => f.name);
+  await js.checkpoint();
+  if (failed.length > 0)
+    return {
+      ok: false,
+      message: `MongoDB is the store; some carriers still did not let go of what the move held in PostgreSQL (${failed.map((f) => `${f.name}: ${f.why}`).join('; ')}): ${RETRY_RELEASE}.`,
+    };
+  await js.finish('done');
+  return {
+    ok: true,
+    message: `MongoDB is the store; the carriers the rollback left (${pending.join(', ')}) let go of what the move held in PostgreSQL. Nothing else was run again.`,
+  };
+}
+
 export async function rollback(
   rt: MigrationRuntime,
   o: { reverse: boolean; allowWriters: boolean; log: Log; failAt?: string },
@@ -456,6 +512,8 @@ async function rollbackLocked(
   rt: MigrationRuntime,
   o: { reverse: boolean; allowWriters: boolean; log: Log; failAt?: string },
 ): Promise<RollbackReport> {
+  const resumed = await resumeRelease(rt);
+  if (resumed) return { ...resumed, mode: 'released' };
   const notStore = await notPostgresStore(rt);
   if (notStore) return { ok: false, mode: 'refused', message: notStore };
   if (!o.allowWriters) {
@@ -503,7 +561,7 @@ async function rollbackLocked(
         throw new Error(`${h.why}.${note}`);
       }
       const cur = await JobState.latest(rt);
-      const released = await releaseCarried(carryPg(rt), carriersFor());
+      const released = await releaseAfterHandOver(rt, { failAt: o.failAt });
       return {
         ok: true,
         mode: 'no_pg_writes',
@@ -545,7 +603,7 @@ async function rollbackLocked(
       const note = await release();
       throw new Error(`${h.why}.${note}`);
     }
-    const released = await releaseCarried(carryPg(rt), carriersFor());
+    const released = await releaseAfterHandOver(rt, { failAt: o.failAt });
     return {
       ok: true,
       mode: 'reverse',

@@ -36,10 +36,12 @@ import {
   handOver,
   notPostgresStore,
   releasePostgres,
+  releaseAfterHandOver,
+  resumeRelease,
   whileExclusive,
 } from './reverse';
 import { VerifyReport, verifyAll } from './verify';
-import { carriersFor, releaseCarried, restoreCarried } from './carry/run';
+import { carriersFor, restoreCarried } from './carry/run';
 import { carryMongo, carryPg } from './carry/steps';
 import { FINALISED, lastMilestone } from './finalize';
 import { refusedIds } from './refusals';
@@ -389,6 +391,8 @@ async function rollbackOnlineLocked(
     (previous
       ? "PostgreSQL is read-only again, as it was when this rollback started, and remains the store (if an earlier attempt froze it, reopen it with `UPDATE platform.store_epoch SET readonly = false WHERE backend = 'postgres'`)."
       : 'PostgreSQL is writable again and remains the store.');
+  const resumed = await resumeRelease(rt);
+  if (resumed) return { ...resumed, stage: 'released' };
   const notStore = await notPostgresStore(rt);
   if (notStore) return { ok: false, stage: 'fence', message: notStore };
   if ((await lastMilestone(rt)) === 'finalised')
@@ -497,8 +501,9 @@ async function rollbackOnlineLocked(
       stage = 'before';
       throw new Error(h.why);
     }
-    // MongoDB is the store: the carriers let go of what only the move held (before the job ends, while its login still works)
-    const released = await releaseCarried(carryPg(rt), carriersFor());
+    // MongoDB is the store: the carriers let go of what only the move held (before the job ends, while its login still works); one that
+    // does not keeps the job open, for a rollback run again
+    const released = await releaseAfterHandOver(rt, { js, failAt: o.failAt });
     // the move is over: end the job (the import login's exemption closes with it) and leave no markers behind
     try {
       if (
@@ -508,14 +513,14 @@ async function rollbackOnlineLocked(
         throw new Error('injected failure after the store row');
       js.progress.phase = 'rolled_back';
       await js.checkpoint();
-      await js.finish('done');
+      if (!released) await js.finish('done');
       await clearMarkers(rt);
     } catch (e) {
       return {
         ok: true,
         stage: 'done',
         freezeMs: Date.now() - t0,
-        message: `MongoDB is the store again at a new epoch and PostgreSQL is closed, but the job record could not be finished (${e instanceof Error ? e.message : String(e)}): end the job and remove the follower's markers by hand, then roll the application back to DOC_STORE=mongo now.${h.note}`,
+        message: `MongoDB is the store again at a new epoch and PostgreSQL is closed, but the job record could not be finished (${e instanceof Error ? e.message : String(e)}): ${released ? '' : 'end the job and '}remove the follower's markers by hand, then roll the application back to DOC_STORE=mongo now.${h.note}${released}`,
       };
     }
     return {

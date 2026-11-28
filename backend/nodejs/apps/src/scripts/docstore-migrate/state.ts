@@ -63,6 +63,8 @@ export interface Progress {
   drain?: { at: string; stoppedRuns: number };
   outbox?: { copied: Record<string, number> };
   flip?: { at: string; backend: 'postgres' };
+  /** Carriers that did not let go after the rollback that handed the store back; the job stays open until a rollback run again releases them. */
+  releasePending?: string[];
   [k: string]: unknown;
 }
 
@@ -143,15 +145,27 @@ export class JobState {
   }
 
   /** Attaches to the running job or starts one. */
-  static async attach(rt: MigrationRuntime): Promise<JobState> {
-    return (await JobState.attachOrStart(rt)).js;
+  static async attach(
+    rt: MigrationRuntime,
+    o: { releasing?: boolean } = {},
+  ): Promise<JobState> {
+    return (await JobState.attachOrStart(rt, o)).js;
   }
 
-  /** `attach`, saying whether this call started the job (the caller may then end it if its own work fails before it did anything). */
+  /**
+   * `attach`, saying whether this call started the job (the caller may then end it if its own work fails before it did anything). A job
+   * a rollback left open for carriers that did not let go is attached only by that release (`releasing`): every other command refuses.
+   */
   static async attachOrStart(
     rt: MigrationRuntime,
+    o: { releasing?: boolean } = {},
   ): Promise<{ js: JobState; created: boolean }> {
     const cur = await JobState.current(rt);
+    const pending = cur?.progress.releasePending ?? [];
+    if (pending.length > 0 && !o.releasing)
+      throw new Error(
+        `a rollback left carriers that did not let go of what the move held in PostgreSQL (${pending.join(', ')}): run \`rollback\` again first`,
+      );
     if (cur) {
       const js = new JobState(rt, cur.id, cur.progress);
       js.remember(cur.progress);
