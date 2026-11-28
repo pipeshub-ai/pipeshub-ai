@@ -5477,8 +5477,8 @@ class TestPersonMigrationAndReaper:
         assert "granted.connectorId = app.id" in reaper
         assert "kh_g.connectorId = $connector_id" in browse
 
-        # A grant in the trash keeps the membership (browse drops it): a restore brings the grant back and needs the membership.
-        assert "isDeleted" not in reaper
+        # Soft-deleted grants must not keep membership alive — browse already drops them.
+        assert "coalesce(granted.isDeleted, false) = false" in reaper
         assert "NOT coalesce(kh_g.isDeleted, false)" in browse
 
     # -- rendered-query assertions -------------------------------------------------
@@ -5670,7 +5670,7 @@ class TestPersonMigrationAndReaper:
         mocked.client.execute_query.return_value = [{"reaped_people": 0}]
         await mocked.reap_stale_external_app_relations("conn-1")
         q = self._query_of(mocked.client)
-        assert q.index("SET uar.matchLock = true") < q.index("WHERE uar.isExternalUser = true AND NOT")
+        assert q.index("SET uar.matchLock = true") < q.rindex("WHERE uar.isExternalUser = true\n") < q.index("AS stale")      # the flag read again
         assert "SET uar.isExternalUser" not in q      # the flag itself is never written
         assert q.index("SET principal.matchLock = true") < q.index("WHERE NOT (principal)--()")
 

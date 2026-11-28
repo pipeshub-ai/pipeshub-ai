@@ -157,11 +157,6 @@ def is_retryable(instance: object, exception: Exception) -> bool:
 _ON_LAST_ATTEMPT: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "retry_on_deadlock_on_last_attempt", default=True
 )
-# The flagged memberships that the rolled-back attempts of one retried call read before their grants (GraphTransactionStore._held_before): an
-# attempt that met a reaper (on ArangoDB, as a conflict) runs again in a new snapshot, where a membership the reaper removed is gone.
-_CARRIED_MEMBERSHIPS: contextvars.ContextVar[tuple[set[tuple[str, str, str, str]], set[tuple[str, str, str]]] | None] = contextvars.ContextVar(
-    "retry_on_deadlock_carried_memberships", default=None
-)
 
 
 def will_retry(instance: object, exception: Exception) -> bool:
@@ -198,40 +193,35 @@ def retry_on_deadlock(max_retries: int = _RETRY_ATTEMPTS):
         @functools.wraps(func)
         async def wrapper(*args, **kwargs):
             logger = logging.getLogger(func.__module__)
-            carried = _CARRIED_MEMBERSHIPS.set((set(), set())) if _CARRIED_MEMBERSHIPS.get() is None else None      # the outermost call's: (grants, memberships)
-            try:
-                last_exception = None
-                for attempt in range(max_retries):
-                    last_attempt = _ON_LAST_ATTEMPT.set(attempt == max_retries - 1)
-                    try:
-                        return await func(*args, **kwargs)
-                    except Exception as e:
-                        last_exception = e
-                        retryable = _is_retryable(args[0] if args else None, e)
+            last_exception = None
+            for attempt in range(max_retries):
+                last_attempt = _ON_LAST_ATTEMPT.set(attempt == max_retries - 1)
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    last_exception = e
+                    retryable = _is_retryable(args[0] if args else None, e)
 
-                        if retryable and attempt < max_retries - 1:
-                            backoff = _retry_delay(attempt)
-                            logger.warning(
-                                f"Deadlock or write conflict in {func.__name__} "
-                                f"(attempt {attempt + 1}/{max_retries}), "
-                                f"retrying in {backoff:.1f}s: {_error_kind(e)}"
+                    if retryable and attempt < max_retries - 1:
+                        backoff = _retry_delay(attempt)
+                        logger.warning(
+                            f"Deadlock or write conflict in {func.__name__} "
+                            f"(attempt {attempt + 1}/{max_retries}), "
+                            f"retrying in {backoff:.1f}s: {_error_kind(e)}"
+                        )
+                        await asyncio.sleep(backoff)
+                        continue
+                    else:
+                        if retryable:
+                            logger.error(
+                                f"Deadlock or write conflict persists in {func.__name__} "
+                                f"after {max_retries} attempts: {_error_kind(e)}"
                             )
-                            await asyncio.sleep(backoff)
-                            continue
-                        else:
-                            if retryable:
-                                logger.error(
-                                    f"Deadlock or write conflict persists in {func.__name__} "
-                                    f"after {max_retries} attempts: {_error_kind(e)}"
-                                )
-                            raise
-                    finally:
-                        _ON_LAST_ATTEMPT.reset(last_attempt)
+                        raise
+                finally:
+                    _ON_LAST_ATTEMPT.reset(last_attempt)
 
-                raise last_exception
-            finally:
-                if carried is not None:
-                    _CARRIED_MEMBERSHIPS.reset(carried)
+            raise last_exception
         return wrapper
     return decorator
 
@@ -374,10 +364,6 @@ class GraphTransactionStore(TransactionStore):
         # The apps (and org) whose grant lock this transaction holds: held to its end, so a later grant statement need not write the lock again.
         # This store's transaction only: a retry opens a new store, and commit and rollback empty it.
         self._app_locks: set[str] = set()
-        # The flagged memberships its grants keep, read before each grant statement, and those grants: a reaper this transaction waited for (or
-        # conflicted with) may have removed one before the lock was taken, and it is made again before commit (_make_held_again).
-        self._held_before: set[tuple[str, str, str]] = set()
-        self._grants_read: list[tuple[str, str, str, str]] = []      # the grants whose memberships were read, one per holder
         self.logger = graph_provider.logger
         # Lookups whose answer cannot change for the life of the transaction.
         # One batch is 100 records from a single connector, so the record group
@@ -730,13 +716,6 @@ class GraphTransactionStore(TransactionStore):
         if not grants:
             return await write(edges)
         if self.explicit:
-            # A holder read once: its next grants are written under the lock its first took, so no reaper of that app runs in between.
-            # shortcut: a holder whose grants in one transaction reach two apps (a team) is read for the first app only; read per app if teams grant across apps in one sync.
-            seen = {(hc, hi) for hc, hi, _, _ in self._grants_read}
-            fresh = list({(hc, hi): (hc, hi, tc, ti) for hc, hi, tc, ti in grants if (hc, hi) not in seen}.values())
-            if fresh:
-                self._held_before.update(await self.graph_provider.lock_external_app_memberships(fresh, transaction=self.txn, lock=False))
-                self._grants_read.extend(fresh)
             return await write(edges, lock_grants=grants, lock_held=self._app_locks)
         held = await self.graph_provider.lock_external_app_memberships(grants, transaction=self.txn)
         return await self._write_grant_alone(edges, grants, held, write)
@@ -756,19 +735,6 @@ class GraphTransactionStore(TransactionStore):
         if failed:
             raised.add_note(f"{len(failed)} of {len(memberships)} app memberships could not be made again")
         raise raised
-
-    async def _make_held_again(self) -> None:
-        """Before commit, with the apps' locks held (no reaper of them can run until the commit): makes again each flagged membership read before a
-        grant of this transaction (or of a rolled-back attempt of the same call) that the grants keep and that is gone, which a reaper this
-        transaction waited for removed. shortcut: a membership removed by a reaper that ended before this transaction read it is not known here;
-        the source's next membership sync makes it again."""
-        carried_grants, carried_memberships = _CARRIED_MEMBERSHIPS.get() or (set(), set())
-        wanted = self._held_before | carried_memberships
-        grants = sorted(set(self._grants_read) | carried_grants)
-        if not wanted or not grants:
-            return
-        kept = set(await self.graph_provider.lock_external_app_memberships(grants, transaction=self.txn, lock=False))
-        await self._make_again(sorted(wanted - kept))
 
     async def _write_grant_alone(self, edges: list[dict], grants: list[tuple[str, str, str, str]], held: list[tuple[str, str, str]],
                                  write: Callable[..., Awaitable[_T]]) -> _T:
@@ -908,11 +874,13 @@ class GraphTransactionStore(TransactionStore):
         within_folder_id: str | None = None,
         include_trashed_roots: bool = False,
     ) -> dict:
-        """Move records to the trash within the active transaction."""
+        """Move records to the trash within the active transaction. A grant on a trashed record keeps no external collaborator's membership, so
+        the reaper may remove one while the record is in the trash; the grants note whom they kept (``stash_external_memberships``), for a restore
+        to make those memberships again."""
         # A trashed record no longer answers a LIVE lookup, and the walk can reach
         # records not named here.
         self._memo_forget_all_records()
-        return await self.graph_provider.soft_delete_records(
+        result = await self.graph_provider.soft_delete_records(
             record_ids,
             connector_id,
             delete_source=delete_source,
@@ -923,6 +891,10 @@ class GraphTransactionStore(TransactionStore):
             within_folder_id=within_folder_id,
             include_trashed_roots=include_trashed_roots,
         )
+        trashed = [r["record_id"] for r in (result or {}).get("soft_deleted_records") or []]
+        if trashed:
+            await self.graph_provider.stash_external_memberships(trashed, transaction=self.txn)
+        return result
 
     async def restore_records(
         self,
@@ -938,10 +910,14 @@ class GraphTransactionStore(TransactionStore):
             await self.graph_provider.lock_grant_apps(
                 sorted({(CollectionNames.RECORDS.value, r["id"]) for r in restores if r.get("id")}), transaction=self.txn,
                 lock_held=self._app_locks)
-        return await self.graph_provider.restore_records(
+        restored = await self.graph_provider.restore_records(
             restores, batch_id, transaction=self.txn,
             connector_id=connector_id, require_live_parent=require_live_parent,
         )
+        if restored:      # the collaborators the grants kept when trashed, whose grant (and group membership) is still there
+            for coll, key, app in await self.graph_provider.restore_external_memberships(restored, transaction=self.txn):
+                await self.ensure_app_membership(key, coll, app, is_external=True)
+        return restored
 
     async def claim_push_record(self, **claim: object) -> object:
         """The conditional write that arbitrates concurrent pushes, within the active transaction."""
@@ -1361,7 +1337,6 @@ class GraphTransactionStore(TransactionStore):
         With HTTP provider: Makes async HTTP call (PUT /_api/transaction/{txn_id})
         With SDK provider: Wrapped in executor for backward compatibility
         """
-        await self._make_held_again()
         self._app_locks.clear()
         await self.graph_provider.commit_transaction(self.txn)
 
@@ -1373,11 +1348,6 @@ class GraphTransactionStore(TransactionStore):
         With SDK provider: Wrapped in executor for backward compatibility
         """
         self._app_locks.clear()
-        carried = _CARRIED_MEMBERSHIPS.get()
-        if carried is not None:
-            # a retry of the call runs again in a new snapshot, where a membership a reaper removed is gone: what was read, and the grants it was read for
-            carried[0].update(self._grants_read)
-            carried[1].update(self._held_before)
         await self.graph_provider.rollback_transaction(self.txn)
 
     async def publish_with_commit(

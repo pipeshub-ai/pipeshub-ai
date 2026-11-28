@@ -677,6 +677,8 @@ def test_the_provider_validates_each_payload_before_converting_it() -> None:
 # Each was read for what it writes and checked against the schemas. A method that appears here for the
 # first time writes something nobody has checked against the strict rules: read it, then add it.
 _AUDITED_CYPHER_WRITERS = frozenset({
+    # notes on existing permission edges (principal ids), set and cleared: no field the record validator owns
+    'restore_external_memberships', 'stash_external_memberships',
     '_delete_unlinked_taxonomy_nodes', '_move_stub_edges_query', '_record_group_link_cypher',
     '_replace_edges_to_cypher', '_require_unique_id', '_stash_connector_delete_handles',
     '_upsert_record_with_type_cypher', 'add_taxonomy_aliases', 'backfill_app_org_ids',

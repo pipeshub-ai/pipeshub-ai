@@ -753,7 +753,7 @@ class _TeamGraph:
     async def find_team_by_name(self, org_id: str, name: str, exclude_team_id: str | None = None) -> None:
         return None
 
-    async def lock_external_app_memberships(self, grants: list, transaction: str | None = None, *, lock: bool = True) -> list:
+    async def lock_external_app_memberships(self, grants: list, transaction: str | None = None) -> list:
         self._statement()      # a statement like any other: it can be the one that conflicts
         return []
 

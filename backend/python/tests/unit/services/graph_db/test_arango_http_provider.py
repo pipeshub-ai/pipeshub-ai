@@ -19107,8 +19107,9 @@ class TestArangoPersonMigrationAndReaper:
             assert coll in grantees
         assert "n.connectorId == @connector_id" in reaper
 
-        # A grant in the trash keeps the membership (browse drops it): a restore brings the grant back and needs the membership.
-        assert "isDeleted" not in reaper
+        # Soft-deleted grants must not keep membership alive — browse already drops them.
+        assert "n.isDeleted != true" in reaper
+        assert "n2.isDeleted != true" in reaper
 
     # -- executing tests -----------------------------------------------------------
     #
@@ -19318,6 +19319,7 @@ class TestArangoPersonMigrationAndReaper:
                 {"principal": "person/p2"},
                 {"principal": "users/u9"},           # a user, never swept
             ],
+            [],                                      # the first pass's marks
             [1, 1],                                  # two people removed
         )
         assert await connected_provider.reap_stale_external_app_relations("c1") == 2
@@ -19330,15 +19332,16 @@ class TestArangoPersonMigrationAndReaper:
         calls = self._script(
             connected_provider,
             [{"principal": "users/u9"}],
+            [],
         )
         assert await connected_provider.reap_stale_external_app_relations("c1") == 0
         assert not any("REMOVE key IN person" in q for q, _ in calls)
 
     @pytest.mark.asyncio
     async def test_reaper_no_ops_when_nothing_is_stale(self, connected_provider):
-        calls = self._script(connected_provider, [])
+        calls = self._script(connected_provider, [], [])
         assert await connected_provider.reap_stale_external_app_relations("c1") == 0
-        assert len(calls) == 1, "must not look for people when no edge was removed"
+        assert len(calls) == 2, "the sweep and the marks; no look for people when no edge was removed"
 
     @pytest.mark.asyncio
     async def test_reaper_swallows_failure(self, connected_provider):

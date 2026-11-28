@@ -370,6 +370,9 @@ user_app_relation_schema = {
             # Set on principals who reached this app only through a share, not through
             # app membership. Gates the browse-hoisting branches.
             "isExternalUser": {"type": "boolean"},
+            # The collaborator reaper's mark: set when no grant keeps the edge, cleared by any write of the membership (common.grant_locks).
+            "reapMarkedAt": {"type": "number"},
+            "reapMarkXid": {"type": "string"},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
         },

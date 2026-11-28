@@ -49,7 +49,7 @@ async def test_in_a_transaction_the_statement_that_writes_a_grant_locks_the_memb
     store, provider, calls = _store()
     await write(store)
     assert getattr(provider, method).await_args.kwargs["lock_grants"] == HELD
-    assert calls == ["lock", "write"]      # the memberships it keeps read first, then the grant statement, which takes the lock
+    assert calls == ["write"]      # no statement of its own: the grant's statement takes the lock
 
 
 @pytest.mark.asyncio
@@ -57,7 +57,7 @@ async def test_a_group_membership_locks_its_member_s_memberships() -> None:
     store, provider, calls = _store()
     assert await store.create_user_group_membership("src-u1", "ext-g1", "app1")
     assert provider.batch_create_edges.await_args.kwargs["lock_grants"] == [("users", "u1", "groups", "g1")]
-    assert calls == ["lock", "write"]
+    assert calls == ["write"]
 
 
 @pytest.mark.asyncio
@@ -68,7 +68,7 @@ async def test_a_record_group_grant_locks_its_users_memberships() -> None:
     await store.batch_upsert_record_group_permissions(
         "rg1", [Permission(email="u1@example.com", type=PermissionType.READ, entity_type=EntityType.USER)], "app1", "org1")
     assert provider.batch_create_edges.await_args.kwargs["lock_grants"] == [("users", "u1", "recordGroups", "rg1")]
-    assert calls == ["lock", "write"]
+    assert calls == ["write"]
 
 
 @pytest.mark.asyncio
@@ -122,7 +122,7 @@ async def test_in_a_transaction_the_person_is_not_read_again() -> None:
     provider.get_document = AsyncMock()
     await store.batch_create_edges([_grant("person", "p1")], "permission")
     provider.get_document.assert_not_awaited()
-    assert calls == ["lock", "write"]
+    assert calls == ["write"]
 
 
 @pytest.mark.asyncio
@@ -208,10 +208,9 @@ async def test_in_a_transaction_the_lock_is_taken_once_and_nothing_is_made_again
     store, provider, _ = _store(held=[("users", "u1", "app1")])
     store.ensure_app_membership = AsyncMock()
     await store.batch_create_edges([_grant("users", "u1"), _grant("groups", "g1")], "permission")
-    assert provider.lock_external_app_memberships.await_args.kwargs == {"transaction": "txn-1", "lock": False}      # read only: the statement locks
+    provider.lock_external_app_memberships.assert_not_awaited()      # the write's statement took it
     provider.batch_create_edges.assert_awaited_once()
     store.ensure_app_membership.assert_not_awaited()
-    assert store._held_before == {("users", "u1", "app1")}
 
 
 @pytest.mark.asyncio
@@ -343,47 +342,6 @@ async def test_a_rolled_back_store_holds_no_lock() -> None:
     assert store._app_locks == set()
 
 
-@pytest.mark.asyncio
-async def test_before_commit_a_membership_read_before_the_grant_and_gone_is_made_again() -> None:
-    """u1's flagged membership was there when the grant was written and is gone before commit (a reaper the grant waited for removed it): the
-    store makes it again, with the lock still held, and only then commits; one that is still there is left alone."""
-    store, provider, calls = _store()
-    provider.lock_external_app_memberships = AsyncMock(side_effect=[[("users", "u1", "app1"), ("users", "u1", "app2")], [("users", "u1", "app2")]])
-    provider.commit_transaction = AsyncMock(side_effect=lambda *_: calls.append("commit"))
-    store.ensure_app_membership = AsyncMock(side_effect=lambda *a, **k: calls.append("make"))
-    await store.batch_create_edges([_grant("users", "u1")], "permission")
-    await store.commit()
-    store.ensure_app_membership.assert_awaited_once_with("u1", "users", "app1", is_external=True)
-    assert calls[-2:] == ["make", "commit"]
-    assert provider.lock_external_app_memberships.await_args.args[0] == [("users", "u1", "records", "r1")]
-
-
-@pytest.mark.asyncio
-async def test_a_retry_makes_again_what_its_rolled_back_attempt_read() -> None:
-    """The first attempt read u1's membership, then conflicted (ArangoDB, behind a reaper) and rolled back; the retry runs in a new snapshot where
-    the reaper's removal is committed and reads nothing: it still makes the membership again before it commits. Outside a retried call
-    nothing is carried."""
-    from app.connectors.core.base.data_store import graph_data_store
-    token = graph_data_store._CARRIED_MEMBERSHIPS.set((set(), set()))
-    try:
-        first, provider, _ = _store(held=[("users", "u1", "app1")])
-        provider.rollback_transaction = AsyncMock()
-        await first.batch_create_edges([_grant("users", "u1")], "permission")
-        await first.rollback()
-        retry, provider2, _ = _store()
-        provider2.commit_transaction = AsyncMock()
-        retry.ensure_app_membership = AsyncMock()
-        await retry.batch_create_edges([_grant("users", "u1")], "permission")
-        await retry.commit()
-        retry.ensure_app_membership.assert_awaited_once_with("u1", "users", "app1", is_external=True)
-    finally:
-        graph_data_store._CARRIED_MEMBERSHIPS.reset(token)
-    alone, provider3, _ = _store(held=[("users", "u1", "app1")])
-    provider3.rollback_transaction = AsyncMock()
-    await alone.batch_create_edges([_grant("users", "u1")], "permission")
-    await alone.rollback()
-    assert graph_data_store._CARRIED_MEMBERSHIPS.get() is None
-
 
 @pytest.mark.asyncio
 async def test_every_membership_is_made_again_though_one_repair_fails_and_the_first_failure_is_raised() -> None:
@@ -415,19 +373,3 @@ async def test_without_a_transaction_a_failed_read_of_the_people_after_the_grant
     with pytest.raises(ConnectionError):
         await store.batch_create_edges([_grant("person", "p1")], "permission")
     store.ensure_app_membership.assert_awaited_once_with("u1", "users", "app1", is_external=True)
-
-
-@pytest.mark.asyncio
-async def test_a_holder_s_memberships_are_read_once_per_transaction() -> None:
-    """A group's grant on a hundred records reads the memberships it keeps once (its members can be thousands), and the check before commit
-    reads them for that one grant: the later grants are written under the lock the first took."""
-    store, provider, _ = _store(held=[("users", "m1", "app1")])
-    provider.commit_transaction = AsyncMock()
-    store.ensure_app_membership = AsyncMock()
-    for i in range(3):
-        await store.batch_create_edges([_grant("groups", "g1", ti=f"r{i}")], "permission")
-    await store.batch_create_edges([_grant("groups", "g1", ti="r9"), _grant("users", "u2", ti="r9")], "permission")
-    reads = [c.args[0] for c in provider.lock_external_app_memberships.await_args_list]
-    assert reads == [[("groups", "g1", "records", "r0")], [("users", "u2", "records", "r9")]]
-    await store.commit()
-    assert provider.lock_external_app_memberships.await_args.args[0] == [("groups", "g1", "records", "r0"), ("users", "u2", "records", "r9")]

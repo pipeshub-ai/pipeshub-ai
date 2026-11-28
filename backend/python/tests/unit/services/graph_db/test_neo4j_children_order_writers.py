@@ -59,6 +59,8 @@ UNTOUCHED = {
     "hard_delete_agent": "an agent, its MCP servers and their tools (none is a browse's child), and their lock flag",
     "reap_stale_external_app_relations": "user-app edges (their own flag, to lock them) and the people they stranded; neither is a browse's child",
     "lock_external_app_memberships": "the lock flag of user-app edges, set and removed; never a browse's child",
+    "stash_external_memberships": "a note on permission edges (keptExternal); never a browse's child",
+    "restore_external_memberships": "clears that note on permission edges; never a browse's child",
     "heal_taxonomy_alias_nodes": "taxonomy nodes",
     "migrate_legacy_kb_to_app": "turns a group into an App, which is never a browse's child, and moves records' connector",
     "migrate_person_to_user": "permission, app and entity edges of a person",

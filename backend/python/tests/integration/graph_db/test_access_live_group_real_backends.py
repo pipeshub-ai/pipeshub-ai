@@ -22,7 +22,6 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from app.connectors.core.base.data_store import graph_data_store
 from app.connectors.core.base.data_store.graph_data_store import GraphTransactionStore
 from tests.integration.graph_permissions.fixture_graph import (
     DRIVE,
@@ -143,6 +142,9 @@ async def graph(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
                           else connect_arango(logger, ARANGO_DB))
     except Exception as exc:
         backend_unavailable(request.param, exc)
+    # The reaper removes in two passes, the second a horizon after the first (common.grant_locks): a millisecond here, so a test's reaper sweeps
+    # what the world's setup pass marked.
+    monkeypatch.setattr(type(provider), "_reap_horizon_ms", lambda *_: 1)
     yield provider
     disconnect = getattr(provider, "disconnect", None)
     if disconnect is not None:
@@ -155,7 +157,23 @@ async def world(request: pytest.FixtureRequest, graph: Any) -> AsyncIterator[_Wo
         w = _World(graph, uuid.uuid4().hex[:10], request.param)
         cleanup.push_async_callback(w.remove)
         await w.seed()
+        await _first_pass(w)
         yield w
+
+
+async def _first_pass(w: _World) -> None:
+    """The reaper's first pass over the world's App: it marks the flagged memberships no grant keeps (ext-own-gone's) and removes nothing; the
+    horizon (a millisecond in these tests) then passes, so the next pass, the one a test races, sweeps them."""
+    await w.graph.reap_stale_external_app_relations(w.sid(APP))
+    await asyncio.sleep(0.01)
+
+
+async def reap_twice(g: Any, app_id: str) -> None:  # noqa: ANN401
+    """Both passes of the reaper over an App, the horizon (a millisecond in these tests) between them: what one pass did before the two-pass
+    reaper."""
+    await g.reap_stale_external_app_relations(app_id)
+    await asyncio.sleep(0.01)
+    await g.reap_stale_external_app_relations(app_id)
 
 
 async def test_a_membership_whose_group_no_longer_exists_grants_nothing(world: _World) -> None:
@@ -422,6 +440,7 @@ async def test_a_person_granted_while_the_reaper_runs_is_not_deleted(world: _Wor
     pid = await g.upsert_person_by_email(Person(email=email, org_id=w.org), raise_on_error=True)
     try:
         await g.ensure_app_membership(pid, "person", w.sid(APP), is_external=True)
+        await _first_pass(w)      # marks the membership: the reaper below sweeps
         tid = await g.begin_transaction(["records", "apps", "person"], ["apps", "organizations", "permission", "person"])
         assert await g.upsert_person_by_email(Person(email=email, org_id=w.org), transaction=tid, raise_on_error=True) == pid
         assert await g.batch_create_edges([{"from_id": pid, "from_collection": "person", "to_id": w.sid("r-own-live"), "to_collection": "records", "type": "USER",
@@ -462,73 +481,6 @@ async def test_a_grant_through_the_store_keeps_its_holder_s_membership_from_a_re
     runs: the reaper waits for it (Neo4j) or conflicts and runs again (ArangoDB), so the collaborator keeps the App once both have committed."""
     w = world
     await _reap_while(w, await _grant_through_the_store(w, w.sid("ext-own-gone")))
-    assert set(await _edges_to_app(w)) == {"u", "ext-own-live", "ext-direct", "ext-own-gone"}
-
-
-@pytest.mark.parametrize("holder", ["direct", "group"])
-async def test_a_grant_in_the_trash_keeps_its_membership_for_the_restore(world: _World, holder: str) -> None:
-    """r-own-live is in the trash with the holder's only grant (ext-direct's own, or own-live's for ext-own-live, whose grant on g-own-live is
-    removed) and the reaper runs and commits: a grant in the trash still counts, so the collaborator keeps the App, and the restore brings back a
-    grant whose membership is there (if the reaper had removed it, nothing would make it again)."""
-    w, g = world, world.graph
-    coll = NODE_TARGETS[w.kind]
-    kept = "ext-direct" if holder == "direct" else "ext-own-live"
-    if holder == "group":
-        assert await g.batch_delete_edges([{"from_id": w.sid("own-live"), "from_collection": coll, "to_id": w.sid("g-own-live"),
-                                            "to_collection": "recordGroups"}], collection="permission")
-    await g.soft_delete_records([w.sid("r-own-live")], w.sid(APP), delete_source="CONNECTOR", batch_id=f"trash-{w.run}")
-    await g.reap_stale_external_app_relations(w.sid(APP))
-    assert kept in await _edges_to_app(w)
-    assert await g.restore_records([{"id": w.sid("r-own-live")}], f"trash-{w.run}") == [w.sid("r-own-live")]
-    assert kept in await _edges_to_app(w)
-
-
-async def test_a_grant_queued_behind_a_reaper_makes_the_membership_it_removed_again(world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The reaper's transaction has removed ext-own-gone's membership (no grant then) and is still open when a connector writes a grant to it
-    through the store, in a retried call. The grant's statement waits for the reaper (Neo4j) or conflicts with it and the call runs again after
-    it (ArangoDB). The writer read the membership before its grant, so once it holds the App's lock it makes it again before it commits, and
-    ext-own-gone keeps the App (without that, the reaper's removal stood under a committed grant)."""
-    from app.connectors.core.base.data_store import graph_data_store
-    from app.connectors.core.base.data_store.graph_data_store import (
-        GraphDataStore,
-        retry_on_deadlock,
-    )
-    w, g = world, world.graph
-    ext = w.sid("ext-own-gone")
-    conflicted = asyncio.Event()
-    monkeypatch.setattr(graph_data_store, "_retry_delay", lambda _attempt: conflicted.set() or 0.5)
-    store = GraphDataStore(logging.getLogger("live-group-it"), g)
-
-    class Writer:
-        data_store_provider = store
-
-        @retry_on_deadlock()
-        async def grant(self) -> None:
-            async with store.transaction() as tx:
-                assert await tx.batch_create_edges([{"from_id": ext, "from_collection": "users", "to_id": w.sid("r-own-live"), "to_collection": "records",
-                                                     "type": "USER", "role": "READER", "createdAtTimestamp": TS}], "permission")
-    rid = await g.begin_transaction(["users", "records", "apps", "person"], ["apps", "organizations", "userAppRelation", "person"])
-    granting = None
-    try:
-        await g.reap_stale_external_app_relations(w.sid(APP), transaction=rid)
-        assert "ext-own-gone" in await _edges_to_app(w)      # the removal is not committed yet
-        granting = asyncio.create_task(Writer().grant())
-        if hasattr(g, "client"):
-            await _until_it_meets(g, granting)      # the grant waits on the App's lock
-            assert not granting.done()
-        else:
-            await asyncio.wait_for(conflicted.wait(), 10)      # the grant conflicted with the reaper and waits to run again
-        await g.commit_transaction(rid)
-        rid = None
-        await asyncio.wait_for(granting, 30)
-    finally:
-        if granting is not None and not granting.done():
-            granting.cancel()
-            with contextlib.suppress(BaseException):
-                await granting
-        if rid is not None:
-            with contextlib.suppress(Exception):
-                await g.rollback_transaction(rid)
     assert set(await _edges_to_app(w)) == {"u", "ext-own-live", "ext-direct", "ext-own-gone"}
 
 
@@ -604,9 +556,7 @@ async def test_a_member_added_while_a_group_s_grant_is_written_keeps_its_members
     conflicted, t1_ended = asyncio.Event(), asyncio.Event()
 
     async def add() -> None:
-        """T2, run again after a conflict once T1 is no longer open, as its caller does (retry_on_deadlock: what a rolled-back attempt read is
-        carried to the next), and committed through the store, which makes again a membership a reaper removed while T2 waited."""
-        graph_data_store._CARRIED_MEMBERSHIPS.set((set(), set()))      # this task's context: one retried call
+        """T2, run again after a conflict once T1 is no longer open, as its caller does."""
         while True:
             t2 = await g.begin_transaction(*collections)
             open_.append(t2)
@@ -948,3 +898,184 @@ async def test_an_app_without_an_org_is_not_reaped(world: _World) -> None:
         rows = await g.http_client.execute_aql("FOR e IN userAppRelation FILTER e._to == @app RETURN {id: PARSE_IDENTIFIER(e._from).key}",
                                                {"app": f"apps/{w.sid('no-org')}"})
     assert [w.plain(r["id"]) for r in rows] == ["ext-lone"]
+
+
+def _grant_of(w: _World, user: str, record: str) -> dict:
+    return {"from_id": w.sid(user), "from_collection": "users", "to_id": w.sid(record), "to_collection": "records", "type": "USER",
+            "role": "READER", "createdAtTimestamp": TS}
+
+
+@pytest.mark.parametrize("locked", [True, False], ids=["under_the_app_lock", "lock_free"])
+async def test_a_writer_open_at_the_sweep_keeps_its_membership_only_under_the_app_lock(world: _World, monkeypatch: pytest.MonkeyPatch, locked: bool) -> None:
+    """ext-own-gone's membership was marked by the reaper's first pass (no grant kept it). It is a member of hole-g, which has no grant. A writer
+    opens after the mark, grants hole-g a record of the App and stays open while the second pass runs. Under the app lock the pass waits for the
+    writer (Neo4j) or conflicts with it and runs again (ArangoDB), and reads the chain: ext-own-gone keeps the App. Lock-free (no writer lock, no
+    reaper lock) the pass reads the committed state, where the grant is not yet, and removes the membership under a chain about to commit: the
+    hole of a reaper-only design (design-6715-v2, section 1). The grant is a group's, so it locks nothing of ext-own-gone's on Neo4j either."""
+    w, g = world, world.graph
+    if not locked:
+        monkeypatch.setattr(type(g), "_REAPER_HOLDS_APP_LOCK", False)
+        head = "_app_lock_cypher" if hasattr(g, "client") else "_app_lock_aql"
+        monkeypatch.setattr(type(g), head, staticmethod(lambda *_a, **_k: ("", {})))
+    coll = NODE_TARGETS[w.kind]
+    extra = {"Role": {"externalRoleId": "ext-hole", "connectorName": DRIVE, "connectorId": w.sid(APP), "createdAtTimestamp": TS}}
+    hole = _node(w.kind, "hole-g", name="hole", **extra.get(w.kind, {}))
+    w.nodes.append(hole)
+    assert await g.batch_upsert_nodes([{**hole["props"], "id": w.sid("hole-g"), "orgId": w.org}], collection=coll)
+    assert await g.batch_create_edges([{"from_id": w.sid("ext-own-gone"), "from_collection": "users", "to_id": w.sid("hole-g"), "to_collection": coll,
+                                        "type": "USER", "role": "READER", "createdAtTimestamp": TS}], collection="permission")
+    collections = (["users", "records", "apps", coll], ["apps", "organizations", "permission", "userAppRelation", coll])
+    tid = await g.begin_transaction(*collections)
+    reaping = None
+    try:
+        assert await GraphTransactionStore(g, tid, explicit=True).batch_create_edges(
+            [{"from_id": w.sid("hole-g"), "from_collection": coll, "to_id": w.sid("r-own-live"), "to_collection": "records",
+              "type": GRANT_TYPE[w.kind], "role": "READER", "createdAtTimestamp": TS}], "permission")
+        reaping = asyncio.create_task(g.reap_stale_external_app_relations(w.sid(APP)))
+        if locked:
+            await _until_it_meets(g, reaping, marker=REAPER_MARK)
+            if hasattr(g, "client"):
+                assert not reaping.done(), "the sweep decided while the grant was open"
+        else:
+            await asyncio.wait_for(reaping, 10)      # nothing to wait for: it decides at once
+        await g.commit_transaction(tid)
+        tid = None
+        try:
+            await reaping
+        except Exception as e:
+            if not g.is_write_conflict(e):
+                raise
+            await g.reap_stale_external_app_relations(w.sid(APP))      # the caller's retry, now that the writer has committed
+    finally:
+        if reaping is not None and not reaping.done():
+            reaping.cancel()
+            with contextlib.suppress(BaseException):
+                await reaping
+        if tid is not None:
+            with contextlib.suppress(Exception):
+                await g.rollback_transaction(tid)
+    assert ("ext-own-gone" in await _edges_to_app(w)) is locked
+
+
+async def test_a_grant_queued_behind_the_sweep_loses_the_membership_until_the_next_membership_step(world: _World, caplog: pytest.LogCaptureFixture) -> None:
+    """The residual window of the two-pass reaper (design-6715-v2, section 2, option D), explained rather than silent. ext-own-gone was marked a
+    horizon ago and nothing wrote its membership since. The sweep removes it holding the App's lock; a grant to it queued behind the sweep (Neo4j)
+    or run again after it (ArangoDB) then commits without the membership, and the removal is logged with the App, the principal and the mark.
+    The next sync's membership step (ensure_app_membership) makes it again. Before the two-pass reaper the grant's re-make covered this, at the
+    cost measured in m6715."""
+    w, g = world, world.graph
+    ext = w.sid("ext-own-gone")
+    caplog.set_level(logging.INFO)
+    rid = await g.begin_transaction(["users", "records", "apps", "person"], ["apps", "organizations", "userAppRelation", "person"])
+    granting = None
+    conflicted = asyncio.Event()
+
+    async def grant() -> None:
+        while True:
+            tid = await g.begin_transaction(["users", "records", "apps"], ["apps", "organizations", "permission", "userAppRelation"])
+            try:
+                assert await GraphTransactionStore(g, tid, explicit=True).batch_create_edges([_grant_of(w, "ext-own-gone", "r-own-live")], "permission")
+                await g.commit_transaction(tid)
+                return
+            except Exception as e:
+                with contextlib.suppress(Exception):
+                    await g.rollback_transaction(tid)
+                if not g.is_write_conflict(e):
+                    raise
+                conflicted.set()
+                await asyncio.sleep(0.2)      # the caller's retry
+    try:
+        await g.reap_stale_external_app_relations(w.sid(APP), transaction=rid)
+        granting = asyncio.create_task(grant())
+        if hasattr(g, "client"):
+            await _until_it_meets(g, granting)      # waits on the App's lock the sweep holds
+            assert not granting.done()
+        else:
+            await asyncio.wait_for(conflicted.wait(), 10)      # conflicts with the sweep, and runs again after it
+        await g.commit_transaction(rid)
+        rid = None
+        await asyncio.wait_for(granting, 20)
+    finally:
+        if granting is not None and not granting.done():
+            granting.cancel()
+            with contextlib.suppress(BaseException):
+                await granting
+        if rid is not None:
+            with contextlib.suppress(Exception):
+                await g.rollback_transaction(rid)
+    assert "ext-own-gone" not in await _edges_to_app(w)
+    from app.utils.logger import log_record_fields
+    removed = [log_record_fields(r) for r in caplog.records if r.getMessage() == "graph.reaper.membership_removed"]
+    assert any(f.get("connector_id") == w.sid(APP) and f.get("principal_id") == ext and f.get("reap_mark") for f in removed), removed
+    await g.ensure_app_membership(ext, "users", w.sid(APP), is_external=True)      # the next sync's membership step
+    assert (await _edges_to_app(w)).get("ext-own-gone") is True
+
+
+async def test_a_membership_written_after_the_mark_is_not_swept(world: _World) -> None:
+    """ext-own-gone was marked by the first pass; its sync's membership step writes it again (the source still shares with it): the write clears
+    the mark, so the next pass does not remove it though no grant keeps it yet, and marks it again instead."""
+    w, g = world, world.graph
+    await g.ensure_app_membership(w.sid("ext-own-gone"), "users", w.sid(APP), is_external=True)
+    await g.reap_stale_external_app_relations(w.sid(APP))
+    assert "ext-own-gone" in await _edges_to_app(w)
+    await asyncio.sleep(0.01)
+    await g.reap_stale_external_app_relations(w.sid(APP))      # marked again by the pass above, nothing wrote it since: removed
+    assert "ext-own-gone" not in await _edges_to_app(w)
+
+
+async def _visible(w: _World, user_id: str, records: list[str]) -> set[str]:
+    return {w.plain(r) for r in await w.graph.filter_accessible_record_ids([w.sid(r) for r in records], user_id, w.org)}
+
+
+async def test_a_trashed_grant_s_collaborator_loses_the_app_and_its_org_wide_records_and_gets_both_back_on_restore(world: _World) -> None:
+    """ext-direct, a user of the org (it belongs to the Organization), is an external collaborator of the App through its one grant, on r-own-live.
+    Its flagged membership is what lets an org-wide grant of the App (on r-org) reach it: app membership is not inert (design-6715-v2, section 3).
+    r-own-live goes to the trash. While the membership is kept (what keep-trashed would do) ext-direct still reads r-org. The reaper's two passes
+    remove it, as the trashed grant keeps nothing: r-org is hidden. The restore makes the membership again from the trashed grant's note, and
+    both records are readable again. ext-cut, whose grant on r-own-live the source revoked while it was in the trash, gets nothing back."""
+    w, g = world, world.graph
+    org_node = _node("Organization", w.org, with_org=False, name="Org", accountType="enterprise", isActive=True)
+    cut, r_org = _node("User", "ext-cut", email="ext-cut@example.com", fullName="Ext cut"), rec("r-org", "r org", connector_id=APP)
+    w.nodes += [cut, r_org]
+    uid = f"uid-ext-direct-{w.run}"
+    try:
+        assert await g.batch_upsert_nodes([org_node["props"]], collection="organizations")
+        assert await g.batch_upsert_nodes([{"id": w.sid("ext-direct"), "userId": uid, "orgId": w.org, "email": "ext-direct@example.com",
+                                            "fullName": "Ext direct", "isActive": True}], collection="users")
+        assert await g.batch_upsert_nodes([{**cut["props"], "id": w.sid("ext-cut"), "orgId": w.org}], collection="users")
+        assert await g.batch_upsert_nodes([{**r_org["props"], "id": w.sid("r-org"), "orgId": w.org, "connectorId": w.sid(APP)}], collection="records")
+        assert await g.batch_create_edges([{"from_id": w.sid("ext-direct"), "from_collection": "users", "to_id": w.org, "to_collection": "organizations",
+                                            "entityType": "ORGANIZATION", "createdAtTimestamp": TS}], collection="belongsTo")
+        assert await g.batch_create_edges([{"from_id": w.org, "from_collection": "organizations", "to_id": w.sid("r-org"), "to_collection": "records",
+                                            "type": "ORG", "role": "READER", "createdAtTimestamp": TS}, _grant_of(w, "ext-cut", "r-own-live")],
+                                          collection="permission")
+        assert await g.batch_create_edges([{"from_id": w.sid("ext-cut"), "from_collection": "users", "to_id": w.sid(APP), "to_collection": "apps",
+                                            "syncState": "COMPLETED", "lastSyncUpdate": TS, "isExternalUser": True}], collection="userAppRelation")
+        assert await _visible(w, uid, ["r-org", "r-own-live"]) == {"r-org", "r-own-live"}
+
+        tid = await g.begin_transaction(["records", "permission", "userAppRelation", "users"], ["records", "permission", "userAppRelation"])
+        await GraphTransactionStore(g, tid, explicit=True).soft_delete_records([w.sid("r-own-live")], w.sid(APP), delete_source="CONNECTOR",
+                                                                               batch_id=f"trash-{w.run}")
+        await g.commit_transaction(tid)
+        assert "r-org" in await _visible(w, uid, ["r-org"])      # the membership kept with the grant in the trash: r-org still reachable
+        await reap_twice(g, w.sid(APP))
+        edges = await _edges_to_app(w)
+        assert "ext-direct" not in edges and "ext-cut" not in edges
+        assert await _visible(w, uid, ["r-org"]) == set()      # no org-wide record while the only grant is in the trash
+
+        assert await g.batch_delete_edges([{"from_id": w.sid("ext-cut"), "from_collection": "users", "to_id": w.sid("r-own-live"),
+                                            "to_collection": "records"}], collection="permission")      # revoked at the source meanwhile
+        tid = await g.begin_transaction(["records", "permission", "userAppRelation", "users", "apps"],
+                                        ["records", "permission", "userAppRelation", "apps", "organizations"])
+        assert await GraphTransactionStore(g, tid, explicit=True).restore_records([{"id": w.sid("r-own-live")}], f"trash-{w.run}") == [w.sid("r-own-live")]
+        await g.commit_transaction(tid)
+        edges = await _edges_to_app(w)
+        assert edges.get("ext-direct") is True and "ext-cut" not in edges
+        assert await _visible(w, uid, ["r-org", "r-own-live"]) == {"r-org", "r-own-live"}
+    finally:
+        if hasattr(g, "client"):
+            await g.client.execute_query("MATCH (o:Organization {id: $o}) DETACH DELETE o", parameters={"o": w.org})
+        else:
+            await g.http_client.execute_aql("FOR d IN organizations FILTER d._key == @o REMOVE d IN organizations", {"o": w.org})
+            await g.http_client.execute_aql("FOR e IN belongsTo FILTER e._to == @o REMOVE e IN belongsTo", {"o": f"organizations/{w.org}"})
+            await g.http_client.execute_aql("FOR e IN permission FILTER e._from == @o REMOVE e IN permission", {"o": f"organizations/{w.org}"})

@@ -11,10 +11,15 @@ A team, or a group or role without a connector, can keep memberships of any app 
 membership holds the org's lock instead, exclusively, and every reaper holds the org's lock (shared where the store has a shared lock) before
 its app's. Locks are taken in that order: the org's, then the apps' by key.
 
-So the reaper decides once every writer holding the lock has committed (its chain is read) or rolled back. A writer that comes after it waits
-(or, on ArangoDB, conflicts and runs again) and may find a flagged membership its chain needs removed: it read the memberships its grants keep
-before its grant statement, and makes again, before it commits and while it holds the lock, each one that is gone
-(``GraphTransactionStore._make_held_again``). PostgreSQL holds the lock as an advisory lock; Neo4j and ArangoDB, without a shared lock, hold it exclusively on the app's node
+So the reaper decides once every writer holding the lock has committed (its chain is read) or rolled back. The reaper removes in two passes:
+the first marks a flagged membership no chain keeps; a later one removes it only if it is still marked (any write of the membership, as a
+sync's membership step makes, clears the mark), still kept by nothing, and the mark is past the horizon (PostgreSQL: every transaction open at
+the mark has ended; Neo4j: the transaction timeout; ArangoDB: a configured grace). A writer open at either pass holds the lock, so the pass waits
+for it (or, on ArangoDB, conflicts) and reads its chain.
+
+What is left: a grant statement that starts while the second pass holds the lock, for a membership that was marked a horizon ago and not
+written since. It commits a chain without the membership, which the next membership step of its sync makes again; each removal is logged
+(``graph.reaper.membership_removed``, with the app, the principal and the mark) so such a case is explained. PostgreSQL holds the lock as an advisory lock; Neo4j and ArangoDB, without a shared lock, hold it exclusively on the app's node
 or document, so writers of one app take turns.
 
 A lock is held until the transaction ends, so each transaction's store remembers the ones it took (``lock_held``) and a later grant statement
@@ -24,8 +29,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from app.utils.logging_fields import log_event
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from logging import Logger
 
 GRANTED = ("records", "recordGroups")      # a grant on one keeps memberships of the node's app
 MEMBERSHIPS = ("groups", "roles")          # a membership of one: the app of the group's connector, or the org's lock without one
@@ -37,3 +45,10 @@ def lock_targets(grants: Sequence[tuple[str, str, str, str]]) -> list[tuple[str,
     sorted: each grant's target. A record's, record group's, group's or role's is its app's (its ``connectorId``); a team's, or a group's or
     role's without a connector, the org's."""
     return sorted({(tc, ti) for _, _, tc, ti in grants if tc in (*GRANTED, *MEMBERSHIPS, *EVERY_APP)})
+
+
+def log_reaped(logger: Logger, connector_id: str, removed: Sequence[dict]) -> None:
+    """One event per flagged membership the reaper's second pass removed: the app, the principal and its mark (an xid or a time)."""
+    for r in removed:
+        log_event(logger, "graph.reaper.membership_removed", connector_id=connector_id, principal_collection=r["principal_collection"],
+                  principal_id=r["principal_id"], reap_mark=str(r["mark"]))

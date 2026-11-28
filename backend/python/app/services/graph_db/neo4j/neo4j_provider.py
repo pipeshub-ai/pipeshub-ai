@@ -162,7 +162,7 @@ from app.services.graph_db.common.full_sync_unlink import (
     split_unseen_by_window,
     unseen_node_keys,
 )
-from app.services.graph_db.common.grant_locks import lock_targets
+from app.services.graph_db.common.grant_locks import lock_targets, log_reaped
 from app.services.graph_db.common.name_match import cypher_name_key, name_query_params
 from app.services.graph_db.common.record_visibility import (
     HAS_INDEXED_COPY,
@@ -19282,7 +19282,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (app:{app_label} {{id: $connector_id}})
             MERGE (principal)-[r:{relationship}]->(app)
             ON CREATE SET r = $props
-            ON MATCH SET r.updatedAtTimestamp = $now
+            ON MATCH SET r.updatedAtTimestamp = $now, r.reapMarkedAt = null      // wanted again: a reaper's clock starts over
             """
             await self.client.execute_query(
                 query,
@@ -19328,6 +19328,56 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     RETURN collect(held.id) AS lock_new
                 }}""", {"lock_held": sorted(lock_held or ()), **{f"lock_apps_{i}": by_label[label] for i, label in enumerate(sorted(by_label))}}
 
+    async def stash_external_memberships(self, record_ids: list[str], transaction: str | None = None) -> int:
+        if not record_ids:
+            return 0
+        rows = await self.client.execute_query(
+            """
+            UNWIND $ids AS rid
+            MATCH (r:Record {id: rid})<-[p:PERMISSION]-(h)
+            CALL {
+                WITH r, p, h
+                MATCH (h)-[u:USER_APP_RELATION]->(:App {id: r.connectorId})
+                WHERE (h:User OR h:Person) AND p.type = 'USER' AND u.isExternalUser = true
+                RETURN (CASE WHEN h:Person THEN 'person' ELSE 'users' END) + '/' + h.id AS kept
+                UNION
+                WITH r, p, h
+                MATCH (m)-[:PERMISSION {type: 'USER'}]->(h)
+                WHERE (h:Group OR h:Role OR h:Teams) AND (m:User OR m:Person)
+                MATCH (m)-[u:USER_APP_RELATION]->(:App {id: r.connectorId})
+                WHERE u.isExternalUser = true
+                RETURN (CASE WHEN m:Person THEN 'person' ELSE 'users' END) + '/' + m.id AS kept
+            }
+            WITH p, collect(DISTINCT kept) AS kept
+            SET p.keptExternal = kept
+            RETURN count(p) AS noted
+            """,
+            parameters={"ids": list(record_ids)}, txn_id=transaction,
+        )
+        return rows[0]["noted"] if rows else 0
+
+    async def restore_external_memberships(self, record_ids: list[str], transaction: str | None = None) -> list[tuple[str, str, str]]:
+        if not record_ids:
+            return []
+        rows = await self.client.execute_query(
+            """
+            UNWIND $ids AS rid
+            MATCH (r:Record {id: rid})<-[p:PERMISSION]-(h)
+            WHERE p.keptExternal IS NOT NULL
+            WITH r, p, h, p.keptExternal AS kept
+            REMOVE p.keptExternal
+            WITH r, h, kept WHERE r.connectorId IS NOT NULL
+            UNWIND kept AS entry
+            WITH r, h, split(entry, '/')[0] AS pc, substring(entry, size(split(entry, '/')[0]) + 1) AS pid
+            WHERE h.id = pid
+               OR EXISTS { MATCH (m:User|Person {id: pid})-[:PERMISSION {type: 'USER'}]->(h) WHERE (h:Group OR h:Role OR h:Teams) }
+            RETURN DISTINCT pc, pid, r.connectorId AS app
+            ORDER BY pc, pid, app
+            """,
+            parameters={"ids": list(record_ids)}, txn_id=transaction,
+        )
+        return [(r["pc"], r["pid"], r["app"]) for r in rows or []]
+
     async def lock_grant_apps(self, targets: Sequence[tuple[str, str]], transaction: str | None = None, *,
                               lock_held: set[str] | None = None) -> None:
         """Write-locks the apps of ``targets`` until the transaction ends, as a grant's statement does (``_app_lock_cypher``)."""
@@ -19350,8 +19400,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         grants: list[tuple[str, str, str, str]],
         transaction: str | None = None,
-        *,
-        lock: bool = True,
     ) -> list[tuple[str, str, str]]:
         """Write-lock, until the transaction ends, the flagged (external-collaborator) app
         memberships the grants ``(holder collection, holder, target collection, target)``
@@ -19385,10 +19433,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 UNWIND $rows AS row
                 {match}
                 WITH DISTINCT p, r, app WHERE r.isExternalUser = true
-                FOREACH (_ IN CASE WHEN $lock THEN [1] ELSE [] END | SET r.{_MATCH_LOCK} = true REMOVE r.{_MATCH_LOCK})
+                SET r.{_MATCH_LOCK} = true
+                REMOVE r.{_MATCH_LOCK}
                 RETURN p.id AS id, labels(p) AS labels, app.id AS app
                 """,
-                parameters={"rows": [{"h": h, "t": t} for h, t in sorted(pairs)], "lock": lock},
+                parameters={"rows": [{"h": h, "t": t} for h, t in sorted(pairs)]},
                 txn_id=transaction,
             )
             for row in rows or []:
@@ -19400,8 +19449,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     def _external_grant_exists_cypher(self, principal_var: str, app_var: str) -> str:
         """Predicate: does this principal still hold a grant that would make it an
         external collaborator on this app?
-
-        A grant on a record in the trash counts: a restore brings it back, and the membership it needs must still be there.
 
         This must stay in step with the grants browse reads
         (`_kh_v3_connector_grants_cypher`). The reaper deletes the `isExternalUser`
@@ -19418,12 +19465,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 MATCH ({principal_var})-[:PERMISSION {{type: 'USER'}}]->(granted)
                 WHERE (granted:Record OR granted:RecordGroup)
                   AND granted.connectorId = {app_var}.id
+                  AND coalesce(granted.isDeleted, false) = false
             }}
             OR EXISTS {{
                 MATCH ({principal_var})-[:PERMISSION {{type: 'USER'}}]->(via)-[:PERMISSION]->(granted)
                 WHERE (via:Group OR via:Role OR via:Teams)
                   AND (granted:Record OR granted:RecordGroup)
                   AND granted.connectorId = {app_var}.id
+                  AND coalesce(granted.isDeleted, false) = false
             }}
         )"""
 
@@ -19578,38 +19627,58 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             SET uar.{_MATCH_LOCK} = true
             REMOVE uar.{_MATCH_LOCK}
             WITH app, collect([principal, uar]) AS flagged
-            CALL {{      // the org's node, which a writer of a team's membership locks, then the app's
+            CALL {{      // the org's node, which a writer of a team's membership locks, then the app's (off only in the test of what the lock prevents)
                 WITH app OPTIONAL MATCH (org:{collection_to_label(CollectionNames.ORGS.value)} {{id: app.orgId}})
+                WITH app, org WHERE $hold_lock
                 FOREACH (o IN CASE WHEN org IS NULL THEN [] ELSE [org] END | SET o.{_MATCH_LOCK} = true REMOVE o.{_MATCH_LOCK})
                 SET app.{_MATCH_LOCK} = true
                 REMOVE app.{_MATCH_LOCK}
             }}
             UNWIND flagged AS row
             WITH row[0] AS principal, row[1] AS uar, app
-            WHERE uar.isExternalUser = true AND NOT {grant_exists}
-            WITH collect(DISTINCT principal) AS stale_principals, collect(uar) AS stale_edges
+            WHERE uar.isExternalUser = true
+            // Two passes (common.grant_locks): an edge no grant keeps is marked; a later pass removes it once the mark is older than the
+            // horizon and it is still marked (a membership write clears the mark) and still kept by nothing
+            WITH principal, uar, NOT {grant_exists} AS stale, uar.reapMarkedAt AS mark
+            FOREACH (_ IN CASE WHEN stale AND mark IS NULL THEN [1] ELSE [] END | SET uar.reapMarkedAt = $now)
+            FOREACH (_ IN CASE WHEN NOT stale AND mark IS NOT NULL THEN [1] ELSE [] END | REMOVE uar.reapMarkedAt)
+            WITH principal, uar, mark, stale AND mark IS NOT NULL AND mark <= $cutoff AS ripe
+            WITH collect(CASE WHEN ripe THEN principal END) AS stale_principals, collect(CASE WHEN ripe THEN uar END) AS stale_edges,
+                 collect(CASE WHEN ripe THEN {{principal_id: principal.id, labels: labels(principal), mark: mark}} END) AS removed
 
             FOREACH (e IN stale_edges | DELETE e)
 
             // Delete only Persons this pass actually stranded. A global sweep would risk
             // a Person created moments ago whose first edge is not committed yet. The person's lock first, as
             // above: a writer of a grant from it takes it (upsert_person_by_email), so its edge is seen.
-            WITH stale_principals
-            UNWIND stale_principals AS principal
-            WITH principal WHERE principal:{person_label}
-            SET principal.{_MATCH_LOCK} = true
-            REMOVE principal.{_MATCH_LOCK}
-            WITH principal WHERE NOT (principal)--()
-            DETACH DELETE principal
-            RETURN count(*) AS reaped_people
+            WITH stale_principals, removed
+            CALL {{
+                WITH stale_principals
+                UNWIND stale_principals AS principal
+                WITH principal WHERE principal:{person_label}
+                SET principal.{_MATCH_LOCK} = true
+                REMOVE principal.{_MATCH_LOCK}
+                WITH principal WHERE NOT (principal)--()
+                DETACH DELETE principal
+                RETURN count(*) AS reaped_people
+            }}
+            RETURN reaped_people, removed
             """
 
+            horizon = self._reap_horizon_ms()
+            now = get_epoch_timestamp_in_ms()
             results = await self.client.execute_query(
                 query,
-                parameters={"connector_id": connector_id},
+                # no horizon (no transaction timeout configured): mark, never remove
+                parameters={"connector_id": connector_id, "now": now, "cutoff": now - horizon if horizon else -1,
+                            "hold_lock": self._REAPER_HOLDS_APP_LOCK},
                 txn_id=transaction,
             )
             reaped = results[0].get("reaped_people", 0) if results else 0
+            people = {collection_to_label(c): c for c in (CollectionNames.USERS.value, CollectionNames.PEOPLE.value)}
+            log_reaped(self.logger, connector_id, [
+                {"principal_collection": next((people[label] for label in r["labels"] if label in people), ""), "principal_id": r["principal_id"],
+                 "mark": r["mark"]} for r in (results[0].get("removed") or [] if results else [])])
             if reaped:
                 self.logger.info(
                     "Reaped %d orphaned person node(s) for connector %s",
@@ -19625,6 +19694,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
                                     op="reap_stale_external_app_relations", connector_id=connector_id)
             return 0
+
+    def _reap_horizon_ms(self) -> int:
+        """How old a reaper's mark must be before the edge is removed: the transaction timeout this provider opens its transactions with
+        (NEO4J_TRANSACTION_TIMEOUT), so no transaction open at the mark is still open; 0 (never remove) when none is configured."""
+        timeout = getattr(self.client, "_transaction_timeout", 0)
+        return int(timeout * 1000) if isinstance(timeout, (int, float)) and timeout > 0 else 0
 
     async def check_connector_name_exists(
         self,

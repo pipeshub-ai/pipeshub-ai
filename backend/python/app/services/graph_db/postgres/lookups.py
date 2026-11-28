@@ -22,6 +22,7 @@ from app.exceptions.graph_db_exceptions import (
     PermissionVerificationUnavailableError,
 )
 from app.models.entities import FileRecord, Record
+from app.services.graph_db.common.grant_locks import log_reaped
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.common.typed_record import typed_record
 from app.services.graph_db.common.utils import (
@@ -963,7 +964,7 @@ class LookupsMixin(PgBase):
             return (0, False)
 
     async def reap_stale_external_app_relations(self, connector_id: str, transaction: str | None = None) -> int:
-        """Drops the external-collaborator membership edges of the app whose grant is gone (a USER grant on a record or group of the connector, in the trash too: a restore brings the grant back and needs the membership, directly or
+        """Drops the external-collaborator membership edges of the app whose grant is gone (a USER grant on a live record or group of the connector, directly or
         through a group, role or team that exists), then the persons left with no edge at all; returns how many persons went. A member who is not flagged external is never touched."""
         org = current_org_id()
 
@@ -972,25 +973,38 @@ class LookupsMixin(PgBase):
             # writer of a team's membership the org's exclusively, until its transaction ends, so this unit waits for each and the next statements read
             # its grants, or the writer waits for this unit, whose decision then predates them.
             # Then the flagged edges, which a writer of a membership updates in place.
-            await tx.execute("/* pipeshub:graph.reap_lock_org */ SELECT pg_advisory_xact_lock_shared(hashtextextended('grant_org:' || $1, 0))", org)
-            await tx.execute("/* pipeshub:graph.reap_lock_app */ SELECT pg_advisory_xact_lock(hashtextextended('grant_app:' || $1 || ':' || $2, 0))", org, connector_id)
+            if self._REAPER_HOLDS_APP_LOCK:      # off only in the test that shows what the lock prevents
+                await tx.execute("/* pipeshub:graph.reap_lock_org */ SELECT pg_advisory_xact_lock_shared(hashtextextended('grant_org:' || $1, 0))", org)
+                await tx.execute("/* pipeshub:graph.reap_lock_app */ SELECT pg_advisory_xact_lock(hashtextextended('grant_app:' || $1 || ':' || $2, 0))", org, connector_id)
             await tx.execute("""/* pipeshub:graph.reap_lock_external_edges */ SELECT 1 FROM graph.edges u WHERE u.org_id = $1 AND u.coll = 'userAppRelation'
                 AND u.to_coll = 'apps' AND u.to_id = $2 AND u.doc->>'isExternalUser' = 'true' FOR UPDATE""", org, connector_id)
-            gone = await tx.fetch("""/* pipeshub:graph.reap_stale_external_edges */ DELETE FROM graph.edges d USING (
-                  SELECT u.from_coll, u.from_id FROM graph.edges u WHERE u.org_id = $1 AND u.coll = 'userAppRelation' AND u.to_coll = 'apps' AND u.to_id = $2
-                    AND u.doc->>'isExternalUser' = 'true'
-                    AND NOT EXISTS (SELECT 1 FROM graph.edges g JOIN graph.nodes t ON t.org_id = g.org_id AND t.coll = g.to_coll AND t.id = g.to_id
-                                    WHERE g.org_id = $1 AND g.coll = 'permission' AND g.from_coll = u.from_coll AND g.from_id = u.from_id AND g.doc->>'type' = 'USER'
-                                      AND g.to_coll IN ('records', 'recordGroups') AND t.doc->>'connectorId' = $2)
-                    AND NOT EXISTS (SELECT 1 FROM graph.edges m JOIN graph.edges g ON g.org_id = m.org_id AND g.coll = 'permission' AND g.from_coll = m.to_coll AND g.from_id = m.to_id
-                                      AND g.to_coll IN ('records', 'recordGroups')
-                                    JOIN graph.nodes t ON t.org_id = g.org_id AND t.coll = g.to_coll AND t.id = g.to_id
-                                    JOIN graph.nodes mg ON mg.org_id = m.org_id AND mg.coll = m.to_coll AND mg.id = m.to_id
-                                    WHERE m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = u.from_coll AND m.from_id = u.from_id AND m.doc->>'type' = 'USER'
-                                      AND m.to_coll IN ('groups', 'roles', 'teams') AND t.doc->>'connectorId' = $2)) s
-                WHERE d.org_id = $1 AND d.coll = 'userAppRelation' AND d.to_coll = 'apps' AND d.to_id = $2 AND d.from_coll = s.from_coll AND d.from_id = s.from_id
-                  AND d.doc->>'isExternalUser' = 'true'      -- on the target too: a row changed since the snapshot is checked again on it, never on s
-                RETURNING d.from_coll, d.from_id""", org, connector_id)
+            # Two passes (common.grant_locks): a flagged edge no grant keeps is marked with this transaction's id; a later pass removes it once
+            # every transaction open at the mark has ended and it is still marked (a membership write clears the mark) and still kept by nothing.
+            gone = await tx.fetch("""/* pipeshub:graph.reap_stale_external_edges */ WITH j AS (
+                  SELECT u.from_coll, u.from_id, u.doc->>'reapMarkXid' AS mark,
+                    (NOT EXISTS (SELECT 1 FROM graph.edges g JOIN graph.nodes t ON t.org_id = g.org_id AND t.coll = g.to_coll AND t.id = g.to_id
+                                      WHERE g.org_id = $1 AND g.coll = 'permission' AND g.from_coll = u.from_coll AND g.from_id = u.from_id AND g.doc->>'type' = 'USER'
+                                        AND g.to_coll IN ('records', 'recordGroups') AND t.doc->>'connectorId' = $2 AND t.doc->>'isDeleted' IS DISTINCT FROM 'true')
+                      AND NOT EXISTS (SELECT 1 FROM graph.edges m JOIN graph.edges g ON g.org_id = m.org_id AND g.coll = 'permission' AND g.from_coll = m.to_coll AND g.from_id = m.to_id
+                                        AND g.to_coll IN ('records', 'recordGroups')
+                                      JOIN graph.nodes t ON t.org_id = g.org_id AND t.coll = g.to_coll AND t.id = g.to_id
+                                      JOIN graph.nodes mg ON mg.org_id = m.org_id AND mg.coll = m.to_coll AND mg.id = m.to_id
+                                      WHERE m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = u.from_coll AND m.from_id = u.from_id AND m.doc->>'type' = 'USER'
+                                        AND m.to_coll IN ('groups', 'roles', 'teams') AND t.doc->>'connectorId' = $2 AND t.doc->>'isDeleted' IS DISTINCT FROM 'true')) AS stale
+                  FROM graph.edges u WHERE u.org_id = $1 AND u.coll = 'userAppRelation' AND u.to_coll = 'apps' AND u.to_id = $2
+                    AND u.doc->>'isExternalUser' = 'true'),
+                marked AS (UPDATE graph.edges m SET doc = m.doc || jsonb_build_object('reapMarkXid', txid_current()::text, 'reapMarkedAt', $3::bigint)
+                  FROM j WHERE m.org_id = $1 AND m.coll = 'userAppRelation' AND m.to_coll = 'apps' AND m.to_id = $2 AND m.from_coll = j.from_coll
+                    AND m.from_id = j.from_id AND j.stale AND j.mark IS NULL RETURNING 1),
+                cleared AS (UPDATE graph.edges c SET doc = c.doc - 'reapMarkXid' - 'reapMarkedAt'
+                  FROM j WHERE c.org_id = $1 AND c.coll = 'userAppRelation' AND c.to_coll = 'apps' AND c.to_id = $2 AND c.from_coll = j.from_coll
+                    AND c.from_id = j.from_id AND NOT j.stale AND j.mark IS NOT NULL RETURNING 1)
+                DELETE FROM graph.edges d USING j
+                WHERE d.org_id = $1 AND d.coll = 'userAppRelation' AND d.to_coll = 'apps' AND d.to_id = $2 AND d.from_coll = j.from_coll AND d.from_id = j.from_id
+                  AND j.stale AND j.mark IS NOT NULL AND pg_snapshot_xmin(pg_current_snapshot()) > j.mark::xid8
+                  AND d.doc->>'isExternalUser' = 'true' AND d.doc->>'reapMarkXid' = j.mark      -- on the row too: a mark cleared since is checked on it
+                RETURNING d.from_coll, d.from_id, j.mark""", org, connector_id, get_epoch_timestamp_in_ms())
+            log_reaped(self.logger, connector_id, [{"principal_collection": r["from_coll"], "principal_id": r["from_id"], "mark": r["mark"]} for r in gone])
             people = sorted({r["from_id"] for r in gone if r["from_coll"] == "person"})
             if not people:
                 return 0

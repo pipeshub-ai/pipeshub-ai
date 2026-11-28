@@ -546,6 +546,9 @@ class IGraphDBProvider(ABC):
        and new generic format to ensure smooth migration.
     """
 
+    # The collaborator reaper's org and app locks (common.grant_locks). Off only in the test that shows what they prevent.
+    _REAPER_HOLDS_APP_LOCK = True
+
     #: How ``page_entity_index_source`` orders a connector's records, when it differs from the order this store always used. It is part of the
     #: entity index's pass marker, so a pass saved under another order starts over instead of resuming a cursor that could skip rows.
     ENTITY_INDEX_PAGE_ORDER: str = ""
@@ -4533,12 +4536,10 @@ class IGraphDBProvider(ABC):
         self,
         grants: list[tuple[str, str, str, str]],
         transaction: str | None = None,
-        *,
-        lock: bool = True,
     ) -> list[tuple[str, str, str]]:
         """
         Hold, until the transaction ends, the flagged (``isExternalUser``) app memberships
-        that the grants would keep (with ``lock=False``, only read them): the lock ``reap_stale_external_app_relations`` takes
+        that the grants would keep: the lock ``reap_stale_external_app_relations`` takes
         before it decides. A grant writer calls it before writing the grants, so a reaper
         either waits for them to commit and sees them, or decided before they existed.
 
@@ -4555,6 +4556,19 @@ class IGraphDBProvider(ABC):
             The memberships held, as ``(principal collection, principal, app)``, sorted.
         """
         pass
+
+    @abstractmethod
+    async def stash_external_memberships(self, record_ids: list[str], transaction: str | None = None) -> int:
+        """On each permission edge into the records (trashed, in this transaction), note the principals whose flagged (external-collaborator) app
+        membership of the record's app the grant keeps, as ``keptExternal`` ("collection/key" each): the grant's own holder (a USER grant from a
+        user or person), or a group's, role's or team's members (USER permission). The reaper may remove those memberships while the record is in
+        the trash, where its grants keep nothing. Returns the number of edges noted."""
+
+    @abstractmethod
+    async def restore_external_memberships(self, record_ids: list[str], transaction: str | None = None) -> list[tuple[str, str, str]]:
+        """For the restored records, the noted principals (``stash_external_memberships``) whose grant still keeps them: the edge's own holder, or a
+        member of it still. As (principal collection, principal, app); the notes are cleared. A principal whose grant or group membership went
+        while the record was in the trash is not returned."""
 
     @abstractmethod
     async def lock_grant_apps(

@@ -56,7 +56,7 @@ async def test_the_collaborator_reaper_keeps_only_whom_an_existing_group_still_g
                                     edge("x0", "users", "app1", "apps", isExternalUser=False, syncState="COMPLETED", lastSyncUpdate=1)], "userAppRelation")
         await p.batch_create_edges([_perm("x1", "users", "g", member), _perm("x2", "users", "gone", member), _perm("x3", "users", "r1", "records"),
                                     _perm("g", member, "r1", "records", "GROUP"), _perm("gone", member, "r2", "records", "GROUP")], "permission")
-        await p.reap_stale_external_app_relations("app1")
+        await reap_twice(p)
         kept = await pg_db.run(lambda tx: tx.fetch("SELECT from_id FROM graph.edges WHERE org_id = $1 AND coll = 'userAppRelation' AND to_id = 'app1'", org))
     assert sorted(r["from_id"] for r in kept) == ["x0", "x1", "x3"]
 
@@ -207,6 +207,7 @@ async def test_a_person_granted_while_the_reaper_runs_is_not_deleted(pg_db) -> N
         await _world_x(p, org)
         pid = await p.upsert_person_by_email(Person(email="pers@example.com", org_id=org), raise_on_error=True)
         await p.ensure_app_membership(pid, "person", "app1", is_external=True)
+        await p.reap_stale_external_app_relations("app1")      # the first pass marks the membership: the one below sweeps
         tid = await p.begin_transaction([], [])
         assert await p.upsert_person_by_email(Person(email="pers@example.com", org_id=org), transaction=tid, raise_on_error=True) == pid
         await p.batch_create_edges([_perm(pid, "person", "r1", "records")], "permission", transaction=tid)
@@ -219,6 +220,13 @@ async def _x2_flagged(p, org: str) -> None:
     await _world_x(p, org)
     await p.batch_upsert_nodes([{"_key": "x2", "orgId": org, "email": "x2@example.com"}], "users")
     await p.batch_create_edges([edge("x2", "users", "app1", "apps", isExternalUser=True, syncState="COMPLETED", lastSyncUpdate=1)], "userAppRelation")
+    await p.reap_stale_external_app_relations("app1")      # the reaper's first pass marks x2 (no grant yet): the next pass, a test's, sweeps it
+
+
+async def reap_twice(p, app_id: str = "app1") -> int:
+    """Both passes of the reaper (common.grant_locks): the first marks, the second, once every transaction open at the mark has ended, removes."""
+    await p.reap_stale_external_app_relations(app_id)
+    return await p.reap_stale_external_app_relations(app_id)
 
 
 async def test_a_grant_through_the_store_keeps_its_holder_s_membership_from_a_reaper_that_overlaps_it(pg_db) -> None:
@@ -231,54 +239,6 @@ async def test_a_grant_through_the_store_keeps_its_holder_s_membership_from_a_re
         await GraphTransactionStore(p, tid, explicit=True).batch_create_edges([_perm("x2", "users", "r1", "records")], "permission")
         await _reap_while(p, tid, pg_db=pg_db)
         assert set(await _app_edges(pg_db, org)) == {"x2"}
-
-
-async def test_a_grant_in_the_trash_keeps_its_membership_for_the_restore(pg_db) -> None:
-    """r1 is in the trash with x2's grant, its only one, and the reaper runs and commits: a grant in the trash still counts, so x2 keeps app1,
-    and the restore of r1 brings back a grant whose membership is there (if the reaper had removed it, nothing would make it again)."""
-    p, org = PostgresGraphProvider(logging.getLogger("live-group"), pg_db), new_org()
-    with ctx(org):
-        await _x2_flagged(p, org)
-        await p.batch_create_edges([_perm("x2", "users", "r1", "records")], "permission")
-        await p.soft_delete_records(["r1"], "app1", delete_source="CONNECTOR", batch_id="b-trash")
-        await p.reap_stale_external_app_relations("app1")
-        assert set(await _app_edges(pg_db, org)) == {"x2"}
-        assert await p.restore_records([{"id": "r1"}], "b-trash") == ["r1"]
-        assert set(await _app_edges(pg_db, org)) == {"x2"}
-
-
-async def test_a_grant_queued_behind_a_reaper_makes_the_membership_it_removed_again(pg_db) -> None:
-    """The reaper's transaction has removed x2's membership (no grant then) and is still open when a grant to x2 is written through the store.
-    The grant's statement waits for the reaper's lock; the reaper commits; the writer read x2's membership before its grant, so once it holds
-    the app's lock it makes it again before it commits: the grant and the membership are both there (without that, the removal stood under a
-    committed grant)."""
-    p, org = PostgresGraphProvider(logging.getLogger("live-group"), pg_db), new_org()
-    with ctx(org):
-        await _x2_flagged(p, org)
-        rid = await p.begin_transaction([], [])
-        tid = await p.begin_transaction([], [])
-        store = GraphTransactionStore(p, tid, explicit=True)
-        open_ = [rid, tid]
-        grant = None
-        try:
-            await p.reap_stale_external_app_relations("app1", transaction=rid)
-            grant = asyncio.create_task(store.batch_create_edges([_perm("x2", "users", "r1", "records")], "permission"))
-            await _until_waiting_on(p, pg_db, rid, grant)
-            assert not grant.done()
-            await p.commit_transaction(open_.pop(0))
-            await asyncio.wait_for(grant, 10)
-            await store.commit()
-            open_.pop(0)
-        finally:
-            if grant is not None and not grant.done():
-                grant.cancel()
-                with contextlib.suppress(BaseException):
-                    await grant
-            for t in open_:
-                with contextlib.suppress(Exception):
-                    await p.rollback_transaction(t)
-        grants = await pg_db.run(lambda tx: tx.fetch("SELECT 1 FROM graph.edges WHERE org_id = $1 AND coll = 'permission' AND from_id = 'x2'", org))
-        assert (await _app_edges(pg_db, org), len(grants)) == ({"x2": True}, 1)
 
 
 @pytest.mark.parametrize("member", ["groups", "roles", "teams"])
@@ -629,5 +589,124 @@ async def test_a_direct_grant_on_a_record_without_a_connector_keeps_no_membershi
     with ctx(org):
         await _x2_flagged(p, org)
         await p.batch_upsert_nodes([{"_key": "rx", "recordName": "rx", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}], "records")
-        assert await p.lock_external_app_memberships([("users", "x2", "records", "rx")], lock=False) == []
-        assert await p.lock_external_app_memberships([("users", "x2", "records", "r1")], lock=False) == [("users", "x2", "app1")]
+        assert await p.lock_external_app_memberships([("users", "x2", "records", "rx")]) == []
+        assert await p.lock_external_app_memberships([("users", "x2", "records", "r1")]) == [("users", "x2", "app1")]
+
+
+@pytest.mark.parametrize("locked", [True, False], ids=["under_the_app_lock", "lock_free"])
+async def test_a_writer_open_at_the_sweep_keeps_its_membership_only_under_the_app_lock(pg_db, monkeypatch, locked) -> None:
+    """x2's membership was marked by the reaper's first pass (no grant then). A writer opens after the mark, grants x2 r1 and stays open while the
+    second pass runs. Under the app lock the pass waits for the writer and reads its grant: x2 keeps app1. Without the lock the pass reads the
+    committed state, where the grant is not yet, and removes the membership under the grant about to commit: the hole of a reaper-only design
+    (design-6715-v2, section 1). Every transaction open at the mark has ended, so the horizon does not hold the pass back in either case."""
+    p, org = PostgresGraphProvider(logging.getLogger("live-group"), pg_db), new_org()
+    if not locked:
+        monkeypatch.setattr(PostgresGraphProvider, "_REAPER_HOLDS_APP_LOCK", False)
+    with ctx(org):
+        await _x2_flagged(p, org)
+        tid = await p.begin_transaction([], [])
+        reaping = None
+        try:
+            holder = await p._q(lambda tx: tx.fetchval("SELECT pg_backend_pid()"), tid)
+            await GraphTransactionStore(p, tid, explicit=True).batch_create_edges([_perm("x2", "users", "r1", "records")], "permission")
+            reaping, reaper_pid = await _reaper(p)
+            if locked:
+                await _until_blocked_or_done(pg_db, holder, reaping, waiter=reaper_pid)
+                assert not reaping.done(), "the sweep decided while the grant was open"
+            else:
+                await asyncio.wait_for(reaping, 10)
+            await p.commit_transaction(tid)
+            tid = None
+            await asyncio.wait_for(reaping, 10)
+        finally:
+            if reaping is not None and not reaping.done():
+                reaping.cancel()
+                with contextlib.suppress(BaseException):
+                    await reaping
+            if tid is not None:
+                with contextlib.suppress(Exception):
+                    await p.rollback_transaction(tid)
+        assert ("x2" in await _app_edges(pg_db, org)) is locked
+
+
+async def test_a_grant_queued_behind_the_sweep_loses_the_membership_until_the_next_membership_step(pg_db, caplog) -> None:
+    """The residual window of the two-pass reaper (design-6715-v2, section 2, option D), explained rather than silent. x2 was marked by the first
+    pass and nothing wrote its membership since. The sweep removes it holding app1's lock; a grant to x2 queued behind it then commits without the
+    membership, and the removal is logged with the app, the principal and the mark. The next sync's membership step makes it again. Before the
+    two-pass reaper the grant's re-make covered this, at the cost measured in m6715."""
+    from app.utils.logger import log_record_fields
+    caplog.set_level(logging.INFO)
+    p, org = PostgresGraphProvider(logging.getLogger("live-group"), pg_db), new_org()
+    with ctx(org):
+        await _x2_flagged(p, org)
+        rid, tid = await p.begin_transaction([], []), await p.begin_transaction([], [])
+        open_, grant = [rid, tid], None
+        try:
+            await p.reap_stale_external_app_relations("app1", transaction=rid)
+            grant = asyncio.create_task(GraphTransactionStore(p, tid, explicit=True).batch_create_edges([_perm("x2", "users", "r1", "records")], "permission"))
+            await _until_waiting_on(p, pg_db, rid, grant)
+            await p.commit_transaction(open_.pop(0))
+            await asyncio.wait_for(grant, 10)
+            await p.commit_transaction(open_.pop(0))
+        finally:
+            if grant is not None and not grant.done():
+                grant.cancel()
+                with contextlib.suppress(BaseException):
+                    await grant
+            for t in open_:
+                with contextlib.suppress(Exception):
+                    await p.rollback_transaction(t)
+        assert "x2" not in await _app_edges(pg_db, org)
+        removed = [log_record_fields(r) for r in caplog.records if r.getMessage() == "graph.reaper.membership_removed"]
+        assert any(f.get("connector_id") == "app1" and f.get("principal_id") == "x2" and f.get("reap_mark") for f in removed), removed
+        await p.ensure_app_membership("x2", "users", "app1", is_external=True)      # the next sync's membership step
+        assert await _app_edges(pg_db, org) == {"x2": True}
+
+
+async def test_a_membership_written_after_the_mark_is_not_swept(pg_db) -> None:
+    """x2 was marked by the first pass; its sync's membership step writes it again: the write clears the mark, so the next pass keeps it (and
+    marks it again, no grant keeping it), and the one after removes it."""
+    p, org = PostgresGraphProvider(logging.getLogger("live-group"), pg_db), new_org()
+    with ctx(org):
+        await _x2_flagged(p, org)
+        await p.ensure_app_membership("x2", "users", "app1", is_external=True)
+        await p.reap_stale_external_app_relations("app1")
+        assert "x2" in await _app_edges(pg_db, org)
+        await p.reap_stale_external_app_relations("app1")
+        assert "x2" not in await _app_edges(pg_db, org)
+
+
+async def test_a_trashed_grant_s_collaborator_loses_the_app_and_its_org_wide_records_and_gets_both_back_on_restore(pg_db) -> None:
+    """x2, a user of the org (it belongs to the Organization), is an external collaborator of app1 through its one grant, on r1. Its flagged
+    membership is what lets app1's org-wide grant (on r-org) reach it: app membership is not inert (design-6715-v2, section 3). r1 goes to the
+    trash. While the membership is kept (what keep-trashed would do) x2 still reads r-org. The reaper's two passes remove it, the trashed grant
+    keeping nothing: r-org is hidden. The restore makes the membership again from the trashed grant's note: both records are readable again. x3,
+    whose grant on r1 the source revoked while it was in the trash, gets nothing back."""
+    p, org = PostgresGraphProvider(logging.getLogger("live-group"), pg_db), new_org()
+    with ctx(org):
+        await _x2_flagged(p, org)
+        await p.batch_upsert_nodes([{"_key": org, "name": "Org", "accountType": "enterprise", "isActive": True}], "organizations")
+        await p.batch_upsert_nodes([{"_key": "x2", "orgId": org, "email": "x2@example.com", "userId": "uid-x2", "isActive": True},
+                                    {"_key": "x3", "orgId": org, "email": "x3@example.com"}], "users")
+        await p.batch_upsert_nodes([{"_key": "r-org", "recordName": "r-org", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}], "records")
+        await p.batch_create_edges([edge("x2", "users", org, "organizations", entityType="ORGANIZATION", createdAtTimestamp=1)], "belongsTo")
+        await p.batch_create_edges([_perm(org, "organizations", "r-org", "records", "ORG"), _perm("x2", "users", "r1", "records"),
+                                    _perm("x3", "users", "r1", "records")], "permission")
+        await p.batch_create_edges([edge("x3", "users", "app1", "apps", isExternalUser=True, syncState="COMPLETED", lastSyncUpdate=1)], "userAppRelation")
+
+        async def visible() -> set[str]:
+            return await p.filter_accessible_record_ids(["r-org", "r1"], "uid-x2", org)
+        assert await visible() == {"r-org", "r1"}
+        tid = await p.begin_transaction([], [])
+        await GraphTransactionStore(p, tid, explicit=True).soft_delete_records(["r1"], "app1", delete_source="CONNECTOR", batch_id="b-trash")
+        await p.commit_transaction(tid)
+        assert "r-org" in await visible()      # the membership kept with the grant in the trash: r-org still reachable
+        await reap_twice(p)
+        assert set(await _app_edges(pg_db, org)) == set()
+        assert await visible() == set()      # no org-wide record while the only grant is in the trash
+        await p.delete_edge("x3", "users", "r1", "records", "permission")      # revoked at the source meanwhile
+        tid = await p.begin_transaction([], [])
+        assert await GraphTransactionStore(p, tid, explicit=True).restore_records([{"id": "r1"}], "b-trash") == ["r1"]
+        await p.commit_transaction(tid)
+        assert await _app_edges(pg_db, org) == {"x2": True}
+        assert await visible() == {"r-org", "r1"}
