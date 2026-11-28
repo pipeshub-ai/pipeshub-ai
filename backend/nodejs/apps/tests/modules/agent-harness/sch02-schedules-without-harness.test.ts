@@ -13,6 +13,7 @@ import {
   classicDigest,
   classicTurnBody,
   DEADLINE_PASSED,
+  STOP_GRACE_MS,
   scheduledConversationId,
 } from '../../../src/modules/agent-harness/application/classic-schedule-runner';
 import { orgSchedulesOn } from '../../../src/modules/agent-harness/config';
@@ -398,7 +399,11 @@ describe('ADR-SCH-02 schedules without the harness', () => {
       c.set('deleted', { status: 'deleted' });
       const r = runner(c);
       expect(await r.status(ORG, 'running', 2_000)).to.deep.equal({ status: 'running' });
-      expect(await r.status(ORG, 'late', 500)).to.deep.equal({
+      // Stopped at its deadline (the stream's cap), it still runs until the stop lands: the next firing waits.
+      expect(await r.status(ORG, 'late', 500)).to.deep.equal({ status: 'running' });
+      expect(await runner(c, 500 + STOP_GRACE_MS).status(ORG, 'late', 500)).to.deep.equal({ status: 'running' });
+      // Past the grace only a process that died mid-turn leaves it in progress.
+      expect(await runner(c, 501 + STOP_GRACE_MS).status(ORG, 'late', 500)).to.deep.equal({
         status: 'failed',
         reason: DEADLINE_PASSED,
       });

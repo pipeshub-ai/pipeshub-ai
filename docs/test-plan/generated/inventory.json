@@ -2,8 +2,8 @@
  "generatedBy": "scripts/harness_test_inventory.py",
  "componentMap": "docs/test-plan/data/components.json",
  "harnessTestFiles": 2053,
- "claimedTestFiles": 4017,
- "claimedTests": 43225,
+ "claimedTestFiles": 4018,
+ "claimedTests": 43231,
  "claimedFilesByLevel": {
   "cohesion": 64,
   "component": 37,
@@ -18,7 +18,7 @@
   "live": 6,
   "perf": 3,
   "replay": 16,
-  "unit": 3288
+  "unit": 3289
  },
  "components": [
   {
@@ -2076,7 +2076,7 @@
    "name": "Chat routes and routing",
    "status": "built (one-request routing is LAT1/CPD-10, in flight)",
    "files": 59,
-   "tests": 840,
+   "tests": 842,
    "filesByLevel": {
     "component": 11,
     "contract": 4,
@@ -2093,7 +2093,7 @@
     "fault": 2,
     "integration": 23,
     "perf": 1,
-    "unit": 683
+    "unit": 685
    },
    "markers": {
     "integration": 1
@@ -2424,7 +2424,7 @@
      "path": "backend/nodejs/apps/tests/modules/enterprise_search/utils/stream-lifecycle.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 20
+     "tests": 22
     },
     {
      "path": "backend/nodejs/apps/tests/modules/enterprise_search/utils/utils.regeneration.test.ts",
@@ -15568,15 +15568,15 @@
    "id": "MAC",
    "name": "Model access routes and accounts",
    "status": "built",
-   "files": 63,
-   "tests": 488,
+   "files": 64,
+   "tests": 490,
    "filesByLevel": {
     "component": 4,
     "contract": 3,
     "e2e-browser": 1,
     "integration": 2,
     "integration-docker": 3,
-    "unit": 50
+    "unit": 51
    },
    "testsByLevel": {
     "component": 23,
@@ -15584,7 +15584,7 @@
     "e2e-browser": 1,
     "integration": 3,
     "integration-docker": 6,
-    "unit": 427
+    "unit": 429
    },
    "markers": {
     "docker": 3
@@ -15940,6 +15940,12 @@
      "tests": 4
     },
     {
+     "path": "frontend/app/(main)/workspace/ai-accounts/__tests__/engine-not-installed.test.tsx",
+     "level": "unit",
+     "markers": [],
+     "tests": 2
+    },
+    {
      "path": "frontend/app/(main)/workspace/ai-accounts/__tests__/engine-signin.test.tsx",
      "level": "unit",
      "markers": [],
@@ -15988,7 +15994,7 @@
    "name": "Scheduler",
    "status": "built, Labs off by default",
    "files": 48,
-   "tests": 443,
+   "tests": 445,
    "filesByLevel": {
     "component": 2,
     "contract": 1,
@@ -16003,7 +16009,7 @@
     "e2e-browser": 1,
     "integration": 16,
     "integration-docker": 1,
-    "unit": 374
+    "unit": 376
    },
    "markers": {
     "docker": 1
@@ -16203,7 +16209,7 @@
      "path": "backend/nodejs/apps/tests/modules/enterprise_search/scheduled-classic-turn.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 7
+     "tests": 9
     },
     {
      "path": "backend/python/tests/unit/harness/engines/test_scheduled_durable.py",
@@ -25876,15 +25882,15 @@
    "id": "FEA",
    "name": "Frontend workspace and admin surfaces",
    "status": "built",
-   "files": 306,
-   "tests": 2228,
+   "files": 307,
+   "tests": 2230,
    "filesByLevel": {
     "e2e-browser": 15,
-    "unit": 291
+    "unit": 292
    },
    "testsByLevel": {
     "e2e-browser": 53,
-    "unit": 2175
+    "unit": 2177
    },
    "markers": {},
    "unmatchedTestGlobs": [],
@@ -26318,6 +26324,12 @@
      "level": "unit",
      "markers": [],
      "tests": 4
+    },
+    {
+     "path": "frontend/app/(main)/workspace/ai-accounts/__tests__/engine-not-installed.test.tsx",
+     "level": "unit",
+     "markers": [],
+     "tests": 2
     },
     {
      "path": "frontend/app/(main)/workspace/ai-accounts/__tests__/engine-signin.test.tsx",

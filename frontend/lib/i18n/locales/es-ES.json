@@ -7929,6 +7929,7 @@
         "engine_isolation_unavailable": "Necesita el entorno de sandbox gVisor en este servidor",
         "engine_group_required": "Solo algunos grupos de tu organización pueden usarlo"
       },
+      "notInstalledHow": "{{engine}} no está instalado en este servidor, así que aún no se puede elegir. No es un ajuste: quien administra tu servidor de PipesHub lo instala con {{command}} y después se puede elegir aquí.",
       "isolation": {
         "required": "Los motores de código necesitan el entorno de sandbox gVisor en este servidor —",
         "guide": "guía de instalación",

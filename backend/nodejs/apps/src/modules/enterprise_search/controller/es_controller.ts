@@ -140,6 +140,7 @@ import {
 import { apiRecord, apiStoredRecords } from '../utils/internal-record-fields';
 import {
   attachUpstreamAbort,
+  DETACHED_RUN_MAX_MS,
   runGuarded,
   StreamedContentAccumulator,
 } from '../utils/stream-lifecycle';
@@ -179,6 +180,7 @@ import { resolvedProxyHeaders } from '../../agent-harness/transport/resolved-tur
 import {
   scheduledConversationOrigin,
   type ScheduledConversationOrigin,
+  scheduledTurnDetachMs,
   scheduledTurnHeaders,
   scheduledTurnOf,
   scheduledTurnOrigin,
@@ -1252,23 +1254,32 @@ export const streamChat =
       let streamSettled = false;
       const contentAccumulator = new StreamedContentAccumulator();
 
-      const upstreamAbort = attachUpstreamAbort(res, () => {
-        if (streamSettled || !savedConversation) return;
-        if (completeData || upstreamAiErrorEventForwarded) {
-          runGuarded(finalizeRun);
-          return;
-        }
-        streamSettled = true;
-        void savePartialConversation(
-          savedConversation,
-          contentAccumulator.getText(),
-          null,
-          { parts: contentAccumulator.getParts() },
-        ).then(
-          () => run.end({ kind: 'abandoned' }),
-          (error: unknown) => run.end({ kind: 'failed', error }),
-        );
-      });
+      const upstreamAbort = attachUpstreamAbort(
+        res,
+        () => {
+          if (streamSettled || !savedConversation) return;
+          if (completeData || upstreamAiErrorEventForwarded) {
+            runGuarded(finalizeRun);
+            return;
+          }
+          streamSettled = true;
+          void savePartialConversation(
+            savedConversation,
+            contentAccumulator.getText(),
+            null,
+            { parts: contentAccumulator.getParts() },
+          ).then(
+            () => {
+              run.end({ kind: 'abandoned' });
+            },
+            (error: unknown) => {
+              run.end({ kind: 'failed', error });
+            },
+          );
+        },
+        scheduledTurnDetachMs(req) ?? DETACHED_RUN_MAX_MS,
+        { detached: scheduledTurnDetachMs(req) !== null },
+      );
       const stream = await run.open(() =>
         startAIStream(aiCommandOptions, 'Chat Stream', upstreamAbort.signal),
       );
@@ -1753,8 +1764,12 @@ export const addMessageStream =
             parts: contentAccumulator.getParts(),
           },
         ).then(
-          () => run.end({ kind: 'abandoned' }),
-          (error: unknown) => run.end({ kind: 'failed', error }),
+          () => {
+            run.end({ kind: 'abandoned' });
+          },
+          (error: unknown) => {
+            run.end({ kind: 'failed', error });
+          },
         );
       });
       const stream = await run.open(() =>
@@ -3949,8 +3964,12 @@ async function regenerateAnswersInternal(
           await dropReplacedTurn();
         })
         .then(
-          () => run.end({ kind: 'abandoned' }),
-          (error: unknown) => run.end({ kind: 'failed', error }),
+          () => {
+            run.end({ kind: 'abandoned' });
+          },
+          (error: unknown) => {
+            run.end({ kind: 'failed', error });
+          },
         )
         .finally(() => releaseRun(reservation));
     });
@@ -6765,8 +6784,8 @@ export const streamAgentConversation =
     try {
       // Before the stream opens; see streamChat.
       projectLink = await resolveProjectLink(
-        orgId as unknown as string,
-        userId as unknown as string,
+        orgId,
+        userId,
         req.body as Record<string, unknown>,
         projectCallerFromRequest(req, appConfig),
       );
@@ -6901,23 +6920,32 @@ export const streamAgentConversation =
       let streamSettled = false;
       const contentAccumulator = new StreamedContentAccumulator();
 
-      const upstreamAbort = attachUpstreamAbort(res, () => {
-        if (streamSettled || !savedConversation) return;
-        if (completeData || upstreamAiErrorEventForwarded) {
-          runGuarded(finalizeRun);
-          return;
-        }
-        streamSettled = true;
-        void savePartialConversation(
-          savedConversation,
-          contentAccumulator.getText(),
-          null,
-          { parts: contentAccumulator.getParts() },
-        ).then(
-          () => run.end({ kind: 'abandoned' }),
-          (error: unknown) => run.end({ kind: 'failed', error }),
-        );
-      });
+      const upstreamAbort = attachUpstreamAbort(
+        res,
+        () => {
+          if (streamSettled || !savedConversation) return;
+          if (completeData || upstreamAiErrorEventForwarded) {
+            runGuarded(finalizeRun);
+            return;
+          }
+          streamSettled = true;
+          void savePartialConversation(
+            savedConversation,
+            contentAccumulator.getText(),
+            null,
+            { parts: contentAccumulator.getParts() },
+          ).then(
+            () => {
+              run.end({ kind: 'abandoned' });
+            },
+            (error: unknown) => {
+              run.end({ kind: 'failed', error });
+            },
+          );
+        },
+        scheduledTurnDetachMs(req) ?? DETACHED_RUN_MAX_MS,
+        { detached: scheduledTurnDetachMs(req) !== null },
+      );
       const stream = await run.open(() =>
         startAIStream(
           aiCommandOptions,
@@ -7383,8 +7411,12 @@ export const addMessageStreamToAgentConversation =
             parts: contentAccumulator.getParts(),
           },
         ).then(
-          () => run.end({ kind: 'abandoned' }),
-          (error: unknown) => run.end({ kind: 'failed', error }),
+          () => {
+            run.end({ kind: 'abandoned' });
+          },
+          (error: unknown) => {
+            run.end({ kind: 'failed', error });
+          },
         );
       });
       const stream = await run.open(() =>

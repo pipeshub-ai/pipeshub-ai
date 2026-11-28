@@ -238,6 +238,9 @@ export function classicDigest(
  * the schedule's owner, in a new conversation named after the schedule. Its `runRef` is that conversation: approving
  * a held call there is the person's own next turn in it, and the run reads as ended once an answer no longer waits.
  */
+/** How long past its deadline a scheduled turn's stop may take to land before the turn is taken as gone. */
+export const STOP_GRACE_MS = 5 * 60 * 1000;
+
 export class ClassicScheduleRunner implements ScheduleRunner {
   readonly kind = 'classic' as const;
 
@@ -334,8 +337,12 @@ export class ClassicScheduleRunner implements ScheduleRunner {
     const late = deadlineAt !== null && this.now() > deadlineAt;
     switch (state.status) {
       case 'deleted':
-      case 'stopped':
         return { status: 'cancelled' };
+      case 'stopped':
+        // Past its deadline the turn was stopped there (`scheduledTurnDetach`), not by a person.
+        return late
+          ? { status: 'failed', reason: DEADLINE_PASSED }
+          : { status: 'cancelled' };
       case 'failed':
         return {
           status: 'failed',
@@ -344,7 +351,9 @@ export class ClassicScheduleRunner implements ScheduleRunner {
             : {}),
         };
       case 'in_progress':
-        return late
+        // The turn is stopped at its deadline (`scheduledTurnDetach`) and saves what it wrote; until that lands it
+        // is still running, so the next firing waits. Past the grace only a process that died mid-turn leaves it so.
+        return deadlineAt !== null && this.now() > deadlineAt + STOP_GRACE_MS
           ? { status: 'failed', reason: DEADLINE_PASSED }
           : { status: 'running' };
       case 'complete':

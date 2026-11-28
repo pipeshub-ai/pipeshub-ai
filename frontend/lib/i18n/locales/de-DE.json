@@ -7831,6 +7831,7 @@
         "engine_isolation_unavailable": "Benötigt die gVisor-Sandbox-Laufzeit auf diesem Server",
         "engine_group_required": "Nur einige Gruppen Ihrer Organisation können sie nutzen"
       },
+      "notInstalledHow": "{{engine}} ist auf diesem Server nicht installiert und kann daher noch nicht gewählt werden. Das ist keine Einstellung: Wer Ihren PipesHub-Server betreibt, installiert es mit {{command}}; danach kann es hier gewählt werden.",
       "isolation": {
         "required": "Coding-Engines benötigen die gVisor-Sandbox-Laufzeit auf diesem Server —",
         "guide": "Installationsanleitung",

@@ -35,6 +35,20 @@ export function scheduledTurnHeaders(req: Request): Record<string, string> {
   };
 }
 
+/**
+ * How long a scheduled turn's stream runs with no browser before it is stopped (`attachUpstreamAbort`'s cap): no
+ * one watches it, so it is detached from the start and stopped at its firing's deadline, its partial answer saved as
+ * a person's leaving saves it. Until then the firing counts it running, so the next firing waits (overlap). Null for
+ * any other request, which keeps the usual cap from its browser's leaving.
+ */
+export function scheduledTurnDetachMs(
+  req: Request,
+  now: number = Date.now(),
+): number | null {
+  const mark = scheduledTurnOf(req);
+  return mark === null ? null : Math.max(1, mark.deadlineAt - now);
+}
+
 export interface ScheduledConversationOrigin {
   kind: 'schedule';
   scheduleId: string;

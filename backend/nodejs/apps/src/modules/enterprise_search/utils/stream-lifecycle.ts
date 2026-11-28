@@ -77,6 +77,7 @@ export function attachUpstreamAbort(
   res: ResponseWatchable,
   onAbandon?: () => void,
   maxDetachedMs: number = DETACHED_RUN_MAX_MS,
+  options: { detached?: boolean } = {},
 ): UpstreamAbortHandle {
   const controller = new AbortController();
   let clientDisconnected = false;
@@ -109,15 +110,17 @@ export function attachUpstreamAbort(
     }, maxDetachedMs);
     abandonTimer.unref();
   };
+  // A run no browser ever watches (a schedule's turn) is detached from the start: its cap runs from now.
+  if (options.detached === true) onClose();
   // A socket's close is emitted outside any request: run the listener in the request it was attached in.
   const requestContext = getRequestContext();
   res.on(
     'close',
-    bindOrgContext(() =>
+    bindOrgContext(() => {
       requestContext
         ? runWithRequestContext(requestContext, onClose)
-        : onClose(),
-    ),
+        : onClose();
+    }),
   );
 
   return {

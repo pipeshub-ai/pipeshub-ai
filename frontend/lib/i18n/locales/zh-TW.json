@@ -7780,6 +7780,7 @@
         "engine_isolation_unavailable": "此伺服器需要 gVisor 沙箱執行環境",
         "engine_group_required": "您的組織中只有部分群組可以使用"
       },
+      "notInstalledHow": "此伺服器未安裝 {{engine}}，因此暫時無法選擇。這不是一項設定：執行您 PipesHub 伺服器的人員使用 {{command}} 安裝後，即可在此處選擇。",
       "isolation": {
         "required": "程式碼引擎需要此伺服器上的 gVisor 沙箱執行環境 —",
         "guide": "安裝指南",

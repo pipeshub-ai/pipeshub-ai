@@ -480,6 +480,8 @@ export class MongoScheduleStore implements ScheduleStore, ScheduleEraser {
                 : {}),
               updatedAt: firing.createdAt,
             },
+            // Disabling it is a change an edit must see: one read before the claim is refused SCHEDULE_CHANGED.
+            ...(disable !== undefined ? { $inc: { revision: 1 } } : {}),
           },
           { session },
         );

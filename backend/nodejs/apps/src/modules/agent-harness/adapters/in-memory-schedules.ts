@@ -256,7 +256,12 @@ export class InMemoryScheduleStore implements ScheduleStore, ScheduleEraser {
       ...schedule,
       nextFireAt,
       ...(disable !== undefined
-        ? { status: 'disabled' as const, statusReason: disable }
+        ? {
+            status: 'disabled' as const,
+            statusReason: disable,
+            // Disabling it is a change an edit must see: one read before the claim is refused SCHEDULE_CHANGED.
+            revision: scheduleRevision(schedule) + 1,
+          }
         : {}),
       updatedAt: firing.createdAt,
     });

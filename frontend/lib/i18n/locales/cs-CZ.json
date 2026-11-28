@@ -8027,6 +8027,7 @@
         "engine_isolation_unavailable": "Vyžaduje na tomto serveru běhové prostředí sandboxu gVisor",
         "engine_group_required": "Mohou ho používat jen některé skupiny ve vaší organizaci"
       },
+      "notInstalledHow": "{{engine}} není na tomto serveru nainstalován, takže ho zatím nelze vybrat. Nejde o nastavení: kdo spravuje váš server PipesHub, ho nainstaluje příkazem {{command}} a pak ho tu půjde vybrat.",
       "isolation": {
         "required": "Kódovací enginy vyžadují na tomto serveru běhové prostředí sandboxu gVisor —",
         "guide": "návod k instalaci",

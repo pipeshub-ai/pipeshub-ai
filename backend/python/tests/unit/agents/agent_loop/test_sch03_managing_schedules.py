@@ -10,6 +10,7 @@ routes.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -294,7 +295,9 @@ async def _approve(node: _Node, name: str, arguments: dict[str, Any], *, between
 async def test_sch03_classic_an_approved_change_patches_with_the_revision_and_this_chat() -> None:
     node = _Node()
     node.answers[("PATCH", "/sch-1")] = (200, {**VIEW, "revision": 4, "input": {"query": "Tell me a short animal joke."}})
-    when = {"kind": "once", "at": "2026-11-28T09:00:00Z", "timeZone": "UTC"}
+    # A day on from now: a time already past is refused before any card, so a fixed date would expire.
+    at = (datetime.now(UTC) + timedelta(days=1)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    when = {"kind": "once", "at": at, "timeZone": "UTC"}
     text = await _approve(node, "schedule_update", {"id": "sch-1", "revision": 3, "ask": "Tell me a short animal joke.", "when": when})
     (patch,) = node.writes()
     assert patch.method == "PATCH" and patch.url.path.endswith("/schedules/sch-1")

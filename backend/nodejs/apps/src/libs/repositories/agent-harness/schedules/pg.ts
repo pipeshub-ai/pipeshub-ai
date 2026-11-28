@@ -373,7 +373,10 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
       return await this.org(firing.orgId, true, async (k) => {
         const { rowCount } = await k.query(
           // $5: the slot a run would take, refused when its owner asked to skip it (ADR-SCH-03 D4); null for a skip.
+          // $6: disabling it is a change an edit must see, so it bumps the revision an edit read.
           `/* pipeshub:harness.schedules_move_cursor */ UPDATE harness.schedules SET doc = doc || $4::jsonb
+              || CASE WHEN $6::boolean THEN jsonb_build_object('revision', COALESCE((doc->>'revision')::bigint, 0) + 1)
+                 ELSE '{}'::jsonb END
             WHERE org_id = $1 AND id = $2 AND status = 'active' AND next_fire_at = $3
               AND ($5::bigint IS NULL OR (doc->>'skipNextAt') IS NULL OR (doc->>'skipNextAt')::bigint <> $5::bigint)`,
           [
@@ -388,6 +391,7 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
               updatedAt: firing.createdAt,
             }),
             firing.status === 'pending' ? firing.slotAt : null,
+            disable !== undefined,
           ],
         );
         if (rowCount !== 1) return null;

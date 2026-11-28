@@ -150,7 +150,10 @@ export function describeScheduleStoreContract(
         status: 'disabled',
         statusReason: 'ran_once',
         nextFireAt: null,
+        revision: 1,
       });
+      // An edit of its time read before it fired is refused: it ran, and a new time would never run.
+      expect(await f.store.update(ORG, schedule.id, 0, { name: 'Later' }, T0 + 1)).to.equal('changed');
       expect(await f.store.dueCron(at + 60_000, 10)).to.deep.equal([]);
       const second = aFiring(schedule, { kind: 'once', slotKey: firing.slotKey, slotAt: at });
       expect(await f.store.claimCronSlot(second, at, null, 'ran_once')).to.equal(null);

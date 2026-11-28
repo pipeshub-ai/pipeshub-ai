@@ -7849,7 +7849,7 @@
       "route_unavailable": "This way of reaching the model is not available.",
       "route_not_configured": "This model is not set up.",
       "unknown": "Not available.",
-      "engine_unavailable": "This coding engine is not installed on this deployment.",
+      "engine_unavailable": "This coding engine is not installed on this server.",
       "engine_profile_untrusted": "This engine's profile isn't signed for this deployment.",
       "engine_sandbox_missing": "Coding engines need the sandbox add-on, not installed on this deployment.",
       "engine_profile_widening": "Your organization does not allow this."
@@ -7887,7 +7887,7 @@
       "unavailable": "The coding engines can't be loaded right now.",
       "reasons": {
         "route_not_configured": "Needs an AI model set up for the organization",
-        "engine_unavailable": "Not installed on this deployment",
+        "engine_unavailable": "Not installed on this server",
         "engine_profile_untrusted": "Profile not signed for this deployment",
         "engine_sandbox_missing": "Coding engines need the sandbox add-on, not installed on this deployment",
         "offering_not_permitted": "Not available in this kind of installation with your organization's models",
@@ -7895,6 +7895,7 @@
         "engine_isolation_unavailable": "Needs the gVisor sandbox runtime on this server",
         "engine_group_required": "Only some groups in your organization can use it"
       },
+      "notInstalledHow": "{{engine}} isn't installed on this server, so it can't be chosen yet. It isn't a setting: whoever runs your PipesHub server installs it with {{command}}, and it can then be chosen here.",
       "isolation": {
         "required": "Coding engines need the gVisor sandbox runtime on this server —",
         "guide": "install guide",

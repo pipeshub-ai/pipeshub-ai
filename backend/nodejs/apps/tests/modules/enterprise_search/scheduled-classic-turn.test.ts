@@ -20,9 +20,11 @@ import { AIServiceCommand } from '../../../src/libs/commands/ai_service/ai.servi
 import { HttpMethod } from '../../../src/libs/enums/http-methods.enum'
 import { FakeAIBackend, InMemoryChatStore, settle } from './controller/chat-test-harness'
 import { AGENT_KEY, ORG, OWNER, RUN, appConfig, finalAnswer } from './controller/streaming-flows'
+import { markScheduledTurn, scheduledTurnDetachMs } from '../../../src/modules/agent-harness/transport/scheduled-turn-mark'
 
 const MINTED = 'Bearer minted-for-alice'
-const DEADLINE = Date.parse('2026-11-27T18:00:00.000Z')
+// An hour on: the turn's stream is stopped at its deadline, so a deadline already past would stop it at once.
+const DEADLINE = Date.now() + 3_600_000
 
 /** The app's authentication as far as this turn needs it: the minted credential is the owner, anything else is not. */
 const auth = {
@@ -64,6 +66,30 @@ describe('ADR-SCH-02 D3: a scheduled classic turn', () => {
     sinon.restore()
   })
 
+  it('a turn still going at its deadline is stopped there and its conversation saved, so the firing sees it end', async () => {
+    let ended = 0
+    const started = await turns.start({
+      authorization: MINTED,
+      body: { query: 'Tell me a joke', chatMode: 'agent', recordIds: [], filters: {} },
+      mark: { ...mark, deadlineAt: Date.now() + 80 },
+      ended: () => {
+        ended += 1
+      },
+    })
+    const id = (started as { conversationId: string }).conversationId
+    await settle()
+    ai.send('TEXT_MESSAGE_CONTENT', { delta: 'Why did the' })
+    const conversations = new RepositoryClassicConversations(getConversationRepository)
+    expect((await conversations.read(String(ORG), id))?.status).to.equal('in_progress')
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    await settle(10)
+    // Saved as stopped with what it wrote; the firing reads it as ended at its deadline, not cancelled by a person.
+    expect((await conversations.read(String(ORG), id))?.status).to.equal('stopped')
+    const runner = new ClassicScheduleRunner(turns, conversations, () => Date.now())
+    expect(await runner.status(String(ORG), id, Date.now() - 1)).to.deep.equal({ status: 'failed', reason: 'deadline_passed' })
+    expect(ended).to.equal(0)
+  })
+
   it('opens a conversation named after the schedule, marked as its, and tells the query service it is a firing', async () => {
     let ended = 0
     const started = await turns.start({
@@ -87,7 +113,7 @@ describe('ADR-SCH-02 D3: a scheduled classic turn', () => {
     await settle()
     const [call] = ai.streamCalls
     expect(call!.headers['x-pipeshub-schedule-firing']).to.equal('fir-1')
-    expect(call!.headers['x-pipeshub-ask-deadline']).to.equal('2026-11-27T18:00:00.000Z')
+    expect(call!.headers['x-pipeshub-ask-deadline']).to.equal(new Date(DEADLINE).toISOString())
     expect(call!.headers['authorization']).to.equal(MINTED)
     expect(ended).to.equal(0)
 
@@ -199,5 +225,16 @@ describe('ADR-SCH-02 D3: a scheduled classic turn', () => {
     )
     expect((failed.error as Error).message).to.equal('no')
     expect(seen).to.not.include('never')
+  })
+})
+
+describe('ADR-SCH-02: a scheduled turn is stopped at its firing\'s deadline', () => {
+  it('its stream cap is the time left to the deadline; any other request keeps the usual cap', () => {
+    const req = {} as never
+    expect(scheduledTurnDetachMs(req)).to.equal(null)
+    markScheduledTurn(req, { scheduleId: 's', firingId: 'f', conversationId: 'c', title: 't', deadlineAt: 10_000 })
+    expect(scheduledTurnDetachMs(req, 4_000)).to.equal(6_000)
+    // Already past it: stopped at once, never left running without a cap.
+    expect(scheduledTurnDetachMs(req, 20_000)).to.equal(1)
   })
 })
