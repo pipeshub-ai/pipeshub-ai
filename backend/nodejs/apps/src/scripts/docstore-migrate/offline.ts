@@ -58,7 +58,7 @@ export async function migrateOffline(
       return {
         ok: false,
         stage: 'quiesce',
-        message: `the application is still connected: ${describeClients(clients)}. Stop it first (docker compose stop <app services>; scripts/migrate-to-postgres.sh does this), or pass --allow-clients if those connections are not the application's`,
+        message: `the application is still connected: ${describeClients(clients)}. Stop it first (docker compose stop pipeshub-ai; scripts/migrate-to-postgres.sh --offline does this), or pass --allow-clients if those connections are not the application's`,
       };
   }
   const fenceBefore = await readMongoFence(rt);

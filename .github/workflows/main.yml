@@ -308,6 +308,10 @@ jobs:
         if: steps.changes.outputs.changed == 'true'
         run: bash deployment/docker-compose/tests/release_tooling_test.sh
 
+      - name: Document-store move script tests
+        if: steps.changes.outputs.changed == 'true'
+        run: bash deployment/docker-compose/tests/docstore_move_scripts_test.sh
+
       - name: Entrypoint ownership pass tests
         if: steps.changes.outputs.changed == 'true'
         run: bash deployment/docker-compose/tests/entrypoint_ownership_test.sh
