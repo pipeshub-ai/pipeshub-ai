@@ -6,6 +6,8 @@ backend/python/tests/cohesion/test_sec_sc_supply_chain.py collects these same ca
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import re
@@ -361,6 +363,63 @@ class TestSecSc10NodeInstalls(SupplyChainCase):
         self.fx.lock_json["packages"]["node_modules/left-pad"]["resolved"] = "https://evil.example/left-pad.tgz"
         self.fx.write_node_lock()
         self.assertOnly("NODE-INTEGRITY")
+
+    def _vendor(self, resolved: str, data: bytes = b"tarball bytes", integrity: str | None = None) -> None:
+        self.fx.write("frontend/vendor/pad-1.0.0.tgz", "")
+        (self.fx.root / "frontend/vendor/pad-1.0.0.tgz").write_bytes(data)
+        digest = "sha512-" + base64.b64encode(hashlib.sha512(data).digest()).decode()
+        self.fx.lock_json["packages"]["node_modules/pad"] = {"version": "1.0.0", "resolved": resolved,
+                                                            "integrity": digest if integrity is None else integrity}
+        self.fx.write_node_lock()
+
+    def test_sec_sc_10_a_vendored_tarball_inside_the_repository_with_its_hash_passes(self) -> None:
+        self._vendor("file:vendor/pad-1.0.0.tgz")
+        self.assertEqual(sc.run_checks(self.fx.root), [])
+
+    def test_sec_sc_10_a_vendored_tarball_is_refused_unless_it_is_in_the_repository_and_matches(self) -> None:
+        other = "sha512-" + base64.b64encode(hashlib.sha512(b"other bytes").digest()).decode()
+        cases = {
+            "is not exactly the sha512 of the file": ("file:vendor/pad-1.0.0.tgz", other),
+            "is not a vendored tarball in the repository": ("file:vendor/missing-1.0.0.tgz", None),
+            "is not a path inside the repository": ("file:../outside/pad-1.0.0.tgz", None),
+            "is not a path inside the repository ": ("file:/tmp/pad-1.0.0.tgz", None),
+            "has no sha512 integrity": ("file:vendor/pad-1.0.0.tgz", ""),
+            "resolves outside the npm registry": ("git+https://example.com/pad.git#0123", None),
+        }
+        for why, (resolved, integrity) in cases.items():
+            with self.subTest(resolved=resolved, integrity=integrity):
+                self._vendor(resolved, integrity=integrity)
+                (finding,) = self.assertOnly("NODE-INTEGRITY")
+                self.assertIn(why.strip(), finding.message)
+
+    def test_sec_sc_10_a_target_npm_resolves_elsewhere_is_refused_even_with_a_matching_decoy(self) -> None:
+        """npm-package-arg reads a file: target as a URL: a leading ~ is the home directory, and `.`, `..`,
+        percent escapes, backslashes, `?` and `#` change the path. A decoy committed at the literal path must not pass."""
+        decoy = b"decoy bytes"
+        both = " ".join("sha512-" + base64.b64encode(hashlib.sha512(b).digest()).decode() for b in (decoy, b"home bytes"))
+        for target in ("~/.npm/pad.tgz", "~", "vendor/./pad.tgz", "vendor/%70ad.tgz", "vendor\\pad.tgz",
+                       "vendor/pad.tgz#x", "vendor/pad.tgz?x", "C:/pad.tgz"):
+            with self.subTest(target=target):
+                literal = self.fx.root / "frontend" / target
+                if literal.parent.is_relative_to(self.fx.root):
+                    literal.parent.mkdir(parents=True, exist_ok=True)
+                    if not literal.is_dir():
+                        literal.write_bytes(decoy)
+                self.fx.lock_json["packages"]["node_modules/pad"] = {"version": "1.0.0", "resolved": f"file:{target}",
+                                                                    "integrity": both}
+                self.fx.write_node_lock()
+                (finding,) = self.assertOnly("NODE-INTEGRITY")
+                self.assertIn("is not a path inside the repository", finding.message)
+
+    def test_sec_sc_10_a_vendored_tarball_needs_exactly_its_own_hash(self) -> None:
+        """npm accepts a file matching any listed hash, so a second token would let another file through."""
+        own = "sha512-" + base64.b64encode(hashlib.sha512(b"tarball bytes").digest()).decode()
+        other = "sha512-" + base64.b64encode(hashlib.sha512(b"other bytes").digest()).decode()
+        for integrity in (f"{own} {other}", f"{other} {own}", f"{own}?opt"):
+            with self.subTest(integrity=integrity):
+                self._vendor("file:vendor/pad-1.0.0.tgz", integrity=integrity)
+                (finding,) = self.assertOnly("NODE-INTEGRITY")
+                self.assertIn("is not exactly the sha512 of the file", finding.message)
 
     def test_sec_sc_10_a_package_json_with_dependencies_and_no_lock_fails(self) -> None:
         self.fx.write("tools/x/package.json", json.dumps({"dependencies": {"left-pad": "1.3.0"}}))

@@ -15,6 +15,7 @@ before anything is installed. docs/agent-harness-v2/guides/SUPPLY-CHAIN.md is th
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as _dt
 import hashlib
 import json
@@ -508,6 +509,26 @@ def _node_locks(repo: Path) -> list[tuple[str, dict]]:
             for p in _walk(repo, names=("package-lock.json",))]
 
 
+# npm-package-arg reads a file: target as a URL relative to the lock: a leading ~ is the home directory, and
+# `.`/`..` segments, percent escapes, backslashes, `?`, `#` and drive letters change the path it opens. A target of
+# plain segments, none starting with a dot, means the same path to npm and to this check.
+_VENDORED_TARGET = re.compile(r"[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*(?:/[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*)*")
+
+
+def _vendored_tarball_problem(repo: Path, lock_dir: Path, target: str, integrity: str) -> str | None:
+    """Why a `file:` lock entry is not a tarball vendored inside the repository whose bytes match its sha512, or None."""
+    path = repo / lock_dir / target
+    if not _VENDORED_TARGET.fullmatch(target) or not path.resolve().is_relative_to(repo.resolve()):
+        return f"file:{target} is not a path inside the repository"
+    if not path.is_file():
+        return f"file:{target} is not a vendored tarball in the repository"
+    digest = "sha512-" + base64.b64encode(hashlib.sha512(path.read_bytes()).digest()).decode()
+    # npm accepts the file if it matches any listed hash, so only the file's own hash may be listed.
+    if integrity != digest:
+        return f"file:{target}: the lock's integrity is not exactly the sha512 of the file"
+    return None
+
+
 def check_node_locks(repo: Path) -> list[Finding]:
     findings = []
     locked_dirs = set()
@@ -521,6 +542,9 @@ def check_node_locks(repo: Path) -> list[Finding]:
             resolved, integrity = pkg.get("resolved", ""), pkg.get("integrity", "")
             if not integrity.startswith("sha512-"):
                 findings.append(Finding("NODE-INTEGRITY", rel, f"{key} has no sha512 integrity"))
+            elif resolved.startswith("file:"):
+                if why := _vendored_tarball_problem(repo, Path(rel).parent, resolved.removeprefix("file:"), integrity):
+                    findings.append(Finding("NODE-INTEGRITY", rel, f"{key}: {why}"))
             elif not resolved.startswith(NPM_HOSTS):
                 findings.append(Finding("NODE-INTEGRITY", rel, f"{key} resolves outside the npm registry: {resolved}"))
     for p in _walk(repo, names=("package.json",)):
