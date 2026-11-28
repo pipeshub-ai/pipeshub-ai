@@ -352,6 +352,13 @@ export class MongoScheduleStore implements ScheduleStore, ScheduleEraser {
     now: number,
   ): Promise<AgentSchedule | 'changed' | null> {
     const { input, skipNextAt, ...fields } = change;
+    if (
+      typeof skipNextAt === 'number' &&
+      change.nextFireAt !== undefined &&
+      change.nextFireAt !== skipNextAt
+    ) {
+      return (await this.get(orgId, id)) === null ? null : 'changed';
+    }
     const set: Record<string, unknown> = { ...fields, updatedAt: now };
     if (input !== undefined) {
       set['input'] = await this.inputs.sealInput(
@@ -364,7 +371,16 @@ export class MongoScheduleStore implements ScheduleStore, ScheduleEraser {
       set['skipNextAt'] = skipNextAt;
     }
     const updated = await AgentScheduleModel.findOneAndUpdate(
-      { _id: id, orgId, ...LIVE, ...atRevision(expectedRevision) },
+      {
+        _id: id,
+        orgId,
+        ...LIVE,
+        ...atRevision(expectedRevision),
+        // A skip marks the slot the cursor is on: a firing that moved it since the read makes this a stale skip.
+        ...(typeof skipNextAt === 'number' && change.nextFireAt === undefined
+          ? { status: 'active', nextFireAt: skipNextAt }
+          : {}),
+      },
       {
         $set: set,
         ...(skipNextAt === null ? { $unset: { skipNextAt: '' } } : {}),
@@ -451,6 +467,10 @@ export class MongoScheduleStore implements ScheduleStore, ScheduleEraser {
             orgId: firing.orgId,
             status: 'active',
             nextFireAt: expectedNextFireAt,
+            // A slot its owner asked to skip after the firer read it is never claimed to run (ADR-SCH-03 D4).
+            ...(firing.status === 'pending'
+              ? { skipNextAt: { $ne: firing.slotAt } }
+              : {}),
           },
           {
             $set: {

@@ -92,6 +92,8 @@ export const bindSchedules: HarnessBinder = ({
               classic: new ClassicScheduleRunner(
                 classicTurns,
                 new RepositoryClassicConversations(getConversationRepository),
+                Date.now,
+                dependencies.agentAccess,
               ),
             }
           : {}),

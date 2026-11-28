@@ -8138,6 +8138,7 @@
       "actorNotPerson": "소유자가 사람이 아닙니다",
       "orgInactive": "조직이 비활성 상태입니다",
       "agentForbidden": "소유자가 더 이상 이 에이전트를 사용할 수 없습니다",
+      "agentVersionNotLatest": "에이전트의 이전 버전을 사용하는데, 에이전트 하네스가 없는 채팅은 최신 버전만 실행합니다. 최신 버전을 따르도록 수정하세요",
       "agentDeleted": "에이전트가 삭제되었습니다",
       "narrowing": "에이전트 설정이 더 이상 이 실행을 허용하지 않습니다",
       "rolloutLegacy": "조직에서 내구성 에이전트 하네스가 꺼져 있습니다",

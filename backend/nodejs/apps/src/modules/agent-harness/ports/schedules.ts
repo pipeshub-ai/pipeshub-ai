@@ -69,7 +69,8 @@ export interface ScheduleStore {
   ): Promise<AgentSchedule | null>;
   /**
    * Changes what a person may edit of a schedule (ADR-SCH-03 D4) if its revision is still `expectedRevision`, and
-   * bumps the revision; `changed` when another change came first, null when it is gone. `skipNextAt: null` clears it.
+   * bumps the revision; `changed` when another change came first, null when it is gone. `skipNextAt: null` clears it;
+   * a number marks that slot only while the schedule is active with its cursor on it, else `changed` (a stale skip).
    */
   update(
     orgId: string,
@@ -101,7 +102,8 @@ export interface ScheduleStore {
    * schedule's cursor from `expectedNextFireAt` to `nextFireAt`, together;
    * `disable`, a reason, also disables the schedule in that write (a
    * one-time schedule's only slot). Null (nothing written) when another
-   * scheduler already moved the cursor or claimed the slot.
+   * scheduler already moved the cursor or claimed the slot, or when a run
+   * (`pending`) would take the slot its owner marked skipped since the read.
    */
   claimCronSlot(
     firing: ScheduleFiring,

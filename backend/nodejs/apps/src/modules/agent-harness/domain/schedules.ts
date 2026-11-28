@@ -909,6 +909,8 @@ const FIRING_DISPOSITIONS: Readonly<Record<string, FiringDisposition>> = {
   agent_forbidden: 'pause',
   forbidden: 'pause',
   narrowing: 'pause',
+  // Classic chat runs only an agent's latest published version: a schedule pinned to another waits for its owner.
+  agent_version_not_latest: 'pause',
   scheduled_runs_disabled: 'refuse',
   rollout_legacy: 'refuse',
   runner_unavailable: 'refuse',

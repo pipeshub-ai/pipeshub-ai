@@ -115,6 +115,24 @@ describe('ADR-SCH-03 managing schedules from chat', () => {
       expect(changed.nextFireAt).to.equal(made.nextFireAt);
     });
 
+    it('a new time keeps how missed runs catch up; only an edit that names it changes it', async () => {
+      const w = world();
+      const made = (await w.service.create(alice, { ...CRON, trigger: { ...CRON.trigger, catchUp: 'run_all' as const } })).schedule;
+      const moved = await w.service.update(alice, made.id, {
+        revision: 0,
+        trigger: { kind: 'cron', cron: '30 8 * * 1-5', timeZone: 'Europe/Berlin' },
+      });
+      expect(moved.trigger).to.deep.include({ cron: '30 8 * * 1-5', catchUp: 'run_all' });
+      const named = await w.service.update(alice, made.id, {
+        revision: 1,
+        trigger: { kind: 'cron', cron: '30 8 * * 1-5', timeZone: 'Europe/Berlin', catchUp: 'run_latest' },
+      });
+      expect(named.trigger).to.deep.include({ catchUp: 'run_latest' });
+      const once = (await w.service.create(alice, { ...CRON, trigger: { kind: 'once', at: new Date(w.clock.now() + 60 * MIN).toISOString(), timeZone: 'Europe/Berlin' } })).schedule;
+      const toCron = await w.service.update(alice, once.id, { revision: 0, trigger: { kind: 'cron', cron: '0 9 * * 1', timeZone: 'Europe/Berlin' } });
+      expect(toCron.trigger).to.deep.include({ catchUp: 'skip' });
+    });
+
     it('a stale revision is refused SCHEDULE_CHANGED and nothing changes', async () => {
       const w = world();
       const made = (await w.service.create(alice, CRON)).schedule;

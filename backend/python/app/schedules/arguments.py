@@ -52,6 +52,8 @@ TOOL_IDS: Final = {
     SCHEDULE_UPDATE_TOOL: SCHEDULE_UPDATE_TOOL_ID,
     SCHEDULE_DELETE_TOOL: SCHEDULE_DELETE_TOOL_ID,
 }
+# The schedules toolset's model names: a person's own chat only, never a delegated child's (ADR-SCH-03 D1).
+SCHEDULE_TOOL_NAMES: Final = frozenset(TOOL_IDS)
 # The tools that change a schedule: each asks the person every time (ADR-SCH-03 D5).
 ASKED_TOOL_IDS: Final = frozenset({SCHEDULE_TOOL_ID, SCHEDULE_UPDATE_TOOL_ID, SCHEDULE_DELETE_TOOL_ID})
 CARD_LABELS: Final = {

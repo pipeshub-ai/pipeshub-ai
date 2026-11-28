@@ -494,3 +494,21 @@ async def test_sch03_classic_a_delete_node_finds_stale_is_told_as_a_change() -> 
     node = _Node(answers={("DELETE", "/sch-1"): (409, {"error": {"code": "SCHEDULE_CHANGED", "message": "x"}})})
     text = await _approve(node, "schedule_delete", {"id": "sch-1", "revision": 3})
     assert "Read it again with schedule_find" in text
+
+
+def test_sch03_a_delegated_child_never_holds_the_schedule_tools() -> None:
+    """ADR-SCH-03 D1: the schedules toolset is a person's own chat's; deep mode's spawn pool and the list a spawning call
+    names both drop it, while the child keeps its other tools."""
+    from app.agents.agent_loop.loops.orchestrator import domain_spec_factory
+    from app.schedules.arguments import SCHEDULE_TOOL_NAMES
+
+    pool = ["jira_search", *sorted(SCHEDULE_TOOL_NAMES)]
+    factory = domain_spec_factory(provider="scripted", model_name="scripted-model", default_tool_names=pool)
+    assert factory("researcher").tool_names == ["jira_search"]
+    named = factory("researcher", tool_names=["schedule_create", "jira_search", "schedule_delete"])
+    assert named.tool_names == ["jira_search"]
+    granted = domain_spec_factory(
+        provider="scripted", model_name="scripted-model", default_tool_names=pool,
+        grant=lambda names: [*names, "schedule_update"],
+    )("researcher")
+    assert granted.tool_names == ["jira_search"]

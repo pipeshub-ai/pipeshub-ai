@@ -8138,6 +8138,7 @@
       "actorNotPerson": "其所有者不是真人",
       "orgInactive": "组织未启用",
       "agentForbidden": "其所有者已无法使用此智能体",
+      "agentVersionNotLatest": "它使用其智能体的较早版本，而未启用智能体框架的聊天只运行最新版本：请将其改为跟随最新版本",
       "agentDeleted": "其智能体已被删除",
       "narrowing": "智能体的设置已不允许此次运行",
       "rolloutLegacy": "组织已关闭持久化智能体框架",

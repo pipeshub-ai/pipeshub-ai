@@ -1104,7 +1104,28 @@ export class ScheduleFirer {
       started.reason === 'rollout_legacy' &&
       classic !== undefined
     ) {
-      return { runner: classic, started: await classic.start(request) };
+      // The harness's credential was minted for admission only; a classic turn presents its own for as long as
+      // the firing may take, so the person is authorized again for that.
+      const actor = await this.actors.authorize(
+        request.orgId,
+        request.actorId,
+        {
+          ttlS: Math.ceil(request.deadlineMs / 1000),
+        },
+      );
+      if ('refused' in actor) {
+        return {
+          runner: classic,
+          started: { kind: 'refused', reason: actor.refused },
+        };
+      }
+      return {
+        runner: classic,
+        started: await classic.start({
+          ...request,
+          authorization: actor.authorization,
+        }),
+      };
     }
     return { runner, started };
   }

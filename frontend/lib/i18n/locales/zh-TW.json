@@ -8138,6 +8138,7 @@
       "actorNotPerson": "其擁有者不是真人",
       "orgInactive": "組織未啟用",
       "agentForbidden": "其擁有者已無法使用此代理程式",
+      "agentVersionNotLatest": "它使用其代理程式的較早版本，而未啟用代理程式框架的聊天只會執行最新版本：請將其改為跟隨最新版本",
       "agentDeleted": "其代理程式已被刪除",
       "narrowing": "代理程式的設定已不允許此次執行",
       "rolloutLegacy": "組織已關閉持久化代理程式框架",

@@ -213,6 +213,7 @@ export const updateScheduleSchema = scheduleParamsSchemaOf({
               kind: z.literal('cron'),
               cron: z.string().min(9).max(120),
               timeZone: z.string().min(1).max(64),
+              catchUp: z.enum(['skip', 'run_latest', 'run_all']).optional(),
             })
             .strict(),
           z

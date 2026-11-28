@@ -8254,6 +8254,7 @@
       "actorNotPerson": "its owner is not a person",
       "orgInactive": "the organization is inactive",
       "agentForbidden": "its owner can no longer use this agent",
+      "agentVersionNotLatest": "it runs an earlier version of its agent, and chat without the agent harness runs only the latest: edit it to follow the latest version",
       "agentDeleted": "its agent was deleted",
       "narrowing": "the agent's settings no longer allow this run",
       "rolloutLegacy": "the durable agent harness is off for the organization",

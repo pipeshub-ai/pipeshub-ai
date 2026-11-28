@@ -1,3 +1,4 @@
+import type { AgentAccessPolicy } from '../ports/agent-access';
 import { createHash } from 'node:crypto';
 import type { RunInputSnapshot } from '../domain/execution';
 import type {
@@ -240,10 +241,15 @@ export function classicDigest(
 export class ClassicScheduleRunner implements ScheduleRunner {
   readonly kind = 'classic' as const;
 
+  /**
+   * `agents`: the agent authority, asked for the version a classic turn would run. Classic chat runs an agent's
+   * latest published version only, so a schedule pinned to another (OWD-14) is refused rather than run on it.
+   */
   constructor(
     private readonly turns: ClassicTurns,
     private readonly conversations: ClassicConversations,
     private readonly now: () => number = Date.now,
+    private readonly agents?: Pick<AgentAccessPolicy, 'authorizeRun'>,
   ) {}
 
   /**
@@ -252,6 +258,29 @@ export class ClassicScheduleRunner implements ScheduleRunner {
    * what lets one start through. A start that finds that conversation, before or because its create was refused,
    * answers it, and the watch reads whether it is still running or ended.
    */
+  /** Why a pinned agent version cannot run here; null when it can (unpinned, or the pin is the latest). */
+  private async pinRefusal(
+    request: ScheduleRunRequest,
+  ): Promise<string | null> {
+    if (
+      request.agentKey === undefined ||
+      request.agentVersion === undefined ||
+      this.agents === undefined
+    ) {
+      return null;
+    }
+    const latest = await this.agents.authorizeRun({
+      orgId: request.orgId,
+      actorId: request.actorId,
+      agentKey: request.agentKey,
+      authorization: request.authorization,
+    });
+    if (latest === null) return 'agent_forbidden';
+    return latest.definitionVersion === request.agentVersion
+      ? null
+      : 'agent_version_not_latest';
+  }
+
   async start(request: ScheduleRunRequest): Promise<ScheduleRunStart> {
     const conversationId = scheduledConversationId(
       request.orgId,
@@ -270,6 +299,8 @@ export class ClassicScheduleRunner implements ScheduleRunner {
     ) {
       return started();
     }
+    const pin = await this.pinRefusal(request);
+    if (pin !== null) return { kind: 'refused', reason: pin };
     const turn = await this.turns.start({
       authorization: request.authorization,
       ...(request.agentKey !== undefined ? { agentKey: request.agentKey } : {}),

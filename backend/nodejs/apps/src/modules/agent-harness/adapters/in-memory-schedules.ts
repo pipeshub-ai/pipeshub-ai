@@ -173,6 +173,13 @@ export class InMemoryScheduleStore implements ScheduleStore, ScheduleEraser {
     if (found?.orgId !== orgId) return null;
     if (scheduleRevision(found) !== expectedRevision) return 'changed';
     const { skipNextAt, ...rest } = structuredClone(change);
+    // A skip marks the slot the cursor is on: a firing that moved it since the read makes this a stale skip.
+    if (
+      typeof skipNextAt === 'number' &&
+      staleSkip(found, change, skipNextAt)
+    ) {
+      return 'changed';
+    }
     const next: AgentSchedule = {
       ...found,
       ...rest,
@@ -240,6 +247,7 @@ export class InMemoryScheduleStore implements ScheduleStore, ScheduleEraser {
       schedule?.orgId !== firing.orgId ||
       schedule.status !== 'active' ||
       schedule.nextFireAt !== expectedNextFireAt ||
+      (firing.status === 'pending' && schedule.skipNextAt === firing.slotAt) ||
       this.slots.has(slotOf(firing))
     ) {
       return null;
@@ -612,4 +620,19 @@ export class InMemoryScheduleStore implements ScheduleStore, ScheduleEraser {
     }
     return count;
   }
+}
+
+/** A skip names the slot the cursor is on after the write: this change's cursor, or the stored one while active. */
+function staleSkip(
+  found: AgentSchedule,
+  change: ScheduleChange,
+  skipNextAt: number,
+): boolean {
+  const cursor =
+    change.nextFireAt !== undefined
+      ? change.nextFireAt
+      : found.status === 'active'
+        ? found.nextFireAt
+        : null;
+  return cursor !== skipNextAt;
 }

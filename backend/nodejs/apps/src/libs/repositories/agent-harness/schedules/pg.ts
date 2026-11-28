@@ -258,6 +258,13 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
     now: number,
   ): Promise<AgentSchedule | 'changed' | null> {
     const { input, skipNextAt, ...fields } = change;
+    if (
+      typeof skipNextAt === 'number' &&
+      change.nextFireAt !== undefined &&
+      change.nextFireAt !== skipNextAt
+    ) {
+      return (await this.get(orgId, id)) === null ? null : 'changed';
+    }
     const patch: Record<string, unknown> = { ...fields, updatedAt: now };
     if (input !== undefined) {
       patch['input'] = await this.inputs.sealInput(
@@ -277,8 +284,19 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
             SET doc = (doc || $4::jsonb
               || jsonb_build_object('revision', COALESCE((doc->>'revision')::bigint, 0) + 1)) - $5::text[]
           WHERE org_id = $1 AND id = $2 AND status <> '${SCHEDULE_TOMBSTONE_STATUS}'
-            AND COALESCE((doc->>'revision')::bigint, 0) = $3 RETURNING doc`,
-        [orgId, id, expectedRevision, docParam(patch), removed],
+            AND COALESCE((doc->>'revision')::bigint, 0) = $3
+            AND ($6::bigint IS NULL OR (status = 'active' AND next_fire_at = $6::bigint)) RETURNING doc`,
+        // $6: a skip marks the slot the cursor is on; a firing that moved it since the read makes it stale.
+        [
+          orgId,
+          id,
+          expectedRevision,
+          docParam(patch),
+          removed,
+          typeof skipNextAt === 'number' && change.nextFireAt === undefined
+            ? skipNextAt
+            : null,
+        ],
       );
       if (found[0] !== undefined) return toSchedule(this.inputs, found[0]);
       const { rows } = await k.query<{ id: string }>(
@@ -354,8 +372,10 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
     try {
       return await this.org(firing.orgId, true, async (k) => {
         const { rowCount } = await k.query(
+          // $5: the slot a run would take, refused when its owner asked to skip it (ADR-SCH-03 D4); null for a skip.
           `/* pipeshub:harness.schedules_move_cursor */ UPDATE harness.schedules SET doc = doc || $4::jsonb
-            WHERE org_id = $1 AND id = $2 AND status = 'active' AND next_fire_at = $3`,
+            WHERE org_id = $1 AND id = $2 AND status = 'active' AND next_fire_at = $3
+              AND ($5::bigint IS NULL OR (doc->>'skipNextAt') IS NULL OR (doc->>'skipNextAt')::bigint <> $5::bigint)`,
           [
             firing.orgId,
             firing.scheduleId,
@@ -367,6 +387,7 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
                 : {}),
               updatedAt: firing.createdAt,
             }),
+            firing.status === 'pending' ? firing.slotAt : null,
           ],
         );
         if (rowCount !== 1) return null;

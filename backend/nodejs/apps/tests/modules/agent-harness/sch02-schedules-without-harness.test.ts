@@ -27,6 +27,7 @@ import {
   type AgentSchedule,
   FIRING_LEASE_MS,
   FIRING_BACKOFF_MAX_MS,
+  firingDisposition,
 } from '../../../src/modules/agent-harness/domain/schedules';
 import {
   aSchedule,
@@ -256,6 +257,25 @@ describe('ADR-SCH-02 schedules without the harness', () => {
         runner: 'classic',
         runRef: w.turns.ids[0]!,
       });
+      // The admission's credential was short-lived; the classic turn presents one that lasts the firing.
+      expect(w.actors.ttls).to.deep.equal([undefined, schedule.deadlineS]);
+      expect(w.turns.requests[0]?.authorization).to.equal(`Bearer token-of-${ALICE}`);
+    });
+
+    it('a fallback to classic whose person can no longer run is refused for that reason, and no turn runs', async () => {
+      const w = world();
+      w.harnessOn = true;
+      w.admission.refusals.push('rollout_legacy');
+      const schedule = await due(w);
+      const authorize = w.actors.authorize.bind(w.actors);
+      let calls = 0;
+      w.actors.authorize = async (orgId, actorId, options) => {
+        calls += 1;
+        return calls === 1 ? authorize(orgId, actorId, options) : { refused: 'actor_disabled' };
+      };
+      await w.firer.tick();
+      expect(await onlyFiring(w, schedule)).to.include({ reason: 'actor_disabled' });
+      expect(w.turns.requests).to.have.length(0);
     });
 
     it('a firing is watched by the runner that started it after the org changes path', async () => {
@@ -491,6 +511,22 @@ describe('ADR-SCH-02 schedules without the harness', () => {
       expect((await refusal(service.runNow(caller, existing.id, 'k'))).code).to.equal('SCHEDULED_RUNS_STORE_UNAVAILABLE');
     });
 
+    it('a webhook made before the store lost transactions is refused the same 503, after its credential', async () => {
+      const w = world();
+      const ready = new ScheduleService({ transaction: testControlPlane(), store: w.store, firer: w.firer, actors: w.actors, setting: w.setting });
+      const caller = { orgId: ORG, userId: ALICE, via: 'session' as const };
+      const made = await ready.create(caller, { name: 'Hook', input: { query: 'Triage it' }, trigger: { kind: 'webhook', auth: 'token' } });
+      const unready = new ScheduleService({
+        transaction: testControlPlane(), store: w.store, firer: w.firer, actors: w.actors, setting: w.setting, storeReady: () => false,
+      });
+      const body = Buffer.from('{}');
+      expect((await refusal(unready.webhook(made.schedule.id, { token: 'pxt_wrong', body }))).code).to.equal('SCHEDULE_TRIGGER_TOKEN_INVALID');
+      expect((await refusal(unready.webhook(made.schedule.id, { token: made.webhookToken!, body }))).code).to.equal(
+        'SCHEDULED_RUNS_STORE_UNAVAILABLE',
+      );
+      expect(await w.store.firings(ORG, made.schedule.id, 10)).to.deep.equal([]);
+    });
+
     it('the firer is not started, so no slot is claimed without its transaction', async () => {
       const container = new Container();
       let started = 0;
@@ -587,6 +623,59 @@ describe('ADR-SCH-02 schedules without the harness', () => {
       const before = w.turns.requests.length;
       expect(await runner.start(request)).to.deep.equal(a);
       expect(w.turns.requests).to.have.length(before);
+    });
+  });
+
+  describe('OWD-14 on classic chat: a pinned agent version is run only when it is the latest, never dropped', () => {
+    const at = (firingId: string, agentVersion?: number) => ({
+      orgId: ORG,
+      actorId: ALICE,
+      agentKey: 'helper',
+      ...(agentVersion !== undefined ? { agentVersion } : {}),
+      scheduleId: 'sch-v',
+      scheduleName: 'Standup',
+      firingId,
+      idempotencyKey: firingId,
+      deadlineMs: 60_000,
+      deadlineAt: 60_000,
+      input: aSchedule().input!,
+      authorization: 'Bearer token-of-alice',
+      trigger: { scheduleId: 'sch-v', firingId, slotKey: `m:${firingId}` },
+    });
+    const agents = (latest: number | null) => {
+      const asked: unknown[] = [];
+      return {
+        asked,
+        authorizeRun: async (request: unknown) => {
+          asked.push(request);
+          return latest === null ? null : ({ definitionVersion: latest } as never);
+        },
+      };
+    };
+
+    it('pinned to an earlier version: refused agent_version_not_latest, which pauses it; no turn runs', async () => {
+      const w = world();
+      const authority = agents(4);
+      const runner = new ClassicScheduleRunner(w.turns, w.conversations, () => 0, authority);
+      expect(await runner.start(at('fir-old', 3))).to.deep.equal({ kind: 'refused', reason: 'agent_version_not_latest' });
+      expect(w.turns.requests).to.have.length(0);
+      expect(firingDisposition('agent_version_not_latest')).to.equal('pause');
+      // Asked as the person, with the run's own credential, for the version a classic turn would run.
+      expect(authority.asked[0]).to.deep.include({ agentKey: 'helper', authorization: 'Bearer token-of-alice' });
+      expect(authority.asked[0]).to.not.have.property('agentVersion');
+    });
+
+    it('pinned to the latest, or not pinned: it runs; an agent the person lost is agent_forbidden', async () => {
+      const w = world();
+      expect(await new ClassicScheduleRunner(w.turns, w.conversations, () => 0, agents(4)).start(at('fir-now', 4))).to.include({ kind: 'started' });
+      const unpinned = agents(4);
+      expect(await new ClassicScheduleRunner(w.turns, w.conversations, () => 0, unpinned).start(at('fir-any'))).to.include({ kind: 'started' });
+      expect(unpinned.asked).to.deep.equal([]);
+      expect(await new ClassicScheduleRunner(w.turns, w.conversations, () => 0, agents(null)).start(at('fir-gone', 4))).to.deep.equal({
+        kind: 'refused',
+        reason: 'agent_forbidden',
+      });
+      expect(w.turns.requests).to.have.length(2);
     });
   });
 });

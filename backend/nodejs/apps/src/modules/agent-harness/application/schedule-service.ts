@@ -644,7 +644,14 @@ export class ScheduleService {
           'trigger',
         );
       }
-      const trigger = this.trigger(request.trigger, now, false);
+      // An edit of the time or zone keeps how missed runs catch up; only a change that names it moves it.
+      const asked =
+        request.trigger.kind === 'cron' &&
+        request.trigger.catchUp === undefined &&
+        schedule.trigger.kind === 'cron'
+          ? { ...request.trigger, catchUp: schedule.trigger.catchUp }
+          : request.trigger;
+      const trigger = this.trigger(asked, now, false);
       change.trigger = trigger;
       // Paused, it has no cursor: resume works out the next slot.
       change.nextFireAt =
@@ -1200,6 +1207,9 @@ export class ScheduleService {
     const now = await this.store.now();
     if (!this.authentic(schedule, delivery, now)) throw badToken();
     await this.assertEnabled(schedule.orgId);
+    // After the credential: an unauthenticated caller learns nothing of the store. A webhook made before the
+    // store lost transactions must not reach a slot claim that needs them.
+    this.assertStoreReady();
     if (schedule.status !== 'active')
       return { firing: null, ignored: 'paused' };
     const maxBytes =

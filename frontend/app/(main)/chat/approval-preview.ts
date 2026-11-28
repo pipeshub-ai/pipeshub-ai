@@ -436,7 +436,8 @@ const sameWhen = (a: ScheduleWhenShown, b: ScheduleWhenShown): boolean =>
 
 /**
  * The change, or null whenever a before and after can't both be told for certain: no current values, current
- * values of another schedule, a field the current values leave out, arguments that are not a change. The card
+ * values of another schedule or of another revision than the call names, a field the current values leave out,
+ * arguments that are not a change. The card
  * then lists the call's arguments as any call's, never a guessed "before".
  */
 export function scheduleChangeOf(
@@ -448,6 +449,8 @@ export function scheduleChangeOf(
   const parsed = parseArgs(args);
   if (!isRecord(parsed) || !filledText(parsed.id) || !isRecord(current)) return null;
   if (current.id !== parsed.id || !filledText(current.name)) return null;
+  // The before is the schedule as the call was written against it: one that moved on since is not that "before".
+  if (typeof parsed.revision !== 'number' || current.revision !== parsed.revision) return null;
   const name = textField('name', current.name, 'identifier', limit);
   const currentAsk = filledText(current.ask) ? textField('ask', current.ask, 'prose', limit) : null;
   const currentWhen = whenOf(current.when);

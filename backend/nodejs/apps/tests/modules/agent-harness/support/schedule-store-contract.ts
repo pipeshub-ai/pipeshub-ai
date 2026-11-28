@@ -107,6 +107,36 @@ export function describeScheduleStoreContract(
       expect(await f.store.firings(ORG, schedule.id, 10)).to.have.length(1);
     });
 
+    it('SCH-03: a slot its owner skipped after the firer read it is not claimed to run; it is claimed as skipped', async () => {
+      const schedule = await f.store.create(aSchedule(), LIMITS);
+      const slot = schedule.nextFireAt as number;
+      const week = 7 * 86_400_000;
+      // The firer read the schedule with no marker; the owner's skip commits before its claim.
+      expect(await f.store.update(ORG, schedule.id, 0, { skipNextAt: slot }, T0 + 1)).to.not.be.oneOf(['changed', null]);
+      const run = aFiring(schedule, { kind: 'cron', slotKey: 'c:skip', slotAt: slot });
+      expect(await f.store.claimCronSlot(run, slot, slot + week)).to.equal(null);
+      expect((await f.store.get(ORG, schedule.id))?.nextFireAt).to.equal(slot);
+      expect(await f.store.firings(ORG, schedule.id, 10)).to.deep.equal([]);
+      // The next read sees the marker and records the slot skipped, in the same claim.
+      const skipped = aFiring(schedule, {
+        kind: 'cron', slotKey: 'c:skip', slotAt: slot, status: 'skipped', reason: 'skipped_by_owner', attempts: 0, settledAt: T0,
+      });
+      expect(await f.store.claimCronSlot(skipped, slot, slot + week)).to.deep.equal(skipped);
+      expect((await f.store.get(ORG, schedule.id))?.nextFireAt).to.equal(slot + week);
+    });
+
+    it('SCH-03: a skip of a slot the cursor has left is changed, and marks nothing', async () => {
+      const schedule = await f.store.create(aSchedule(), LIMITS);
+      const slot = schedule.nextFireAt as number;
+      const week = 7 * 86_400_000;
+      // The owner read slot A; the firer claims A and moves the cursor to B before the skip writes.
+      expect(await f.store.claimCronSlot(aFiring(schedule, { kind: 'cron', slotKey: 'c:a', slotAt: slot }), slot, slot + week)).to.not.equal(null);
+      expect(await f.store.update(ORG, schedule.id, 0, { skipNextAt: slot }, T0 + 1)).to.equal('changed');
+      expect(await f.store.get(ORG, schedule.id)).to.not.have.property('skipNextAt');
+      // A skip of the slot the cursor is on now is written.
+      expect(await f.store.update(ORG, schedule.id, 0, { skipNextAt: slot + week }, T0 + 2)).to.deep.include({ skipNextAt: slot + week });
+    });
+
     it('SCH-01: a one-time slot is due, claimed once, and its claim disables the schedule in the same write', async () => {
       const at = T0 + 30 * 60_000;
       const schedule = await f.store.create(

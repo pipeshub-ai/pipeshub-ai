@@ -3,7 +3,7 @@
  "componentMap": "docs/test-plan/data/components.json",
  "harnessTestFiles": 2053,
  "claimedTestFiles": 4012,
- "claimedTests": 43143,
+ "claimedTests": 43151,
  "claimedFilesByLevel": {
   "cohesion": 64,
   "component": 37,
@@ -15988,7 +15988,7 @@
    "name": "Scheduler",
    "status": "built, Labs off by default",
    "files": 48,
-   "tests": 436,
+   "tests": 443,
    "filesByLevel": {
     "component": 2,
     "contract": 1,
@@ -15999,11 +15999,11 @@
    },
    "testsByLevel": {
     "component": 11,
-    "contract": 38,
+    "contract": 40,
     "e2e-browser": 1,
     "integration": 16,
     "integration-docker": 1,
-    "unit": 369
+    "unit": 374
    },
    "markers": {
     "docker": 1
@@ -16041,7 +16041,7 @@
      "path": "backend/nodejs/apps/tests/modules/agent-harness/sch02-schedules-without-harness.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 20
+     "tests": 24
     },
     {
      "path": "backend/nodejs/apps/tests/modules/agent-harness/sch03-internal-route-limits.test.ts",
@@ -16053,7 +16053,7 @@
      "path": "backend/nodejs/apps/tests/modules/agent-harness/sch03-managing-schedules.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 25
+     "tests": 26
     },
     {
      "path": "backend/nodejs/apps/tests/modules/agent-harness/schedule-approvals.test.ts",
@@ -16149,7 +16149,7 @@
      "path": "backend/nodejs/apps/tests/modules/agent-harness/support/schedule-store-contract.ts",
      "level": "contract",
      "markers": [],
-     "tests": 38
+     "tests": 40
     },
     {
      "path": "backend/nodejs/apps/tests/modules/agent-harness/trigger-settings.test.ts",
@@ -17299,7 +17299,7 @@
    "name": "Legacy query path (today's loop)",
    "status": "built (reference and kill-switch target)",
    "files": 799,
-   "tests": 17870,
+   "tests": 17871,
    "filesByLevel": {
     "contract": 6,
     "integration": 3,
@@ -17314,7 +17314,7 @@
     "integration-docker": 19,
     "live": 39,
     "replay": 7,
-    "unit": 17700
+    "unit": 17701
    },
    "markers": {
     "ai_agents": 6,
@@ -20614,7 +20614,7 @@
      "path": "backend/python/tests/unit/agents/agent_loop/test_sch03_managing_schedules.py",
      "level": "unit",
      "markers": [],
-     "tests": 24
+     "tests": 25
     },
     {
      "path": "backend/python/tests/unit/agents/agent_loop/test_sch03_schedules_on_demand.py",

@@ -29,6 +29,7 @@ export const FIRING_REASONS: Readonly<Record<string, string>> = {
   actor_not_person: 'schedules.reason.actorNotPerson',
   org_inactive: 'schedules.reason.orgInactive',
   agent_forbidden: 'schedules.reason.agentForbidden',
+  agent_version_not_latest: 'schedules.reason.agentVersionNotLatest',
   agent_deleted: 'schedules.reason.agentDeleted',
   forbidden: 'schedules.reason.agentForbidden',
   narrowing: 'schedules.reason.narrowing',
