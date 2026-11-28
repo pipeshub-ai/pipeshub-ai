@@ -1848,25 +1848,25 @@ class TestOnEventUpdateEvent:
 
     @pytest.mark.asyncio
     async def test_update_non_reconciliation_type_generates_new_vrid(self):
-        """Non-reconciliation types (e.g. XLSX) get a new UUID on update."""
+        """Non-reconciliation types (e.g. PPTX) get a new UUID on update."""
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {
             "_key": "rec-1",
             "recordType": "FILE",
             "virtualRecordId": "old-vr-id",
         }
-        processor.process_excel_document = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_pptx_document = MagicMock(side_effect=_mock_processor_gen)
 
         with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
              return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(
-                extension=ExtensionTypes.XLSX.value,
+                extension=ExtensionTypes.PPTX.value,
                 event_type=EventTypes.UPDATE_RECORD.value,
                 virtual_record_id="old-vr-id",
             )
             events = await _drain(ep.on_event(event_data))
 
-        call_kwargs = processor.process_excel_document.call_args[1]
+        call_kwargs = processor.process_pptx_document.call_args[1]
         assert call_kwargs["virtual_record_id"] != "old-vr-id"
         assert len(call_kwargs["virtual_record_id"]) == 36
 
@@ -1895,6 +1895,38 @@ class TestOnEventUpdateEvent:
         call_kwargs = processor.process_sql_structured_data.call_args[1]
         assert call_kwargs["virtual_record_id"] == "existing-vrid"
         assert call_kwargs["prev_virtual_record_id"] == "existing-vrid"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("extension", "mime_type", "handler"),
+        [
+            (ExtensionTypes.CSV.value, MimeTypes.CSV.value, "process_delimited_document"),
+            (ExtensionTypes.TSV.value, MimeTypes.TSV.value, "process_delimited_document"),
+            (ExtensionTypes.XLSX.value, MimeTypes.XLSX.value, "process_excel_document"),
+            (ExtensionTypes.XLS.value, MimeTypes.XLS.value, "process_xls_document"),
+        ],
+    )
+    async def test_a_spreadsheet_update_keeps_its_vrid_and_diffs_against_it(
+        self, extension: str, mime_type: str, handler: str,
+    ) -> None:
+        # Kills: a spreadsheet update minting a new vrid and deleting the old copy before the parse, so neither its
+        # stored row text nor its unchanged rows' points could be kept.
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE", "virtualRecordId": "existing-vrid"}
+        gp.get_records_by_virtual_record_id = AsyncMock(return_value=[{"_key": "rec-1"}])
+        setattr(processor, handler, MagicMock(side_effect=_mock_processor_gen))
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)),              patch.object(ep, "_spawn_abandoned_vrid_cleanup") as cleanup:
+            await _drain(ep.on_event(_make_event_payload(
+                mime_type=mime_type, extension=extension,
+                event_type=EventTypes.UPDATE_RECORD.value, virtual_record_id="existing-vrid",
+            )))
+
+        call_kwargs = getattr(processor, handler).call_args[1]
+        assert call_kwargs["virtual_record_id"] == "existing-vrid"
+        assert call_kwargs["prev_virtual_record_id"] == "existing-vrid"
+        cleanup.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_a_retry_stays_on_the_vrid_it_saved_instead_of_taking_the_twins(self) -> None:
@@ -1938,21 +1970,21 @@ class TestOnEventUpdateEvent:
             "recordType": "FILE",
             "virtualRecordId": "saved-by-attempt-1",
         }
-        processor.process_excel_document = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_pptx_document = MagicMock(side_effect=_mock_processor_gen)
 
         with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
              return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
              patch.object(ep, "_rewrite_or_delete_vrid_vectors", new_callable=AsyncMock), \
              patch.object(ep, "_spawn_abandoned_vrid_cleanup") as cleanup:
             await _drain(ep.on_event(_make_event_payload(
-                mime_type=MimeTypes.XLSX.value,
-                extension=ExtensionTypes.XLSX.value,
+                mime_type=MimeTypes.PPTX.value,
+                extension=ExtensionTypes.PPTX.value,
                 event_type=EventTypes.REINDEX_RECORD.value,
                 virtual_record_id="vrid-in-the-message",
             )))
 
         cleanup.assert_called_once_with("org-1", "saved-by-attempt-1")
-        minted = processor.process_excel_document.call_args[1]["virtual_record_id"]
+        minted = processor.process_pptx_document.call_args[1]["virtual_record_id"]
         assert minted not in ("saved-by-attempt-1", "vrid-in-the-message")
 
     @pytest.mark.asyncio

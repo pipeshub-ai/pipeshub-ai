@@ -28,7 +28,7 @@ import json
 import logging
 import re
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -76,6 +76,9 @@ from app.utils.llm import LLMNotConfiguredError, get_llm_for_role
 from app.utils.streaming import invoke_with_structured_output_and_reflection
 from app.utils.table_row_memory import (
     StoredTable,
+    best_stored_table,
+    dict_row_digest,
+    kept_texts,
     previous_row_texts,
     row_digest,
     with_row_digest,
@@ -620,7 +623,7 @@ async def describe_row_dicts(
     for reason, count in run.rows_by_reason.items():
         note_degraded_rows(reason, count)
     return [
-        t if _usable(t) else indexing_helpers.generate_simple_row_text(rows_data[i])
+        t if _usable(t) else PlainRowText(indexing_helpers.generate_simple_row_text(rows_data[i]))
         for i, t in enumerate(texts)
     ]
 
@@ -739,26 +742,31 @@ async def _summary_and_headers_call(
 
 
 async def _stored_texts_for(rows: Sequence[Sequence[str]], known_header_row_count: Optional[int]) -> Optional[StoredTable]:
-    """The rows of the stored table that can give this one the most texts, when this delivery offered any; ``None`` otherwise (no
-    update, a table the stored version did not have, or two stored tables that tie, where neither is surely this one). Only one
-    stored table is used, so a row equal to one of another table never takes that table's wording. Where the model decides the
-    header, a row is looked for both ways."""
+    """The rows of the stored table that can give this one the most texts (``best_stored_table``), when this delivery offered any;
+    ``None`` otherwise. Where the model decides the header, a row is looked for both ways."""
     tables = await previous_row_texts()
     if not tables:
         return None
     hypotheses = (1 if known_header_row_count else 0,) if known_header_row_count is not None else (0, 1)
-    best, best_shared, tied = None, 0, False
-    for header_rows in hypotheses:
-        header = rows[0] if header_rows else None
-        counts = Counter(row_digest(header, row) for row in rows[header_rows:])
-        for table in tables:
-            # A repeated row counts as many times as both versions hold it, never more than the stored table can give.
-            shared = sum(min(n, len(table.get(digest, ()))) for digest, n in counts.items())
-            if shared > best_shared:
-                best, best_shared, tied = table, shared, False
-            elif shared and shared == best_shared and table is not best:
-                tied = True
-    return None if tied else best
+    return best_stored_table(
+        tables, [[row_digest(rows[0] if header_rows else None, row) for row in rows[header_rows:]] for header_rows in hypotheses]
+    )
+
+
+async def stored_row_texts(rows: Sequence[Mapping[str, Any]]) -> tuple[list[str], list[Optional[str]]]:
+    """For a table given as one dict per row (CSV, Excel): each row's digest, and the text the stored version gave each row
+    (``None`` for a row it did not have, and for every row when this delivery offered none). Only the rows without a text
+    need describing."""
+    digests = [dict_row_digest(row) for row in rows]
+    tables = await previous_row_texts()
+    return digests, kept_texts(best_stored_table(tables, [digests]) if tables else None, digests)
+
+
+class PlainRowText(str):
+    """A row's plain ``column: value`` text, given where the model did not describe the row. Such a row gets no digest, so the
+    next update describes it again instead of keeping the plain text."""
+
+    __slots__ = ()
 
 
 async def enrich_table_grid(
@@ -979,9 +987,7 @@ async def _describe_unmatched(
     batch_size: int,
 ) -> tuple[list[Optional[str]], _Run]:
     """Every data row's description: a row the stored version had keeps its text, the others are described in batches."""
-    left = {digest: iter(texts) for digest, texts in stored.items()}
-    # A repeated row takes the stored texts of its repeats in order, one each; a repeat more than were stored is described.
-    texts: list[Optional[str]] = [next(left.get(digest, iter(())), None) for digest in digests]
+    texts = kept_texts(stored, digests)
     pending = [i for i, text in enumerate(texts) if text is None]
     batches = [pending[i : i + batch_size] for i in range(0, len(pending), batch_size)]
     run = _Run(llm, summary, logger, RetryBudget.for_batches(len(batches)))
