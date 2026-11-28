@@ -466,7 +466,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         const r = await run(['rollback', '--online', '--fail-at', 'finalize-checkpoint'], ONLINE);
         expect(r.code).to.equal(0);
         expect(r.out.message).to.contain('job record could not be finished').and.to.contain('qa-reject: still holding').and.to.contain('run `rollback` again');
-        expect((await JobState.current(w.rt))?.progress.releasePending).to.deep.equal(['qa-reject']);
+        expect((await JobState.current(w.rt))?.progress.release?.pending).to.deep.equal(['qa-reject']);
         const before = await storeEpoch();
         reject = false;
         const again = await run(['rollback']);

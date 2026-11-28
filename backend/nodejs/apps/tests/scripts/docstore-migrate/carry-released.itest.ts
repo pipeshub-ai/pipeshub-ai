@@ -130,7 +130,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           .to.contain('qa-released: not this time')
           .and.contain('run `rollback` again');
         expect(
-          (await JobState.current(w.rt))?.progress.releasePending,
+          (await JobState.current(w.rt))?.progress.release?.pending,
         ).to.deep.equal(['qa-released']);
         // no other command attaches to the open job
         const blocked = await migrateOffline(w.rt, {
@@ -164,6 +164,104 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         });
         expect(third).to.include({ ok: false, mode: 'refused' });
         expect(released).to.have.length(2);
+      });
+
+      const offlineMoved = async (): Promise<void> => {
+        expect(
+          (
+            await migrateOffline(w.rt, {
+              dryRun: false,
+              allowWriters: false,
+              log,
+            })
+          ).ok,
+        ).to.equal(true);
+      };
+      const back = (failAt?: string): ReturnType<typeof rollback> => {
+        const hooks = process.env.MIGRATE_TEST_HOOKS;
+        process.env.MIGRATE_TEST_HOOKS = '1';
+        return rollback(w.rt, {
+          reverse: false,
+          allowWriters: false,
+          log,
+          ...(failAt ? { failAt } : {}),
+        }).finally(() => {
+          if (hooks === undefined) delete process.env.MIGRATE_TEST_HOOKS;
+          else process.env.MIGRATE_TEST_HOOKS = hooks;
+        });
+      };
+      const pending = async (): Promise<string[] | undefined> =>
+        (await JobState.current(w.rt))?.progress.release?.pending;
+
+      it('a pending carrier this run does not know, or one with no step to let go, stays pending and is named; it ends only once it let go', async () => {
+        await offlineMoved();
+        failNext = true;
+        expect((await back()).message).to.contain('qa-released: not this time');
+        expect(await pending()).to.deep.equal(['qa-released']);
+        // not in this run's carriers
+        const i = CARRIERS.indexOf(carrier);
+        (CARRIERS as Carrier[]).splice(i, 1);
+        const unknown = await back().finally(() =>
+          (CARRIERS as Carrier[]).push(carrier),
+        );
+        expect(unknown, unknown.message).to.include({
+          ok: false,
+          mode: 'released',
+        });
+        expect(unknown.message)
+          .to.contain('qa-released')
+          .and.contain('not a carrier of this run');
+        expect(await pending(), 'still pending').to.deep.equal(['qa-released']);
+        // known, but without the step
+        const step = carrier.released;
+        delete carrier.released;
+        const none = await back().finally(() => (carrier.released = step));
+        expect(none, none.message).to.include({ ok: false, mode: 'released' });
+        expect(none.message)
+          .to.contain('qa-released')
+          .and.contain('has no step to let go');
+        expect(await pending(), 'still pending').to.deep.equal(['qa-released']);
+        const done = await back();
+        expect(done, done.message).to.include({ ok: true, mode: 'released' });
+        expect(released).to.deep.equal(['active', 'active']);
+        expect(await JobState.current(w.rt)).to.equal(null);
+      });
+
+      it('a release whose job cannot be ended is ended by a rollback run again, without letting go twice', async () => {
+        await offlineMoved();
+        failNext = true;
+        await back();
+        const r = await back('release-finish');
+        expect(r, r.message).to.include({ ok: false, mode: 'released' });
+        expect(r.message)
+          .to.contain('qa-released')
+          .and.contain('run `rollback` again');
+        expect(
+          await pending(),
+          'all let go, the job still to end',
+        ).to.deep.equal([]);
+        expect(released).to.deep.equal(['active', 'active']);
+        const again = await back();
+        expect(again, again.message).to.include({ ok: true, mode: 'released' });
+        expect(released, 'not let go a third time').to.deep.equal([
+          'active',
+          'active',
+        ]);
+        expect(await JobState.current(w.rt), 'the job ended').to.equal(null);
+      });
+
+      it('a release that cannot be recorded leaves no open job without its list, and says so', async () => {
+        await offlineMoved();
+        const r = await back('release-record');
+        expect(r, r.message).to.include({ ok: true, mode: 'no_pg_writes' });
+        expect(r.message)
+          .to.contain('could not be recorded')
+          .and.contain('qa-released');
+        const cur = await JobState.current(w.rt);
+        expect(
+          cur === null || (cur.progress.release?.pending ?? []).length > 0,
+          'no running job has lost the list',
+        ).to.equal(true);
       });
 
       it('a refused rollback releases nothing', async () => {

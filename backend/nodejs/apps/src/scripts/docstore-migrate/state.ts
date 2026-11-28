@@ -63,8 +63,11 @@ export interface Progress {
   drain?: { at: string; stoppedRuns: number };
   outbox?: { copied: Record<string, number> };
   flip?: { at: string; backend: 'postgres' };
-  /** Carriers that did not let go after the rollback that handed the store back; the job stays open until a rollback run again releases them. */
-  releasePending?: string[];
+  /**
+   * A rollback's release (written before any carrier lets go): `pending` names the carriers still to let go, and `end` says the job is to
+   * end once they have (the rollback's own job). While either holds, only a rollback run again attaches (see `releaseHeld`).
+   */
+  release?: { pending: string[]; end: boolean };
   [k: string]: unknown;
 }
 
@@ -77,6 +80,14 @@ export const canon = (v: unknown): string =>
         )
       : x,
   );
+
+/** What a rollback's release still holds the job for ('' when nothing): the carriers still to let go, or the job's end. */
+export const releaseHeld = (p: Progress | undefined): string => {
+  const r = p?.release;
+  if (!r) return '';
+  if (r.pending.length > 0) return r.pending.join(', ');
+  return r.end ? 'the job is still to end' : '';
+};
 
 export const emptyProgress = (): Progress => ({
   version: 1,
@@ -158,13 +169,19 @@ export class JobState {
    */
   static async attachOrStart(
     rt: MigrationRuntime,
-    o: { releasing?: boolean } = {},
+    o: {
+      releasing?: boolean;
+      /** Written in the first save of a job this call starts (such a job is never left running without it: it is cancelled instead). */
+      initial?: Partial<Progress>;
+      /** Tests: runs before that first save. */
+      beforeSave?: () => void;
+    } = {},
   ): Promise<{ js: JobState; created: boolean }> {
     const cur = await JobState.current(rt);
-    const pending = cur?.progress.releasePending ?? [];
-    if (pending.length > 0 && !o.releasing)
+    const held = releaseHeld(cur?.progress);
+    if (held && !o.releasing)
       throw new Error(
-        `a rollback left carriers that did not let go of what the move held in PostgreSQL (${pending.join(', ')}): run \`rollback\` again first`,
+        `a rollback has not finished letting go of what the move held in PostgreSQL (${held}): run \`rollback\` again first`,
       );
     if (cur) {
       const js = new JobState(rt, cur.id, cur.progress);
@@ -175,8 +192,17 @@ export class JobState {
       'SELECT platform.job_start($1)::text AS id',
       [JOB_KIND],
     );
-    const js = new JobState(rt, Number(rows[0]?.id), emptyProgress());
-    await js.checkpoint();
+    const js = new JobState(rt, Number(rows[0]?.id), {
+      ...emptyProgress(),
+      ...o.initial,
+    });
+    try {
+      o.beforeSave?.();
+      await js.checkpoint();
+    } catch (e) {
+      await js.finish('cancelled').catch(() => undefined);
+      throw e;
+    }
     return { js, created: true };
   }
 
