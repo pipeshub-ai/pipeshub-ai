@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from gitlab.v4.objects import GroupMember, Project
 
 from app.config.constants.arangodb import Connectors, PermissionModel
+from app.connectors.core.base.connector.failure_notices import ReconnectRequiredError, listed
 from app.connectors.core.registry.filters import FilterOperator, SyncFilterKey
 from app.models.entities import AppUserGroup, RecordGroup, RecordGroupType
 from app.models.permission import EntityType, Permission, PermissionType
@@ -102,9 +103,11 @@ class ProjectsSync:
         if not projects:
             self.logger.warning("No projects to sync after applying filters")
             return
+        incomplete: list[str] = []
         for project in projects:
             project_id: int = project.id
             project_path: str = project.path_with_namespace
+            problems_before = len(self.c.sync_problems)
             for step_name, step in (
                 ("members", lambda: self._sync_project_members_as_pseudo(project)),
                 ("issues", lambda: self.c.issues.fetch_issues_batched(project_id)),
@@ -117,14 +120,25 @@ class ProjectsSync:
                 ),
                 ("merge_requests", lambda: self.c.merge_requests.fetch_prs_batched(project_id)),
             ):
+                self.c.run_state.raise_if_rejected()
                 try:
                     await step()
+                except ReconnectRequiredError:
+                    raise
                 except Exception as e:
                     self.logger.error(
                         "Unhandled error syncing %s for project %s (%s); continuing: %s",
                         step_name, project_id, project_path, e, exc_info=True,
                     )
                     self.c.note_sync_problem(f"{step_name} of project {project_path}: {e}")
+            if len(self.c.sync_problems) > problems_before:
+                incomplete.append(project_path)
+        self.c.run_state.raise_if_rejected()
+        if incomplete:
+            self.c.run_state.note(
+                f"These projects did not sync completely: {listed(incomplete)}. The next sync tries again; if it "
+                "keeps failing, check that the connected account can read them and that a selected branch exists."
+            )
 
     # ------------------------------------------------------------------
     # Project resolution
@@ -163,6 +177,7 @@ class ProjectsSync:
 
         by_id: dict[int, Project] = {}
         listing_complete = True
+        unreadable: list[str] = []
 
         if proj_in:
             for pth in proj_in:
@@ -172,6 +187,8 @@ class ProjectsSync:
                     project = await c.removed_projects.moved_or_remove(pth)
                 if not project:
                     self.logger.error("Repository not found or inaccessible: %s (%s)", pth, res.error)
+                    if res.status_code in (403, 404):
+                        unreadable.append(pth)
                     if res.status_code != 404:
                         c.note_failed_read(f"project {pth}", res)
                     continue
@@ -186,6 +203,8 @@ class ProjectsSync:
                 )
                 if not gres.success:
                     self.logger.error("Could not list projects for group %s: %s", gp, gres.error)
+                    if gres.status_code in (403, 404):
+                        unreadable.append(gp)
                     c.note_failed_read(f"projects of group {gp}", gres)
                     listing_complete = False
                     continue
@@ -200,6 +219,12 @@ class ProjectsSync:
                 raise Exception("Error in fetching projects")
             for p in res.data or []:
                 by_id[int(p.id)] = p
+
+        if unreadable and prune:
+            c.run_state.note(
+                f"These selected projects or groups were deleted, moved, or are not readable by the connected "
+                f"account: {listed(unreadable)}. Give the account access, or remove them from the filter."
+            )
 
         candidates = list(by_id.values())
         if proj_not_in:

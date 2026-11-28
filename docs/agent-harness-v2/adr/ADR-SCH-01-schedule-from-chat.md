@@ -59,8 +59,9 @@ refused `SCHEDULE_NOT_APPROVED` and nothing is made. The schedule is the run's p
 the 5-minute cron floor, budget, notify channels), with the person's authority re-read as a firing re-reads it. It
 runs the chat's agent, agent version, model, chat mode, tools and locale, and records its origin (conversation, run,
 interaction). One decision makes one schedule, once, and the schedule store alone guarantees it, since a journal
-write and a store write cannot be one: the schedule's id is derived from the org and the interaction, so the store's
-insert under it is the one atomic step, and deleting a chat-made schedule leaves in its place, in the same store write,
+write and a store write cannot be one: the schedule's id is derived from the org, the run and the interaction (an
+interaction id is unique only within its run: the loop's first approval is `ix.approve.t1.0` in every run), so the
+store's insert under it is the one atomic step, and deleting a chat-made schedule leaves in its place, in the same store write,
 a tombstone under that id (ids, its origin and when it went; no name, ask or trigger) that no read answers (lists, the
 firer, triggers, quotas, admins) and that erasing the person or the org removes. A repeat answers the live schedule
 (`created: false`); a repeat after the person deleted it meets the tombstone and is refused (`SCHEDULE_APPROVAL_USED`).
@@ -107,6 +108,11 @@ is the person's act on the Schedules page, and a list is something a person read
 ## Deviations
 
 - Approval is the existing approval card, not a question card with a confirm route (D3).
+- 2026-11-27 (#6712): the id was first derived from the org and the interaction alone, so every later run's first
+  approval (`ix.approve.t1.0`) was answered with the first such run's schedule, another person's included; it now
+  includes the run, and a decision answers only with a schedule its own run and person made (anything else at the id
+  is refused `SCHEDULE_FORBIDDEN`). No release carried the first formula, and a decision is retried only within its
+  run's lifetime, so no stored schedule needs its id carried over.
 - Every refusal notice of a schedule, not only a one-off's, now waits on the org's harness predicate and Labs
   `ENABLE_SCHEDULED_RUNS` (ADR-OPS-08: what a person sees is gated on both): an org that switched scheduled runs off
   no longer gets the daily "your schedule could not run" notice. Firings are still settled and recorded.

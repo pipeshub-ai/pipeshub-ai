@@ -3540,7 +3540,14 @@
         "createError": "Failed to create connector",
         "createSuccess": "Instancia del conector «{{name}}» creada correctamente",
         "authSaveError": "Failed to save auth configuration",
-        "configSaveError": "Failed to save configuration"
+        "configSaveError": "Failed to save configuration",
+        "syncTurningOn": "Activando la sincronización de {{name}}",
+        "syncTurningOnDescription": "Comprobando la conexión con {{source}}. Puede tardar unos segundos.",
+        "syncTurningOff": "Desactivando la sincronización de {{name}}",
+        "syncTurnedOn": "La sincronización de {{name}} está activada",
+        "syncTurnedOff": "La sincronización de {{name}} está desactivada",
+        "syncToggleFailed": "No se pudo cambiar la sincronización de {{name}}",
+        "syncToggleFailedDescription": "Inténtalo de nuevo. Si sigue fallando, revisa la configuración del conector."
       },
       "tabs": {
         "authenticate": "Autenticar",
@@ -3841,7 +3848,9 @@
         "removing": "Este conector se está quitando.",
         "configureFirst": "Termine la configuración para poder activar la sincronización.",
         "authenticateFirst": "Autentique este conector para poder activar la sincronización.",
-        "selected": "{{field}} seleccionados"
+        "selected": "{{field}} seleccionados",
+        "turningOn": "Activando…",
+        "turningOff": "Desactivando…"
       },
       "instanceStatus": {
         "setup": {
@@ -7294,6 +7303,9 @@
     "appLimited_other": "{{appName}} solo puede ver {{count}} elementos elegidos por su creador, y solo los que tú puedes ver."
   },
   "errorToast": {
+    "reconnecting": "Reconectando…",
+    "reconnectingDescription": "Ahora mismo no podemos comprobar tu sesión. Sigues con la sesión iniciada. Lo reintentaremos durante unos minutos y después cuando vuelvas o te reconectes.",
+    "sessionUnavailable": "Ahora mismo no podemos comprobar tu sesión. Reconectando…",
     "accessDenied": "Acceso denegado",
     "invalidRequest": "Solicitud no válida",
     "notFound": "No encontrado",

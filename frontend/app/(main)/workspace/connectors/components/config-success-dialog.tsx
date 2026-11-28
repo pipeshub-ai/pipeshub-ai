@@ -13,6 +13,11 @@ interface ConfigSuccessDialogProps {
   connectorName: string;
   onStartSyncing: () => void;
   onDoLater: () => void;
+  /**
+   * The sync is being started. The dialog stays closable: closing it does not cancel the
+   * request, and the connector's card keeps showing that sync is turning on.
+   */
+  isStarting?: boolean;
   /** Shown under the description, before the buttons. */
   children?: React.ReactNode;
 }
@@ -36,6 +41,7 @@ export function ConfigSuccessDialog({
   connectorName,
   onStartSyncing,
   onDoLater,
+  isStarting = false,
   children,
 }: ConfigSuccessDialogProps) {
   const { t } = useTranslation();
@@ -64,7 +70,13 @@ export function ConfigSuccessDialog({
             <Button variant="outline" color="gray" size="2" onClick={onDoLater} style={{ cursor: 'pointer' }}>
               {t('workspace.connectors.successDialog.later')}
             </Button>
-            <Button variant="solid" size="2" onClick={onStartSyncing} style={{ cursor: 'pointer' }}>
+            <Button
+              variant="solid"
+              size="2"
+              loading={isStarting}
+              onClick={onStartSyncing}
+              style={{ cursor: 'pointer' }}
+            >
               {t('workspace.connectors.successDialog.startSync')}
             </Button>
           </Flex>

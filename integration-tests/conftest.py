@@ -37,11 +37,10 @@ if str(_BACKEND_PYTHON) not in sys.path:
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-# The assertions read the graph through providers in this process (the graph_provider fixture,
-# helper/*, the scenario matrix), with no request or job binding an org. Like the provider-level
-# suites in backend/python/tests/integration, they keep shadow mode (docs/org-context.md, "Shadow
-# and enforce"). It covers this pytest process only: the services under test keep their default,
-# enforce, because the integration compose files pass no ORG_CONTEXT_MODE.
+# The tests read the stack's stores through the providers directly (graph_provider, filter_accessible_record_ids), with no
+# request, message or job binding an org, so in enforce mode every such read is refused (MissingOrgContext). They keep shadow
+# mode in this process, as backend/python/tests/integration does since enforce became the default (#6412). The stack under
+# test runs in its own containers and is not affected.
 os.environ.setdefault("ORG_CONTEXT_MODE", "shadow")
 
 # Import after backend path is added to sys.path

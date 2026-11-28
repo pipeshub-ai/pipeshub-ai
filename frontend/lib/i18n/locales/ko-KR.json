@@ -3651,7 +3651,14 @@
         "createError": "커넥터를 생성하지 못했습니다",
         "createSuccess": "커넥터 인스턴스 '{{name}}'이(가) 생성되었습니다",
         "authSaveError": "인증 설정을 저장하지 못했습니다",
-        "configSaveError": "설정을 저장하지 못했습니다"
+        "configSaveError": "설정을 저장하지 못했습니다",
+        "syncTurningOn": "{{name}}의 동기화를 켜는 중",
+        "syncTurningOnDescription": "{{source}} 연결을 확인하는 중입니다. 몇 초 정도 걸릴 수 있습니다.",
+        "syncTurningOff": "{{name}}의 동기화를 끄는 중",
+        "syncTurnedOn": "{{name}}의 동기화가 켜졌습니다",
+        "syncTurnedOff": "{{name}}의 동기화가 꺼졌습니다",
+        "syncToggleFailed": "{{name}}의 동기화를 변경할 수 없습니다",
+        "syncToggleFailedDescription": "다시 시도하세요. 계속 실패하면 커넥터 설정을 확인하세요."
       },
       "tabs": {
         "authenticate": "인스턴스 인증",
@@ -3951,7 +3958,9 @@
         "removing": "이 커넥터를 제거하는 중입니다.",
         "configureFirst": "동기화를 사용하려면 먼저 구성을 완료하세요.",
         "authenticateFirst": "동기화를 사용하려면 먼저 이 커넥터를 인증하세요.",
-        "selected": "{{field}} 선택됨"
+        "selected": "{{field}} 선택됨",
+        "turningOn": "켜는 중…",
+        "turningOff": "끄는 중…"
       },
       "instanceStatus": {
         "setup": {
@@ -7155,6 +7164,9 @@
     "appLimited_other": "{{appName}}은(는) 작성자가 선택한 {{count}}개 항목 중 회원님이 볼 수 있는 항목만 볼 수 있습니다."
   },
   "errorToast": {
+    "reconnecting": "다시 연결하는 중…",
+    "reconnectingDescription": "지금은 세션을 확인할 수 없습니다. 로그인 상태는 유지됩니다. 몇 분 동안 다시 시도하고, 그 후에는 돌아오거나 다시 연결될 때 다시 시도합니다.",
+    "sessionUnavailable": "지금은 세션을 확인할 수 없습니다. 다시 연결하는 중…",
     "accessDenied": "액세스 거부됨",
     "invalidRequest": "잘못된 요청",
     "notFound": "찾을 수 없음",
