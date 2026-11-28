@@ -14,6 +14,7 @@ require:
   - './tests/helpers/harness-switch-env-global.ts'
   - './tests/helpers/logger-isolation-global.ts'
   - './tests/helpers/stray-async-errors-global.ts'
+  - './tests/helpers/access-breakers-hooks.ts'
 spec: 'tests/**/*.test.ts'
 timeout: 10000
 recursive: true
