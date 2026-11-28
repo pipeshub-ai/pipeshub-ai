@@ -545,7 +545,11 @@ export class MongoRunAdmissionStore
         if (history === null && run.input) {
           run.input.previousConversations = previousConversations;
         }
-        const memory = memoryPin(command.memory, audience !== null);
+        // A chat others read is shared for memory as for its history: the actor's personal memories stay out.
+        const memory = memoryPin(
+          command.memory,
+          audience !== null || binding?.readByOthers === true,
+        );
         const requires = withAnswersOnlyHistory(
           rootRunRequirements(
             run,

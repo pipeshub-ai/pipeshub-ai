@@ -43,6 +43,12 @@ export const mongoCollaboratorBackend = (
         { $pull: { sharedWith: { userId: new Types.ObjectId(userId) } } },
       );
     },
+    openToProject: async (_orgId, sessionId) => {
+      await ChatSession.updateOne(
+        { _id: sessionId },
+        { $set: { projectId: new Types.ObjectId(), projectVisibility: 'project' } },
+      );
+    },
     messages: async (sessionId) =>
       (
         await ChatSessionMessage.find({ sessionId }).sort({ seq: 1 }).lean()
