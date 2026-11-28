@@ -4,6 +4,7 @@ import { BrokerTriggerSource } from '../adapters/messaging/broker-trigger-source
 import { createRunStatusReader } from '../../../libs/repositories/agent-harness/run-status';
 import { createScheduleStore } from '../../../libs/repositories/agent-harness/schedules';
 import { ActorAgentVersions } from '../application/actor-agent-versions';
+import type { CodingEngineService } from '../application/coding-engine-service';
 import type { ExecutionService } from '../application/execution-service';
 import { RunAdmissionService } from '../application/run-admission-service';
 import type { RunTimelineService } from '../application/run-timeline-service';
@@ -36,6 +37,7 @@ import type { ScheduledWaitNotices } from '../ports/schedules';
 import {
   AGENT_HARNESS_SCHEDULED_WAIT_NOTICES,
   AGENT_HARNESS_CHAT_SCHEDULES,
+  AGENT_HARNESS_CODING_ENGINES,
   AGENT_HARNESS_EXECUTION_SERVICE,
   AGENT_HARNESS_EXECUTION_STORE,
   AGENT_HARNESS_INBOX_STORE,
@@ -203,6 +205,13 @@ export const bindSchedules: HarnessBinder = ({
             journal.service,
             inDurableTransaction,
           ),
+          ...(context.container.isBound(AGENT_HARNESS_CODING_ENGINES)
+            ? {
+                engines: context.container.get<CodingEngineService>(
+                  AGENT_HARNESS_CODING_ENGINES,
+                ),
+              }
+            : {}),
           logger,
         });
       })

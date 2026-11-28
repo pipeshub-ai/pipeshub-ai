@@ -55,6 +55,9 @@ export class HarnessScheduleRunner implements ScheduleRunner {
       ...(request.agentVersion !== undefined
         ? { agentVersion: request.agentVersion }
         : {}),
+      ...(request.codingEngine !== undefined
+        ? { codingEngine: request.codingEngine }
+        : {}),
       idempotencyKey: request.idempotencyKey,
       deadlineMs: request.deadlineMs,
       input: request.input,

@@ -42,6 +42,7 @@ export interface ScheduleDocument {
   revision?: number;
   lastChangedFrom?: ScheduleChangedFrom;
   skipNextAt?: number;
+  codingEngine?: string;
   /** A tombstone's (ScheduleTombstoneDocument) only. */
   deletedAt?: number;
   createdAt: number;

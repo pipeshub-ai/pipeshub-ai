@@ -32,6 +32,8 @@ export interface ScheduleRunRequest {
   agentKey?: string;
   /** The agent version the schedule pinned (OWD-14); absent: the latest published. */
   agentVersion?: number;
+  /** The coding engine the schedule keeps for its runs' new chats (an engine kind or `none`); absent: the default. */
+  codingEngine?: string;
   idempotencyKey: string;
   deadlineMs: number;
   /** When the run's watch ends: an ask still open then expires. */

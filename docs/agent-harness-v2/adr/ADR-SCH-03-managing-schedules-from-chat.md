@@ -132,6 +132,12 @@ only the few most-used tools in full and deferring the rest by group (Anthropic'
   the wrapper's digest from the arguments it is sent, `{name: calledAs, arguments}`, and accepts the call only when
   that, or the arguments' own digest, is the journaled one. Engines are unchanged: their gateway unwraps `call_tool`
   before the digest is taken.
+- A schedule made in chat keeps that chat's coding engine (`AgentSchedule.codingEngine`, an engine kind or `none`).
+  Each firing opens a new chat, which otherwise took its owner's default: a chat that chose no engine made a schedule
+  whose run handed the ask to the owner's personal engine. The firing names it as a new chat's first message does
+  (CMDUI2), so admission checks it against the org's switches and the person's groups at every firing, and an engine
+  since turned off falls back to the default. A failed read of the chat's choice makes the schedule on the default.
+  Kept in the schedule document on both stores; no migration (PostgreSQL keeps the document as JSON).
 
 ## Owner amendments
 

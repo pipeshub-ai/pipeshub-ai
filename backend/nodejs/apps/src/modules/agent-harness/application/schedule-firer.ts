@@ -953,6 +953,9 @@ export class ScheduleFirer {
         ? { agentKey: schedule.agentKey }
         : {}),
       ...(agentVersion !== undefined ? { agentVersion } : {}),
+      ...(schedule.codingEngine !== undefined
+        ? { codingEngine: schedule.codingEngine }
+        : {}),
       idempotencyKey: scheduleIdempotencyKey(schedule.id, firing.slotKey),
       deadlineMs: schedule.deadlineS * 1000,
       deadlineAt: startedAt + schedule.deadlineS * 1000,

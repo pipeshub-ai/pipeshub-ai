@@ -198,6 +198,13 @@ export interface ChatScheduleOptions {
   store: Pick<ScheduleStore, 'get'>;
   actors: Pick<ActorAuthority, 'authorize'>;
   marks: ScheduleMarks;
+  /**
+   * The coding engine the chat chose (an engine kind or `none`), which a schedule made there keeps: its runs open
+   * new chats, which would otherwise take the person's default engine. Absent, or no choice: the default.
+   */
+  engines?: {
+    sessionChoice(orgId: string, sessionId: string): Promise<string | null>;
+  };
   logger?: HarnessLogger;
 }
 
@@ -326,6 +333,7 @@ export class ChatScheduleService {
       interactionId: request.interactionId,
       ...(run.agentKey !== undefined ? { agentKey: run.agentKey } : {}),
     };
+    const engine = await this.chatEngine(orgId, run.sessionId);
     let created: ScheduleView;
     try {
       ({ schedule: created } = await this.options.schedules.create(
@@ -337,7 +345,10 @@ export class ChatScheduleService {
             ? { locale: run.input.locale }
             : {}),
         },
-        scheduleRequest(run, request.arguments),
+        {
+          ...scheduleRequest(run, request.arguments),
+          ...(engine !== null ? { codingEngine: engine } : {}),
+        },
         { id, origin },
       ));
     } catch (error) {
@@ -618,6 +629,26 @@ export class ChatScheduleService {
           : {}),
       },
     };
+  }
+
+  /** The chat's engine choice; a failed read is the default, logged, since the schedule is made either way. */
+  private async chatEngine(
+    orgId: string,
+    sessionId: string,
+  ): Promise<string | null> {
+    if (this.options.engines === undefined) return null;
+    try {
+      return await this.options.engines.sessionChoice(orgId, sessionId);
+    } catch (error) {
+      this.logger.warn(
+        'schedule.chat_engine_unread',
+        harnessLogMeta('schedule.chat_engine_unread', {
+          orgId,
+          errorType: error instanceof Error ? error.name : typeof error,
+        }),
+      );
+      return null;
+    }
   }
 
   /** The audit fact of what the decision made; nothing depends on it, so a failure to journal it is only logged. */

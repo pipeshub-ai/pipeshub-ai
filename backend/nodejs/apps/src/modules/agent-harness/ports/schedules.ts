@@ -289,6 +289,8 @@ export interface ScheduledAdmission {
   agentKey?: string;
   /** The agent version the schedule pinned (OWD-14); absent: the latest published. */
   agentVersion?: number;
+  /** The coding engine the schedule keeps for its run's new chat (an engine kind or `none`); absent: the default. */
+  codingEngine?: string;
   idempotencyKey: string;
   deadlineMs: number;
   input: RunInputSnapshot;

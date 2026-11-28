@@ -155,6 +155,12 @@ export interface AgentSchedule {
   lastChangedFrom?: ScheduleChangedFrom;
   /** The one slot its owner asked to skip (ADR-SCH-03 D4): the firer records it skipped instead of running it. */
   skipNextAt?: number;
+  /**
+   * The coding engine its runs hand code tasks to: the one chosen in the chat it was made in (an engine kind or
+   * `none`). Each run opens a new chat, which would otherwise take its owner's default; checked at every firing as
+   * a new chat's choice is, so an engine since turned off falls back to the default. Absent: the owner's default.
+   */
+  codingEngine?: string;
   createdAt: number;
   updatedAt: number;
 }

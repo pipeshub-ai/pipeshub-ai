@@ -56,6 +56,7 @@ const scheduleSchema = new Schema<ScheduleDocument>(
     revision: { type: Number, default: undefined },
     lastChangedFrom: { type: Schema.Types.Mixed, default: undefined },
     skipNextAt: { type: Number, default: undefined },
+    codingEngine: { type: String, default: undefined },
     deletedAt: { type: Number, default: undefined },
     createdAt: { type: Number, required: true },
     updatedAt: { type: Number, required: true },

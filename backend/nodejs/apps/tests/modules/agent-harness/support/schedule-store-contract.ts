@@ -281,6 +281,13 @@ export function describeScheduleStoreContract(
       expect(await f.store.getFiring(ORG, refused.id)).to.not.have.property('runner');
     });
 
+    it('SCH-03: the coding engine a chat chose is kept and read back; absent stays absent', async () => {
+      const kept = await f.store.create(aSchedule({ codingEngine: 'none' }), LIMITS);
+      expect((await f.store.get(ORG, kept.id))?.codingEngine).to.equal('none');
+      const plain = await f.store.create(aSchedule(), LIMITS);
+      expect(await f.store.get(ORG, plain.id)).to.not.have.property('codingEngine');
+    });
+
     it('SCH-03: an update at the revision read changes the fields and bumps it; a stale one changes nothing', async () => {
       const schedule = await f.store.create(aSchedule(), LIMITS);
       const from = { conversationId: 'chat-1', agentKey: 'helper', at: T0 + 5, interactionId: 'ix-1' };

@@ -124,6 +124,8 @@ export interface CreateScheduleRequest {
   overlap?: OverlapPolicy;
   /** Where the actor hears that a run ended (TR-07); absent: in-app. */
   notify?: NotifyChannel[];
+  /** The coding engine its runs use (an engine kind or `none`); absent: the owner's default at each firing. */
+  codingEngine?: string;
 }
 
 /** One change to a schedule (ADR-SCH-03 D4), checked as a create checks it; `revision` is the one the caller read. */
@@ -428,6 +430,20 @@ export const firingView = (firing: ScheduleFiring): FiringView => ({
   createdAt: iso(firing.createdAt) as string,
   settledAt: iso(firing.settledAt),
 });
+
+/** An engine kind or `none`, as a chat's choice is named; whether it may run is admission's check at each firing. */
+const ENGINE_CHOICE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+function codingEngineChoice(choice: string): string {
+  if (!ENGINE_CHOICE.test(choice)) {
+    throw new HarnessScheduleRefusedError(
+      'SCHEDULE_INVALID',
+      'codingEngine must be an engine kind or none',
+      'codingEngine',
+    );
+  }
+  return choice;
+}
 
 const bounded = (
   value: number | undefined,
@@ -875,6 +891,9 @@ export class ScheduleService {
       overlap: request.overlap ?? DEFAULT_OVERLAP,
       notify,
       ...(made !== undefined ? { origin: { ...made.origin } } : {}),
+      ...(request.codingEngine !== undefined
+        ? { codingEngine: codingEngineChoice(request.codingEngine) }
+        : {}),
       createdAt: now,
       updatedAt: now,
     };
