@@ -45,7 +45,11 @@ import { IMessageProducer } from './libs/types/messaging.types';
 import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
 import { operatorKeyGuardMiddleware } from './libs/middlewares/operator-key-guard.middleware';
 
-import { loadConfigurationManagerConfig } from './modules/configuration_manager/config/config';
+import {
+  isPlaceholderSecretKey,
+  loadConfigurationManagerConfig,
+} from './modules/configuration_manager/config/config';
+import { ringSecret, SECRET_KEY_ENV } from './libs/encryptor/secret-key-ring';
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
 import { createOAuthRouter } from './modules/tokens_manager/routes/oauth.routes';
 import { createProcessMetricsServer } from './libs/services/telemetry/process-metrics';
@@ -373,6 +377,12 @@ export class Application {
 
       // Loads configuration
       const configurationManagerConfig = loadConfigurationManagerConfig();
+      // Once per process. Existing installs cannot change the key yet, so log and continue.
+      if (isPlaceholderSecretKey(ringSecret(SECRET_KEY_ENV))) {
+        this.logger.error(
+          'SECRET_KEY is a placeholder, shorter than 16 characters or too repetitive. Set a random value of at least 16 characters.',
+        );
+      }
       const appConfig = await loadAppConfig();
       configureEnvelopeFromSecret(appConfig.scopedJwtSecret, () =>
         ConfigService.getInstance().getScopedJwtSecret(),
