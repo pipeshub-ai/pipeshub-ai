@@ -400,7 +400,7 @@ export const enterpriseSearchStreamCreateSchema = z.object({
 });
 
 /**
- * The Slack bot's own fields on the assistant's internal chat routes, which the agent routes take unvalidated: who is
+ * The Slack bot's own fields on its internal stream routes, the assistant's and an agent's alike: who is
  * behind its service credential (the caller context), the thread the turn came from (ADR-OWD-09 D-SLACK-ASK), and the
  * Agent mode's request for the agent harness. Without them the validation dropped each one before the route read it.
  */
@@ -710,22 +710,18 @@ export const agentAddMessageParamsSchema = z.object({
 });
 
 /**
- * Internal (scoped-token) agent stream routes. Slack forwards the caller's
- * identity to the AI backend (ai-chat-payload.ts::assignCallerContextToAiPayload);
- * the public schemas strip those keys on purpose, so only these variants keep them.
+ * Internal (scoped-token) agent stream routes, with the Slack bot's own fields. Slack forwards the caller's
+ * identity to the AI backend (ai-chat-payload.ts::assignCallerContextToAiPayload), and the agent harness posts the
+ * run's end in the thread the turn came from; the public schemas strip those keys on purpose, so only these variants
+ * keep them. These routes once took the bot's body unvalidated, so a field missing here is one the bot's turns lose.
  */
-const internalCallerContextSchema = {
-  callerDisplayName: z.string().optional(),
-  callerEmail: z.string().optional(),
-};
-
 export const agentInternalStreamCreateSchema = agentStreamCreateSchema.extend({
-  body: agentStreamCreateBodySchema.extend(internalCallerContextSchema),
+  body: agentStreamCreateBodySchema.extend(slackTurnFieldsSchema),
 });
 
 export const agentInternalAddMessageParamsSchema =
   agentAddMessageParamsSchema.extend({
-    body: agentAddMessageBodySchema.extend(internalCallerContextSchema),
+    body: agentAddMessageBodySchema.extend(slackTurnFieldsSchema),
   });
 
 // ---------------------------------------------------------------------------
