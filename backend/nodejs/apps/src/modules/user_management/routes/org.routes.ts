@@ -15,6 +15,7 @@ import { attachContainerMiddleware } from '../../auth/middlewares/attachContaine
 import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/fp.factory';
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
+import { requireSessionAuth } from '../../../libs/middlewares/require-session-auth.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { emailCheck } from '../../../libs/utils/zod-formats';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
@@ -170,6 +171,7 @@ export function createOrgRouter(container: Container) {
   router.delete(
     '/',
     authMiddleware.authenticate,
+    requireSessionAuth,
     requireScopes(OAuthScopeNames.ORG_ADMIN),
     userAdminCheck,
     async (

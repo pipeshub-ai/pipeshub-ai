@@ -893,7 +893,6 @@ components:
             code:read: Read indexed code repositories and their code graph
             code:write: Push local repositories to be indexed into the code graph
             config:read: Read system configuration
-            config:write: Update system configuration
             crawl:read: Read crawling jobs
             crawl:write: Create and manage crawling jobs
             crawl:delete: Delete crawling jobs
@@ -946,7 +945,6 @@ components:
             code:read: Read indexed code repositories and their code graph
             code:write: Push local repositories to be indexed into the code graph
             config:read: Read system configuration
-            config:write: Update system configuration
             crawl:read: Read crawling jobs
             crawl:write: Create and manage crawling jobs
             skill:read: Read custom agent skills
@@ -34436,7 +34434,7 @@ paths:
       description: |
         Returns the OAuth scopes the signed-in user is permitted to register on new or updated apps, grouped by category. Use this to populate scope-picker UIs and to validate `allowedScopes` client-side before submitting to `createOAuthApp` / `updateOAuthApp`.
 
-        The result is role-aware. Org admins (members of an admin user group) receive every registered scope; everyone else is filtered to exclude admin-only scopes: `org:write`, `org:admin`, `user:invite`, `user:delete`, `usergroup:write`, `team:write`, `config:write`, `crawl:write`, `crawl:delete`.
+        The result is role-aware. Org admins (members of an admin user group) receive every registered scope; everyone else is filtered to exclude admin-only scopes: `org:write`, `org:admin`, `user:invite`, `user:delete`, `usergroup:write`, `team:write`, `crawl:write`, `crawl:delete`. `config:write` is not offered to anyone: organization configuration changes only from an interactive session.
 
         Each key in the `scopes` map matches the `category` field on the `OAuthScopeInfo` entries it contains. A category may appear with an empty array when every scope it contains is restricted for the caller — treat empty buckets as "no permitted scopes in this group", not as a missing category.
 
@@ -37524,6 +37522,8 @@ paths:
             The caller is not an admin of this organization (`You need admin access to do this...`).
             An OAuth access token without the `user:invite` scope is also refused with `403`
             (`Insufficient scope. Required: user:invite`), before the request is validated.
+
+            Also returned when the bearer token is an OAuth access token or a personal access token and `role` is `admin` (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted").
           content:
             application/json:
               schema:
@@ -37898,6 +37898,8 @@ paths:
 
             An OAuth access token without the `user:write` scope is also refused with `403`
             (`Insufficient scope. Required: user:write`), before the request is validated.
+
+            Also returned when the bearer token is an OAuth access token or a personal access token and the body sets `email` or sets `role` to anything other than the user's current role, which includes taking `admin` away (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"). Other fields stay open to tokens, and a `role` equal to the current one is accepted but not written.
           content:
             application/json:
               schema:
@@ -38169,7 +38171,6 @@ paths:
       operationId: updateEmail
       security:
         - bearerAuth: []
-        - oauth2: [user:write]
       parameters:
         - name: id
           in: path
@@ -38245,16 +38246,11 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Only the account owner can change its email address: the request's `email`
-            differs from the stored address and the caller isn't that user. Checked after
-            the user is loaded, so a missing id is `404`.
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted").
 
-            A caller who is neither an org admin nor that user is refused earlier, before the
-            lookup (so a member gets it for an unknown id too), by the admin-or-self check
-            (`You don't have admin access and can't change other users`).
+            An admin is refused with `403` when the address is another user's: only the account owner can change its email address (checked after the user is loaded, so a missing id is `404`).
 
-            An OAuth access token without the `user:write` scope is also refused with `403`
-            (`Insufficient scope. Required: user:write`), before the request is validated.
+            A caller who is neither an org admin nor that user is refused earlier, before the lookup, by the admin-or-self check (`You don't have admin access and can't change other users`).
           content:
             application/json:
               schema:
@@ -38712,6 +38708,8 @@ paths:
 
             An OAuth access token without the `user:invite` scope is also refused with `403`
             (`Insufficient scope. Required: user:invite`), before the request is validated.
+
+            Also returned when the bearer token is an OAuth access token or a personal access token and `role` is `admin` (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted").
           content:
             application/json:
               schema:
@@ -39232,7 +39230,6 @@ paths:
       operationId: unblockUser
       security:
         - bearerAuth: []
-        - oauth2: [user:write]
       parameters:
         - name: id
           in: path
@@ -39277,9 +39274,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
             The caller is not an admin of this organization (`You need admin access to do this...`).
-            An OAuth access token without the `user:write` scope is also refused with `403`
-            (`Insufficient scope. Required: user:write`), before the request is validated.
           content:
             application/json:
               schema:
@@ -40463,7 +40460,6 @@ paths:
       operationId: createServiceAccount
       security:
         - bearerAuth: []
-        - oauth2: [user:invite]
       requestBody:
         required: true
         content:
@@ -40499,7 +40495,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Token lacks the required scope, or the caller is not an admin of this organization
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -40594,7 +40593,6 @@ paths:
       operationId: updateServiceAccount
       security:
         - bearerAuth: []
-        - oauth2: [user:write]
       requestBody:
         required: true
         content:
@@ -40628,7 +40626,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Token lacks the required scope, or the caller is not an admin of this organization
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -40795,7 +40796,6 @@ paths:
       operationId: createServiceToken
       security:
         - bearerAuth: []
-        - oauth2: [user:invite]
       requestBody:
         required: true
         content:
@@ -40837,7 +40837,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Token lacks the required scope, or the caller is not an admin of this organization
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -42277,7 +42280,6 @@ paths:
       operationId: deleteOrganization
       security:
         - bearerAuth: []
-        - oauth2: [org:admin]
       requestBody:
         required: false
         content:
@@ -42319,7 +42321,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: "The caller is not an admin of this organization, or an OAuth access token lacks the `org:admin` scope (`Insufficient scope. Required: org:admin`)."
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            The caller is not an admin of this organization.
           content:
             application/json:
               schema:
@@ -63235,6 +63240,8 @@ paths:
             `Beta connectors are not enabled. The connector '<type>' is a beta connector and cannot be accessed. ...`
             Also returned to a non-admin for a connector type that only supports team
             scope, with the message `Only administrators can set up <type> connectors`.
+
+            Also returned when the bearer token is an OAuth access token, a personal access token or a service token and the body contains any key other than `authType` and `connectorId`, even with an empty value; `auth` may be sent only when empty, so the check runs against the stored settings (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"). An interactive user session is not restricted.
           content:
             application/json:
               schema:
@@ -63611,7 +63618,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Team scope needs an admin, or a missing scope
+          description: |-
+            Team scope needs an admin, or a missing scope.
+
+            Also returned when the bearer token is an OAuth access token, a personal access token or a service token and the body contains any key other than `connectorType`, `instanceName`, `scope`, `authType` and `config` holding only `sync` and `filters`, even with an empty value; `config.auth` may be sent only when empty (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"). An interactive user session is not restricted.
           content:
             application/json:
               schema:
@@ -66659,7 +66669,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The token lacks a required scope, or the caller may not use this connector
+          description: |
+            The token lacks a required scope, or the caller may not use this connector
+
+            Also returned when the bearer token is an OAuth access token, a personal access token or a service token and the body contains any key other than `sync` and `filters`, even with an empty value (so `auth`, `baseUrl` and `oauthConfigId` are refused, an empty `auth` included) (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"). An interactive user session is not restricted.
           content:
             application/json:
               schema:
@@ -66771,7 +66784,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The token lacks a required scope, or the caller may not use this connector
+          description: |
+            The token lacks a required scope, or the caller may not use this connector
+
+            Also returned when the bearer token is an OAuth access token, a personal access token or a service token and the body contains any key, even with an empty value (this route changes only the connector's `auth`, and an empty `auth` clears the stored credentials, so a token has nothing it may send here) (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"). An interactive user session is not restricted.
           content:
             application/json:
               schema:
@@ -69786,6 +69802,8 @@ paths:
             The caller's OAuth access token does not carry the `toolset:write` scope (`Insufficient scope.
             Required: toolset:write`). Session tokens are not scope-checked. Not being an administrator
             is not refused: the instance is created as personal.
+
+            Also returned when the bearer token is an OAuth access token, a personal access token or a service token and the body contains any key other than `instanceName`, `toolsetType`, `authType` and `scope`, even with an empty value (so `authConfig`, `baseUrl`, `oauthConfigId`, `oauthInstanceName` and credential keys such as `clientId` are refused) (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"). An interactive user session is not restricted.
           content:
             application/json:
               schema:
@@ -70026,6 +70044,8 @@ paths:
             is looked up, so an unknown id or another user's personal instance also gets 403), or the
             caller's OAuth access token does not carry the `toolset:write` scope (`Insufficient scope.
             Required: toolset:write`). Session tokens are not scope-checked.
+
+            Also returned when the bearer token is an OAuth access token, a personal access token or a service token and the body contains any key other than `instanceName`, even with an empty value (so `authConfig`, `baseUrl` and `oauthConfigId` are refused) (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"). An interactive user session is not restricted.
           content:
             application/json:
               schema:
@@ -71132,6 +71152,8 @@ paths:
             The caller is not an administrator (`Only administrators can update OAuth configurations.`,
             checked before the configuration is looked up), or the caller's OAuth access token does not
             carry the `toolset:write` scope (`Insufficient scope. Required: toolset:write`).
+
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
           content:
             application/json:
               schema:
@@ -71205,6 +71227,8 @@ paths:
             The caller is not an administrator (`Only administrators can delete OAuth configurations.`), or
             the caller's OAuth access token does not carry the `toolset:delete` scope (`Insufficient
             scope. Required: toolset:delete`).
+
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
           content:
             application/json:
               schema:
@@ -71728,6 +71752,7 @@ paths:
           description: |
             Forbidden — one of:
             - the OAuth token lacks the `mcp:write` scope
+            - the bearer token is an OAuth access token, a personal access token or a service token and the body sets a key other than `name`, `description`, `typeId`, `scope`, `transport`, `authMode`, `useAdminAuth` or `scopes`, or sets `transport` to `stdio` (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds
             - an org server requested by a non-administrator, or a custom `stdio` server while the deployment does not allow them (`MCP_ALLOW_CUSTOM_STDIO`)
             - MCP servers are disabled for this organization (`ENABLE_MCP` feature flag is off)
           content:
@@ -71887,6 +71912,7 @@ paths:
           description: |
             Forbidden — one of:
             - the OAuth token lacks the `mcp:write` scope
+            - the bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds
             - the caller may not manage this instance, or a custom `stdio` server was requested and the deployment does not allow them (`MCP_ALLOW_CUSTOM_STDIO`)
             - MCP servers are disabled for this organization (`ENABLE_MCP` feature flag is off)
           content:
@@ -73091,6 +73117,7 @@ paths:
           description: |
             Forbidden — one of:
             - the OAuth token lacks the `mcp:write` scope
+            - the bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds
             - the caller may not manage this instance
             - MCP servers are disabled for this organization (`ENABLE_MCP` feature flag is off)
           content:
@@ -74214,6 +74241,7 @@ paths:
           description: |
             Forbidden — one of:
             - the OAuth token lacks the `connector:write` scope (`Insufficient scope. Required: connector:write`)
+            - the bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds
             - the caller is not an administrator, or API Toolsets are disabled
           content:
             application/json:
@@ -74319,6 +74347,7 @@ paths:
           description: |
             Forbidden — one of:
             - the OAuth token lacks the `connector:write` scope (`Insufficient scope. Required: connector:write`)
+            - the bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds
             - the caller is not an administrator
           content:
             application/json:
@@ -77784,6 +77813,8 @@ paths:
             Forbidden — one of:
             - the OAuth token lacks the `connector:write` scope
             - the token lacks `connector:write`, or the caller is not an admin
+
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
           content:
             application/json:
               schema:
@@ -77980,6 +78011,8 @@ paths:
             Forbidden — one of:
             - the OAuth token lacks the `connector:write` scope
             - the token lacks `connector:write`, or the caller is not an admin
+
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
           content:
             application/json:
               schema:
@@ -78056,6 +78089,8 @@ paths:
             Forbidden — one of:
             - the OAuth token lacks the `connector:delete` scope
             - the token lacks `connector:delete`, or the caller is not an admin
+
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
           content:
             application/json:
               schema:
@@ -78169,7 +78204,6 @@ paths:
       operationId: createStorageConfig
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: Storage configuration payload (discriminated by storageType)
@@ -78469,9 +78503,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -78517,7 +78551,6 @@ paths:
       operationId: createSMTPConfig
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Create or update SMTP configuration"
@@ -78590,9 +78623,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Admin access required
-
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), or the caller is not an admin.
           content:
             application/json:
               schema:
@@ -78669,7 +78700,6 @@ paths:
       operationId: deleteSMTPConfig
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       responses:
         '200':
           description: SMTP configuration deleted
@@ -78693,9 +78723,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization
-
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), or the caller is not an admin.
           content:
             application/json:
               schema:
@@ -78720,7 +78748,6 @@ paths:
       operationId: setSMTPConfigEnabled
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         content:
@@ -78761,9 +78788,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization
-
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), or the caller is not an admin.
           content:
             application/json:
               schema:
@@ -78845,7 +78870,6 @@ paths:
       operationId: setMicrosoftAuthConfig
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Configure Microsoft authentication"
@@ -78885,9 +78909,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Admin access required
-
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), or the caller is not an admin.
           content:
             application/json:
               schema:
@@ -78966,7 +78988,6 @@ paths:
       operationId: setGoogleAuthConfig
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Configure Google authentication"
@@ -79006,9 +79027,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Admin access required
-
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), or the caller is not an admin.
           content:
             application/json:
               schema:
@@ -79390,7 +79409,6 @@ paths:
       operationId: discoverAIModels
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         content:
@@ -79434,9 +79452,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Admin access required
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            Admin access required
           content:
             application/json:
               schema:
@@ -79465,7 +79483,6 @@ paths:
       operationId: batchAddAIModels
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         content:
@@ -79557,9 +79574,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Forbidden.
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            Forbidden.
           content:
             application/json:
               schema:
@@ -79587,7 +79604,6 @@ paths:
       operationId: rotateConnectionCredentials
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       parameters:
         - name: connectionId
           in: path
@@ -79651,9 +79667,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Forbidden.
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            Forbidden.
           content:
             application/json:
               schema:
@@ -79684,7 +79700,6 @@ paths:
       operationId: setConnectionIdentityForwarding
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       parameters:
         - name: connectionId
           in: path
@@ -79754,7 +79769,10 @@ paths:
         '401':
           description: Authentication required
         '403':
-          description: Admin access required
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            Admin access required
         '404':
           description: Connection not found
   /configurationManager/ai-models/identity-policy:
@@ -79794,7 +79812,6 @@ paths:
       operationId: putAIGatewayIdentityPolicy
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         content:
@@ -79818,7 +79835,10 @@ paths:
         '401':
           description: Authentication required
         '403':
-          description: Admin access required
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            Admin access required
         '409':
           description: The policy changed while saving
   /configurationManager/ai-models/identity/preview:
@@ -79909,7 +79929,6 @@ paths:
       operationId: addAIModelProvider
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Add new AI model provider"
@@ -79945,9 +79964,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Admin access required, or the OAuth token does not carry `config:write`
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            Admin access required
           content:
             application/json:
               schema:
@@ -79985,7 +80004,6 @@ paths:
       operationId: updateAIModelProvider
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       parameters:
         - name: modelType
           in: path
@@ -80041,9 +80059,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization, or the OAuth token does not carry `config:write`
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -80095,7 +80113,6 @@ paths:
       operationId: deleteAIModelProvider
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       parameters:
         - name: modelType
           in: path
@@ -80177,9 +80194,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Admin access required, or the OAuth token does not carry `config:write`
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            Admin access required
           content:
             application/json:
               schema:
@@ -80248,7 +80265,6 @@ paths:
       operationId: setDefaultAIModel
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       parameters:
         - name: modelType
           in: path
@@ -80321,9 +80337,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization, or the OAuth token does not carry `config:write`
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -80375,7 +80391,6 @@ paths:
       operationId: prepareEmbeddingModel
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         content:
@@ -80431,12 +80446,13 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization, the caller's
-            OAuth token lacks the `config:write` scope, or the embedding
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            The caller is not an admin of this organization, or the embedding
             server rejected the request under its own policy: `model` is not
             in `EMBEDDING_SERVER_ALLOWED_MODELS`, or `trustRemoteCode: true`
             was requested while `EMBEDDING_SERVER_ALLOW_REMOTE_CODE` is
-            disabled on the server. The admin and scope refusals use the
+            disabled on the server. The admin and session refusals use the
             Node.js `ErrorResponse` shape. Only the embedding-server
             rejection is proxied verbatim in FastAPI's `{"detail": ...}`
             envelope.
@@ -80622,12 +80638,11 @@ paths:
         are kept. When `maxImages` is left out, the stored value (default 3) is kept. Body
         fields other than the two settings are dropped by the validator.
 
-        This route has no OAuth scope check: a token without `config:write` is accepted
-        (only the admin check applies).
+        Takes an interactive session: an OAuth access token, a personal access token or a
+        service token is refused, whatever its scopes.
       operationId: updateWebSearchSettings
       security:
         - bearerAuth: []
-        - oauth2: []
       requestBody:
         required: true
         content:
@@ -80672,7 +80687,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Admin access required
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            Admin access required
           content:
             application/json:
               schema:
@@ -80700,12 +80718,11 @@ paths:
         only reads pages (crawl4ai) cannot be the default and never becomes it on its own. Body
         fields other than the three below are dropped by the validator.
 
-        This route has no OAuth scope check: a token without `config:write` is accepted
-        (only the admin check applies).
+        Takes an interactive session: an OAuth access token, a personal access token or a
+        service token is refused, whatever its scopes.
       operationId: addWebSearchProvider
       security:
         - bearerAuth: []
-        - oauth2: []
       requestBody:
         required: true
         content:
@@ -80776,7 +80793,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Admin access required
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            Admin access required
           content:
             application/json:
               schema:
@@ -80807,12 +80827,11 @@ paths:
         provider is made the default then). Body fields other than the three below are dropped
         by the validator.
 
-        This route has no OAuth scope check: a token without `config:write` is accepted
-        (only the admin check applies).
+        Takes an interactive session: an OAuth access token, a personal access token or a
+        service token is refused, whatever its scopes.
       operationId: updateWebSearchProvider
       security:
         - bearerAuth: []
-        - oauth2: []
       parameters:
         - name: providerKey
           in: path
@@ -80885,7 +80904,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Admin access required
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            Admin access required
           content:
             application/json:
               schema:
@@ -80925,12 +80947,11 @@ paths:
         none, web search is not set up until an admin chooses a provider). Refused with 409 while any agent of the organization uses a web search
         provider of the same type (`provider`), whichever stored entry it was set up with.
 
-        This route has no OAuth scope check: a token without `config:write` is accepted
-        (only the admin check applies).
+        Takes an interactive session: an OAuth access token, a personal access token or a
+        service token is refused, whatever its scopes.
       operationId: deleteWebSearchProvider
       security:
         - bearerAuth: []
-        - oauth2: []
       parameters:
         - name: providerKey
           in: path
@@ -80975,7 +80996,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Admin access required
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            Admin access required
           content:
             application/json:
               schema:
@@ -81046,12 +81070,11 @@ paths:
         check; if DuckDuckGo blocks or rate limits the test search it is still chosen and the answer carries a `warning`. It is stored with an empty
         `configuration`, and becomes the default.
 
-        This route has no OAuth scope check: a token without `config:write` is accepted
-        (only the admin check applies).
+        Takes an interactive session: an OAuth access token, a personal access token or a
+        service token is refused, whatever its scopes.
       operationId: updateDefaultWebSearchProvider
       security:
         - bearerAuth: []
-        - oauth2: []
       parameters:
         - name: providerKey
           in: path
@@ -81120,7 +81143,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Admin access required
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            Admin access required
           content:
             application/json:
               schema:
@@ -81162,7 +81188,6 @@ paths:
       operationId: setFrontendPublicUrl
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Set frontend public URL"
@@ -81205,9 +81230,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Admin access required, or the OAuth token does not carry `config:write`
-
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), or the caller is not an admin.
           content:
             application/json:
               schema:
@@ -81362,7 +81385,6 @@ paths:
       operationId: setConnectorPublicUrl
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Set connector public URL"
@@ -81405,9 +81427,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Admin access required, or the OAuth token does not carry `config:write`
-
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), or the caller is not an admin.
           content:
             application/json:
               schema:
@@ -81518,7 +81538,6 @@ paths:
       operationId: putMcpAccessPolicy
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         content:
@@ -81545,7 +81564,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Admin access required
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            Admin access required
           content:
             application/json:
               schema:
@@ -81637,7 +81659,6 @@ paths:
       operationId: setPlatformSettings
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Update platform settings"
@@ -81732,9 +81753,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Admin access required
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            Admin access required
           content:
             application/json:
               schema:
@@ -82020,7 +82041,6 @@ paths:
       operationId: setCustomSystemPrompt
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Update custom system prompt"
@@ -82093,9 +82113,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Admin access required
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            Admin access required
           content:
             application/json:
               schema:
@@ -82242,7 +82262,6 @@ paths:
       operationId: toggleMetricsCollection
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -82298,9 +82317,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Forbidden - Admin access required
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            Forbidden - Admin access required
           content:
             application/json:
               schema:
@@ -82326,6 +82345,7 @@ paths:
       operationId: getSlackBotConfigs
       security:
         - bearerAuth: []
+        - oauth2: [config:read]
       parameters:
         - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
@@ -82425,7 +82445,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden - Admin access required
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            Forbidden - Admin access required
           content:
             application/json:
               schema:
@@ -82895,7 +82918,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden - Admin access required
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            Forbidden - Admin access required
           content:
             application/json:
               schema:
@@ -82955,7 +82981,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden - Admin access required
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            Forbidden - Admin access required
           content:
             application/json:
               schema:
@@ -82989,7 +83018,6 @@ paths:
       operationId: setMetricsCollectionPushInterval
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -83033,9 +83061,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Forbidden - Admin access required
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            Forbidden - Admin access required
           content:
             application/json:
               schema:
@@ -83061,7 +83089,6 @@ paths:
       operationId: setMetricsCollectionRemoteServer
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -83122,9 +83149,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Forbidden - Admin access required
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            Forbidden - Admin access required
           content:
             application/json:
               schema:
@@ -83202,7 +83229,6 @@ paths:
       operationId: createAIModelsConfig
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: The model entries, one list per model type
@@ -83243,9 +83269,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization, or the OAuth token does not carry `config:write`
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -83391,7 +83417,6 @@ paths:
       operationId: updateModelRoles
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         content:
@@ -83450,9 +83475,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization, or the OAuth token does not carry `config:write`
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -84285,7 +84310,6 @@ paths:
       operationId: removeAllCrawlingJob
       security:
         - bearerAuth: []
-        - oauth2: [crawl:delete]
       responses:
         '200':
           description: All crawling jobs removed successfully
@@ -84309,7 +84333,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Token lacks the required scope, or the caller is not an admin of this organization
+          description: |
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
+
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -88706,7 +88733,6 @@ paths:
         Applies to turns admitted after the change. Org admins only.
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         content:
@@ -94229,7 +94255,6 @@ paths:
       operationId: setAtlassianOauthConfig
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: Atlassian OAuth client to store
@@ -94269,9 +94294,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization, or the OAuth token lacks `config:write`
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -94359,7 +94384,6 @@ paths:
       operationId: setOneDriveCredentials
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: Microsoft app credentials to store for OneDrive
@@ -94396,9 +94420,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization, or the OAuth token lacks `config:write`
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -94486,7 +94510,6 @@ paths:
       operationId: setSharePointCredentials
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: Microsoft app credentials to store for SharePoint
@@ -94523,9 +94546,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization, or the OAuth token lacks `config:write`
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -94611,7 +94634,6 @@ paths:
       operationId: setGoogleWorkspaceOauthConfig
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: Google Workspace OAuth client and Gmail real-time update settings to store
@@ -94685,9 +94707,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization, or the OAuth token lacks `config:write`
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -94798,7 +94820,6 @@ paths:
       operationId: createGoogleWorkspaceCredentials
       security:
         - bearerAuth: []
-        - oauth2: [config:write]
       requestBody:
         required: true
         description: A multipart key-file upload (business organization) or a JSON token body (individual organization)
@@ -94956,9 +94977,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an admin of this organization, or the OAuth token lacks `config:write`
+            The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"), whatever scopes it holds.
 
-            Also returned when the bearer token is an OAuth access token without the `config:write` scope (`HTTP_FORBIDDEN`, "Insufficient scope. Required: config:write"), checked right after authentication; session tokens are never scope-checked.
+            The caller is not an admin of this organization
           content:
             application/json:
               schema:

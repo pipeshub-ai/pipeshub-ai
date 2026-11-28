@@ -65,6 +65,8 @@ from app.api.connection_limit import (
 from app.api.middlewares.auth import (
     connection_limit,
     is_request_admin,
+    require_interactive_session,
+    require_interactive_session_except,
     require_scopes,
     require_service_token,
 )
@@ -283,6 +285,29 @@ def _setup_failure_message(exc: ValueError) -> str:
 
 
 router = APIRouter()
+
+# What a token may send when it changes or creates a connector: names, sync and filter
+# settings, and which sign-in form the connector uses. Everything else the handlers read
+# (``auth``, ``baseUrl``, ``oauthConfigId``, and any key added later) holds a credential, links
+# an OAuth app or names the host credentials are sent to, so it takes an interactive session.
+# Allowed keys, and why each is safe:
+#   sync, filters: schedules and what to index; neither holds a credential or a host.
+#   connectorType, instanceName, scope: which connector, what to call it, who owns it.
+#   authType: picks the sign-in form; the credentials for it are in ``auth``, which is refused.
+#   connectorId: which saved connector the connection check reads stored settings from.
+#   config (create): only its ``sync`` and ``filters``; ``config.auth`` is refused.
+_CONNECTOR_UPDATE_ALLOWED: dict[str, Any] = {"sync": True, "filters": True}
+_CONNECTOR_AUTH_UPDATE_ALLOWED: dict[str, Any] = {}
+_CONNECTOR_CREATE_ALLOWED: dict[str, Any] = {
+    "connectorType": True, "instanceName": True, "scope": True, "authType": True, "config": ["sync", "filters"],
+}
+_CONNECTOR_TEST_ALLOWED: dict[str, Any] = {"authType": True, "connectorId": True}
+# An off-list key is refused whenever it is present, even empty, because an empty ``auth`` on a
+# save route clears what is stored. These are the empty ones a real caller sends and that store
+# nothing: the SDK connection-check examples send ``auth: {}``, and mcp-server ``add_web_source``
+# and the SDK create examples send ``config: {auth: {}}``.
+_EMPTY_AUTH_OK = ("auth",)
+_EMPTY_CONFIG_AUTH_OK = ("config.auth",)
 
 
 async def _require_vector_store_rebuild_enabled(request: Request) -> None:
@@ -5140,7 +5165,7 @@ async def _prepare_connector_config(
     return prepared_config
 
 
-@router.post("/api/v1/connectors/", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@router.post("/api/v1/connectors/", dependencies=[Depends(require_interactive_session_except(_CONNECTOR_CREATE_ALLOWED, _EMPTY_CONFIG_AUTH_OK)), Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 async def create_connector_instance(
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider)
@@ -5872,7 +5897,7 @@ async def stop_connector_sync(
     }
 
 
-@router.put("/api/v1/connectors/{connector_id}/config/auth", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
+@router.put("/api/v1/connectors/{connector_id}/config/auth", dependencies=[Depends(require_interactive_session_except(_CONNECTOR_AUTH_UPDATE_ALLOWED)), Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def update_connector_instance_auth_config(
     connector_id: str,
     request: Request,
@@ -6312,7 +6337,7 @@ async def update_connector_instance_filters_sync_config(
         ) from e
 
 
-@router.put("/api/v1/connectors/{connector_id}/config", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
+@router.put("/api/v1/connectors/{connector_id}/config", dependencies=[Depends(require_interactive_session_except(_CONNECTOR_UPDATE_ALLOWED)), Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def update_connector_instance_config(
     connector_id: str,
     request: Request,
@@ -9573,7 +9598,7 @@ def _connection_check_class(connector_type: str) -> type[BaseConnector] | None:
 
 @router.post(
     "/api/v1/connectors/registry/{connector_type}/test-connection",
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))],
+    dependencies=[Depends(require_interactive_session_except(_CONNECTOR_TEST_ALLOWED, _EMPTY_AUTH_OK)), Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))],
 )
 async def check_connector_connection(connector_type: str, request: Request) -> dict[str, Any]:
     """Try the auth settings on the setup form before they are saved.
@@ -10455,7 +10480,7 @@ async def _validate_oauth_app_before_creation(
         )
 
 
-@router.post("/api/v1/oauth/{connector_type}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@router.post("/api/v1/oauth/{connector_type}", dependencies=[Depends(require_interactive_session), Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 @inject
 async def create_oauth_config(
     connector_type: str,
@@ -10814,7 +10839,7 @@ async def get_oauth_config_by_id(
         ) from e
 
 
-@router.put("/api/v1/oauth/{connector_type}/{config_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@router.put("/api/v1/oauth/{connector_type}/{config_id}", dependencies=[Depends(require_interactive_session), Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 @inject
 async def update_oauth_config(
     connector_type: str,
@@ -10931,7 +10956,7 @@ async def update_oauth_config(
         ) from e
 
 
-@router.delete("/api/v1/oauth/{connector_type}/{config_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE))])
+@router.delete("/api/v1/oauth/{connector_type}/{config_id}", dependencies=[Depends(require_interactive_session), Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE))])
 @inject
 async def delete_oauth_config(
     connector_type: str,

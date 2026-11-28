@@ -16,6 +16,7 @@ import {
 import { AuthMiddleware } from '../../../config';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
+import { requireSessionAuth } from '../../../libs/middlewares/require-session-auth.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
@@ -63,6 +64,7 @@ export function createCrawlingManagerRouter(container: Container): Router {
   router.delete(
     '/schedule/all',
     authMiddleware.authenticate,
+    requireSessionAuth,
     requireScopes(OAuthScopeNames.CRAWL_DELETE),
     userAdminCheck,
     removeAllCrawlingJob(crawlingService),

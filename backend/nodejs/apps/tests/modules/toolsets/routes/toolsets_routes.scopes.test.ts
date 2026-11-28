@@ -98,9 +98,11 @@ function listRoutes(router: any): RouteInfo[] {
 }
 
 function runScopeMiddleware(route: RouteInfo, user: Record<string, unknown>): any {
-  // handlers[0] = authenticate, handlers[1] = requireScopes(...)
+  // The scope check is the handler that says which scopes it requires; a session guard may sit before it.
+  const scopeLayer = route.handlers.find((h: any) => Array.isArray(h.handle?.requiredScopes))
+  expect(scopeLayer, `${route.key}: no scope check`).to.exist
   const next = sinon.stub()
-  route.handlers[1].handle({ user, headers: {}, params: {}, query: {}, body: {} }, {}, next)
+  scopeLayer.handle({ user, headers: {}, params: {}, query: {}, body: {} }, {}, next)
   expect(next.calledOnce, `${route.key}: scope middleware must call next exactly once`).to.be.true
   return next.firstCall.args[0]
 }
