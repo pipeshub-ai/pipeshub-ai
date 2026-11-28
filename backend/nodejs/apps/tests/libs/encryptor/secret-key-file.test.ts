@@ -112,7 +112,7 @@ describe('SECRET_KEY from a file (R38IDENT-FU-8)', () => {
     ).to.throw(SecretKeyRingError, 'never both');
   });
 
-  it('warns about a file every account can read, naming the path and not the key', () => {
+  it('warns about a file every account can read, naming the variable and neither the path nor the key', () => {
     const file = keyFile(STRONG, 'world', 0o644);
     const warnings: string[] = [];
     const original = process.emitWarning;
@@ -125,7 +125,8 @@ describe('SECRET_KEY from a file (R38IDENT-FU-8)', () => {
       process.emitWarning = original;
     }
     expect(warnings).to.have.length(1);
-    expect(warnings[0]).to.contain(file).and.contain('every account can read').and.not.contain(STRONG);
+    expect(warnings[0]).to.equal('SECRET_KEY_FILE names a file every account can read: make it mode 0400');
+    expect(warnings[0]).to.not.contain(file).and.not.contain(STRONG);
   });
 
   it('counts a configured file as a configured key', () => {

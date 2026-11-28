@@ -63,7 +63,8 @@ def ring_secret(name: str, env: Mapping[str, str] | None = None) -> str:
     if mode & stat.S_IROTH and path not in _warned_paths:
         # Not refused: Kubernetes and Docker set a secret's mode themselves. Every account on the host can read it.
         _warned_paths.add(path)
-        _logger.warning("%s names %s, which every account can read: make it mode 0400", file_env, path)
+        # The variable's name only: the path comes from the secret's own configuration, and the log needs no part of it.
+        _logger.warning("%s names a file every account can read: make it mode 0400", file_env)
     return secret
 
 
