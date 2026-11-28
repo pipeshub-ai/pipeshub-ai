@@ -183,7 +183,8 @@ async def test_a_grant_is_structural_only_when_it_flips_whether_the_node_has_one
         store, provider = _store()
         store.graph_provider = SimpleNamespace(get_nodes_by_field_in=_by_field_in, logger=provider.logger,
                                                get_structure_of_nodes=provider_answering(structures),
-                                               batch_create_edges=AsyncMock(), batch_delete_edges=AsyncMock())
+                                               batch_create_edges=AsyncMock(), batch_delete_edges=AsyncMock(),
+                                               lock_external_app_memberships=AsyncMock())
         await getattr(store, writer)([edge], perm)
         return store.structural_connectors
 
@@ -610,7 +611,6 @@ _OUTSIDE_THE_STORE: dict[tuple[str, str], str] = {
     # rolls back / deletes conversation attachments: records created by the chat upload, which have no connector and are never stamped
     ("app/api/routes/chatbot.py", "delete_nodes_and_edges"): "conversation attachments: records with no connector and no stamp",
     # teams: a user-to-team permission edge, and a team node
-    ("app/api/routes/entity.py", "batch_create_edges"): "user-to-team permission edges: a team is not a record or group",
     ("app/api/routes/entity.py", "delete_nodes"): "a team node",
     # agent templates, tools, toolsets, knowledge links: the collection is a variable holding agent resources, never records or groups
     ("app/api/routes/agent.py", "delete_nodes"): "agent resources, not records or record groups (the collection is a variable)",

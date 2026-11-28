@@ -23,6 +23,7 @@ from app.connectors.core.base.data_store.data_store import (
     DataStoreProvider,
     TransactionStore,
 )
+from app.core.org_context import bound_org_id
 from app.exceptions.graph_db_exceptions import GraphMemoryLimitError, GraphWriteError
 from app.models.entities import (
     AppMetadata,
@@ -141,6 +142,12 @@ def _is_retryable(instance: object, exception: Exception) -> bool:
     return isinstance(store, DataStoreProvider) and store.is_transient_error(exception) is True
 
 
+def _error_kind(error: BaseException) -> str:
+    """The error's type and the store's code, never its text: a driver's message carries the query's keys and values."""
+    code = getattr(error, "code", None)
+    return f"{type(error).__name__} {code}" if isinstance(code, str | int) else type(error).__name__
+
+
 def is_retryable(instance: object, exception: Exception) -> bool:
     """Whether retry_on_deadlock retries this failure of a method of ``instance`` (attempts left or not)."""
     return _is_retryable(instance, exception)
@@ -200,7 +207,7 @@ def retry_on_deadlock(max_retries: int = _RETRY_ATTEMPTS):
                         logger.warning(
                             f"Deadlock or write conflict in {func.__name__} "
                             f"(attempt {attempt + 1}/{max_retries}), "
-                            f"retrying in {backoff:.1f}s: {str(e)[:200]}"
+                            f"retrying in {backoff:.1f}s: {_error_kind(e)}"
                         )
                         await asyncio.sleep(backoff)
                         continue
@@ -208,7 +215,7 @@ def retry_on_deadlock(max_retries: int = _RETRY_ATTEMPTS):
                         if retryable:
                             logger.error(
                                 f"Deadlock or write conflict persists in {func.__name__} "
-                                f"after {max_retries} attempts: {str(e)[:200]}"
+                                f"after {max_retries} attempts: {_error_kind(e)}"
                             )
                         raise
                 finally:
@@ -225,6 +232,44 @@ read_collections = [
 write_collections = [
     collection.value for collection in CollectionNames
 ]
+
+# a grant from one of these to one of those is what keeps an external collaborator's app membership (reap_stale_external_app_relations): a user's
+# or person's own, or a group's, role's or team's for its members
+_GRANT_HOLDERS = frozenset({CollectionNames.USERS.value, CollectionNames.PEOPLE.value})
+_GRANT_VIAS = frozenset({CollectionNames.GROUPS.value, CollectionNames.ROLES.value, CollectionNames.TEAMS.value})
+_GRANTED = frozenset({CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value})
+_REAPER_GRANT_TARGETS = _GRANTED | _GRANT_VIAS
+
+_REGRANT_ATTEMPTS = 3
+
+
+def _ends(e: dict) -> tuple[str | None, str | None, str | None, str | None]:
+    if "_from" in e:
+        fc, fi = e["_from"].split("/", 1)
+        tc, _, ti = e.get("_to", "").partition("/")
+        return fc, fi, tc, ti
+    return e.get("from_collection"), e.get("from_id"), e.get("to_collection"), e.get("to_id")
+
+
+def _counted_grants(edges: list[dict]) -> list[tuple[str, str, str, str]]:
+    """The grants of a write the reaper counts, ``(holder collection, holder, target collection, target)``, sorted (the order locks are taken in)."""
+    return sorted({(fc, fi, tc, ti) for fc, fi, tc, ti in map(_ends, edges) if fi and ti and (
+        (fc in _GRANT_HOLDERS and tc in _REAPER_GRANT_TARGETS) or (fc in _GRANT_VIAS and tc in _GRANTED))})
+
+
+def _person_of(doc: dict | None) -> Person | None:
+    if not doc:
+        return None
+    # the person is the bound org's: the grant writing it and the reaper both run for that org
+    return Person(email=doc.get("email"), source_key=doc.get("sourceKey"), org_id=bound_org_id(), full_name=doc.get("fullName"))
+
+
+def _from_moved(e: dict, moved: dict[str, str]) -> dict:
+    fc, fi, _, _ = _ends(e)
+    if fc != CollectionNames.PEOPLE.value or fi not in moved:
+        return e
+    return {**e, "_from": f"{fc}/{moved[fi]}"} if "_from" in e else {**e, "from_id": moved[fi]}
+
 
 # ---- the only handle the store has on the provider --------------------------------------------------------------------------
 # `GraphTransactionStore.graph_provider` is this proxy. A read goes through. Anything else must happen inside a store method that
@@ -314,6 +359,14 @@ class GraphTransactionStore(TransactionStore):
             _GuardedProvider(graph_provider) if self.tracked else graph_provider)
         self.txn = txn  # Transaction ID (string) for HTTP provider
         self.explicit = explicit  # the block runs in one real transaction
+        # each person this store upserted, by the id it got: without a transaction, what a grant to one the reaper removed is written to again
+        self._people_written: dict[str, Person] = {}
+        # The apps (and org) whose grant lock this transaction holds: held to its end, so a later grant statement need not write the lock again.
+        # This store's transaction only: a retry opens a new store, and commit and rollback empty it.
+        self._app_locks: set[str] = set()
+        # The flagged memberships the users a team write adds held before it (_write_team_memberships); a runner that runs the write again
+        # passes one set to every attempt, as a retry's snapshot no longer has what a reaper removed.
+        self._team_carried: set[tuple[str, str, str]] = set()
         self.logger = graph_provider.logger
         # Lookups whose answer cannot change for the life of the transaction.
         # One batch is 100 records from a single connector, so the record group
@@ -658,15 +711,98 @@ class GraphTransactionStore(TransactionStore):
     async def delete_edges_to(self, to_id: str, to_collection: str, collection: str) -> int:
         return await self.graph_provider.delete_edges_to(to_id, to_collection, collection, transaction=self.txn)
 
+    async def _write_grant(self, edges: list[dict], collection: str, write: Callable[..., Awaitable[_T]]) -> _T:
+        """Writes ``edges`` with ``write``. In a transaction the statement that writes the grants the external-collaborator reaper counts first
+        holds their apps' locks shared until the transaction ends (``lock_grants``; the reaper holds an app's lock exclusively before it
+        decides, ``common.grant_locks``), so a reaper either waits for this grant to commit and sees it, or decided before the grant existed."""
+        grants = _counted_grants(edges) if collection == CollectionNames.PERMISSION.value else []
+        if not grants:
+            return await write(edges)
+        if self.explicit:
+            teams = [g for g in grants if g[2] == CollectionNames.TEAMS.value and g[0] in _GRANT_HOLDERS]
+            if not teams:
+                return await write(edges, lock_grants=grants, lock_held=self._app_locks)
+            return await self._write_team_memberships(teams, lambda: write(edges, lock_grants=grants, lock_held=self._app_locks))
+        held = await self.graph_provider.lock_external_app_memberships(grants, transaction=self.txn)
+        return await self._write_grant_alone(edges, grants, held, write)
+
+    async def _write_team_memberships(self, teams: list[tuple[str, str, str, str]], write: Callable[[], Awaitable[_T]]) -> _T:
+        """A team's membership is written outside a sync (create_team, update_team), so no membership step follows it. It waits for any
+        reaper of the org's apps (the org's lock), and one may have removed a flagged membership of an added user meanwhile, which the
+        team's grants keep once this commits. The added users' flagged memberships are read before the write and again after it, with the
+        lock held; one gone that a chain keeps is made again in this transaction. Team writes are few and small; no other grant pays this."""
+        self._team_carried.update(await self.graph_provider.lock_external_app_memberships(teams, transaction=self.txn, lock=False))
+        result = await write()
+        if self._team_carried:
+            now = set(await self.graph_provider.lock_external_app_memberships(teams, transaction=self.txn, lock=False))
+            gone = sorted(self._team_carried - now)
+            if gone:
+                await self._make_again(await self.graph_provider.external_memberships_kept(gone, transaction=self.txn))
+        return result
+
+    async def _make_again(self, memberships: list[tuple[str, str, str]], failure: Exception | None = None) -> None:
+        """Makes each flagged membership (principal collection, principal, app) again, create-only, every one attempted whatever another raised;
+        then raises ``failure`` when given, else the first repair that failed, the number of failed repairs noted on it."""
+        failed: list[Exception] = []
+        for coll, key, app in memberships:
+            try:
+                await self.ensure_app_membership(key, coll, app, is_external=True)
+            except Exception as e:      # every membership is attempted; the failures are raised below
+                failed.append(e)
+        raised = failure or (failed[0] if failed else None)
+        if raised is None:
+            return
+        if failed:
+            raised.add_note(f"{len(failed)} of {len(memberships)} app memberships could not be made again")
+        raise raised
+
+    async def _write_grant_alone(self, edges: list[dict], grants: list[tuple[str, str, str, str]], held: list[tuple[str, str, str]],
+                                 write: Callable[..., Awaitable[_T]]) -> _T:
+        """Without a transaction each statement commits alone, so the lock orders nothing: the reaper may remove, between the lock and the grant, a
+        person (the grant's edge then finds no node) or a membership the grant keeps. Both are looked for after the write and made again.
+        shortcut: auto-commit gives no isolation, so a reaper that runs again in between wins again; explicit transactions (the default) do not need this."""
+        people = sorted({hi for hc, hi, _, _ in grants if hc == CollectionNames.PEOPLE.value})
+        known = {k: self._people_written.get(k) or _person_of(await self.graph_provider.get_document(
+            k, CollectionNames.PEOPLE.value, transaction=self.txn, raise_on_error=True)) for k in people}
+        for _ in range(_REGRANT_ATTEMPTS):
+            result = await write(edges)
+            try:
+                gone = [k for k in known if not await self.graph_provider.get_document(
+                    k, CollectionNames.PEOPLE.value, transaction=self.txn, raise_on_error=True)]
+                kept = None if gone else set(await self.graph_provider.lock_external_app_memberships(grants, transaction=self.txn))
+            except Exception as failure:      # the grant is committed: every membership it keeps is made again (create-only), then the failure raised
+                await self._make_again(sorted(held), failure)
+                raise
+            if kept is not None:
+                await self._make_again(sorted(set(held) - kept))
+                return result
+            moved = {k: await self._person_again(known[k]) for k in gone}
+            edges = [_from_moved(e, moved) for e in edges]
+            known = {moved.get(k, k): p for k, p in known.items()}
+            grants = sorted({(hc, moved.get(hi, hi) if hc == CollectionNames.PEOPLE.value else hi, tc, ti) for hc, hi, tc, ti in grants})
+            held = [(c, moved.get(k, k) if c == CollectionNames.PEOPLE.value else k, a) for c, k, a in held]
+        raise GraphWriteError("the people of a grant were removed while it was written")
+
+    async def _person_again(self, person: Person | None) -> str:
+        """The id of a person created again from what was known of one the reaper removed."""
+        key = None
+        if person is not None and person.org_id:
+            again = Person(email=person.email, source_key=person.source_key, org_id=person.org_id, full_name=person.full_name)
+            key = (await self.upsert_person_by_email(again, raise_on_error=True) if again.email
+                   else await self.upsert_person_by_source_key(again, raise_on_error=True) if again.source_key else None)
+        if not key:
+            raise GraphWriteError("a person of a grant was removed while it was written and cannot be created again")
+        return key
+
     async def replace_edges_to(self, to_id: str, to_collection: str, edges: list[dict], collection: str) -> None:
-        await self.graph_provider.replace_edges_to(to_id, to_collection, edges, collection, transaction=self.txn)
+        await self._write_grant(edges, collection, lambda es, **lock: self.graph_provider.replace_edges_to(to_id, to_collection, es, collection, transaction=self.txn, **lock))
 
     async def replace_record_permissions(
         self, record_id: str, edges: list[dict], record_group_id: str | None, *, inherit: bool
     ) -> None:
-        await self.graph_provider.replace_record_permissions(
-            record_id, edges, record_group_id, inherit=inherit, transaction=self.txn
-        )
+        await self._write_grant(edges, CollectionNames.PERMISSION.value, lambda es, **lock: self.graph_provider.replace_record_permissions(
+            record_id, es, record_group_id, inherit=inherit, transaction=self.txn, **lock
+        ))
 
     async def link_record_to_group(
         self,
@@ -758,11 +894,13 @@ class GraphTransactionStore(TransactionStore):
         within_folder_id: str | None = None,
         include_trashed_roots: bool = False,
     ) -> dict:
-        """Move records to the trash within the active transaction."""
+        """Move records to the trash within the active transaction. A grant on a trashed record keeps no external collaborator's membership, so
+        the reaper may remove one while the record is in the trash; the grants note whom they kept (``stash_external_memberships``), for a restore
+        to make those memberships again."""
         # A trashed record no longer answers a LIVE lookup, and the walk can reach
         # records not named here.
         self._memo_forget_all_records()
-        return await self.graph_provider.soft_delete_records(
+        result = await self.graph_provider.soft_delete_records(
             record_ids,
             connector_id,
             delete_source=delete_source,
@@ -773,6 +911,10 @@ class GraphTransactionStore(TransactionStore):
             within_folder_id=within_folder_id,
             include_trashed_roots=include_trashed_roots,
         )
+        trashed = [r["record_id"] for r in (result or {}).get("soft_deleted_records") or []]
+        if trashed:
+            await self.graph_provider.stash_external_memberships(trashed, transaction=self.txn)
+        return result
 
     async def restore_records(
         self,
@@ -782,11 +924,20 @@ class GraphTransactionStore(TransactionStore):
         connector_id: str | None = None,
         require_live_parent: bool = False,
     ) -> list[str]:
-        """Bring records back from the trash within the active transaction."""
-        return await self.graph_provider.restore_records(
+        """Bring records back from the trash within the active transaction. A restore makes the records' grants count for the reaper again, so
+        their apps' locks are held first, as a grant writer's are (``_write_grant``)."""
+        if self.explicit and restores:
+            await self.graph_provider.lock_grant_apps(
+                sorted({(CollectionNames.RECORDS.value, r["id"]) for r in restores if r.get("id")}), transaction=self.txn,
+                lock_held=self._app_locks)
+        restored = await self.graph_provider.restore_records(
             restores, batch_id, transaction=self.txn,
             connector_id=connector_id, require_live_parent=require_live_parent,
         )
+        if restored:      # the collaborators the grants kept when trashed, whose grant (and group membership) is still there
+            for coll, key, app in await self.graph_provider.restore_external_memberships(restored, transaction=self.txn):
+                await self.ensure_app_membership(key, coll, app, is_external=True)
+        return restored
 
     async def claim_push_record(self, **claim: object) -> object:
         """The conditional write that arbitrates concurrent pushes, within the active transaction."""
@@ -852,9 +1003,12 @@ class GraphTransactionStore(TransactionStore):
         )
 
     async def upsert_person_by_email(self, person: Person, *, raise_on_error: bool = False) -> Optional[str]:
-        return await self.graph_provider.upsert_person_by_email(
+        key = await self.graph_provider.upsert_person_by_email(
             person, transaction=self.txn, raise_on_error=raise_on_error
         )
+        if key:
+            self._people_written[key] = person
+        return key
 
 
     async def get_person_by_source_key(self, source_key: str, org_id: str) -> Person | None:
@@ -866,9 +1020,12 @@ class GraphTransactionStore(TransactionStore):
         return self.graph_provider.is_transient_error(error)
 
     async def upsert_person_by_source_key(self, person: Person, *, raise_on_error: bool = False) -> str | None:
-        return await self.graph_provider.upsert_person_by_source_key(
+        key = await self.graph_provider.upsert_person_by_source_key(
             person, transaction=self.txn, raise_on_error=raise_on_error
         )
+        if key:
+            self._people_written[key] = person
+        return key
     async def ensure_app_membership(
         self,
         principal_id: str,
@@ -979,11 +1136,9 @@ class GraphTransactionStore(TransactionStore):
                 to_collection=CollectionNames.GROUPS.value,
             )
 
-            await self.graph_provider.batch_create_edges(
-                [perm_edge],
-                collection=CollectionNames.PERMISSION.value,
-                transaction=self.txn
-            )
+            await self._write_grant([perm_edge], CollectionNames.PERMISSION.value, lambda es, **lock: self.graph_provider.batch_create_edges(
+                es, collection=CollectionNames.PERMISSION.value, transaction=self.txn, **lock
+            ))
 
             self.logger.debug(f"Created user group membership: {user.email} -> {group.name}")
             return True
@@ -1202,6 +1357,7 @@ class GraphTransactionStore(TransactionStore):
         With HTTP provider: Makes async HTTP call (PUT /_api/transaction/{txn_id})
         With SDK provider: Wrapped in executor for backward compatibility
         """
+        self._app_locks.clear()
         await self.graph_provider.commit_transaction(self.txn)
 
     async def rollback(self) -> None:
@@ -1211,6 +1367,7 @@ class GraphTransactionStore(TransactionStore):
         With HTTP provider: Makes async HTTP call (DELETE /_api/transaction/{txn_id})
         With SDK provider: Wrapped in executor for backward compatibility
         """
+        self._app_locks.clear()
         await self.graph_provider.rollback_transaction(self.txn)
 
     async def publish_with_commit(
@@ -1434,17 +1591,15 @@ class GraphTransactionStore(TransactionStore):
                 )
 
         if permission_edges:
-            await self.graph_provider.batch_create_edges(
-                permission_edges,
-                collection=CollectionNames.PERMISSION.value,
-                transaction=self.txn
-            )
+            await self._write_grant(permission_edges, CollectionNames.PERMISSION.value, lambda es, **lock: self.graph_provider.batch_create_edges(
+                es, collection=CollectionNames.PERMISSION.value, transaction=self.txn, **lock
+            ))
 
     async def batch_create_edges(self, edges: list[dict[str, Any]], collection: str) -> bool:
-        return bool(await self.graph_provider.batch_create_edges(edges, collection=collection, transaction=self.txn))
+        return bool(await self._write_grant(edges, collection, lambda es, **lock: self.graph_provider.batch_create_edges(es, collection=collection, transaction=self.txn, **lock)))
 
     async def create_edges_if_absent(self, edges: list[dict], collection: str) -> None:
-        await self.graph_provider.create_edges_if_absent(edges, collection, transaction=self.txn)
+        await self._write_grant(edges, collection, lambda es, **lock: self.graph_provider.create_edges_if_absent(es, collection, transaction=self.txn, **lock))
 
     async def batch_delete_edges(self, edges: list[dict], collection: str) -> int:
         return await self.graph_provider.batch_delete_edges(edges, collection=collection, transaction=self.txn)
@@ -1631,7 +1786,7 @@ class GraphDataStore(DataStoreProvider):
             # every query waited out the 60s acquisition timeout -- which
             # produced more record timeouts, more cancels, more leaks.
             if isinstance(e, Exception) and self.graph_provider.is_write_conflict(e):
-                self.logger.warning("Transaction hit a write conflict, rolling back: %s", str(e)[:200])
+                self.logger.warning("Transaction hit a write conflict, rolling back: %s", _error_kind(e))
             elif isinstance(e, Exception):
                 self.logger.error(f"❌ Transaction error, rolling back: {str(e)}")
             else:
@@ -1722,10 +1877,13 @@ class GraphDataStore(DataStoreProvider):
         ``explicit`` is passed to :meth:`transaction`.
         """
         attempts = 0
+        carried: set[tuple[str, str, str]] = set()      # what the attempts' team writes read (_write_team_memberships)
         while True:
             attempts += 1
             try:
                 async with self.transaction(explicit=explicit) as tx_store:
+                    if isinstance(tx_store, GraphTransactionStore):
+                        tx_store._team_carried = carried
                     return await func(tx_store, *args, **kwargs)
             except Exception as e:
                 if attempts >= _RETRY_ATTEMPTS or not self.is_transient_error(e, explicit=explicit):
@@ -1754,10 +1912,13 @@ class GraphDataStore(DataStoreProvider):
         :meth:`transaction`.
         """
         attempts = 0
+        carried: set[tuple[str, str, str]] = set()      # what the attempts' team writes read (_write_team_memberships)
         while True:
             attempts += 1
             try:
                 async with self.transaction(explicit=explicit) as tx_store:
+                    if isinstance(tx_store, GraphTransactionStore):
+                        tx_store._team_carried = carried
                     return await func(tx_store, *args, **kwargs)
             except Exception as e:
                 if attempts >= _RETRY_ATTEMPTS or not (self.graph_provider.is_write_conflict(e) or isinstance(e, ScopeGenerationConflict)):

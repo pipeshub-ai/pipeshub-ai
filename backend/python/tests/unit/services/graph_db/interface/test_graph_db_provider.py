@@ -389,6 +389,11 @@ class TestAbstractMethodInventory:
         "get_person_by_source_key",
         "ensure_app_membership",
         "create_edges_if_absent",
+        "lock_external_app_memberships",
+        "lock_grant_apps",
+        "stash_external_memberships",
+        "external_memberships_kept",
+        "restore_external_memberships",
         "migrate_person_to_user",
         "reap_stale_external_app_relations",
         "get_app_role_by_external_id",
@@ -834,7 +839,7 @@ class TestRecordLinkDefaults:
         await instance.replace_record_permissions("r1", edges, "g1", inherit=False, transaction="tx")
 
         instance.delete_edges_to.assert_awaited_once_with("r1", "records", "permission", "tx")
-        instance.batch_create_edges.assert_awaited_once_with(edges, "permission", "tx")
+        instance.batch_create_edges.assert_awaited_once_with(edges, "permission", "tx", lock_grants=(), lock_held=None)
         # Every record group, not only g1: the edge to a group that can no longer be
         # looked up must go too.
         instance.delete_edges_between_collections.assert_awaited_once_with(

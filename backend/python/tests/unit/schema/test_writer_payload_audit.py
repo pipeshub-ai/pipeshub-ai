@@ -677,6 +677,8 @@ def test_the_provider_validates_each_payload_before_converting_it() -> None:
 # Each was read for what it writes and checked against the schemas. A method that appears here for the
 # first time writes something nobody has checked against the strict rules: read it, then add it.
 _AUDITED_CYPHER_WRITERS = frozenset({
+    # notes on existing permission edges (principal ids), set and cleared: no field the record validator owns
+    'restore_external_memberships', 'stash_external_memberships',
     '_delete_unlinked_taxonomy_nodes', '_move_stub_edges_query', '_record_group_link_cypher',
     '_replace_edges_to_cypher', '_require_unique_id', '_stash_connector_delete_handles',
     '_upsert_record_with_type_cypher', 'add_taxonomy_aliases', 'backfill_app_org_ids',
@@ -692,6 +694,9 @@ _AUDITED_CYPHER_WRITERS = frozenset({
     # reap_stale_external_app_relations: sets each flagged user-app edge's isExternalUser to the value it already holds (true), only to take
     # the edge's write lock before the grants are read, then deletes the stale edges and the people they stranded; no caller payload
     'reap_stale_external_app_relations',
+    # lock_external_app_memberships: only the matchLock flag, set and removed in the same statement on the flagged user-app edges a grant keeps,
+    # to take their write lock before the grant is written; no caller payload, nothing kept
+    'lock_external_app_memberships',
     'ensure_taxonomy_hierarchy_edge', 'ensure_team_app_edge', 'heal_taxonomy_alias_nodes', 'increment_node_field',
     'link_record_to_group', 'migrate_legacy_kb_to_app', '_move_legacy_relation_edges', 'migrate_person_to_user',
     'move_taxonomy_edges', 'normalize_folder_mime_types', 'purge_trash_kept_record_groups',

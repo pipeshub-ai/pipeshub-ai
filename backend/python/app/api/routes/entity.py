@@ -651,9 +651,9 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
                 applied.append(f"Updated {len(updated_permissions)} user roles in batch")
             if user_team_edges:
                 members_written = True
-                if await graph_provider.batch_create_edges(
-                    user_team_edges, CollectionNames.PERMISSION.value, transaction=txn,
-                ):
+                # through the store: a team membership is a grant the reaper counts, written under the org's lock (and its members'
+                # flagged memberships kept), as create_team writes it
+                if await tx_store.batch_create_edges(user_team_edges, CollectionNames.PERMISSION.value):
                     applied.append(f"Added {len(user_team_edges)} users to team {team_id}")
 
         # One unit: a write that fails partway leaves the team as it was. Each write is keyed by the

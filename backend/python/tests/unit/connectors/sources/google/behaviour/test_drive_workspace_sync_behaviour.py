@@ -7028,3 +7028,24 @@ async def test_a_parked_shared_drive_file_its_members_refuse_stays_undecided(ws:
     ws.http.fail("GET", "/drive/v3/files/f5", 403, "driveServiceDisabled", when=lambda r: r.identity != BOB)
     await ws.sync()
     assert "f5" in ws.records.records and _undecided_file_ids(ws) == {"f5"}
+
+
+async def test_a_run_writes_its_grants_then_the_collaborators_memberships_then_reaps(ws: Workspace) -> None:
+    """Drive writes a run's permissions (step 5), then the external collaborators' memberships (step 7), then reaps (step 8): no grant of
+    the run is written after its reaper, so none can wait behind the reaper's second pass. (A reindex cannot either: it commits only while
+    no sync of the connector runs or has started, unless_synced_since.)"""
+    outsider = "outsider@other.org"
+    ws.world.add_item("shared", "plan.txt", parent="root-alice", owner=ALICE, perms=[{"type": "user", "role": "reader", "emailAddress": outsider}])
+    order: list[str] = []
+    rec = ws.records
+    for name, label in (("on_new_records", "grants"), ("on_updated_record_permissions", "grants"), ("on_external_app_users", "membership"),
+                        ("reap_external_app_users", "reap")):
+        real = getattr(rec, name)
+
+        async def step(*a: object, _real: Any = real, _label: str = label, **k: object) -> Any:  # noqa: ANN401
+            order.append(_label)
+            return await _real(*a, **k)
+        setattr(rec, name, step)
+    await ws.sync()
+    assert outsider in rec.external_app_users
+    assert "grants" in order and order.index("membership") > max(i for i, s in enumerate(order) if s == "grants") and order[-1] == "reap"

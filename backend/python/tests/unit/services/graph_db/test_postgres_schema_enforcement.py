@@ -265,6 +265,8 @@ CLASSIFICATION: dict[str, str] = {
     # the legacy migrations write what is already stored and constants (no caller payload); they validate what they build anyway
     **dict.fromkeys(["migrate_legacy_kb_to_app", "migrate_agent_hub_knowledge", "migrate_legacy_relation_edge"], "none"),
     "migrate_person_to_user": "none",            # moves a person's stored edges onto a user
+    # a note on stored permission edges (principal ids the reaper may remove), set on trash and cleared on restore: no caller payload
+    **dict.fromkeys(["stash_external_memberships", "restore_external_memberships"], "none"),
     **dict.fromkeys([
         "backfill_block_name_folded", "backfill_indexed_copy_flags", "batch_delete_edges", "copy_document_relationships", "delete_all_edges_for_node",
         "delete_blocks_for_records", "delete_edges_between_collections", "delete_edges_by_relationship_types", "delete_edges_by_source_keys",

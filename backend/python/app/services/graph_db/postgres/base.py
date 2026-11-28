@@ -10,10 +10,11 @@ from app.config.constants.arangodb import CollectionNames
 from app.core.db.uow import QUERY_LOG_SKIP
 from app.core.org_context import current_or_system, current_org_id, spawn_in_request
 from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError
+from app.services.graph_db.common.grant_locks import lock_targets
 from app.utils.db_query_log import CALLER_FRAME, caller_origin
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Sequence
     from logging import Logger
 
     from app.core.db import KernelDB, Tx
@@ -66,6 +67,13 @@ def _edge(e: dict) -> tuple[str, str, str, str, dict]:
         raise ValueError(f"edge without both ends: {e}")
     props = {k: v for k, v in e.items() if k not in ("_from", "_to", "from_id", "to_id", "from_collection", "to_collection")}
     return fc, fi, tc, ti, props
+
+
+def _target_columns(grants: Sequence[tuple[str, str, str, str]]) -> list[list[str]]:
+    """The collections and keys of the nodes whose app locks a write of ``grants`` takes (``common.grant_locks.lock_targets``), as the two
+    arrays the lock binds: arrays the primary key takes as index conditions (a join to unnest() can be planned as a scan of the org's nodes)."""
+    targets = lock_targets(grants)
+    return [[c for c, _ in targets], [k for _, k in targets]]      # parallel: the statement takes the exact pairs
 
 
 def _ekey(coll: str, props: dict) -> str:

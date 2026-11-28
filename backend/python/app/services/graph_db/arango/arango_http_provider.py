@@ -203,6 +203,7 @@ from app.services.graph_db.common.full_sync_unlink import (
     split_unseen_by_window,
     unseen_node_keys,
 )
+from app.services.graph_db.common.grant_locks import lock_targets, log_reaped
 from app.services.graph_db.common.name_match import aql_name_key, name_query_params
 from app.services.graph_db.common.record_visibility import (
     HAS_INDEXED_COPY,
@@ -346,6 +347,7 @@ from app.services.graph_db.vector_membership_queries import (
 )
 from app.utils import error_class
 from app.utils.db_query_log import expecting
+from app.utils.env_config import env_seconds
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed, folder_in_trash
 
@@ -1658,6 +1660,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         for fields in _STAGE_STATE_INDEXES:
             await self.http_client.ensure_persistent_index(CollectionNames.STAGE_STATES.value, list(fields))
+        # The flagged (external-collaborator) app memberships of a holder and of an app: the reaper and a write without a transaction read those.
+        for fields in (["_from", "isExternalUser"], ["_to", "isExternalUser"]):
+            await self.http_client.ensure_persistent_index(CollectionNames.USER_APP_RELATION.value, fields)
         await self.http_client.ensure_persistent_index(
             CollectionNames.STAGE_STATES.value, _STAGE_STATE_PAGE_FIELDS, name=_STAGE_STATE_PAGE_INDEX
         )
@@ -4544,6 +4549,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         count_created: bool = False,
+        lock_grants: Sequence[tuple[str, str, str, str]] = (),
+        lock_held: set[str] | None = None,
     ) -> bool | int:
         """
         Batch create edges - FULLY ASYNC.
@@ -4579,9 +4586,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     IN @@collection
                     {"RETURN OLD == null ? [NEW._from, NEW._to] : null" if report else "RETURN NEW"}
                 """
-                results = await self.http_client.execute_aql(
-                    batch_query, {"edges": arango_edges, "@collection": collection}, txn_id=transaction,
-                )
+                results = await self._run_under_app_lock(      # the apps' documents before the edges are written
+                    batch_query, {"edges": arango_edges, "@collection": collection}, lock_grants, lock_held, transaction)
                 made = _created_ends(results, collection) if report else results or []
                 self.logger.debug(f"✅ Successfully created {len(made)} edges in collection '{collection}'.")
                 return len(made) if count_created else True
@@ -4635,6 +4641,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         count_created: bool = False,
+        lock_grants: Sequence[tuple[str, str, str, str]] = (),
+        lock_held: set[str] | None = None,
     ) -> int | None:
         """Create the edges that are not there; an existing edge keeps its document.
 
@@ -4648,7 +4656,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return 0 if count_created else None
 
             arango_edges = self._translate_edges_to_arango(edges)
-
             query = f"""
             FOR edge IN @edges
                 UPSERT {{ _from: edge._from, _to: edge._to }}
@@ -4657,11 +4664,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 IN @@collection
                 {"RETURN OLD == null ? [NEW._from, NEW._to] : null" if report else ""}
             """
-            done = await self.http_client.execute_aql(
-                query,
-                {"edges": arango_edges, "@collection": collection},
-                txn_id=transaction
-            )
+            done = await self._run_under_app_lock(query, {"edges": arango_edges, "@collection": collection}, lock_grants, lock_held, transaction)
             made = _created_ends(done, collection) if report else []
             return len(made) if count_created else None
 
@@ -9595,8 +9598,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query = """
             UPSERT { _from: @from_id, _to: @to_id }
             INSERT @doc
-            UPDATE { updatedAtTimestamp: @now }
-            IN @@collection
+            UPDATE { updatedAtTimestamp: @now, reapMarkedAt: null }
+            IN @@collection OPTIONS { keepNull: false }
             """
             await self.http_client.execute_aql(
                 query,
@@ -9611,6 +9614,164 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
         except Exception:
             raise
+
+    @staticmethod
+    def _app_lock_aql(lock_grants: Sequence[tuple[str, str, str, str]], lock_held: set[str] | None = None) -> tuple[str, dict]:
+        """The head of a query that writes ``lock_grants``: an empty update of the documents of their targets' apps (``common.grant_locks``),
+        which the app's reaper writes too, so that one of two such transactions conflicts (ArangoDB has no shared lock: writers of one app
+        conflict too, and their caller runs them again). A document in ``lock_held`` (this transaction wrote it) is not written again; the
+        keys written are ``lock_orgs`` and ``lock_apps``. ("", {}) when there is none."""
+        targets = lock_targets(lock_grants)
+        if not targets:
+            return "", {}
+        apps = CollectionNames.APPS.value
+        return f"""
+            LET lock_nodes = (FOR g IN @lock_targets LET t = DOCUMENT(CONCAT(g.c, "/", g.k)) FILTER t != null RETURN t)
+            // a node without a connector (a team) keeps memberships of every app of its org: its org's document is written, as every reaper does
+            LET lock_orgs = (FOR o IN UNIQUE(FOR t IN lock_nodes FILTER t.connectorId == null RETURN t.orgId) FILTER o NOT IN @lock_held SORT o
+                             FOR d IN {CollectionNames.ORGS.value} FILTER d._key == o UPDATE d WITH {{}} IN {CollectionNames.ORGS.value} RETURN NEW._key)
+            LET lock_apps = (FOR k IN UNIQUE(FOR t IN lock_nodes FILTER t.connectorId != null RETURN t.connectorId) FILTER k NOT IN @lock_held SORT k
+                             FOR a IN {apps} FILTER a._key == k UPDATE a WITH {{}} IN {apps} RETURN NEW._key)""", {
+            "lock_targets": [{"c": c, "k": k} for c, k in targets], "lock_held": sorted(lock_held or ())}
+
+    async def external_memberships_kept(self, memberships: list[tuple[str, str, str]], transaction: str | None = None) -> list[tuple[str, str, str]]:
+        if not memberships:
+            return []
+        rows = await self.http_client.execute_aql(
+            f"""
+            FOR row IN @rows
+                LET pid = CONCAT(row.c, "/", row.p)
+                LET app_key = row.a
+                FILTER {self._external_grant_exists_aql("pid", "app_key")}
+                RETURN row
+            """,
+            bind_vars={"rows": [{"c": c, "p": p, "a": a} for c, p, a in memberships]}, txn_id=transaction,
+        )
+        return sorted((r["c"], r["p"], r["a"]) for r in rows or [])
+
+    async def stash_external_memberships(self, record_ids: list[str], transaction: str | None = None) -> int:
+        if not record_ids:
+            return 0
+        perm, uar = CollectionNames.PERMISSION.value, CollectionNames.USER_APP_RELATION.value
+        rows = await self.http_client.execute_aql(
+            f"""
+            LET noted = (
+                FOR rid IN @ids
+                    LET r = DOCUMENT(CONCAT("{CollectionNames.RECORDS.value}/", rid))
+                    FILTER r != null AND r.connectorId != null
+                    LET app = CONCAT("{CollectionNames.APPS.value}/", r.connectorId)
+                    FOR p IN {perm}
+                        FILTER p._to == r._id
+                        LET hc = PARSE_IDENTIFIER(p._from).collection
+                        LET kept = hc IN @people
+                            ? (p.type == "USER" AND LENGTH(FOR u IN {uar} FILTER u._from == p._from AND u._to == app AND u.isExternalUser == true
+                                                            LIMIT 1 RETURN 1) > 0 ? [p._from] : [])
+                            : (hc IN @groups ? UNIQUE(FOR m IN {perm} FILTER m._to == p._from AND m.type == "USER"
+                                                       FOR u IN {uar} FILTER u._from == m._from AND u._to == app AND u.isExternalUser == true
+                                                       RETURN m._from) : [])
+                        FILTER LENGTH(kept) > 0
+                        RETURN {{ key: p._key, kept }})
+            FOR n IN noted
+                UPDATE n.key WITH {{ keptExternal: n.kept }} IN {perm}
+                COLLECT WITH COUNT INTO c
+                RETURN c
+            """,
+            bind_vars={"ids": list(record_ids), "people": [CollectionNames.USERS.value, CollectionNames.PEOPLE.value],
+                       "groups": [CollectionNames.GROUPS.value, CollectionNames.ROLES.value, CollectionNames.TEAMS.value]},
+            txn_id=transaction,
+        )
+        return rows[0] if rows else 0
+
+    async def restore_external_memberships(self, record_ids: list[str], transaction: str | None = None) -> list[tuple[str, str, str]]:
+        if not record_ids:
+            return []
+        perm = CollectionNames.PERMISSION.value
+        rows = await self.http_client.execute_aql(
+            f"""
+            LET noted = (
+                FOR rid IN @ids
+                    LET r = DOCUMENT(CONCAT("{CollectionNames.RECORDS.value}/", rid))
+                    FILTER r != null
+                    FOR p IN {perm}
+                        FILTER p._to == r._id AND p.keptExternal != null
+                        RETURN {{ key: p._key, holder: p._from, kept: p.keptExternal, app: r.connectorId }})
+            LET found = (
+                FOR n IN noted
+                    FILTER n.app != null
+                    FOR entry IN n.kept
+                        FILTER entry == n.holder
+                            OR LENGTH(FOR m IN {perm} FILTER m._from == entry AND m._to == n.holder AND m.type == "USER" LIMIT 1 RETURN 1) > 0
+                        RETURN DISTINCT {{ entry, app: n.app }})
+            LET cleared = (FOR n IN noted UPDATE n.key WITH {{ keptExternal: null }} IN {perm} OPTIONS {{ keepNull: false }} RETURN 1)
+            FOR f IN found RETURN f
+            """,
+            bind_vars={"ids": list(record_ids)}, txn_id=transaction,
+        )
+        return sorted({(*f["entry"].split("/", 1), f["app"]) for f in rows or []})
+
+    async def lock_grant_apps(self, targets: Sequence[tuple[str, str]], transaction: str | None = None, *,
+                              lock_held: set[str] | None = None) -> None:
+        """Writes the documents of the apps of ``targets`` (an empty update), as a grant's query does (``_app_lock_aql``)."""
+        await self._run_under_app_lock("", {}, [("", "", c, k) for c, k in targets], lock_held, transaction)
+
+    async def _run_under_app_lock(self, query: str, bind_vars: dict, lock_grants: Sequence[tuple[str, str, str, str]], lock_held: set[str] | None,
+                                  transaction: str | None) -> list:
+        """Runs ``query`` after the app-lock head of ``lock_grants`` in one query and returns its rows, adding the documents the head wrote to
+        ``lock_held``; just ``query`` when there is nothing to lock."""
+        head, lock_vars = self._app_lock_aql(lock_grants, lock_held)
+        if not head:
+            return await self.http_client.execute_aql(query, bind_vars, txn_id=transaction) if query else []
+        rows = f"LET rows = ({query})" if query else "LET rows = []"
+        out = await self.http_client.execute_aql(f"{head}\n            {rows}\n            RETURN {{rows, locked: APPEND(lock_orgs, lock_apps)}}",
+                                                 {**bind_vars, **lock_vars}, txn_id=transaction)
+        if lock_held is not None:
+            lock_held.update(out[0]["locked"])
+        return out[0]["rows"]
+
+    async def lock_external_app_memberships(
+        self,
+        grants: list[tuple[str, str, str, str]],
+        transaction: str | None = None,
+        *,
+        lock: bool = True,
+    ) -> list[tuple[str, str, str]]:
+        """Touch the flagged (external-collaborator) app memberships the grants ``(holder
+        collection, holder, target collection, target)`` would keep, as
+        ``ensure_app_membership`` does: a reaper removing one of them in a snapshot older
+        than this write conflicts with it (``reap_stale_external_app_relations``). The
+        holder's own on the target's app (every app for a group, role or team target),
+        or a group, role or team holder's members' on the target's app. Returns them as
+        ``(principal collection, principal, app)``; a principal with none writes nothing."""
+        if not grants:
+            return []
+        uar = CollectionNames.USER_APP_RELATION.value
+        rows = await self.http_client.execute_aql(
+            f"""
+            LET keys = UNIQUE(FLATTEN(
+                FOR g IN @grants
+                    LET on_records = g.tc IN @record_colls
+                    LET t = on_records ? DOCUMENT(CONCAT(g.tc, "/", g.ti)) : null
+                    LET app = t != null ? CONCAT("{CollectionNames.APPS.value}/", t.connectorId) : null
+                    LET holder = CONCAT(g.hc, "/", g.hi)
+                    RETURN g.hc IN @people_colls
+                        ? (FOR u IN {uar} FILTER u._from == holder AND u.isExternalUser == true AND (on_records ? u._to == app : true) RETURN u._key)
+                        : (on_records AND app != null
+                            ? (FOR u IN {uar} FILTER u._to == app AND u.isExternalUser == true
+                                FILTER LENGTH(FOR m IN {CollectionNames.PERMISSION.value}
+                                    FILTER m._from == u._from AND m._to == holder AND m.type == "USER" LIMIT 1 RETURN 1) > 0
+                                RETURN u._key)
+                            : [])
+            ))
+            {f"FOR k IN keys UPDATE k WITH {{ updatedAtTimestamp: @now }} IN {uar} RETURN {{ principal: NEW._from, app: NEW._to }}" if lock else
+             f"FOR k IN keys LET u = DOCUMENT({uar}, k) RETURN {{ principal: u._from, app: u._to }}"}
+            """,
+            bind_vars={"grants": [{"hc": hc, "hi": hi, "tc": tc, "ti": ti} for hc, hi, tc, ti in grants],
+                       "record_colls": [CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value],
+                       "people_colls": [CollectionNames.USERS.value, CollectionNames.PEOPLE.value],
+                       **({"now": get_epoch_timestamp_in_ms()} if lock else {})},
+            txn_id=transaction,
+        )
+        return sorted({(*r["principal"].split("/", 1), r["app"].split("/", 1)[1]) for r in rows or []})
 
     def _external_grant_exists_aql(self, principal_id_expr: str, app_key_expr: str) -> str:
         """Predicate: does this principal still hold a grant that would make it an
@@ -9854,20 +10015,51 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             app_id = f"{CollectionNames.APPS.value}/{connector_id}"
             grant_exists = self._external_grant_exists_aql("uar._from", "@connector_id")
+            horizon, now = self._reap_horizon_ms(), get_epoch_timestamp_in_ms()      # no horizon: mark, never remove
 
             # The grant is checked by the statement that removes the edge: a grant written between a separate read and the removal would
-            # otherwise lose its holder the App. A grant committed after this statement's snapshot is not seen, but its writer touches the
-            # holder's edge after it (ensure_app_membership): the removal then conflicts and nothing is removed (the next pass decides again).
-            # The removed edges' principals are what the person cleanup below needs.
+            # otherwise lose its holder the App. The statement also writes the app's document (the app's lock, common.grant_locks): a writer of a
+            # grant of the app writes it too before its grant, so one of the two conflicts while the other is open or committed after its snapshot,
+            # and nothing is removed on a stale view (the next pass decides again). The removed edges' principals are what the person cleanup needs.
             stale_rows = await self.http_client.execute_aql(
+                f"""
+                // an app with no org (one a backfill left unset) cannot take the org's lock a writer of a team's membership holds: nothing is
+                // removed for it until its org is known
+                LET app_org = DOCUMENT(@app_id).orgId
+                LET removed = (
+                    FOR uar IN {CollectionNames.USER_APP_RELATION.value}
+                        FILTER app_org != null
+                        FILTER uar._to == @app_id AND uar.isExternalUser == true
+                        // the second pass (common.grant_locks): marked by an earlier one at least a horizon ago, still marked, still kept by nothing
+                        FILTER uar.reapMarkedAt != null AND uar.reapMarkedAt <= @cutoff
+                        FILTER NOT {grant_exists}
+                        REMOVE uar IN {CollectionNames.USER_APP_RELATION.value}
+                        RETURN {{ principal: OLD._from, mark: OLD.reapMarkedAt }})
+                // last, as the grants' reads (DOCUMENT of any node) come before a write of apps: the conflict aborts the whole statement anyway.
+                // The org's document too, which a writer of a team's membership writes. Off only in the test of what the lock prevents.
+                LET app_locked = (FOR a IN {CollectionNames.APPS.value} FILTER @hold_lock AND a._key == @connector_id
+                                  UPDATE a WITH {{}} IN {CollectionNames.APPS.value} RETURN NEW.orgId)
+                LET org_locked = (FOR d IN {CollectionNames.ORGS.value} FILTER d._key IN app_locked UPDATE d WITH {{}} IN {CollectionNames.ORGS.value})
+                FOR r IN removed RETURN r
+                """,
+                bind_vars={"app_id": app_id, "connector_id": connector_id, "cutoff": now - horizon if horizon else -1,
+                           "hold_lock": self._REAPER_HOLDS_APP_LOCK},
+                txn_id=transaction,
+            )
+            log_reaped(self.logger, connector_id, [
+                {"principal_collection": r["principal"].split("/", 1)[0], "principal_id": r["principal"].split("/", 1)[1], "mark": r.get("mark")}
+                for r in stale_rows or []])
+            # The first pass: an edge no grant keeps is marked (the clock starts), one kept again is unmarked. It removes nothing, so it needs no
+            # lock: a grant open now is either committed when the second pass reads it, or holds the app's lock then.
+            await self.http_client.execute_aql(
                 f"""
                 FOR uar IN {CollectionNames.USER_APP_RELATION.value}
                     FILTER uar._to == @app_id AND uar.isExternalUser == true
-                    FILTER NOT {grant_exists}
-                    REMOVE uar IN {CollectionNames.USER_APP_RELATION.value}
-                    RETURN {{ principal: OLD._from }}
+                    LET stale = NOT {grant_exists}
+                    FILTER stale ? uar.reapMarkedAt == null : uar.reapMarkedAt != null
+                    UPDATE uar WITH {{ reapMarkedAt: stale ? @now : null }} IN {CollectionNames.USER_APP_RELATION.value} OPTIONS {{ keepNull: false }}
                 """,
-                bind_vars={"app_id": app_id, "connector_id": connector_id},
+                bind_vars={"app_id": app_id, "connector_id": connector_id, "now": now},
                 txn_id=transaction,
             )
             if not stale_rows:
@@ -9916,6 +10108,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
                                     op="reap_stale_external_app_relations", connector_id=connector_id)
             return 0
+
+    @staticmethod
+    def _reap_horizon_ms() -> int:
+        """How old a reaper's mark must be before the edge is removed. ArangoDB bounds a stream transaction's idle time, not its life, so the
+        horizon is ARANGO_REAP_HORIZON_SECONDS (default 600): a grace between the two passes. What keeps a grant open at the second pass is the
+        app's lock it holds, not the horizon (design note of the external-collaborator reaper). 0 or less: never remove."""
+        seconds = env_seconds("ARANGO_REAP_HORIZON_SECONDS", 600.0)
+        return int(seconds * 1000) if seconds > 0 else 0
 
     async def get_app_role_by_external_id(
         self,
@@ -11707,8 +11907,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "createdAtTimestamp": ts,
                     "updatedAtTimestamp": ts,
                 }
-                await self.batch_create_edges(
-                    [permission_edge], CollectionNames.PERMISSION.value
+                await self.batch_create_edges(      # a team membership: under the org's lock
+                    [permission_edge], CollectionNames.PERMISSION.value, lock_grants=[(e["from_collection"], e["from_id"], e["to_collection"], e["to_id"]) for e in [permission_edge]]
                 )
                 self.logger.debug(f"✅ Added user {user_key} to All team with role {role}")
 
@@ -11792,8 +11992,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "createdAtTimestamp": ts,
                 "updatedAtTimestamp": ts,
             }
-            await self.batch_create_edges(
-                [permission_edge], CollectionNames.PERMISSION.value
+            await self.batch_create_edges(      # a team membership: under the org's lock
+                [permission_edge], CollectionNames.PERMISSION.value, lock_grants=[(e["from_collection"], e["from_id"], e["to_collection"], e["to_id"]) for e in [permission_edge]]
             )
             self.logger.debug(f"Added user {user_key} to All team with role {role}")
 

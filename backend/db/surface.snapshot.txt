@@ -2334,6 +2334,8 @@ index conversation.semantic_searches_pkey on conversation.semantic_searches uniq
 index graph.edges_by_neighbour_in on graph.edges unique=false exclusion=false valid=true def=45e665142a6e336eb541b79f46f98cae
 index graph.edges_by_neighbour_out on graph.edges unique=false exclusion=false valid=true def=442cf41b6fe034fa520658aeee43de80
 index graph.edges_by_target on graph.edges unique=false exclusion=false valid=true def=f87b2d07ea6c1bb8dcebe54000a174c1
+index graph.edges_external_by_app on graph.edges unique=false exclusion=false valid=true def=ed1d4438b02855e755e3dbee88c49050
+index graph.edges_external_by_holder on graph.edges unique=false exclusion=false valid=true def=793e6407deff782124890e80ac8380c9
 index graph.edges_pkey on graph.edges unique=true exclusion=false valid=true def=cb40875fb7aeea0903e6713524de17e3
 index graph.nodes_app_by_id on graph.nodes unique=false exclusion=false valid=true def=9fb2c424ad701514ef37f152dfa19f27
 index graph.nodes_block_name_seek on graph.nodes unique=false exclusion=false valid=true def=e008c0ac8ab0ab02de10697fc2be6c50

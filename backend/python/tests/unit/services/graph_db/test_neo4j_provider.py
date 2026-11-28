@@ -5496,6 +5496,22 @@ class TestPersonMigrationAndReaper:
         p.client = AsyncMock()
         return p
 
+    def test_the_reaper_s_horizon_is_the_transaction_timeout_when_one_is_set(self, mocked, monkeypatch) -> None:
+        mocked.client._transaction_timeout = 120.0
+        monkeypatch.setenv("NEO4J_REAP_HORIZON_SECONDS", "5")
+        assert mocked._reap_horizon_ms() == 120_000
+
+    @pytest.mark.parametrize(("env", "want"), [(None, 600_000), ("30", 30_000), ("0", 0)])
+    def test_without_a_transaction_timeout_the_reaper_s_horizon_is_the_grace_setting(self, mocked, monkeypatch, env, want) -> None:
+        """No transaction timeout must not mean never removing: a stale flagged membership keeps opening the app's org-wide grants. The
+        grace (NEO4J_REAP_HORIZON_SECONDS, default 600 s) applies instead; only setting it to 0 turns the removal off."""
+        mocked.client._transaction_timeout = 0
+        if env is None:
+            monkeypatch.delenv("NEO4J_REAP_HORIZON_SECONDS", raising=False)
+        else:
+            monkeypatch.setenv("NEO4J_REAP_HORIZON_SECONDS", env)
+        assert mocked._reap_horizon_ms() == want
+
     @staticmethod
     def _query_of(mock_client):
         return mock_client.execute_query.await_args.args[0]
@@ -5670,7 +5686,7 @@ class TestPersonMigrationAndReaper:
         mocked.client.execute_query.return_value = [{"reaped_people": 0}]
         await mocked.reap_stale_external_app_relations("conn-1")
         q = self._query_of(mocked.client)
-        assert q.index("SET uar.matchLock = true") < q.index("WHERE uar.isExternalUser = true AND NOT")
+        assert q.index("SET uar.matchLock = true") < q.rindex("WHERE uar.isExternalUser = true\n") < q.index("AS stale")      # the flag read again
         assert "SET uar.isExternalUser" not in q      # the flag itself is never written
         assert q.index("SET principal.matchLock = true") < q.index("WHERE NOT (principal)--()")
 

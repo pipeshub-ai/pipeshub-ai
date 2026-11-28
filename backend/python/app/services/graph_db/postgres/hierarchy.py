@@ -29,6 +29,7 @@ from app.services.graph_db.postgres.base import (
     _edge_scope,
     _ekey,
     _j,
+    _target_columns,
 )
 from app.services.graph_db.postgres.kg import hierarchy as kg_hier
 from app.services.graph_db.postgres.kg.reader import seeks
@@ -38,6 +39,8 @@ from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from app.core.db import Tx
 
 _ORG_FIELD = "orgId"  # the org property of a graph document
@@ -131,7 +134,8 @@ class HierarchyMixin(PgBase):
         return await self._q(lambda tx: tx.fetch(sql, *args), transaction)
 
     async def create_edges_if_absent(
-        self, edges: list[dict], collection: str, transaction: str | None = None, *, count_created: bool = False
+        self, edges: list[dict], collection: str, transaction: str | None = None, *, count_created: bool = False,
+        lock_grants: Sequence[tuple[str, str, str, str]] = (), lock_held: set[str] | None = None,      # ignored: see the interface
     ) -> None:
         """Create the edges that are not there (both ends must exist); an existing edge keeps its properties."""
         if count_created:  # this store does not report which edges a write created; the store's before/after comparison covers it
@@ -145,12 +149,24 @@ class HierarchyMixin(PgBase):
             _VALIDATOR.validate_edge(collection, props)
             key = _ekey(collection, props)
             rows.setdefault((fc, fi, tc, ti, key), {"fc": fc, "fi": fi, "tc": tc, "ti": ti, "k": key, "doc": props})      # the first of a duplicate wins, as MERGE ... ON CREATE
-        await self._q(lambda tx: tx.execute("""/* pipeshub:graph.create_edges_if_absent */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
+        # as batch_create_edges: the app locks of lock_grants are taken before the first row is written
+        await self._q(lambda tx: tx.execute("""/* pipeshub:graph.create_edges_if_absent */ WITH lt AS (SELECT t.coll, t.doc->>'connectorId' AS app FROM graph.nodes t WHERE t.org_id = $1 AND t.coll = ANY($4::text[]) AND t.id = ANY($5::text[])
+                     AND cardinality($5::text[]) > 0      -- the arrays an index takes, then the exact pairs
+                     AND EXISTS (SELECT 1 FROM unnest($4::text[], $5::text[]) AS q(c, i) WHERE q.c = t.coll AND q.i = t.id)),
+                  -- the locks of the grants' targets (common.grant_locks), in one order: the org's, exclusively, for a team or a node without a connector,
+                  -- then each app's, shared
+                  held AS (SELECT (SELECT count(pg_advisory_xact_lock(hashtextextended('grant_org:' || $1, 0)))
+                                     FROM (SELECT 1 FROM lt WHERE lt.coll = 'teams' OR lt.app IS NULL LIMIT 1) o)
+                                + (SELECT count(pg_advisory_xact_lock_shared(hashtextextended('grant_app:' || $1 || ':' || s.a, 0)))
+                                     FROM (SELECT DISTINCT lt.app AS a FROM lt WHERE lt.app IS NOT NULL AND lt.coll <> 'teams' ORDER BY 1) s) AS n)
+            INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
             SELECT $1, $2, x.fc, x.fi, x.tc, x.ti, x.k, jsonb_strip_nulls(x.doc)
             FROM jsonb_to_recordset($3::jsonb) AS x(fc text, fi text, tc text, ti text, k text, doc jsonb)
-            WHERE EXISTS (SELECT 1 FROM graph.nodes f WHERE f.org_id = $1 AND f.coll = x.fc AND f.id = x.fi)
+            WHERE (SELECT n FROM held) >= 0
+              AND EXISTS (SELECT 1 FROM graph.nodes f WHERE f.org_id = $1 AND f.coll = x.fc AND f.id = x.fi)
               AND EXISTS (SELECT 1 FROM graph.nodes t WHERE t.org_id = $1 AND t.coll = x.tc AND t.id = x.ti)
-            ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO NOTHING""", org, collection, _j(list(rows.values()))), transaction, write=True)
+            ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO NOTHING""", org, collection, _j(list(rows.values())),
+                                            *_target_columns(lock_grants)), transaction, write=True)
 
     async def copy_document_relationships(self, source_key: str, target_key: str, transaction: str | None = None) -> bool:
         """Copy a record's taxonomy edges (departments, categories, languages, topics) to another record; an edge the target has stays."""

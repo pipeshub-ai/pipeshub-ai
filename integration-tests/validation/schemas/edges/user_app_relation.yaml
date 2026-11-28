@@ -21,6 +21,14 @@ fields:
   isExternalUser:
     required: false
     type: boolean
+  # The collaborator reaper's mark (two passes): set when no grant keeps a flagged edge, cleared by a write of the membership.
+  reapMarkedAt:
+    required: false
+    type: integer
+  # PostgreSQL only: the id of the reaper transaction that marked the edge (its horizon).
+  reapMarkXid:
+    required: false
+    type: string
   createdAtTimestamp:
     required: false
     type: integer

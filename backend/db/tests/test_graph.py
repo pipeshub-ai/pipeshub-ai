@@ -1583,6 +1583,7 @@ def test_the_address_and_site_lookups_read_their_keys_where_the_plain_statements
 # ---- indexes built and dropped outside the upgrade's transaction (db.migrate's online step) ------------------------------------------------
 ONLINE = ("nodes_record_ticket_url", "nodes_record_pending_vrid", "nodes_record_weburl", "nodes_record_ticket_site", "nodes_block_record_seek",
           "nodes_block_name_seek", "nodes_codefile_path_seek", "nodes_record_refresh_intent", "nodes_record_name_trgm")
+ONLINE_EDGES = ("edges_external_by_holder", "edges_external_by_app")      # graph_0024, on graph.edges, which holds no rows here
 RETIRED = ("nodes_block_record", "nodes_block_name")
 _DDL = re.compile(r"^(CREATE (UNIQUE )?INDEX|DROP INDEX|ALTER INDEX|REINDEX)\b", re.I)
 
@@ -1601,11 +1602,11 @@ def _populate(c, n: int = 3000) -> str:
     return c.execute("SELECT DISTINCT tableoid::regclass::text FROM graph.nodes WHERE org_id = %s", (A,)).fetchone()[0]
 
 
-def _whole_and_valid(c, index: str) -> bool:
-    """An index on every table of graph.nodes' tree, the root included, and every one valid."""
+def _whole_and_valid(c, index: str, table: str = "graph.nodes") -> bool:
+    """An index on every table of the table's tree (graph.nodes by default), the root included, and every one valid."""
     n, ok = c.execute("SELECT count(*), bool_and(i.indisvalid) FROM pg_partition_tree(%s::regclass) t JOIN pg_index i ON i.indexrelid = t.relid",
                       (f"graph.{index}",)).fetchone()
-    return ok is True and n == c.execute("SELECT count(*) FROM pg_partition_tree('graph.nodes')").fetchone()[0]
+    return ok is True and n == c.execute("SELECT count(*) FROM pg_partition_tree(%s::regclass)", (table,)).fetchone()[0]
 
 
 def _exists(c, index: str) -> bool:
@@ -1619,7 +1620,7 @@ def _left_of(c, indexes) -> list[str]:
 
 
 def test_an_upgrade_builds_its_indexes_online_and_its_transaction_builds_and_drops_none(db, monkeypatch, capsys):
-    """From graph_0013 on a populated graph: every index of graph_0014..0022 is built before the upgrade's transaction, concurrently on the leaf
+    """From graph_0013 on a populated graph: every index of graph_0014..0024 is built before the upgrade's transaction, concurrently on the leaf
     that holds rows; the indexes graph_0020 retires go after the commit; the transaction itself runs no index statement at all (one there would
     keep the writers, or for a drop every reader, of graph.nodes waiting until the commit)."""
     from sqlalchemy import Engine, event
@@ -1634,7 +1635,7 @@ def test_an_upgrade_builds_its_indexes_online_and_its_transaction_builds_and_dro
     assert r.returncode == 0, r.stdout + r.stderr
     with connect(cluster, name) as c:
         leaf = _populate(c).split(".")[1]
-        assert not any(_exists(c, i) for i in ONLINE) and all(_exists(c, i) for i in RETIRED)
+        assert not any(_exists(c, i) for i in (*ONLINE, *ONLINE_EDGES)) and all(_exists(c, i) for i in RETIRED)
     seen: list[tuple[bool, str]] = []
 
     def spy(conn, _cursor, statement, *_):
@@ -1653,12 +1654,16 @@ def test_an_upgrade_builds_its_indexes_online_and_its_transaction_builds_and_dro
     for index in ONLINE:
         assert any(re.match(rf"CREATE INDEX CONCURRENTLY {leaf}_\w*_{index} ON graph\.{leaf} ", s) for s in online), (index, online)
         assert f"index graph.{index}: built in" in out
+    for index in ONLINE_EDGES:
+        assert any(re.match(rf"CREATE INDEX (IF NOT EXISTS )?\w*{index} ON ", s) for s in online), index      # empty leaves: built plainly, still online
+        assert f"index graph.{index}: built in" in out
     for index in RETIRED:
         assert f"DROP INDEX IF EXISTS graph.{index}" in online
     with connect(cluster, name) as c:
         assert all(_whole_and_valid(c, i) for i in ONLINE)
+        assert all(_whole_and_valid(c, i, "graph.edges") for i in ONLINE_EDGES)
         assert not any(_exists(c, i) for i in RETIRED) and _whole_and_valid(c, "nodes_codefile_path")
-        assert c.execute("SELECT epoch, min_code_epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone() == (23, 0)
+        assert c.execute("SELECT epoch, min_code_epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone() == (24, 0)
 
 
 def test_an_online_build_a_stopped_run_left_invalid_is_rebuilt(db):
@@ -1750,7 +1755,7 @@ def test_an_upgrade_that_raised_keeps_its_indexes_unless_it_did_not_commit(db, m
     assert ("committed although it raised" if outcome == "committed" else "could not tell whether the upgrade committed") in out, out
     with connect(cluster, name) as c:
         assert all(_whole_and_valid(c, i) for i in ONLINE)
-        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone()[0] == (23 if outcome == "committed" else 13)
+        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone()[0] == (24 if outcome == "committed" else 13)
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout + r.stderr
     with connect(cluster, name) as c:
@@ -1782,7 +1787,7 @@ def test_a_retired_index_goes_after_the_commit_and_a_drop_that_had_to_wait_is_do
         assert f"WARNING index graph.{index} was not dropped" in r.stdout, r.stdout
     with connect(cluster, name) as c:
         assert all(_exists(c, i) for i in RETIRED)
-        assert c.execute("SELECT epoch, min_code_epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone() == (23, 0)
+        assert c.execute("SELECT epoch, min_code_epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone() == (24, 0)
     r = run_doctor(url)                                                 # the health check accepts them as the migrate run did
     assert r.returncode == 0 and "doctor: healthy" in r.stdout, r.stdout
     r = run_migrate(url)

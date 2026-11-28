@@ -245,6 +245,12 @@ CLASSIFICATION: dict[str, str] = {
     # ---- exempt
     "execute_query": "passthrough", "ensure_schema": "ddl", "ensure_pipeline_schema": "ddl",
     "is_trash_walk_index_ready": "ddl",
+    # a property set and removed on existing edges: a lock, nothing kept
+    "lock_external_app_memberships": _I,
+    "lock_grant_apps": _I,
+    # a note on existing permission edges (a list of principal ids), set and cleared: no document field the validator owns
+    "stash_external_memberships": _I,
+    "restore_external_memberships": _I,
 }
 
 # Names filled in below from the first run of the classification test (deletes and maintenance).

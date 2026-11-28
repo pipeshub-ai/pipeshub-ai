@@ -29,8 +29,12 @@ from app.api.routes.entity import (
 from app.core.db.errors import SerializationConflict
 from app.core.org_context import OrgContext, bind
 from app.services.graph_db.postgres.base import PgBase
-from app.utils.user_messages import DATABASE_UNREACHABLE, PEOPLE_GONE, action_failed, not_found
-
+from app.utils.user_messages import (
+    DATABASE_UNREACHABLE,
+    PEOPLE_GONE,
+    action_failed,
+    not_found,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -641,7 +645,7 @@ class TestCreateTeam:
         a retry must finish that team, not add one."""
         monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
         req = _make_request({"name": "Team"})
-        graph = _TeamGraph(conflicts_on=2, honours_explicit=honours_explicit)
+        graph = _TeamGraph(conflicts_on=_EDGE_STATEMENT[honours_explicit], honours_explicit=honours_explicit)
         req.app.state.graph_provider = graph
 
         resp = await create_team(req)
@@ -658,7 +662,7 @@ class TestCreateTeam:
         self, honours_explicit: bool,
     ) -> None:
         req = _make_request({"name": "Team"})
-        graph = _TeamGraph(fails_on=2, honours_explicit=honours_explicit)
+        graph = _TeamGraph(fails_on=_EDGE_STATEMENT[honours_explicit], honours_explicit=honours_explicit)
         req.app.state.graph_provider = graph
 
         with pytest.raises(HTTPException) as exc:
@@ -673,6 +677,11 @@ class TestCreateTeam:
 
 class _Conflict(RuntimeError):
     pass
+
+
+# The edge's statement: the node's, then (outside a transaction) the lock of the owner's memberships, then the edge's; in a transaction the edge's
+# statement takes the lock itself.
+_EDGE_STATEMENT = {True: 2, False: 3}
 
 
 class _TeamGraph:
@@ -736,13 +745,17 @@ class _TeamGraph:
             self.teams.setdefault(node["_key"], {}).update(node)
         return True
 
-    async def batch_create_edges(self, edges: list[dict], collection: str, transaction: str | None = None) -> bool:
+    async def batch_create_edges(self, edges: list[dict], collection: str, transaction: str | None = None, *, lock_grants: list = (), lock_held: set | None = None) -> bool:
         self._statement()
         self.edges.update((collection, e["from_id"], e["to_id"]) for e in edges)
         return True
 
     async def find_team_by_name(self, org_id: str, name: str, exclude_team_id: str | None = None) -> None:
         return None
+
+    async def lock_external_app_memberships(self, grants: list, transaction: str | None = None, *, lock: bool = True) -> list:
+        self._statement()      # a statement like any other: it can be the one that conflicts
+        return []
 
     async def get_team_with_users(
         self, team_id: str, org_id: str, user_key: str,
@@ -936,7 +949,7 @@ class TestUpdateTeam:
         assert gp.update_node.await_args.args[2]["name"] == "Renamed"
         assert gp.get_team_with_users.await_args.kwargs["is_org_admin"] is True
         # with no role of their own to keep, the admin can add themselves
-        (edges, _), _ = gp.batch_create_edges.call_args
+        edges = gp.batch_create_edges.call_args.args[0]      # through the store: the edges, then keywords
         assert [e["from_id"] for e in edges] == ["user-key-1"]
 
     @pytest.mark.asyncio
@@ -1396,6 +1409,9 @@ class _TeamUpdateGraph:
         for e in edges:
             self.perms[e["from_id"]] = e["role"]
         return True
+
+    async def lock_external_app_memberships(self, grants: list, transaction=None, **_: object) -> list:
+        return []      # the added members hold no flagged membership here: the team write's read finds none
 
 
 _OWNER_AND_READERS = {"user-1": "OWNER", "c": "READER", "d": "READER"}
@@ -2157,7 +2173,9 @@ class TestUpdateUserEmail:
 
     def test_409_when_email_belongs_to_another_login(self):
         async def _run() -> None:
-            from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
+            from app.services.graph_db.user_email_identity import (
+                GraphUserEmailConflictError,
+            )
 
             req = _make_request()
             gp = _graph_provider(req)
@@ -2211,7 +2229,9 @@ class TestUpdateUserEmail:
 
     def test_409_does_not_leak_the_other_users_id(self):
         async def _run() -> None:
-            from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
+            from app.services.graph_db.user_email_identity import (
+                GraphUserEmailConflictError,
+            )
 
             req = _make_request()
             gp = _graph_provider(req)

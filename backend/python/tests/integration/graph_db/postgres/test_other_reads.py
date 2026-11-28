@@ -449,13 +449,15 @@ async def test_an_external_collaborator_keeps_the_app_only_while_a_grant_holds_i
     await w.edge("permission", ("users", "ext6"), ("groups", "g6"), type="USER", role="READER")                       # a group whose only grant is on another connector's record
     await w.edge("permission", ("groups", "g6"), ("records", "elsewhere"), type="GROUP", role="READER")
     p = w.p
-    assert await p.reap_stale_external_app_relations(APP) == 1                                      # the one person left with nothing
+    assert await p.reap_stale_external_app_relations(APP) == 0                                      # the first pass marks, removes nothing
+    assert await p.reap_stale_external_app_relations(APP) == 1                                      # the second: the one person left with nothing
     assert await p.get_document("pers", "person") is None and await p.get_document("pers_kept", "person") is not None
     assert await p.get_document("pers_busy", "person") is not None                                  # its membership went, but it still holds an edge
     left = {e["from_id"] for e in await p.get_edges_to_node(f"apps/{APP}", "userAppRelation")}
     assert left == {"ext", "pers_kept", "member", "idle_member"}                                                    # ext2 and pers_busy went (a trashed grant, another connector's), the others hold
     assert await p.get_document("ext2", "users") is not None                                      # a user who lost the flagged edge stays a user
-    await p.delete_edge("ext", "users", "shared", "records", "permission")                            # the grant taken away: the next pass reaps it
+    await p.delete_edge("ext", "users", "shared", "records", "permission")                            # the grant taken away: the next two passes reap it
+    assert await p.reap_stale_external_app_relations(APP) == 0
     assert await p.reap_stale_external_app_relations(APP) == 0
     assert {e["from_id"] for e in await p.get_edges_to_node(f"apps/{APP}", "userAppRelation")} == {"pers_kept", "member", "idle_member"}
     with in_org(_org()):
@@ -471,5 +473,6 @@ async def test_a_failed_reap_reports_none_and_the_next_pass_does_it(w: World, mo
     assert await w.p.reap_stale_external_app_relations(APP) == 0
     monkeypatch.setattr(w.p, "_q", real)
     assert len(await w.p.get_edges_to_node(f"apps/{APP}", "userAppRelation")) == 1                 # the failed pass removed nothing
-    await w.p.reap_stale_external_app_relations(APP)
+    await w.p.reap_stale_external_app_relations(APP)                                                # it marks
+    await w.p.reap_stale_external_app_relations(APP)                                                # it removes
     assert await w.p.get_edges_to_node(f"apps/{APP}", "userAppRelation") == []

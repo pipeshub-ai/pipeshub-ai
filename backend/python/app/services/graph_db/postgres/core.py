@@ -29,6 +29,7 @@ from app.services.graph_db.postgres.base import (
     _hot,
     _j,
     _node,
+    _target_columns,
 )
 
 
@@ -396,7 +397,8 @@ class CoreMixin(PgBase):
 
     # ---- generic edges -----------------------------------------------------------------------------------------
     async def batch_create_edges(
-        self, edges: list[dict], collection: str, transaction: str | None = None, *, count_created: bool = False
+        self, edges: list[dict], collection: str, transaction: str | None = None, *, count_created: bool = False,
+        lock_grants: Sequence[tuple[str, str, str, str]] = (), lock_held: set[str] | None = None,      # ignored: see the interface
     ) -> bool:
         if count_created:  # this store does not report which edges a write created; the store's before/after comparison covers it
             raise NotImplementedError("batch_create_edges(count_created=True) is not supported on the PostgreSQL graph store")
@@ -427,13 +429,38 @@ class CoreMixin(PgBase):
                     await tx.execute("""/* pipeshub:graph.batch_create_edges_retype */ DELETE FROM graph.edges e USING unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[]) AS d(fc, fi, tc, ti, k)
                         WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_id = d.fi AND e.from_coll = d.fc AND e.to_id = d.ti AND e.to_coll = d.tc AND e.ekey = d.k""",
                                      org, [r["fc"] for r in stale], [r["fi"] for r in stale], [r["tc"] for r in stale], [r["ti"] for r in stale], [r["ekey"] for r in stale])
-            await tx.execute("""/* pipeshub:graph.batch_create_edges */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
+            await tx.execute("""/* pipeshub:graph.batch_create_edges */ WITH lt AS (SELECT t.coll, t.doc->>'connectorId' AS app FROM graph.nodes t WHERE t.org_id = $1 AND t.coll = ANY($4::text[]) AND t.id = ANY($5::text[])
+                     AND cardinality($5::text[]) > 0      -- the arrays an index takes, then the exact pairs
+                     AND EXISTS (SELECT 1 FROM unnest($4::text[], $5::text[]) AS q(c, i) WHERE q.c = t.coll AND q.i = t.id)),
+                  -- the locks of the grants' targets (common.grant_locks), in one order: the org's, exclusively, for a team or a node without a connector,
+                  -- then each app's, shared
+                  held AS (SELECT (SELECT count(pg_advisory_xact_lock(hashtextextended('grant_org:' || $1, 0)))
+                                     FROM (SELECT 1 FROM lt WHERE lt.coll = 'teams' OR lt.app IS NULL LIMIT 1) o)
+                                + (SELECT count(pg_advisory_xact_lock_shared(hashtextextended('grant_app:' || $1 || ':' || s.a, 0)))
+                                     FROM (SELECT DISTINCT lt.app AS a FROM lt WHERE lt.app IS NOT NULL AND lt.coll <> 'teams' ORDER BY 1) s) AS n)
+                INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
                 SELECT $1, $2, x.fc, x.fi, x.tc, x.ti, x.k, (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(x.doc) AS _nv WHERE _nv.value <> 'null'::jsonb)
                 FROM jsonb_to_recordset($3::jsonb) AS x(fc text, fi text, tc text, ti text, k text, doc jsonb)
+                WHERE (SELECT n FROM held) >= 0      -- the locks are taken once, before the first row is written
                 ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = EXCLUDED.doc, from_coll = EXCLUDED.from_coll, to_coll = EXCLUDED.to_coll""",
-                             org, collection, payload)
+                             org, collection, payload, *_target_columns(lock_grants))
         await self._q(go, transaction, write=True)
         return True
+
+    async def lock_grant_apps(self, targets: Sequence[tuple[str, str]], transaction: str | None = None, *,
+                              lock_held: set[str] | None = None) -> None:      # ignored: a held advisory lock costs nothing to take again
+        """Holds the app locks of ``targets`` shared until the transaction ends, as batch_create_edges does for its grants (common.grant_locks)."""
+        org = current_org_id()      # first: no org bound raises, whatever the targets
+        if not targets:
+            return
+        await self._q(lambda tx: tx.execute("""/* pipeshub:graph.lock_grant_apps */ WITH lt AS (SELECT t.coll, t.doc->>'connectorId' AS app FROM graph.nodes t
+                WHERE t.org_id = $1 AND t.coll = ANY($2::text[]) AND t.id = ANY($3::text[])
+                AND EXISTS (SELECT 1 FROM unnest($2::text[], $3::text[]) AS q(c, i) WHERE q.c = t.coll AND q.i = t.id)),
+              o AS (SELECT count(pg_advisory_xact_lock(hashtextextended('grant_org:' || $1, 0))) AS n
+                    FROM (SELECT 1 FROM lt WHERE lt.coll = 'teams' OR lt.app IS NULL LIMIT 1) x)
+            SELECT (SELECT n FROM o) + (SELECT count(pg_advisory_xact_lock_shared(hashtextextended('grant_app:' || $1 || ':' || s.a, 0)))
+                                        FROM (SELECT DISTINCT lt.app AS a FROM lt WHERE lt.app IS NOT NULL AND lt.coll <> 'teams' ORDER BY 1) s)""",
+                                            org, [c for c, _ in targets], [k for _, k in targets]), transaction)
 
     async def get_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str,
                        transaction: str | None = None, *, raise_on_error: bool = False) -> dict | None:
