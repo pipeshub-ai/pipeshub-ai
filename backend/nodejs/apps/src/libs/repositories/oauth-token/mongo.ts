@@ -80,6 +80,13 @@ export class MongoOAuthTokenRepository implements OAuthTokenRepository {
     return stored ? toPlain<RefreshTokenDto>(stored) : null;
   }
 
+  async findAccessByHash(tokenHash: string): Promise<AccessTokenDto | null> {
+    const stored = await OAuthAccessToken.findOne({
+      tokenHash: { $eq: tokenHash },
+    });
+    return stored ? toPlain<AccessTokenDto>(stored) : null;
+  }
+
   async rotateRefresh(id: string): Promise<boolean> {
     const result = await OAuthRefreshToken.updateOne(
       { _id: oid(id), isRevoked: false },

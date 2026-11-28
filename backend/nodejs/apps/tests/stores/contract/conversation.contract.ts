@@ -5,6 +5,7 @@
  * the run lease, seq allocation, and the inputs the archive/redaction views use.
  */
 import { expect } from 'chai';
+import { MAX_ANSWER_LOOKUP } from '../../../src/libs/repositories/conversation';
 import type { ConversationRepository, NewMessage, NewSession, SessionListQuery, SessionScope } from '../../../src/libs/repositories/conversation';
 import type { ScopedUnitOfWork } from './unit-of-work-scope';
 
@@ -447,6 +448,56 @@ export function describeConversationContract(fx: ConversationFixture): void {
       expect(await content({ skip: 1, limit: 2 })).to.deep.equal(['2', '3']);
       expect(await content({ limit: 0 })).to.deep.equal([]);
       expect(await repo.listMessages(s._id, { orgId: fx.newId() })).to.deep.equal([]);
+    });
+
+    it('findLatestQuestionBefore: the newest question asked by then, in this session and org only', async () => {
+      const org = fx.newId(), user = fx.newId();
+      const t = (ms: number) => new Date(Date.UTC(2026, 0, 1) + ms);
+      const s = await open(org, user, {}, { ...userMsg('q1'), createdAt: t(0), updatedAt: t(0) });
+      const [, q2] = await repo.appendMessages(s._id, org, [
+        { ...botMsg('a1'), createdAt: t(1000), updatedAt: t(1000) },
+        { ...userMsg('q2'), createdAt: t(2000), updatedAt: t(2000) },
+        { ...botMsg('a2'), createdAt: t(3000), updatedAt: t(3000) },
+        { ...userMsg('q3'), createdAt: t(4000), updatedAt: t(4000) },
+      ]);
+      const q1 = (await repo.listMessages(s._id, { orgId: org, limit: 1 }))[0]!.dto._id;
+      expect(await repo.findLatestQuestionBefore(s._id, org, t(3500))).to.equal(q2!._id);
+      expect(await repo.findLatestQuestionBefore(s._id, org, t(2000))).to.equal(q2!._id);
+      expect(await repo.findLatestQuestionBefore(s._id, org, t(1999))).to.equal(q1);
+      expect(await repo.findLatestQuestionBefore(s._id, org, t(-1))).to.equal(null);
+      expect(await repo.findLatestQuestionBefore(s._id, fx.newId(), t(9000))).to.equal(null);
+      expect(await repo.findLatestQuestionBefore(fx.newId(), org, t(9000))).to.equal(null);
+    });
+
+    it('findAnswers: the answer right after each question, none when another question comes first, never another org\'s', async () => {
+      const org = fx.newId(), user = fx.newId();
+      const s = await open(org, user, {}, userMsg('q1'));
+      const [a1, q2, q3, a3a, , q4] = await repo.appendMessages(s._id, org, [
+        botMsg('a1'),
+        userMsg('q2'),
+        userMsg('q3'),
+        botMsg('a3'),
+        botMsg('a3 again'),
+        userMsg('q4'),
+      ]);
+      const q1 = (await repo.listMessages(s._id, { orgId: org, limit: 1 }))[0]!.dto._id;
+      const ids = [q1, q2!._id, q3!._id, q4!._id, a1!._id, fx.newId(), 'not-an-id'];
+      expect([...(await repo.findAnswers(s._id, org, ids))].sort()).to.deep.equal(
+        [[q1, a1!._id], [q3!._id, a3a!._id]].sort(),
+      );
+      expect((await repo.findAnswers(s._id, fx.newId(), ids)).size).to.equal(0);
+      expect((await repo.findAnswers(fx.newId(), org, ids)).size).to.equal(0);
+      expect((await repo.findAnswers(s._id, org, [])).size).to.equal(0);
+    });
+
+    it('findAnswers takes at most MAX_ANSWER_LOOKUP ids a call', async () => {
+      const org = fx.newId(), user = fx.newId();
+      const s = await open(org, user);
+      const [a] = await repo.appendMessages(s._id, org, [botMsg('a')]);
+      const q = (await repo.listMessages(s._id, { orgId: org, limit: 1 }))[0]!.dto._id;
+      const padding = Array.from({ length: MAX_ANSWER_LOOKUP }, () => fx.newId());
+      expect((await repo.findAnswers(s._id, org, [q, ...padding])).get(q)).to.equal(a!._id);
+      expect((await repo.findAnswers(s._id, org, [...padding, q])).size).to.equal(0);
     });
 
     it('is read per session: two sessions never share a read', async () => {

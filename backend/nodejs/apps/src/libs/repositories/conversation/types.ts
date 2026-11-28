@@ -160,6 +160,9 @@ export interface MessageDto {
   label?: IMessage['label'];
 }
 
+/** The most question ids one `findAnswers` call takes; a caller with more sends them in batches. */
+export const MAX_ANSWER_LOOKUP = 100;
+
 /** A message as the store returns it. */
 export interface MessageRow {
   dto: MessageDto;
@@ -705,6 +708,21 @@ export interface ConversationRepository {
     lastSeq: number,
   ): Promise<string[]>;
   countMessages(sessionId: string, orgId: string): Promise<number>;
+  /** The newest question of the session asked at or before `at`, or null. */
+  findLatestQuestionBefore(
+    sessionId: string,
+    orgId: string,
+    at: Date,
+  ): Promise<string | null>;
+  /**
+   * The answer to each of these questions of the session: the message right after the question, among questions and
+   * answers, when it is an answer. At most `MAX_ANSWER_LOOKUP` ids per call; other ids are skipped.
+   */
+  findAnswers(
+    sessionId: string,
+    orgId: string,
+    questionIds: string[],
+  ): Promise<Map<string, string>>;
   /** Attachment ids and the cited record of each citation, for permission sync. */
   listAttachmentsAndCitedRecords(
     sessionId: string,

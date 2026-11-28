@@ -157,7 +157,7 @@ import { Params, fill } from '../../pg-util';
 import {
   decodeDoc,
   docParam,
-  jobsUnit,
+  jobsUnitAcrossOrgs,
   rowRegion,
   type PgKernelTx,
 } from '../pg-documents/pg';
@@ -446,24 +446,27 @@ export class PgExecutionStore
     worker?: ClaimingWorker,
     order: ClaimOrder = {},
   ): Promise<ClaimCandidate[]> {
-    return jobsUnit('agent-harness.claim-queue', { write: true }, async (k) => {
-      const p = new Params();
-      const now = `${p.add(await this.time.now(k))}::double precision`;
-      const macros = {
-        DUE: this.dueFor(role),
-        ABOVE:
-          order.above !== undefined
-            ? `AND (priority_rank IS NULL OR priority_rank < ${p.add(priorityRank(order.above))})`
-            : '',
-        WAITED: this.waitedFor(role, tClaimMs, now, p),
-        NOW: now,
-        CAN_RUN: worker !== undefined ? `AND ${canRunSql(worker, p)}` : '',
-        PRIORITY: order.floor ? '' : 'priority_rank NULLS FIRST, ',
-        LIMIT: p.add(Math.max(limit, 1)),
-      };
-      const { rows } = await k.query<{ org_id: string; run_id: string }>(
-        fill(
-          `/* pipeshub:harness.runs_claimable */ SELECT org_id, run_id FROM harness.runs
+    return jobsUnitAcrossOrgs(
+      'agent-harness.claim-queue',
+      { write: true },
+      async (k) => {
+        const p = new Params();
+        const now = `${p.add(await this.time.now(k))}::double precision`;
+        const macros = {
+          DUE: this.dueFor(role),
+          ABOVE:
+            order.above !== undefined
+              ? `AND (priority_rank IS NULL OR priority_rank < ${p.add(priorityRank(order.above))})`
+              : '',
+          WAITED: this.waitedFor(role, tClaimMs, now, p),
+          NOW: now,
+          CAN_RUN: worker !== undefined ? `AND ${canRunSql(worker, p)}` : '',
+          PRIORITY: order.floor ? '' : 'priority_rank NULLS FIRST, ',
+          LIMIT: p.add(Math.max(limit, 1)),
+        };
+        const { rows } = await k.query<{ org_id: string; run_id: string }>(
+          fill(
+            `/* pipeshub:harness.runs_claimable */ SELECT org_id, run_id FROM harness.runs
           WHERE @{DUE}
             @{ABOVE}
             AND @{WAITED}
@@ -472,12 +475,13 @@ export class PgExecutionStore
           ORDER BY @{PRIORITY}not_before NULLS FIRST, created_at, org_id, run_id
           LIMIT @{LIMIT}
           FOR UPDATE SKIP LOCKED`,
-          macros,
-        ),
-        p.values,
-      );
-      return rows.map((row) => ({ orgId: row.org_id, runId: row.run_id }));
-    });
+            macros,
+          ),
+          p.values,
+        );
+        return rows.map((row) => ({ orgId: row.org_id, runId: row.run_id }));
+      },
+    );
   }
 
   async markWaiting(
@@ -486,7 +490,7 @@ export class PgExecutionStore
     limit: number,
     worker: ClaimingWorker,
   ): Promise<WaitingRun[]> {
-    const hidden = await jobsUnit(
+    const hidden = await jobsUnitAcrossOrgs(
       'agent-harness.mark-waiting',
       { write: true },
       async (k) => {
@@ -751,7 +755,11 @@ export class PgExecutionStore
     const documents =
       filter.orgId !== undefined
         ? await inOrgRead(filter.orgId, read)
-        : await jobsUnit('agent-harness.open-runs', { write: false }, read);
+        : await jobsUnitAcrossOrgs(
+            'agent-harness.open-runs',
+            { write: false },
+            read,
+          );
     return documents.map((document) => {
       const engine = (
         document['engineProfile'] as PinnedEngineProfile | null | undefined
@@ -772,7 +780,7 @@ export class PgExecutionStore
     limit: number,
   ): Promise<StrandedRun[]> {
     if (limit <= 0) return [];
-    const documents = await jobsUnit(
+    const documents = await jobsUnitAcrossOrgs(
       'agent-harness.stranded-runs',
       { write: false },
       async (k) =>
@@ -942,7 +950,7 @@ export class PgExecutionStore
 
   async unclaimedRuns(ageMs: number, limit: number): Promise<HarnessRun[]> {
     if (limit <= 0) return [];
-    return jobsUnit(
+    return jobsUnitAcrossOrgs(
       'agent-harness.unclaimed-runs',
       { write: false },
       async (k) =>
@@ -960,7 +968,7 @@ export class PgExecutionStore
   }
 
   async promoteInline(tClaimMs: number, limit: number): Promise<number> {
-    const due = await jobsUnit(
+    const due = await jobsUnitAcrossOrgs(
       'agent-harness.promote-inline',
       { write: true },
       async (k) =>
@@ -1786,7 +1794,7 @@ export class PgExecutionStore
   async sweep(limit: number, transcripts?: SweptTranscripts): Promise<number> {
     const bound = Math.min(Math.max(limit, 1), 100);
     // Ties in admission order, as Mongo's natural order breaks them: a parent before the children it admitted.
-    const { leaseExpired, pastDeadline, now } = await jobsUnit(
+    const { leaseExpired, pastDeadline, now } = await jobsUnitAcrossOrgs(
       'agent-harness.sweep',
       { write: true },
       async (k) => {

@@ -380,6 +380,22 @@ export class PgOAuthTokenRepository
     );
   }
 
+  findAccessByHash(tokenHash: string): Promise<AccessTokenDto | null> {
+    return inKeyUnit<AccessTokenDto | null>(
+      () => accessOrg(tokenHash),
+      false,
+      null,
+      async (k) => {
+        if (!goodKey(tokenHash)) return null;
+        const { rows } = await k.query<AccessRow>(
+          `/* pipeshub:oauth.access_by_hash */ SELECT ${ACCESS} FROM oauth.access_tokens WHERE org_id = $1 AND token_hash = $2`,
+          [k.orgId, tokenHash],
+        );
+        return rows[0] ? accessDto(rows[0]) : null;
+      },
+    );
+  }
+
   // The org of an id alone is not knowable: these run in the ambient org (the token endpoint binds the client's).
   async rotateRefresh(id: string): Promise<boolean> {
     const rid = id24(id);

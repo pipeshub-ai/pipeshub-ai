@@ -31,10 +31,11 @@ import {
   setMongoFence,
 } from './fence';
 import { storeEpochOnFreshConnection } from './online';
-import { JobState } from './state';
+import { JobState, releaseHeld } from './state';
 import { VerifyReport, verifyAll } from './verify';
-import { carriersFor, restoreCarried } from './carry/run';
+import { carriersFor, releaseCarried, restoreCarried } from './carry/run';
 import { carryMongo, carryPg } from './carry/steps';
+import type { Carrier } from './carry/types';
 import { refusedIds } from './refusals';
 
 // eslint-disable-next-line @typescript-eslint/no-unused-expressions
@@ -42,7 +43,7 @@ MONGO_COLLECTIONS; // loading it registers every model
 
 export interface RollbackReport {
   ok: boolean;
-  mode: 'no_pg_writes' | 'reverse' | 'refused';
+  mode: 'no_pg_writes' | 'reverse' | 'released' | 'refused';
   message: string;
   verify?: VerifyReport;
   reversed?: Record<string, { written: number; removed: number }>;
@@ -441,6 +442,157 @@ export async function handOver(
   return { kind: 'done', note: await restoreAppWrites(rt) };
 }
 
+const RETRY_RELEASE =
+  'run `rollback` again: it does only what is left of the release';
+
+const named = (xs: Array<{ name: string; why: string }>): string =>
+  xs.map((f) => `${f.name}: ${f.why}`).join('; ');
+
+/**
+ * After a hand-over: the carriers let go of what only the move held. Which ones are to let go is written in the job before any of them
+ * runs; the list then shrinks to the ones that did not, and a job this rollback ends is ended only after that write (a rollback run
+ * again finishes either). `open`: the job stays open for the release (the caller must not end it); the sentence says what is left.
+ */
+export async function releaseAfterHandOver(
+  rt: MigrationRuntime,
+  o: { js?: JobState; failAt?: string; phase?: string } = {},
+): Promise<{ note: string; open: boolean }> {
+  const carriers = carriersFor().filter((c) => c.released !== undefined);
+  if (carriers.length === 0) return { note: '', open: false };
+  const names = carriers.map((c) => c.name);
+  // the online rollback ends its own job (and writes its phase with the record); the offline one ends a job only if it started it here
+  let js = o.js;
+  let end = Boolean(o.js);
+  const beforeSave = (): void => {
+    if (hookOn(o.failAt, 'release-record'))
+      throw new Error('injected: the release could not be recorded');
+  };
+  try {
+    if (js) {
+      const before = { release: js.progress.release, phase: js.progress.phase };
+      js.progress.release = { pending: names, end };
+      if (o.phase) js.progress.phase = o.phase;
+      try {
+        beforeSave();
+        await js.checkpoint();
+      } catch (e) {
+        Object.assign(js.progress, before);
+        throw e;
+      }
+    } else {
+      const a = await JobState.attachOrStart(rt, {
+        releasing: true,
+        initial: { release: { pending: names, end: true } },
+        beforeSave,
+      });
+      js = a.js;
+      end = a.created;
+      if (!end) {
+        // a running job this rollback did not start (the move's): named, not ended
+        try {
+          js.progress.release = { pending: names, end };
+          beforeSave();
+          await js.checkpoint();
+        } catch (e) {
+          js.progress.release = undefined;
+          throw e;
+        }
+      }
+    }
+  } catch (e) {
+    // no carrier runs without the record: one that failed would have nothing to retry it
+    return {
+      note: ` The carriers' release did not start: it could not be recorded (${errText(e)}), so no carrier let go of what the move held in PostgreSQL (${names.join(', ')}): remove what they hold by hand before a move again.`,
+      open: false,
+    };
+  }
+  const failed = await releaseCarried(
+    carryPg(rt),
+    carriers,
+    hookOn(o.failAt, 'released'),
+  );
+  js.progress.release = { pending: failed.map((f) => f.name), end };
+  try {
+    await js.checkpoint();
+  } catch (e) {
+    // the job still names every carrier (each release may run twice): in memory too, so that no later save writes a list nobody named
+    js.progress.release = { pending: names, end };
+    return {
+      note: ` The carriers' release could not be saved (${errText(e)})${failed.length ? `, and some did not let go (${named(failed)})` : ''}: job ${String(js.id)} stays open for ${names.join(', ')}: ${RETRY_RELEASE}.`,
+      open: true,
+    };
+  }
+  if (failed.length > 0)
+    return {
+      note: ` Some carriers did not let go of what the move held in PostgreSQL (${named(failed)}); job ${String(js.id)} stays open for ${failed.map((f) => f.name).join(', ')}: ${RETRY_RELEASE}.`,
+      open: true,
+    };
+  if (!end || o.js) return { note: '', open: false }; // the online rollback ends its job itself
+  try {
+    await js.finish('done');
+    return { note: '', open: false };
+  } catch (e) {
+    return {
+      note: ` Every carrier let go, but job ${String(js.id)} could not be ended (${errText(e)}): ${RETRY_RELEASE}.`,
+      open: true,
+    };
+  }
+}
+
+/**
+ * A rollback run again while a release holds the job: only what is left of it runs (null when nothing does). A pending carrier stays
+ * pending until its own step has let go: one this run does not have, or one without the step, is named and kept. The job ends (if it is
+ * the rollback's own) only after the emptied list is written.
+ */
+export async function resumeRelease(
+  rt: MigrationRuntime,
+  failAt?: string,
+): Promise<{ ok: boolean; message: string } | null> {
+  const cur = await JobState.current(rt);
+  if (!releaseHeld(cur?.progress)) return null;
+  const js = await JobState.attach(rt, { releasing: true });
+  const rel = js.progress.release ?? { pending: [], end: false };
+  const all = carriersFor();
+  const kept: Array<{ name: string; why: string }> = [];
+  const run: Carrier[] = [];
+  for (const name of rel.pending) {
+    const c = all.find((x) => x.name === name);
+    if (!c) kept.push({ name, why: 'not a carrier of this run' });
+    else if (c.released === undefined)
+      kept.push({ name, why: 'has no step to let go' });
+    else run.push(c);
+  }
+  kept.push(...(await releaseCarried(carryPg(rt), run)));
+  // a retry that only ends the job changes nothing in it: no save stands between it and the end
+  if (rel.pending.length > 0) {
+    js.progress.release = { pending: kept.map((f) => f.name), end: rel.end };
+    await js.checkpoint();
+  }
+  if (kept.length > 0)
+    return {
+      ok: false,
+      message: `MongoDB is the store; some carriers have not let go of what the move held in PostgreSQL (${named(kept)}): ${RETRY_RELEASE}.`,
+    };
+  const done = rel.pending.length
+    ? `the carriers the rollback left (${rel.pending.join(', ')}) let go of what the move held in PostgreSQL`
+    : 'every carrier had let go';
+  if (rel.end)
+    try {
+      if (hookOn(failAt, 'release-finish'))
+        throw new Error('injected: the job could not be ended');
+      await js.finish('done');
+    } catch (e) {
+      return {
+        ok: false,
+        message: `MongoDB is the store; ${done}, but job ${String(js.id)} could not be ended (${errText(e)}): ${RETRY_RELEASE}.`,
+      };
+    }
+  return {
+    ok: true,
+    message: `MongoDB is the store; ${done}${rel.end ? ' and the job ended' : ''}. Nothing else was run again.`,
+  };
+}
+
 export async function rollback(
   rt: MigrationRuntime,
   o: { reverse: boolean; allowWriters: boolean; log: Log; failAt?: string },
@@ -456,6 +608,8 @@ async function rollbackLocked(
   rt: MigrationRuntime,
   o: { reverse: boolean; allowWriters: boolean; log: Log; failAt?: string },
 ): Promise<RollbackReport> {
+  const resumed = await resumeRelease(rt, o.failAt);
+  if (resumed) return { ...resumed, mode: 'released' };
   const notStore = await notPostgresStore(rt);
   if (notStore) return { ok: false, mode: 'refused', message: notStore };
   if (!o.allowWriters) {
@@ -503,11 +657,14 @@ async function rollbackLocked(
         throw new Error(`${h.why}.${note}`);
       }
       const cur = await JobState.latest(rt);
+      const { note: released } = await releaseAfterHandOver(rt, {
+        failAt: o.failAt,
+      });
       return {
         ok: true,
         mode: 'no_pg_writes',
         verify: v,
-        message: `PostgreSQL equals MongoDB (job ${String(cur?.id ?? '-')}): nothing was written there. MongoDB is the live store again: set DOC_STORE=mongo and start the application.${h.note}`,
+        message: `PostgreSQL equals MongoDB (job ${String(cur?.id ?? '-')}): nothing was written there. MongoDB is the live store again: set DOC_STORE=mongo and start the application.${h.note}${released}`,
       };
     }
     if (!o.reverse) {
@@ -544,12 +701,15 @@ async function rollbackLocked(
       const note = await release();
       throw new Error(`${h.why}.${note}`);
     }
+    const { note: released } = await releaseAfterHandOver(rt, {
+      failAt: o.failAt,
+    });
     return {
       ok: true,
       mode: 'reverse',
       verify: after,
       ...r,
-      message: `PostgreSQL was copied back and verified: set DOC_STORE=mongo and start the application.${h.note}`,
+      message: `PostgreSQL was copied back and verified: set DOC_STORE=mongo and start the application.${h.note}${released}`,
     };
   } catch (e) {
     if (!state.released) {

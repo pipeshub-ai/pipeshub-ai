@@ -5,7 +5,7 @@ import type {
 import type { StoreTx } from '../../../../modules/control-plane/ports/store-tx';
 import { activeUnit } from '../../../db';
 import {
-  jobsUnit,
+  jobsUnitAcrossOrgs,
   rowRegion,
   type PgKernelTx,
 } from '../../agent-harness/pg-documents/pg';
@@ -32,7 +32,11 @@ export class PgMigrationLedger implements MigrationLedger {
     const open = activeUnit();
     return open
       ? read(open)
-      : jobsUnit('control-plane-migration-ledger', { write: false }, read);
+      : jobsUnitAcrossOrgs(
+          'control-plane-migration-ledger',
+          { write: false },
+          read,
+        );
   }
 
   async record(

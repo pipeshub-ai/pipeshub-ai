@@ -187,8 +187,8 @@ jobs:
               python3 scripts/assert_no_skips.py "$T/docstore-migrate-junit.xml" --min-tests 40 \
                 --expect-suite 'docstore-migrate: CLI end to end=40' ;;
             reverse)
-              python3 scripts/assert_no_skips.py "$T/docstore-migrate-junit.xml" --min-tests 26 \
-                --expect-suite 'docstore-migrate: rollback and the reverse copy=26' ;;
+              python3 scripts/assert_no_skips.py "$T/docstore-migrate-junit.xml" --min-tests 29 \
+                --expect-suite 'docstore-migrate: rollback and the reverse copy=29' ;;
             switchover)
               python3 scripts/assert_no_skips.py "$T/docstore-migrate-junit.xml" --min-tests 45 \
                 --expect-suite 'docstore-migrate: offline and online switch-over=22' \
@@ -203,6 +203,7 @@ jobs:
                 --expect-suite 'docstore-migrate: content, OAuth and platform data=18' \
                 --expect-suite 'docstore-migrate: carriers on PostgreSQL=10' \
                 --expect-suite 'docstore-migrate: carriers in a whole move=3' \
+                --expect-suite 'docstore-migrate: carriers let go after a rollback=10' \
                 --expect-suite 'docstore-migrate: the control plane carried to PostgreSQL=8' \
                 --expect-suite 'docstore-migrate: ledgers, people=8' \
                 --expect-suite 'docstore-migrate: durable runs, journal and payloads on PostgreSQL=9' \

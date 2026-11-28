@@ -1110,6 +1110,7 @@
         "backend/nodejs/apps/tests/modules/agent-harness/support/principal-erasure-jobs-contract.ts",
         "backend/nodejs/apps/tests/modules/agent-harness/conversation-writer.pg.itest.ts",
         "backend/nodejs/apps/tests/modules/agent-harness/harness-directory.pg.itest.ts",
+        "backend/nodejs/apps/tests/modules/agent-harness/jobs-unit-scope.pg.itest.ts",
         "backend/nodejs/apps/tests/modules/agent-harness/org-binding*.ts",
         "backend/nodejs/apps/tests/modules/agent-harness/uib1-*.ts",
         "backend/nodejs/apps/tests/modules/agent-harness/conversation-seen*.ts",

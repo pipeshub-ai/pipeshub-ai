@@ -93977,6 +93977,15 @@ paths:
 
         Query parameters are not accepted: any one is refused with `400`
         (`VALIDATION_ERROR` on `query`, "These fields aren't accepted here").
+
+        Requires org-admin privileges (`userAdminCheck`): the list names every
+        agent in the organization and its creator, including agents the caller
+        cannot open, so only an admin, who is the one removing the web search
+        provider configuration, may read it. A non-admin caller gets
+        `403` (`ForbiddenError`, message "You need admin access to do this.
+        Ask an admin in your organisation.").
+        The admin check runs after the scope check and before the request is
+        validated, so a non-admin gets `403` even for an unknown query parameter.
       operationId: getAgentWebSearchProviderUsage
       security:
         - bearerAuth: []
@@ -94020,7 +94029,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: OAuth token lacks the `agent:read` scope
+          description: |
+            The caller is not an admin of this organization (`You need admin access to do this...`).
+            An OAuth access token without the `agent:read` scope is also refused with `403`
+            (`Insufficient scope. Required: agent:read`), before the admin check.
           content:
             application/json:
               schema:
@@ -94064,6 +94076,15 @@ paths:
 
         Query parameters are not accepted: any one is refused with `400`
         (`VALIDATION_ERROR` on `query`, "These fields aren't accepted here").
+
+        Requires org-admin privileges (`userAdminCheck`): the list names every
+        agent in the organization and its creator, including agents the caller
+        cannot open, so only an admin, who is the one removing the AI model
+        configuration, may read it. A non-admin caller gets
+        `403` (`ForbiddenError`, message "You need admin access to do this.
+        Ask an admin in your organisation.").
+        The admin check runs after the scope check and before the request is
+        validated, so a non-admin gets `403` even for an unknown query parameter.
       operationId: getAgentModelUsage
       security:
         - bearerAuth: []
@@ -94106,7 +94127,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: OAuth token lacks the `agent:read` scope
+          description: |
+            The caller is not an admin of this organization (`You need admin access to do this...`).
+            An OAuth access token without the `agent:read` scope is also refused with `403`
+            (`Insufficient scope. Required: agent:read`), before the admin check.
           content:
             application/json:
               schema:

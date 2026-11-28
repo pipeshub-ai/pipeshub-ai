@@ -292,6 +292,33 @@ export async function restoreCarried(
   return out;
 }
 
+/**
+ * After a rollback has handed the store back to MongoDB: every carrier lets go of what only the move held. A carrier that fails does not
+ * stop the others or undo the rollback (MongoDB is already the store); the ones that failed are returned, with why (none when all let go).
+ * `fail` (tests) makes every carrier with the step fail before it runs.
+ */
+export async function releaseCarried(
+  pg: CarryPg,
+  carriers: readonly Carrier[] = CARRIERS,
+  fail = false,
+): Promise<Array<{ name: string; why: string }>> {
+  const failed: Array<{ name: string; why: string }> = [];
+  for (const c of carriers) {
+    const release = c.released?.bind(c);
+    if (!release) continue;
+    try {
+      if (fail) throw new Error('injected: the carrier did not let go');
+      await pg((k) => release(k), true);
+    } catch (e) {
+      failed.push({
+        name: c.name,
+        why: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+  return failed;
+}
+
 /** Removes everything the carriers wrote and the whole key map (reset; a resync clears its carriers before copying again). */
 export async function clearCarried(
   k: KernelTx,

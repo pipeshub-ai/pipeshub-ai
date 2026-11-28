@@ -8,7 +8,7 @@ import {
   JournalTail,
   JournalTailSubscription,
 } from '../../../../modules/agent-harness/ports/journal-tail';
-import { jobsUnit } from '../pg-documents/pg';
+import { jobsUnitAcrossOrgs } from '../pg-documents/pg';
 
 /** How often the watched runs' journals are asked for their last seq. */
 export const TAIL_POLL_MS = 250;
@@ -21,25 +21,29 @@ export type ReadLastSeqs = (
 const keyOf = (orgId: string, runId: string): string => `${orgId}:${runId}`;
 
 const readLastSeqs: ReadLastSeqs = (runs) =>
-  jobsUnit('agent-harness.journal-tail', { write: false }, async (k) => {
-    const { rows } = await k.query<{
-      org_id: string;
-      run_id: string;
-      seq: string | null;
-    }>(
-      `/* pipeshub:harness.session_events_tail */ SELECT w.org_id, w.run_id,
+  jobsUnitAcrossOrgs(
+    'agent-harness.journal-tail',
+    { write: false },
+    async (k) => {
+      const { rows } = await k.query<{
+        org_id: string;
+        run_id: string;
+        seq: string | null;
+      }>(
+        `/* pipeshub:harness.session_events_tail */ SELECT w.org_id, w.run_id,
          (SELECT e.seq FROM harness.session_events e WHERE e.org_id = w.org_id AND e.run_id = w.run_id
            ORDER BY e.seq DESC LIMIT 1)::text AS seq
        FROM unnest($1::text[], $2::text[]) AS w(org_id, run_id)`,
-      [runs.map((run) => run.orgId), runs.map((run) => run.runId)],
-    );
-    return new Map(
-      rows.map((row) => [
-        keyOf(row.org_id, row.run_id),
-        row.seq === null ? 0 : Number(row.seq),
-      ]),
-    );
-  });
+        [runs.map((run) => run.orgId), runs.map((run) => run.runId)],
+      );
+      return new Map(
+        rows.map((row) => [
+          keyOf(row.org_id, row.run_id),
+          row.seq === null ? 0 : Number(row.seq),
+        ]),
+      );
+    },
+  );
 
 /**
  * Cross-replica journal tail on PostgreSQL (REPORT 6.2.4). PgBouncer in transaction mode keeps no session for LISTEN,

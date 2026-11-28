@@ -6,7 +6,8 @@ import { MAPPINGS } from './mapping';
 import { readMongoFence } from './fence';
 import { clearMarkers } from './follow';
 import type { MigrationRuntime } from './runtime';
-import { COPY_LOCK_KEY, JobState } from './state';
+import { COPY_LOCK_KEY, JobState, releaseHeld } from './state';
+import { BUSY, whileExclusive } from './reverse';
 import { clearCarried } from './carry/run';
 import { clearRefusals } from './refusals';
 
@@ -41,10 +42,32 @@ export async function unfinishedReset(rt: MigrationRuntime): Promise<boolean> {
   return false;
 }
 
+type ResetReport = { ok: boolean; message: string; tables: number };
+
+/** Under the rollback's lock: a reset never runs while a rollback (or its release) does. */
 export async function reset(
   rt: MigrationRuntime,
-  o: { force: boolean },
-): Promise<{ ok: boolean; message: string; tables: number }> {
+  o: { force: boolean; abandonRelease?: boolean },
+): Promise<ResetReport> {
+  return whileExclusive<ResetReport>(
+    rt,
+    () => ({ ok: false, message: BUSY, tables: 0 }),
+    () => resetLocked(rt, o),
+  );
+}
+
+async function resetLocked(
+  rt: MigrationRuntime,
+  o: { force: boolean; abandonRelease?: boolean },
+): Promise<ResetReport> {
+  // a rollback's release lives only in its job: cancelling the job would lose what is still to let go
+  const held = releaseHeld((await JobState.current(rt))?.progress);
+  if (held && !o.abandonRelease)
+    return {
+      ok: false,
+      message: `a rollback has not finished letting go of what the move held in PostgreSQL (${held}): run \`rollback\` again first, or \`reset --yes --abandon-release\` to give that release up (it is recorded in the cancelled job)`,
+      tables: 0,
+    };
   if (!o.force && (await readMongoFence(rt)).mode === 'retired')
     return {
       ok: false,
@@ -61,6 +84,16 @@ export async function reset(
   // cancel first: a copy that is still running stops before its next batch, and the exclusive lock below waits for the batches
   // already being written, so nothing is written after the rows are removed
   const cur = await JobState.current(rt);
+  let abandoned = '';
+  if (cur && held) {
+    const js = await JobState.attach(rt, { releasing: true });
+    js.progress.releaseAbandoned = {
+      at: new Date().toISOString(),
+      pending: js.progress.release?.pending ?? [],
+    };
+    await js.checkpoint();
+    abandoned = ` The release a rollback left (${held}) was given up and recorded in job ${String(js.id)}.`;
+  }
   if (cur)
     await rt.migratePool.query(
       "SELECT platform.job_finish($1::bigint, 'cancelled')",
@@ -88,8 +121,7 @@ export async function reset(
   await clearMarkers(rt);
   return {
     ok: true,
-    message:
-      'the copied rows were removed and the job was cancelled; run the copy again',
+    message: `the copied rows were removed and the job was cancelled; run the copy again.${abandoned}`,
     tables: unique.length,
   };
 }

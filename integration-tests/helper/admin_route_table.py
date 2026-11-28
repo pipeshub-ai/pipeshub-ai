@@ -165,6 +165,9 @@ NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
     AdminRoute("GET", "/api/v1/crawlingManager/schedule/all"),
     _no_admin("DELETE", "/api/v1/crawlingManager/schedule/all",
               "removes every sync schedule in the org"),
+    # enterprise_search/routes/es.routes.ts (agent router): which agents use a model or a web search provider
+    AdminRoute("GET", "/api/v1/agents/model-usage/:model_key"),
+    AdminRoute("GET", "/api/v1/agents/web-search-usage/:provider"),
     # oauth_provider routes
     AdminRoute("PUT", "/api/v1/oauth-clients/:appId/token-identity", admin="invalid"),
     AdminRoute("GET", "/api/v1/personal-access-tokens/admin"),

@@ -3,28 +3,32 @@ import type {
   AbandonedFork,
   AbandonedForks,
 } from '../../../../modules/agent-harness/ports/session-forks';
-import { jobsUnit, orgUnit } from '../pg-documents/pg';
+import { jobsUnitAcrossOrgs, orgUnit } from '../pg-documents/pg';
 
 /** `harness.session_forks` records left uncommitted (CLEANUP-G4): listed across orgs as the jobs role. */
 export class PgAbandonedForks implements AbandonedForks<Tx> {
   list(before: number, limit: number): Promise<AbandonedFork[]> {
     if (limit <= 0) return Promise.resolve([]);
-    return jobsUnit('abandoned-forks', { write: false }, async (k) => {
-      const { rows } = await k.query<{
-        org_id: string;
-        id: string;
-        fork_session_id: string;
-      }>(
-        `/* pipeshub:harness.abandoned_forks */ SELECT org_id, id, fork_session_id FROM harness.session_forks
+    return jobsUnitAcrossOrgs(
+      'abandoned-forks',
+      { write: false },
+      async (k) => {
+        const { rows } = await k.query<{
+          org_id: string;
+          id: string;
+          fork_session_id: string;
+        }>(
+          `/* pipeshub:harness.abandoned_forks */ SELECT org_id, id, fork_session_id FROM harness.session_forks
           WHERE result IS NULL AND created_at < $1 ORDER BY created_at, org_id, id LIMIT $2`,
-        [before, limit],
-      );
-      return rows.map((row) => ({
-        orgId: row.org_id,
-        recordId: row.id,
-        forkSessionId: row.fork_session_id,
-      }));
-    });
+          [before, limit],
+        );
+        return rows.map((row) => ({
+          orgId: row.org_id,
+          recordId: row.id,
+          forkSessionId: row.fork_session_id,
+        }));
+      },
+    );
   }
 
   dropMany(

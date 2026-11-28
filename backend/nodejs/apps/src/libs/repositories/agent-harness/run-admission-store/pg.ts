@@ -130,7 +130,7 @@ import { platformRunKeyDigest } from '../../../../modules/agent-harness/adapters
 import {
   decodeDoc,
   docParam,
-  jobsUnit,
+  jobsUnitAcrossOrgs,
   rowRegion,
   type PgKernelTx,
 } from '../pg-documents/pg';
@@ -879,20 +879,24 @@ export class PgRunAdmissionStore
   async drainable(
     limit: number,
   ): Promise<Array<{ orgId: string; sessionId: string }>> {
-    return jobsUnit('agent-harness.drainable', { write: false }, async (k) => {
-      const { rows } = await k.query<{ org_id: string; session_id: string }>(
-        `/* pipeshub:harness.next_runs_drainable */ SELECT n.org_id, n.session_id FROM harness.next_runs n
+    return jobsUnitAcrossOrgs(
+      'agent-harness.drainable',
+      { write: false },
+      async (k) => {
+        const { rows } = await k.query<{ org_id: string; session_id: string }>(
+          `/* pipeshub:harness.next_runs_drainable */ SELECT n.org_id, n.session_id FROM harness.next_runs n
           WHERE n.status = 'pending'
           GROUP BY n.org_id, n.session_id
           HAVING NOT EXISTS (SELECT 1 FROM harness.runs r WHERE r.org_id = n.org_id AND r.session_id = n.session_id AND r.active)
           ORDER BY min(n.created_at), n.org_id, n.session_id LIMIT $1`,
-        [Math.max(limit, 1)],
-      );
-      return rows.map((row) => ({
-        orgId: row.org_id,
-        sessionId: row.session_id,
-      }));
-    });
+          [Math.max(limit, 1)],
+        );
+        return rows.map((row) => ({
+          orgId: row.org_id,
+          sessionId: row.session_id,
+        }));
+      },
+    );
   }
 
   async settleNextRun(

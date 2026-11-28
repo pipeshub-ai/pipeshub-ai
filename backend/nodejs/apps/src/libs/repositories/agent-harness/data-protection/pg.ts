@@ -1,6 +1,6 @@
 import type { WrappedDataKey } from '../../../../modules/agent-harness/domain/data-protection';
 import type { DataKeyStore } from '../../../../modules/agent-harness/ports/data-keys';
-import { jobsUnit, rowRegion } from '../pg-documents/pg';
+import { jobsUnitAcrossOrgs, rowRegion } from '../pg-documents/pg';
 import { orgOrJobsUnit } from '../pg-documents/org-or-jobs';
 
 interface KeyRow {
@@ -107,7 +107,7 @@ export class PgDataKeyStore implements DataKeyStore {
   }
 
   orgIds(): Promise<string[]> {
-    return jobsUnit(
+    return jobsUnitAcrossOrgs(
       'agent-harness.secret-key-rotation',
       { write: false },
       async (k) => {

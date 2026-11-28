@@ -26,6 +26,11 @@ describe('JSON-semantic comparator', () => {
   it('reports the path of a nested difference', () => {
     expect(jsonDiff({ a: [{ b: 1 }] }, { a: [{ b: 2 }] })).to.deep.equal(['$.a[0].b: 1 != 2'])
   })
+  it('compares a Map by its entries in key order, so maps that hold different entries differ', () => {
+    expect(jsonEqual(new Map([['q1', 'a1'], ['q2', 'a2']]), new Map([['q2', 'a2'], ['q1', 'a1']]))).to.equal(true)
+    expect(jsonDiff(new Map([['q1', 'a1']]), new Map([['q1', 'other']]))).to.deep.equal(['$[0][1]: "a1" != "other"'])
+    expect(jsonDiff({ m: new Map([['q1', 'a1']]) }, { m: new Map() })).to.deep.equal(['$.m: length 1 != 0'])
+  })
   it('compares an array with an object and null with an object as different types', () => {
     expect(jsonDiff([], {})).to.deep.equal(['$: type array != object'])
     expect(jsonDiff(null, {})).to.deep.equal(['$: type null != object'])

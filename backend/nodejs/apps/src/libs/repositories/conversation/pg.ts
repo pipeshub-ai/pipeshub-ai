@@ -77,6 +77,7 @@ import type {
   SessionDeletionDto,
   UserSessionDto,
 } from './types';
+import { MAX_ANSWER_LOOKUP } from './types';
 import type { StoredMessage } from './pg-rows';
 import type { Importable, ImportStats, NeutralDoc } from '../import';
 import { importConversationDocs } from './pg-import';
@@ -412,9 +413,10 @@ const harnessParams = (
 
 /**
  * Deployment-wide sweeps (erasure requests, the backfill's scan of every org) as the jobs role, whose row policy admits
- * every org; every statement names `org_id` where it means one org.
+ * every org; every statement names `org_id` where it means one org. Only for reads that must see every organisation:
+ * a read for one organisation opens that organisation's unit.
  */
-function jobsRead<T>(
+function jobsReadAcrossOrgs<T>(
   reason: string,
   fn: (k: PgKernelTx) => Promise<T>,
 ): Promise<T> {
@@ -1823,6 +1825,51 @@ export class PgConversationRepository
     });
   }
 
+  async findLatestQuestionBefore(
+    sessionId: string,
+    orgId: string,
+    at: Date,
+  ): Promise<string | null> {
+    const sid = oidOf(sessionId);
+    if (!sid) return null;
+    return inUnit(undefined, { write: false }, async (k) => {
+      assertOrg(k, orgId);
+      const { rows } = await k.query<{ id: string }>(
+        `/* pipeshub:conversation.latest_question_before */ SELECT m.id FROM conversation.chat_messages m
+          WHERE m.org_id = $1 AND m.session_id = $2::text AND m.message_type = 'user_query' AND m.created_at <= $3
+          ORDER BY m.created_at DESC, m.seq DESC LIMIT 1`,
+        [k.orgId, sid, at],
+      );
+      return rows[0]?.id ?? null;
+    });
+  }
+
+  async findAnswers(
+    sessionId: string,
+    orgId: string,
+    questionIds: string[],
+  ): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    const sid = oidOf(sessionId);
+    const ids = oidsOf(questionIds.slice(0, MAX_ANSWER_LOOKUP));
+    if (!sid || ids.length === 0) return out;
+    return inUnit(undefined, { write: false }, async (k) => {
+      assertOrg(k, orgId);
+      const { rows } = await k.query<{ question: string; answer: string }>(
+        `/* pipeshub:conversation.find_answers */ SELECT q.id AS question, n.id AS answer FROM conversation.chat_messages q
+          CROSS JOIN LATERAL (SELECT a.id, a.message_type FROM conversation.chat_messages a
+            WHERE a.org_id = q.org_id AND a.session_id = q.session_id AND a.seq > q.seq
+              AND a.message_type IN ('user_query', 'bot_response')
+            ORDER BY a.seq LIMIT 1) n
+          WHERE q.org_id = $1 AND q.session_id = $2::text AND q.id = ANY($3::text[]) AND q.message_type = 'user_query'
+            AND n.message_type = 'bot_response'`,
+        [k.orgId, sid, ids],
+      );
+      for (const r of rows) out.set(r.question, r.answer);
+      return out;
+    });
+  }
+
   async listAttachmentsAndCitedRecords(
     sessionId: string,
   ): Promise<AttachmentsAndCitedRecords[]> {
@@ -2075,7 +2122,7 @@ export class PgConversationRepository
   ): Promise<ErasureRequestDto[]> {
     if (limit <= 0) return [];
     const afterId = after !== null ? (oidOf(after.sessionId) ?? null) : null;
-    return jobsRead('conversation-erasure-requests', async (k) => {
+    return jobsReadAcrossOrgs('conversation-erasure-requests', async (k) => {
       const { rows } = await k.query<{
         org_id: string;
         id: string;
@@ -2109,7 +2156,7 @@ export class PgConversationRepository
   ): Promise<SessionDeletionDto[]> {
     if (limit <= 0 || (orgId !== null && !oidOf(orgId))) return [];
     const afterId = after !== null ? (oidOf(after) ?? null) : null;
-    return jobsRead('conversation-backfill', async (k) => {
+    return jobsReadAcrossOrgs('conversation-backfill', async (k) => {
       const { rows } = await k.query<DeletionSqlRow>(
         fill(DELETION_STATES, {
           WHERE:

@@ -1,3 +1,4 @@
+import { EDITION_SCHEMA_REQUIREMENTS } from '../../edition';
 import { Logger } from '../services/logger.service';
 import {
   PgRuntime,
@@ -55,6 +56,8 @@ export function schemaRequirements(): SchemaRequirements {
   const keep = fallbackList();
   const onPg = (name: string): boolean => !keep.has(name);
   return {
+    // an edition's own branches; listed first, so it can never loosen a shipped one
+    ...EDITION_SCHEMA_REQUIREMENTS,
     platform: { requires: 1, code: 1 },
     ...(['document', 'project'].some(onPg)
       ? { content: { requires: CONTENT_EPOCH, code: CONTENT_EPOCH } }

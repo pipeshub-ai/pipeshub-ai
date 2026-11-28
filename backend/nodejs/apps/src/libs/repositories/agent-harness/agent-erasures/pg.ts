@@ -6,7 +6,7 @@ import { orgOrJobsUnit } from '../pg-documents/org-or-jobs';
 import {
   decodeDoc,
   docParam,
-  jobsUnit,
+  jobsUnitAcrossOrgs,
   rowRegion,
   type PgKernelTx,
 } from '../pg-documents/pg';
@@ -90,7 +90,7 @@ export class PgAgentErasureQueue implements AgentErasureQueue {
   }
 
   due(now: number, limit: number): Promise<PendingAgentErasure[]> {
-    return jobsUnit(REASON, { write: false }, async (k) => {
+    return jobsUnitAcrossOrgs(REASON, { write: false }, async (k) => {
       const { rows } = await k.query<{ doc: unknown }>(
         `/* pipeshub:harness.agent_erasures_due */ SELECT doc FROM harness.agent_erasures
           WHERE next_attempt_at_ms <= $1 ORDER BY next_attempt_at_ms, org_id, agent_key LIMIT $2`,

@@ -22,7 +22,7 @@ import type {
 import type { StoreTx } from '../../../../modules/control-plane/ports/store-tx';
 import { policyWritten } from '../../../../modules/control-plane/ports/policy-write-observers';
 import {
-  jobsUnit,
+  jobsUnitAcrossOrgs,
   rowRegion,
   type PgKernelTx,
 } from '../../agent-harness/pg-documents/pg';
@@ -200,7 +200,7 @@ export class PgPolicyStore
   async *orgLayers(): AsyncIterable<{ orgId: string; layer: PolicyLayer }> {
     let after = '';
     for (;;) {
-      const rows = await jobsUnit(
+      const rows = await jobsUnitAcrossOrgs(
         'control-plane-org-layers',
         { write: false },
         async (k) =>

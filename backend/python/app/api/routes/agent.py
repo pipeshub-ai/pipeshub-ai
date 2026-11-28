@@ -64,6 +64,7 @@ from app.agents.versions import (
     definition_digest,
     pinned_agent,
 )
+from app.api.middlewares.admin_gate import require_admin_caller
 from app.api.middlewares.auth import (
     connection_limit,
     is_request_admin,
@@ -3541,9 +3542,15 @@ async def get_agent_internal(request: Request, agent_id: str) -> JSONResponse:
         raise _route_failure(request, e, "load this agent") from e
 
 
-@router.get("/web-search-usage/{provider}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
+# Admins only: these answer "which agents still use this?" before an admin deletes a
+# web search provider or a model, and they list every agent in the org by name and
+# creator, private ones included. A member must not learn about agents they can't open.
+@router.get(
+    "/web-search-usage/{provider}",
+    dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ)), Depends(require_admin_caller)],
+)
 async def get_web_search_provider_usage(request: Request, provider: str) -> JSONResponse:
-    """Return agents in the org that use a specific web search provider."""
+    """Return agents in the org that use a specific web search provider. Admins only."""
     try:
         services = await get_services(request)
         user_context = _get_user_context(request)
@@ -3570,9 +3577,12 @@ async def get_web_search_provider_usage(request: Request, provider: str) -> JSON
         raise _route_failure(request, e, "check where this web search provider is used") from e
 
 
-@router.get("/model-usage/{model_key}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
+@router.get(
+    "/model-usage/{model_key}",
+    dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ)), Depends(require_admin_caller)],
+)
 async def get_model_usage(request: Request, model_key: str) -> JSONResponse:
-    """Return agents in the org that use a specific AI model."""
+    """Return agents in the org that use a specific AI model. Admins only."""
     try:
         services = await get_services(request)
         user_context = _get_user_context(request)

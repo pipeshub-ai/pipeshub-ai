@@ -2,6 +2,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import {
+  ADMIN,
   MEMBER,
   ORG_A,
   Harness,
@@ -276,10 +277,10 @@ describe('Agent routes that proxy to the AI service: dot segments, padded or not
     const recordId = '5f0c7e2a-3b9d-4c1e-8a7f-6d2b0e9c4a13'
     h.backend.on('DELETE', `/api/v1/chat/attachments/${recordId}`, { status: 204 })
     h.backend.on('GET', '/api/v1/agent/web-search-usage/tavily', { status: 200, body: { success: true, agents: [] } })
-    const token = sessionToken(h, member)
 
-    const removed = await rawCall(h, 'DELETE', `/api/v1/agents/${AGENT_KEY}/conversations/attachments/${recordId}`, token)
-    const usage = await rawCall(h, 'GET', '/api/v1/agents/web-search-usage/Tavily', token)
+    const removed = await rawCall(h, 'DELETE', `/api/v1/agents/${AGENT_KEY}/conversations/attachments/${recordId}`, sessionToken(h, member))
+    // The usage lookup lists every agent in the org, so only an admin may read it.
+    const usage = await rawCall(h, 'GET', '/api/v1/agents/web-search-usage/Tavily', sessionToken(h, ADMIN))
 
     expect(removed.status).to.equal(204)
     expect(usage.status).to.equal(200)
@@ -287,5 +288,18 @@ describe('Agent routes that proxy to the AI service: dot segments, padded or not
       `DELETE /api/v1/chat/attachments/${recordId}`,
       'GET /api/v1/agent/web-search-usage/tavily',
     ])
+  })
+
+  it('refuses the usage lookups to a member with a 403 and makes no upstream call', async () => {
+    h.backend.on('GET', '/api/v1/agent/web-search-usage/tavily', { status: 200, body: { success: true, agents: [] } })
+    h.backend.on('GET', '/api/v1/agent/model-usage/mk-1', { status: 200, body: { success: true, agents: [] } })
+    const token = sessionToken(h, member)
+
+    const webSearch = await rawCall(h, 'GET', '/api/v1/agents/web-search-usage/Tavily', token)
+    const model = await rawCall(h, 'GET', '/api/v1/agents/model-usage/mk-1', token)
+
+    expect(webSearch.status).to.equal(403)
+    expect(model.status).to.equal(403)
+    expect(h.backend.calls).to.deep.equal([])
   })
 })
