@@ -645,7 +645,13 @@ config:
   governorIndexLightWorkingSetGb: ""  # (0.02) RAM assumed per in-flight light record
   governorHeavyParseWorkingSetGb: ""  # (1.5) RAM assumed per in-flight heavy parse
   governorBaselineMemoryMb: ""        # process baseline excluded from pressure
-  parsePoolWorkers: ""  # (derived from the CPU limit) worker processes for large text, code and CSV parses
+  # Worker processes for PDF page layout, Excel, text, code and CSV parses; a PDF
+  # worker needs ~1.25GiB plus the file size. Empty: half the heavy-parse ceiling,
+  # at most 4. PARSE_LANES=on sizes it from the lane plan instead, and
+  # PARSE_ADMISSION=classes from the capacity plan, which then ignores this value.
+  # A set value is capped at the ceiling. 0 starts no pool: PDF layout and CSV run
+  # in a thread, large text and code inline, and each Excel load in its own process.
+  parsePoolWorkers: ""
   embeddingServerMaxConcurrency: ""  # (derived) bundled embedding server encode slots
   embeddingServerQueryReservedSlots: ""  # (1) encode slots kept for search queries
   embeddingBatchConcurrency: ""  # (derived) embedding requests in flight per batch
