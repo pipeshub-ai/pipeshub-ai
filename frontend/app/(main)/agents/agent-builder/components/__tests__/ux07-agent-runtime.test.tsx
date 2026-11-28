@@ -186,6 +186,22 @@ describe('UX-07: the agent card groups how the agent runs', () => {
     expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
   });
 
+  it('ADR-SCH-03 D4: a schedule whose next run was skipped says so', async () => {
+    listed = [schedule({ skipNextAt: '2026-11-09T08:00:00.000Z' })];
+    render(<Theme><AgentSchedules /></Theme>);
+    expect(await screen.findByText('Next run skipped')).toBeTruthy();
+  });
+
+  it('ADR-SCH-02 D1: an org on classic chat with Labs on gets the part too, with nothing said paused', async () => {
+    useFeatureFlagsStore.setState({
+      flags: { ENABLE_SCHEDULED_RUNS: true },
+      agentHarness: { useHarness: false, harnessMajor: 2, reason: 'org_disabled', resumeInFlightRuns: false, harnessOn: false },
+    });
+    render(<Theme><AgentSchedules /></Theme>);
+    expect(await screen.findByRole('list', { name: 'Schedules' })).toBeTruthy();
+    expect(screen.queryByTestId('agent-schedules-paused')).toBeNull();
+  });
+
   it('kill switch + Labs on: the part stays, lists the schedules and says they are paused (ADR-OPS-08)', async () => {
     useFeatureFlagsStore.setState({
       flags: { ENABLE_SCHEDULED_RUNS: true },

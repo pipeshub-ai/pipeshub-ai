@@ -154,3 +154,17 @@ describe('NotificationRow — a chat shared with you, in every language', () => 
     }
   });
 });
+
+describe('NotificationRow — a classic scheduled run (ADR-SCH-02)', () => {
+  it('links to the conversation its run started, with no run id in the payload', () => {
+    const { container } = renderIn('en-US', {
+      type: 'AGENT_SCHEDULE_RUN_ENDED',
+      title: 'Your schedule ran',
+      message: '"Joke" finished.',
+      redirectLink: '/chat/?conversationId=c9',
+      payload: { scheduleId: 's1', runner: 'classic', conversationId: 'c9' },
+    });
+    const links = [...container.querySelectorAll('a')].map((a) => a.getAttribute('href'));
+    expect(links).toContain('/chat/?conversationId=c9');
+  });
+});

@@ -166,6 +166,23 @@ describe('P8a schedule routes (RT)', () => {
     expect((await call('DELETE', `${SCHEDULES_PREFIX}/${id}`)).status).to.equal(204);
   });
 
+  it('ADR-SCH-02 D1: with the org flag off a route answers not found before it reads the body; delete still works', async () => {
+    const id = (await call('POST', SCHEDULES_PREFIX, BODY)).json.schedule.id as string;
+    setting.on = false;
+    for (const [method, path, body] of [
+      ['POST', SCHEDULES_PREFIX, {}],
+      ['POST', SCHEDULES_PREFIX, BODY],
+      ['GET', `${SCHEDULES_PREFIX}?limit=nope`, undefined],
+      ['GET', `${SCHEDULES_PREFIX}/${id}/firings`, undefined],
+      ['POST', `${SCHEDULES_PREFIX}/${id}/pause`, undefined],
+      ['PUT', `${SCHEDULES_PREFIX}/${id}/agent-version`, { agentVersion: 'nope' }],
+    ] as const) {
+      const off = await call(method, path, body);
+      expect([off.status, off.json.error.code], `${method} ${path}`).to.deep.equal([404, 'HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED']);
+    }
+    expect((await call('DELETE', `${SCHEDULES_PREFIX}/${id}`)).status).to.equal(204);
+  });
+
   it('RT-3: run now needs an Idempotency-Key; the same key answers the same firing', async () => {
     const id = (await call('POST', SCHEDULES_PREFIX, BODY)).json.schedule.id as string;
     expect((await call('POST', `${SCHEDULES_PREFIX}/${id}/run`)).status).to.equal(400);

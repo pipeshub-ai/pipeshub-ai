@@ -9715,6 +9715,178 @@
    "options": {
     "class": "Object",
     "actors": "fake:schedules.actors",
+    "engines": {
+     "class": "CodingEngineService",
+     "eligibility": {
+      "class": "EngineEligibility",
+      "options": "Object"
+     },
+     "options": {
+      "class": "Object",
+      "access": "ModelAccessService",
+      "availability": "HttpEngineAvailability",
+      "ceilings": "Object",
+      "engineWorkers": "Object",
+      "logger": "fake:logger",
+      "preferences": "fake:codingEnginePreferences",
+      "transaction": "fake:controlPlane"
+     },
+     "releases": [
+      {
+       "class": "Object",
+       "accountKinds": [
+        "string",
+        "string",
+        "string",
+        "string"
+       ],
+       "approvals": "Object",
+       "egress": "string",
+       "engine": "Object",
+       "isolationMin": "string",
+       "limits": "Object",
+       "mode": "string",
+       "reasoningEffort": "null",
+       "skills": "null",
+       "subAgents": "Object",
+       "tools": "Object"
+      },
+      {
+       "class": "Object",
+       "accountKinds": [
+        "string",
+        "string",
+        "string",
+        "string"
+       ],
+       "approvals": "Object",
+       "egress": "string",
+       "engine": "Object",
+       "isolationMin": "string",
+       "limits": "Object",
+       "mode": "string",
+       "reasoningEffort": "null",
+       "skills": "null",
+       "subAgents": "Object",
+       "tools": "Object"
+      },
+      {
+       "class": "Object",
+       "accountKinds": [
+        "string",
+        "string",
+        "string",
+        "string"
+       ],
+       "approvals": "Object",
+       "egress": "string",
+       "engine": "Object",
+       "isolationMin": "string",
+       "limits": "Object",
+       "mode": "string",
+       "reasoningEffort": "null",
+       "skills": "null",
+       "subAgents": "Object",
+       "tools": "Object"
+      },
+      {
+       "class": "Object",
+       "accountKinds": [
+        "string",
+        "string",
+        "string",
+        "string"
+       ],
+       "approvals": "Object",
+       "egress": "string",
+       "engine": "Object",
+       "isolationMin": "string",
+       "limits": "Object",
+       "mode": "string",
+       "reasoningEffort": "null",
+       "skills": "null",
+       "subAgents": "Object",
+       "tools": "Object"
+      },
+      {
+       "class": "Object",
+       "accountKinds": [
+        "string",
+        "string",
+        "string",
+        "string"
+       ],
+       "approvals": "Object",
+       "egress": "string",
+       "engine": "Object",
+       "isolationMin": "string",
+       "limits": "Object",
+       "mode": "string",
+       "reasoningEffort": "null",
+       "skills": "null",
+       "subAgents": "Object",
+       "tools": "Object"
+      },
+      {
+       "class": "Object",
+       "accountKinds": [
+        "string",
+        "string",
+        "string",
+        "string"
+       ],
+       "approvals": "Object",
+       "egress": "string",
+       "engine": "Object",
+       "isolationMin": "string",
+       "limits": "Object",
+       "mode": "string",
+       "reasoningEffort": "null",
+       "skills": "null",
+       "subAgents": "Object",
+       "tools": "Object"
+      },
+      {
+       "class": "Object",
+       "accountKinds": [
+        "string",
+        "string",
+        "string",
+        "string"
+       ],
+       "approvals": "Object",
+       "egress": "string",
+       "engine": "Object",
+       "isolationMin": "string",
+       "limits": "Object",
+       "mode": "string",
+       "reasoningEffort": "null",
+       "skills": "null",
+       "subAgents": "Object",
+       "tools": "Object"
+      },
+      {
+       "class": "Object",
+       "accountKinds": [
+        "string",
+        "string",
+        "string",
+        "string"
+       ],
+       "approvals": "Object",
+       "egress": "string",
+       "engine": "Object",
+       "isolationMin": "string",
+       "limits": "Object",
+       "mode": "string",
+       "reasoningEffort": "null",
+       "skills": "null",
+       "subAgents": "Object",
+       "tools": "Object"
+      }
+     ],
+     "withoutGvisor": "boolean"
+    },
     "logger": "fake:logger",
     "marks": {
      "class": "JournalScheduleMarks",
@@ -9912,34 +10084,37 @@
      },
      "agents": "null",
      "budgets": "null",
+     "conversations": {
+      "class": "RepositoryChatConversations",
+      "repository": "function"
+     },
      "firer": {
       "class": "ScheduleFirer",
       "actors": "fake:schedules.actors",
-      "admission": "RunAdmissionScheduledRuns",
       "connectorEvents": "BrokerTriggerSource",
-      "digests": "RunTimelineService",
       "harnessOn": "function",
       "logger": "fake:logger",
       "newId": "function",
       "notifier": "InboxAwareScheduleNotifier",
       "records": "fake:recordAccess",
-      "runs": "MongoRunStatusReader",
+      "runners": "Object",
       "setting": "fake:schedules.setting",
       "settings": "Object",
       "store": "fake:schedules.store",
       "ticking": "null",
       "timer": "null",
-      "waitNotices": "undefined"
+      "waitNotices": "undefined",
+      "watching": "Set"
      },
      "logger": "fake:logger",
      "newId": "function",
      "newSecret": "function",
      "newToken": "function",
      "reach": "null",
-     "rollout": "fake:rollout",
      "setting": "fake:schedules.setting",
      "slackBots": "undefined",
      "store": "fake:schedules.store",
+     "storeReady": "function",
      "transaction": "fake:controlPlane",
      "triggers": {
       "class": "Object",
@@ -16523,107 +16698,6 @@
   "AgentHarnessScheduleFirer": {
    "class": "ScheduleFirer",
    "actors": "fake:schedules.actors",
-   "admission": {
-    "class": "RunAdmissionScheduledRuns",
-    "admissions": {
-     "class": "RunAdmissionService",
-     "clock": {
-      "class": "Object",
-      "now": "function"
-     },
-     "codingEngine": {
-      "class": "CodingEngineService",
-      "eligibility": "EngineEligibility",
-      "options": "Object",
-      "releases": [
-       "Object",
-       "Object",
-       "Object",
-       "Object",
-       "Object",
-       "Object",
-       "Object",
-       "Object"
-      ],
-      "withoutGvisor": "boolean"
-     },
-     "collaboratorTurns": "fake:collaboratorTurns",
-     "gate": {
-      "class": "RolloutGate",
-      "routing": "OrgScopedRoutingDecider"
-     },
-     "inline": {
-      "class": "HttpInlineClaimHint",
-      "credential": "function",
-      "logger": "fake:logger",
-      "queryService": "function",
-      "timeoutMs": "number"
-     },
-     "log": {
-      "class": "AdmissionLog",
-      "logger": "fake:logger",
-      "tracer": "Object"
-     },
-     "logger": "fake:logger",
-     "newId": "function",
-     "placement": "undefined",
-     "policy": {
-      "class": "AdmissionPipeline",
-      "steps": [
-       "HarnessAccessStep",
-       "OperatorStopStep",
-       "AgentAuthorizer",
-       "Object",
-       "EngineProfileStep",
-       "ModelAccessStep",
-       "ModelGroupStep",
-       "ExecutorStep",
-       "AgentCodeStep",
-       "RunSurfaceStep",
-       "ReleasePinStep",
-       "DeliverablePinStep",
-       "ModelFallbackStep",
-       "OutputLocaleStep",
-       "KeywordSearchBudgetStep",
-       "Object",
-       "RepositoryStep",
-       "PolicyPinning"
-      ]
-     },
-     "questionAnswered": "function",
-     "references": "fake:recordAccess",
-     "repin": "function",
-     "repositories": {
-      "class": "SessionRepositoryService",
-      "options": "Object"
-     },
-     "roles": "fake:roles",
-     "store": {
-      "class": "MongoRunAdmissionStore",
-      "conversations": "fake:conversations",
-      "dispatches": "MongoDispatchOutbox",
-      "history": "fake:history",
-      "historyContent": "RunHistoryContent",
-      "importContent": "SessionImportContent",
-      "inputs": "RunInputSeal",
-      "journal": "AuditedJournalStore",
-      "journals": "JournalService",
-      "logger": "fake:logger",
-      "quotaLedger": "MongoAdmissionQuotaLedger",
-      "quotaMetrics": "Object",
-      "quotas": "Object",
-      "runKeys": "HmacRunKeyDigest",
-      "sessions": "fake:sessions",
-      "time": "Object",
-      "transactionsAvailable": "boolean"
-     },
-     "turnLabels": {
-      "class": "SharedCitationService",
-      "logger": "fake:logger",
-      "records": "fake:recordAccess"
-     }
-    }
-   },
    "connectorEvents": {
     "class": "BrokerTriggerSource",
     "clock": "function",
@@ -16633,228 +16707,6 @@
     "logger": "fake:logger",
     "starting": "null",
     "streams": "function"
-   },
-   "digests": {
-    "class": "RunTimelineService",
-    "journal": {
-     "class": "AuditedJournalStore",
-     "audit": {
-      "class": "MongoAuditChainStore",
-      "announced": "WeakMap",
-      "logger": "fake:logger"
-     },
-     "inner": {
-      "class": "SnapshotRecordingJournalStore",
-      "inner": "SealedJournalStore",
-      "region": "string",
-      "snapshots": "MongoSandboxSnapshotIndex"
-     }
-    },
-    "journals": {
-     "class": "JournalService",
-     "cipher": {
-      "class": "EnvelopeCipher",
-      "keys": "OrgDataKeys"
-     },
-     "inlineMaxBytes": "number",
-     "payloads": "fake:payloads",
-     "recorders": []
-    },
-    "ledger": {
-     "class": "MongoBudgetLedger",
-     "costs": "null",
-     "time": {
-      "class": "Object",
-      "expr": "function",
-      "read": "function"
-     }
-    },
-    "runs": {
-     "class": "SessionRunService",
-     "clock": "function",
-     "compacts": {
-      "class": "MongoRunAdmissionStore",
-      "conversations": "fake:conversations",
-      "dispatches": "MongoDispatchOutbox",
-      "history": "fake:history",
-      "historyContent": "RunHistoryContent",
-      "importContent": "SessionImportContent",
-      "inputs": "RunInputSeal",
-      "journal": "AuditedJournalStore",
-      "journals": "JournalService",
-      "logger": "fake:logger",
-      "quotaLedger": "MongoAdmissionQuotaLedger",
-      "quotaMetrics": "Object",
-      "quotas": "Object",
-      "runKeys": "HmacRunKeyDigest",
-      "sessions": "fake:sessions",
-      "time": "Object",
-      "transactionsAvailable": "boolean"
-     },
-     "erasures": {
-      "class": "MongoErasureJobStore",
-      "time": "Object"
-     },
-     "executions": {
-      "class": "ExecutionService",
-      "asksListeners": [
-       "function"
-      ],
-      "budgets": "MongoBudgetLedger",
-      "capabilities": "HarnessCapabilityService",
-      "children": "MongoChildRunStore",
-      "clock": "Object",
-      "endedListeners": [
-       "function",
-       "function"
-      ],
-      "engineEligibility": "Object",
-      "engineImages": "HttpEngineAvailability",
-      "floor": "ClaimFloor",
-      "grantableAskListeners": [
-       "function"
-      ],
-      "guardedFeatures": [
-       "string",
-       "string",
-       "string",
-       "string",
-       "string",
-       "string",
-       "string"
-      ],
-      "history": "RunHistoryContent",
-      "inputs": "RunInputSeal",
-      "journal": "AuditedJournalStore",
-      "journals": "JournalService",
-      "labelledListeners": [
-       "function"
-      ],
-      "labelledRuns": "Set",
-      "logger": "fake:logger",
-      "metrics": "Object",
-      "movedListeners": [
-       "function"
-      ],
-      "resolveSpec": "function",
-      "runJournal": "RunJournalReader",
-      "store": "MongoExecutionStore",
-      "sweptTranscripts": "Object",
-      "unlabelledListeners": [
-       "function"
-      ],
-      "upcasters": "Object",
-      "waitingListeners": [],
-      "wakeup": "fake:wakeup",
-      "workerFeatures": "WorkerFeatureAvailability",
-      "workingListeners": [
-       "function"
-      ]
-     },
-     "sessions": "fake:sessions"
-    },
-    "spend": {
-     "class": "RunSpendReader",
-     "ledger": {
-      "class": "MongoBudgetLedger",
-      "costs": "null",
-      "time": "Object"
-     }
-    },
-    "usageSource": {
-     "class": "Object",
-     "access": {
-      "class": "SessionRunService",
-      "clock": "function",
-      "compacts": "MongoRunAdmissionStore",
-      "erasures": "MongoErasureJobStore",
-      "executions": "ExecutionService",
-      "sessions": "fake:sessions"
-     },
-     "runs": {
-      "class": "MongoSessionRunLookup"
-     }
-    },
-    "workspaces": {
-     "class": "WorkspaceService",
-     "cipher": {
-      "class": "EnvelopeCipher",
-      "keys": "OrgDataKeys"
-     },
-     "keys": {
-      "class": "SessionWorkspaceKeys",
-      "cipher": "EnvelopeCipher",
-      "logger": "fake:logger",
-      "newKey": "function",
-      "newKeyId": "function",
-      "now": "function",
-      "store": "MongoWorkspaceKeyStore"
-     },
-     "logger": "fake:logger",
-     "now": "function",
-     "repository": {
-      "class": "MongoWorkspaceRepository"
-     },
-     "runs": {
-      "class": "ExecutionService",
-      "asksListeners": [
-       "function"
-      ],
-      "budgets": "MongoBudgetLedger",
-      "capabilities": "HarnessCapabilityService",
-      "children": "MongoChildRunStore",
-      "clock": "Object",
-      "endedListeners": [
-       "function",
-       "function"
-      ],
-      "engineEligibility": "Object",
-      "engineImages": "HttpEngineAvailability",
-      "floor": "ClaimFloor",
-      "grantableAskListeners": [
-       "function"
-      ],
-      "guardedFeatures": [
-       "string",
-       "string",
-       "string",
-       "string",
-       "string",
-       "string",
-       "string"
-      ],
-      "history": "RunHistoryContent",
-      "inputs": "RunInputSeal",
-      "journal": "AuditedJournalStore",
-      "journals": "JournalService",
-      "labelledListeners": [
-       "function"
-      ],
-      "labelledRuns": "Set",
-      "logger": "fake:logger",
-      "metrics": "Object",
-      "movedListeners": [
-       "function"
-      ],
-      "resolveSpec": "function",
-      "runJournal": "RunJournalReader",
-      "store": "MongoExecutionStore",
-      "sweptTranscripts": "Object",
-      "unlabelledListeners": [
-       "function"
-      ],
-      "upcasters": "Object",
-      "waitingListeners": [],
-      "wakeup": "fake:wakeup",
-      "workerFeatures": "WorkerFeatureAvailability",
-      "workingListeners": [
-       "function"
-      ]
-     },
-     "writers": {
-      "class": "MongoWorkspaceWriterStore"
-     }
-    }
    },
    "harnessOn": "function",
    "logger": "fake:logger",
@@ -16868,8 +16720,29 @@
     }
    },
    "records": "fake:recordAccess",
-   "runs": {
-    "class": "MongoRunStatusReader"
+   "runners": {
+    "class": "Object",
+    "harness": {
+     "class": "HarnessScheduleRunner",
+     "admission": {
+      "class": "RunAdmissionScheduledRuns",
+      "admissions": "RunAdmissionService"
+     },
+     "digests": {
+      "class": "RunTimelineService",
+      "journal": "AuditedJournalStore",
+      "journals": "JournalService",
+      "ledger": "MongoBudgetLedger",
+      "runs": "SessionRunService",
+      "spend": "RunSpendReader",
+      "usageSource": "Object",
+      "workspaces": "WorkspaceService"
+     },
+     "kind": "string",
+     "runs": {
+      "class": "MongoRunStatusReader"
+     }
+    }
    },
    "setting": "fake:schedules.setting",
    "settings": {
@@ -16881,7 +16754,10 @@
    "store": "fake:schedules.store",
    "ticking": "null",
    "timer": "null",
-   "waitNotices": "undefined"
+   "waitNotices": "undefined",
+   "watching": {
+    "class": "Set"
+   }
   },
   "AgentHarnessSchedules": {
    "class": "ScheduleService",
@@ -16893,32 +16769,13 @@
    },
    "agents": "null",
    "budgets": "null",
+   "conversations": {
+    "class": "RepositoryChatConversations",
+    "repository": "function"
+   },
    "firer": {
     "class": "ScheduleFirer",
     "actors": "fake:schedules.actors",
-    "admission": {
-     "class": "RunAdmissionScheduledRuns",
-     "admissions": {
-      "class": "RunAdmissionService",
-      "clock": "Object",
-      "codingEngine": "CodingEngineService",
-      "collaboratorTurns": "fake:collaboratorTurns",
-      "gate": "RolloutGate",
-      "inline": "HttpInlineClaimHint",
-      "log": "AdmissionLog",
-      "logger": "fake:logger",
-      "newId": "function",
-      "placement": "undefined",
-      "policy": "AdmissionPipeline",
-      "questionAnswered": "function",
-      "references": "fake:recordAccess",
-      "repin": "function",
-      "repositories": "SessionRepositoryService",
-      "roles": "fake:roles",
-      "store": "MongoRunAdmissionStore",
-      "turnLabels": "SharedCitationService"
-     }
-    },
     "connectorEvents": {
      "class": "BrokerTriggerSource",
      "clock": "function",
@@ -16928,53 +16785,6 @@
      "logger": "fake:logger",
      "starting": "null",
      "streams": "function"
-    },
-    "digests": {
-     "class": "RunTimelineService",
-     "journal": {
-      "class": "AuditedJournalStore",
-      "audit": "MongoAuditChainStore",
-      "inner": "SnapshotRecordingJournalStore"
-     },
-     "journals": {
-      "class": "JournalService",
-      "cipher": "EnvelopeCipher",
-      "inlineMaxBytes": "number",
-      "payloads": "fake:payloads",
-      "recorders": []
-     },
-     "ledger": {
-      "class": "MongoBudgetLedger",
-      "costs": "null",
-      "time": "Object"
-     },
-     "runs": {
-      "class": "SessionRunService",
-      "clock": "function",
-      "compacts": "MongoRunAdmissionStore",
-      "erasures": "MongoErasureJobStore",
-      "executions": "ExecutionService",
-      "sessions": "fake:sessions"
-     },
-     "spend": {
-      "class": "RunSpendReader",
-      "ledger": "MongoBudgetLedger"
-     },
-     "usageSource": {
-      "class": "Object",
-      "access": "SessionRunService",
-      "runs": "MongoSessionRunLookup"
-     },
-     "workspaces": {
-      "class": "WorkspaceService",
-      "cipher": "EnvelopeCipher",
-      "keys": "SessionWorkspaceKeys",
-      "logger": "fake:logger",
-      "now": "function",
-      "repository": "MongoWorkspaceRepository",
-      "runs": "ExecutionService",
-      "writers": "MongoWorkspaceWriterStore"
-     }
     },
     "harnessOn": "function",
     "logger": "fake:logger",
@@ -16988,8 +16798,15 @@
      }
     },
     "records": "fake:recordAccess",
-    "runs": {
-     "class": "MongoRunStatusReader"
+    "runners": {
+     "class": "Object",
+     "harness": {
+      "class": "HarnessScheduleRunner",
+      "admission": "RunAdmissionScheduledRuns",
+      "digests": "RunTimelineService",
+      "kind": "string",
+      "runs": "MongoRunStatusReader"
+     }
     },
     "setting": "fake:schedules.setting",
     "settings": {
@@ -17001,17 +16818,20 @@
     "store": "fake:schedules.store",
     "ticking": "null",
     "timer": "null",
-    "waitNotices": "undefined"
+    "waitNotices": "undefined",
+    "watching": {
+     "class": "Set"
+    }
    },
    "logger": "fake:logger",
    "newId": "function",
    "newSecret": "function",
    "newToken": "function",
    "reach": "null",
-   "rollout": "fake:rollout",
    "setting": "fake:schedules.setting",
    "slackBots": "undefined",
    "store": "fake:schedules.store",
+   "storeReady": "function",
    "transaction": "fake:controlPlane",
    "triggers": {
     "class": "Object",

@@ -86,7 +86,7 @@ class Disclosure:
             META_TOOL_NAMES,
             lazy_tools_enabled,
             lazy_tools_scope,
-            make_lazy_tools_decider,
+            make_lazy_tools_planner,
             register_lazy_tool_meta_tools,
         )
 
@@ -96,7 +96,7 @@ class Disclosure:
             granted = [n for n in names if n not in self._withheld]
             if loop_kind != "orchestrator":
                 granted += [m for m in META_TOOL_NAMES if m not in granted and self._registry.has(m)]
-            decider = make_lazy_tools_decider(
+            planner = make_lazy_tools_planner(
                 apply=(
                     lazy_tools_enabled()
                     and loop_kind != "orchestrator"
@@ -107,8 +107,11 @@ class Disclosure:
                 uncounted_names=_uncounted(),
                 mode=self._chosen,
             )
-            granted, mode = decider(self._registry, granted)
+            granted, mode, on_demand_pins = planner(self._registry, granted)
             pinned = list(self._essential)
+            # Lazy only for an on-demand toolset (ADR-SCH-03 D8): the grant's other groups stay listed, except the
+            # MCP servers listed at first use, which are always behind the search (D-LAZY-4).
+            pinned += [g for g in on_demand_pins if not (self._lazy and g == MCP_PARENT)]
             if mode == "eager" and self._lazy and loop_kind != "orchestrator" and self._chosen != "eager":
                 # D-LAZY-4: an MCP server's tools reach the model only through search_tools/fetch_tools, whatever
                 # the count; every other tool of an eager grant stays listed, as its own pinned group.
@@ -192,7 +195,7 @@ def _listed_groups(registry: ToolRegistry, granted: list[str], *, exclude: set[s
     return [
         g.name
         for g in registry.toolsets()
-        if g.parent is None and g.name not in exclude and any(n in names for n in g.tool_names)
+        if g.parent is None and g.name not in exclude and not g.on_demand and any(n in names for n in g.tool_names)
     ]
 
 

@@ -9,6 +9,8 @@ Checks, on the stack's scripted model and through its public API:
 - Labs lists, answers and saves none of the harness's flags; a save naming one is a plain 400;
 - the effective flags answer no rollout and no harness surface;
 - the harness's public routes answer 404, as an unknown path does;
+- scheduling is not the harness's (ADR-SCH-02): Labs lists Scheduled runs, and the schedule routes are served and
+  answer 404 "not enabled for this organization" while that flag is off (its default);
 - the classic paths work: a default chat, a chat with the seeded agent, semantic search, a personal access token
   on the REST API, and PipesHub's own /mcp as an external MCP client calls it (initialize, tools/list,
   pipeshub_chat).
@@ -27,15 +29,18 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-HARNESS_LABS = ("ENABLE_AGENT_HARNESS", "ENABLE_SCHEDULED_RUNS", "ENABLE_KNOWLEDGE_PUBLICATIONS")
+HARNESS_LABS = ("ENABLE_AGENT_HARNESS", "ENABLE_KNOWLEDGE_PUBLICATIONS")
+SCHEDULES_LAB = "ENABLE_SCHEDULED_RUNS"
 HARNESS_ROUTES = (
     ("GET", "/api/v1/agent-harness/runs"),
     ("GET", "/api/v1/agent-harness/inbox"),
-    ("GET", "/api/v1/agent-harness/schedules"),
     ("GET", "/api/v1/agent-harness/model-accounts/access"),
     ("GET", "/api/v1/agent-harness/admin/dependencies"),
-    ("POST", "/api/v1/agent-harness/schedules"),
     ("POST", "/api/v1/conversations/runs"),
+)
+SCHEDULE_ROUTES = (
+    ("GET", "/api/v1/agent-harness/schedules"),
+    ("POST", "/api/v1/agent-harness/schedules"),
 )
 
 
@@ -81,6 +86,7 @@ def main() -> int:
     keys = {flag.get("key") for flag in available.get("flags") or []}
     out.check("Labs lists no harness flag", not keys & set(HARNESS_LABS), str(sorted(keys & set(HARNESS_LABS))))
     out.check("Labs still lists the platform's flags", "ENABLE_MCP" in keys)
+    out.check("Labs lists Scheduled runs (not the harness's)", SCHEDULES_LAB in keys)
     effective = api.ok("GET", "/api/v1/configurationManager/platform/feature-flags/effective") or {}
     flags = effective.get("featureFlags") or {}
     out.check("the effective flags answer no rollout", effective.get("agentHarness") is None)
@@ -98,6 +104,13 @@ def main() -> int:
         got = api.request(method, path, {} if method == "POST" else None)
         said = "not enabled on this install" in json.dumps(got.body) or not path.startswith("/api/v1/agent-harness/")
         out.check(f"{method} {path} is not served", got.status == 404 and said, f"{got.status} {str(got.body)[:80]!r}")
+
+    # Scheduling is served on every install; with the org's flag off (its default) it is not found, and says why.
+    for method, path in SCHEDULE_ROUTES:
+        got = api.request(method, path, {} if method == "POST" else None)
+        said = "not enabled for this organization" in json.dumps(got.body)
+        out.check(f"{method} {path} is served and off for the org", got.status == 404 and said,
+                  f"{got.status} {str(got.body)[:80]!r}")
 
     for label, base, mode in (("a default chat", "/api/v1/conversations", "internal_search"),
                               ("a chat with an agent", f"/api/v1/agents/{stack.seed['agentKey']}/conversations", "quick")):

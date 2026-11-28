@@ -144,11 +144,54 @@ export interface AgentSchedule {
   overlap?: OverlapPolicy;
   /** Absent: `DEFAULT_NOTIFY`. */
   notify?: NotifyChannel[];
-  /** Made in a chat on its person's approval (ADR-SCH-01 D3); absent: made on the Schedules page or the API. */
+  /**
+   * The chat it was made in (ADR-SCH-01 D3 on the harness; ADR-SCH-03 D3 on classic chat, the conversation only);
+   * absent: made on the Schedules page or the API.
+   */
   origin?: ScheduleOrigin;
+  /** Bumped by every change a person makes (ADR-SCH-03 D5); absent: 0, a schedule never changed since it was made. */
+  revision?: number;
+  /** The chat a person last changed it from (ADR-SCH-03 D3); absent: never changed from a chat. */
+  lastChangedFrom?: ScheduleChangedFrom;
+  /** The one slot its owner asked to skip (ADR-SCH-03 D4): the firer records it skipped instead of running it. */
+  skipNextAt?: number;
+  /**
+   * The coding engine its runs hand code tasks to: the one chosen in the chat it was made in (an engine kind or
+   * `none`). Each run opens a new chat, which would otherwise take its owner's default; checked at every firing as
+   * a new chat's choice is, so an engine since turned off falls back to the default. Absent: the owner's default.
+   */
+  codingEngine?: string;
   createdAt: number;
   updatedAt: number;
 }
+
+/** Where a person changed a schedule from (ADR-SCH-03 D3). */
+export interface ScheduleChangedFrom {
+  conversationId: string;
+  agentKey: string | null;
+  at: number;
+  /**
+   * The approved call that changed it, when a harness run did: a repeat of that call changes nothing again. An
+   * interaction id is unique only within its run (the loop's first approval is `ix.approve.t1.0` in every run), so
+   * a repeat is the same run and the same interaction.
+   */
+  interactionId?: string;
+  runId?: string;
+}
+
+/** A firing its owner asked to skip (ADR-SCH-03 D4). */
+export const SKIPPED_BY_OWNER = 'skipped_by_owner';
+
+export const scheduleRevision = (
+  schedule: Pick<AgentSchedule, 'revision'>,
+): number => schedule.revision ?? 0;
+
+/** The schedule changed since the caller read it (ADR-SCH-03 D5): read it again before changing it. */
+export const scheduleChanged = (): HarnessScheduleRefusedError =>
+  new HarnessScheduleRefusedError(
+    'SCHEDULE_CHANGED',
+    'The schedule changed since it was read. Read it again and ask about the change again',
+  );
 
 /**
  * What a deleted chat-made schedule leaves in its store, under its own id (ADR-SCH-01 D3): the approval that made it
@@ -163,11 +206,16 @@ export const scheduleApprovalUsed = (): HarnessScheduleRefusedError =>
     'The schedule this approval set up was deleted; it is not made again',
   );
 
-/** The chat turn and the approved call a schedule was made from. */
+/**
+ * The chat a schedule was made from. On the harness also the run and the approved call (ADR-SCH-01 D3), whose id the
+ * schedule's own derives from and which a tombstone keeps; on classic chat the conversation alone (ADR-SCH-03 D3).
+ */
 export interface ScheduleOrigin {
   conversationId: string;
-  runId: string;
-  interactionId: string;
+  runId?: string;
+  interactionId?: string;
+  /** The agent of the chat it was made in; absent: the assistant, or a schedule from before it was kept. */
+  agentKey?: string;
 }
 
 export type FiringKind = 'cron' | 'once' | 'manual' | 'event';
@@ -203,6 +251,38 @@ export interface ScheduleFiring {
   queuedBehind?: string;
   /** When the watch saw its run end and told its actor (TR-07): once per run. */
   watchEndedAt?: number;
+  /**
+   * Which runner started its run (ADR-SCH-02 D2) and that runner's reference to it; absent on a firing from before
+   * runners, which is the harness's and whose reference is `runId`.
+   */
+  runner?: ScheduleRunnerKind;
+  runRef?: string;
+  /** The schedule's cost cap was not applied: its run is a classic turn, which has no budget ledger (D6). */
+  costCapIgnored?: true;
+}
+
+/** The runner fields a settle writes: those of an admitted firing's run, none otherwise. */
+export function settledRun(
+  outcome: FiringOutcome,
+): Pick<ScheduleFiring, 'runner' | 'runRef' | 'costCapIgnored'> {
+  if (outcome.status !== 'admitted') return {};
+  return {
+    runner: outcome.runner,
+    runRef: outcome.runRef,
+    ...(outcome.costCapIgnored === true ? { costCapIgnored: true } : {}),
+  };
+}
+
+/** Who runs a firing (ADR-SCH-02 D2): a durable run of the agent harness, or the classic chat turn. */
+export type ScheduleRunnerKind = 'harness' | 'classic';
+
+/** The runner and reference of a firing's run; null until it was started. */
+export function firingRun(
+  firing: Pick<ScheduleFiring, 'runner' | 'runRef' | 'runId'>,
+): { runner: ScheduleRunnerKind; runRef: string } | null {
+  const runRef = firing.runRef ?? firing.runId;
+  if (runRef === null) return null;
+  return { runner: firing.runner ?? 'harness', runRef };
 }
 
 /** What a firing keeps of its event: references and sizes, never content. */
@@ -214,7 +294,16 @@ export interface FiringEvent {
 }
 
 export type FiringOutcome =
-  | { status: 'admitted'; runId: string; sessionId: string; watchUntil: number }
+  | {
+      status: 'admitted';
+      runner: ScheduleRunnerKind;
+      runRef: string;
+      /** The durable run's id; null for a classic turn, which is a conversation, not a run. */
+      runId: string | null;
+      sessionId: string;
+      watchUntil: number;
+      costCapIgnored?: true;
+    }
   | { status: 'refused'; reason: string }
   | { status: 'skipped'; reason: string };
 
@@ -820,8 +909,11 @@ const FIRING_DISPOSITIONS: Readonly<Record<string, FiringDisposition>> = {
   agent_forbidden: 'pause',
   forbidden: 'pause',
   narrowing: 'pause',
+  // Classic chat runs only an agent's latest published version: a schedule pinned to another waits for its owner.
+  agent_version_not_latest: 'pause',
   scheduled_runs_disabled: 'refuse',
   rollout_legacy: 'refuse',
+  runner_unavailable: 'refuse',
   template_missing: 'disable',
 };
 
@@ -843,3 +935,8 @@ export interface RunTrigger {
   slotKey: string;
   maxCostUsd?: number;
 }
+
+/** A schedule whose deletion leaves a tombstone: one an approved harness call made (ADR-SCH-01 D3). */
+export const leavesTombstone = (
+  schedule: Pick<AgentSchedule, 'origin'>,
+): boolean => schedule.origin?.interactionId !== undefined;

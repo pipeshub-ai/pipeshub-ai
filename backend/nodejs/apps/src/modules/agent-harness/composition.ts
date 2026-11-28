@@ -71,6 +71,7 @@ import { HistorySource } from './ports/history-source';
 import { AgentAccessPolicy } from './ports/agent-access';
 import {
   currentJournalCapability,
+  transactionsAvailable,
   JOURNAL_DETAIL,
   describeAgentHarnessReadiness,
   isAgentHarnessInfrastructureReady,
@@ -93,7 +94,10 @@ import {
   mongoBootMigration,
   type HarnessStoreMigration,
 } from '../../libs/repositories/agent-harness/journal-startup/mongo';
-import { migrateErasureStore } from '../../libs/repositories/agent-harness/migrations/mongo';
+import {
+  migrateErasureStore,
+  migrateScheduleStore,
+} from '../../libs/repositories/agent-harness/migrations/mongo';
 import { createJournalDurabilityProbe } from '../../libs/repositories/agent-harness/journal-durability-probe';
 import { DispatchCapabilityProbe } from './adapters/configuration/dispatch-capability-probe';
 import {
@@ -1343,9 +1347,6 @@ export function startAgentHarnessBackgroundServices(
   container
     .bind<RunSweeper>(AGENT_HARNESS_RUN_SWEEPER)
     .toConstantValue(sweeper);
-  if (container.isBound(AGENT_HARNESS_SCHEDULE_FIRER)) {
-    container.get<ScheduleFirer>(AGENT_HARNESS_SCHEDULE_FIRER).start();
-  }
   if (container.isBound(AGENT_HARNESS_DATA_KEYS)) {
     const journal = container.get<HarnessJournal>(AGENT_HARNESS_DATA_KEYS);
     sealRunInputsQuietly(journal.runInput, container.get<Logger>('Logger'));
@@ -1441,6 +1442,41 @@ export async function startSessionErasureServices(
     container
       .get<RetentionSweeper<StoreSession>>(AGENT_HARNESS_RETENTION_SWEEPER)
       .start();
+  }
+}
+
+/**
+ * Scheduling runs whether or not the harness is on (ADR-SCH-02 D1): the firer starts with the app on every install,
+ * after the indexes its exactly-once claim relies on (a firing's unique slot) are built here, since
+ * `prepareAgentHarnessStore` is skipped while the harness switch is off. A failed build leaves the firer stopped.
+ */
+export async function startScheduleServices(
+  container: Container,
+  logger: Pick<Logger, 'info' | 'error'>,
+  migrate: () => Promise<{ created: string[] }> = () =>
+    mongoBootMigration({ created: [], dropped: [] }, (db) =>
+      migrateScheduleStore(db()),
+    ),
+  storeReady: () => boolean = () => transactionsAvailable(),
+): Promise<void> {
+  if (!container.isBound(AGENT_HARNESS_SCHEDULE_FIRER)) return;
+  if (!storeReady()) {
+    logger.error(
+      'Schedules stay stopped: their store needs transactions (a MongoDB replica set, or PostgreSQL); a create answers SCHEDULED_RUNS_STORE_UNAVAILABLE',
+      { replicaSet: false },
+    );
+    return;
+  }
+  try {
+    const { created } = await migrate();
+    if (created.length > 0) {
+      logger.info('Schedules built indexes', { indexes: created });
+    }
+    container.get<ScheduleFirer>(AGENT_HARNESS_SCHEDULE_FIRER).start();
+  } catch (error) {
+    logger.error('Schedule store preparation failed; schedules stay stopped', {
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 

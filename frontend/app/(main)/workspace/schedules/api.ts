@@ -5,6 +5,7 @@ import { isObject, listOf, num, oneOf, QUIET, text } from '../harness-ui/pick';
 import type {
   AgentVersionPin,
   CatchUpPolicy,
+  ChatChange,
   CreatedSchedule,
   Firing,
   FiringKind,
@@ -16,6 +17,7 @@ import type {
   NotifyChannel,
   OverlapPolicy,
   Schedule,
+  SchedulePatch,
   ScheduleScope,
   ScheduleStatus,
   ScheduleTrigger,
@@ -90,8 +92,23 @@ export function toSchedule(value: unknown): Schedule | null {
     query: isObject(value.input) ? text(value.input.query) : null,
     overlap: oneOf(value.overlap, OVERLAP) ?? 'skip',
     notify: Array.isArray(value.notify) ? NOTIFY_CHANNELS.filter((c) => (value.notify as unknown[]).includes(c)) : ['in_app'],
+    lastChangedFrom: toChatChange(value.lastChangedFrom),
+    skipNextAt: instant(value.skipNextAt),
+    revision: typeof value.revision === 'number' && Number.isInteger(value.revision) && value.revision >= 0 ? value.revision : 0,
   };
 }
+
+function toChatChange(value: unknown): ChatChange | null {
+  if (!isObject(value)) return null;
+  const conversationId = text(value.conversationId);
+  if (!conversationId) return null;
+  return { conversationId, agentKey: text(value.agentKey), at: instant(value.at) };
+}
+
+const instant = (value: unknown): string | null => {
+  const at = text(value);
+  return at !== null && !Number.isNaN(Date.parse(at)) ? at : null;
+};
 
 export function toFiring(value: unknown): Firing | null {
   if (!isObject(value)) return null;
@@ -108,11 +125,15 @@ export function toFiring(value: unknown): Firing | null {
     reason: text(value.reason),
     runId: text(value.runId),
     conversationId: text(value.conversationId),
+    runner: oneOf(value.runner, RUNNERS),
+    costCapIgnored: value.costCapIgnored === true,
     missed: num(value.missed) ?? 0,
     attempts: num(value.attempts) ?? 0,
     createdAt: text(value.createdAt),
   };
 }
+
+const RUNNERS = ['harness', 'classic'] as const;
 
 function toNoticeChannel(value: unknown): NoticeChannelChoice | null {
   if (!isObject(value)) return null;
@@ -167,6 +188,22 @@ export const SchedulesApi = {
         webhookToken: text(body.webhookToken),
         webhookSecret: text(body.webhookSecret),
       };
+    }, true),
+
+  /** One schedule of the person's, as it is now: a harness change's card reads it for its "before" (ADR-SCH-03 D5). */
+  get: (id: string) => harnessCall(async () => scheduleFrom((await apiClient.get(at(id), QUIET)).data)),
+
+  /** ADR-SCH-03 D4: an edit; refused `SCHEDULE_CHANGED` when the schedule moved past `revision` since it was read. */
+  update: (id: string, patch: SchedulePatch) =>
+    harnessCall(async () => {
+      const body = {
+        revision: patch.revision,
+        ...(patch.name !== undefined ? { name: patch.name } : {}),
+        ...(patch.query !== undefined ? { input: { query: patch.query } } : {}),
+        ...(patch.trigger !== undefined ? { trigger: patch.trigger } : {}),
+        ...(patch.notify !== undefined ? { notify: patch.notify } : {}),
+      };
+      return scheduleFrom((await apiClient.patch(at(id), body, QUIET)).data);
     }, true),
 
   pause: (id: string) =>

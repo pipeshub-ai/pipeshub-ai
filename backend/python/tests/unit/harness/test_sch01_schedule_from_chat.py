@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 import pytest
 
-from app.harness.assembly.assembler import PipesHubRuntimeAssembler, schedule_tool
+from app.harness.assembly.assembler import PipesHubRuntimeAssembler, schedule_tools
 from app.harness.assembly.trigger import trigger_note
 from app.harness.contracts.state import RunTrigger
 from app.harness.engines.instructions import engine_time_line
@@ -28,9 +28,8 @@ from app.harness.schedules import (
     ScheduleAsks,
     ScheduleCreateTool,
     schedule_destination,
-    schedule_problem,
-    when_words,
 )
+from app.schedules.arguments import schedule_problem, when_words
 from app.services.featureflag.platform_settings import (
     PLATFORM_SETTINGS_KEY,
     is_scheduled_runs_on,
@@ -171,16 +170,17 @@ async def test_sch01_offered_only_with_the_org_harness_and_scheduled_runs_on(
 ) -> None:
     monkeypatch.setenv("AGENT_HARNESS_WORKER_ENABLED", worker)
     config = _Config({"featureFlags": flags})
-    assert await is_scheduled_runs_on(config) is on  # type: ignore[arg-type]
+    # ADR-SCH-02 D1: scheduling is the Labs flag alone; the harness tool also needs the harness, since it is one.
+    assert await is_scheduled_runs_on(config) is bool(flags.get("ENABLE_SCHEDULED_RUNS"))  # type: ignore[arg-type]
     services = type("S", (), {"config_service": lambda self: config})()
     run = type("R", (), {"sub_agent": None, "timezone": "UTC"})()
     claim = type("C", (), {"attempt_route": _Route(), "trigger_context": None, "spec": _TOP})()
     registry = ToolRegistry()
-    offered = await schedule_tool(services, run, claim, registry)  # type: ignore[arg-type]
-    assert (offered is not None) is on
+    offered = await schedule_tools(services, run, claim, registry)  # type: ignore[arg-type]
+    assert bool(offered) is on
     assert registry.has(SCHEDULE_CREATE_TOOL) is on
-    if offered is not None:
-        assert offered.tool_id == SCHEDULE_TOOL_ID and offered.grant is None
+    if offered:
+        assert offered[0].tool_id == SCHEDULE_TOOL_ID and all(t.grant is None for t in offered)
 
 
 async def test_sch01_an_unreadable_setting_offers_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -195,7 +195,7 @@ async def test_sch01_no_route_or_a_fired_run_is_not_offered(monkeypatch: pytest.
     services = type("S", (), {"config_service": lambda self: config})()
     run = type("R", (), {"sub_agent": None, "timezone": "UTC"})()
     claim = type("C", (), {"attempt_route": _Route(), "trigger_context": None, "spec": _TOP, **claim_fields})()
-    assert await schedule_tool(services, run, claim, ToolRegistry()) is None  # type: ignore[arg-type]
+    assert await schedule_tools(services, run, claim, ToolRegistry()) == []  # type: ignore[arg-type]
 
 
 # --- the arguments --------------------------------------------------------------------------------------------------
@@ -537,7 +537,7 @@ async def test_sch01_a_code_task_engine_child_is_not_offered(monkeypatch: pytest
     spec = type("Spec", (), {"run_kind": "child"})()
     claim = type("C", (), {"attempt_route": _Route(), "trigger_context": None, "spec": spec})()
     registry = ToolRegistry()
-    assert await schedule_tool(services, run, claim, registry) is None  # type: ignore[arg-type]
+    assert await schedule_tools(services, run, claim, registry) == []  # type: ignore[arg-type]
     assert not registry.has(SCHEDULE_CREATE_TOOL)
 
 
@@ -622,9 +622,9 @@ NODE_INSTANTS: dict[str, int | None] = {
 
 @pytest.mark.parametrize(("at", "epoch_ms"), sorted(NODE_INSTANTS.items()))
 def test_sch01_an_instant_reads_as_nodes_parse_instant(at: str, epoch_ms: int | None) -> None:
-    from app.harness.schedules import _instant  # pyright: ignore[reportPrivateUsage]
+    from app.schedules.arguments import parse_instant
 
-    read = _instant(at)
+    read = parse_instant(at)
     assert (round(read.timestamp() * 1000) if read is not None else None) == epoch_ms
     arguments = {"name": "Joke", "ask": "Tell me a joke.", "when": {"kind": "once", "at": at, "timeZone": "UTC"}}
     sent = json.loads(json.dumps(arguments))

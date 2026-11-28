@@ -4,8 +4,9 @@ import React, { useMemo, useRef, useState } from 'react';
 import { Badge, Box, Button, Card, Checkbox, Flex, Link, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { maskedReason, previewPayload, safeText, scheduleCallOf, sourceHref, type PreviewField } from '../../approval-preview';
-import { whenWords } from '@/app/(main)/workspace/schedules/schedule-words';
+import { maskedReason, previewPayload, safeText, sourceHref } from '../../approval-preview';
+import { PreviewValue } from './preview-value';
+import { ScheduleChangeCall, ScheduleSummary, useCardSchedule, useScheduleChangeWords } from './schedule-summary';
 import { DisplaySafetyNote, MarkedText } from './display-safety';
 import {
   allowConversationText,
@@ -16,8 +17,9 @@ import {
   interactionTitle,
   interactionWhy,
   isClone,
-  isScheduleCreate,
   isSiteUpload,
+  scheduleToolOf,
+  type ScheduleTool,
   SITE_UPLOAD_RULE,
 } from '../../interaction-wording';
 import { useInteractionFocus } from '../../hooks/use-interaction-focus';
@@ -187,38 +189,6 @@ export const HEADING_FOCUS: React.CSSProperties = { outlineOffset: 2, outlineCol
 /** Buttons a person taps: 44 px (frontend guide), the primary one full width on a phone. */
 export const TARGET: React.CSSProperties = { minHeight: 44 };
 
-function PreviewValue({ field }: { field: PreviewField }) {
-  const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
-  return (
-    <Box>
-      {field.label ? (
-        <Text as="div" size="1" color="gray" style={{ marginBottom: 2 }}>
-          {field.label}
-        </Text>
-      ) : null}
-      <Text
-        as="div"
-        size="2"
-        data-testid="approval-preview-value"
-        style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
-      >
-        <MarkedText text={open ? field.full : field.value} />
-      </Text>
-      {field.redacted ? (
-        <Text as="div" size="1" color="gray">
-          {t('approvalCard.flow.redacted')}
-        </Text>
-      ) : null}
-      {field.truncated ? (
-        <Button variant="ghost" size="1" onClick={() => setOpen((v) => !v)} aria-expanded={open} style={{ marginTop: 'var(--space-1)' }}>
-          {open ? t('approvalCard.flow.showLess') : t('approvalCard.flow.showAll')}
-        </Button>
-      ) : null}
-    </Box>
-  );
-}
-
 /** "What will be sent", as labelled values for every rule: never the raw JSON (UXINT-3). */
 export function WhatWillBeSent({ args }: { args: string }) {
   const { t } = useTranslation();
@@ -252,59 +222,13 @@ export function WhatWillBeSent({ args }: { args: string }) {
   );
 }
 
-const NOTICE_CHANNEL_LABELS: Readonly<Record<string, string>> = {
-  in_app: 'schedules.create.notifyInApp',
-  email: 'schedules.create.notifyEmail',
-  slack: 'schedules.create.notifySlack',
-};
-
-/**
- * The schedule a `schedule_create` call makes (ADR-SCH-01 D4), in plain words: its name, when it runs ("Every
- * weekday at 9:00 AM (America/Los_Angeles)") and what each run is asked. Arguments that are not a schedule are
- * listed as any call's.
- */
-export function ScheduleSummary({ args }: { args: string }) {
-  const { t, i18n } = useTranslation();
-  const call = useMemo(() => scheduleCallOf(args), [args]);
-  if (call === null) return <WhatWillBeSent args={args} />;
-  const channels = call.notify.map((channel) => (NOTICE_CHANNEL_LABELS[channel] ? t(NOTICE_CHANNEL_LABELS[channel]) : channel));
-  return (
-    <Flex
-      direction="column"
-      gap="2"
-      data-testid="schedule-summary"
-      style={{ padding: 'var(--space-2)', borderRadius: 'var(--radius-2)', backgroundColor: 'var(--olive-3)' }}
-    >
-      <PreviewValue field={{ ...call.name, label: t('approvalCard.schedule.name') }} />
-      <Box>
-        <Text as="div" size="1" color="gray" style={{ marginBottom: 2 }}>
-          {t('approvalCard.schedule.when')}
-        </Text>
-        <Text as="div" size="2" data-testid="schedule-when">
-          <MarkedText text={whenWords(t, call.when, i18n.language)} />
-        </Text>
-      </Box>
-      <PreviewValue field={{ ...call.ask, label: t('approvalCard.schedule.ask') }} />
-      {channels.length > 0 ? (
-        <Box>
-          <Text as="div" size="1" color="gray" style={{ marginBottom: 2 }}>
-            {t('approvalCard.schedule.notify')}
-          </Text>
-          <Text as="div" size="2">
-            <MarkedText text={channels.join(', ')} />
-          </Text>
-        </Box>
-      ) : null}
-      <Text size="1" color="gray">
-        {t('approvalCard.schedule.where')}
-      </Text>
-    </Flex>
-  );
+/** The call's arguments as its card shows them: a schedule or its change in words, any other call as labelled values. */
+function CallPreview({ args, schedule, current }: { args: string; schedule: ScheduleTool | null; current?: unknown }) {
+  const fallback = <WhatWillBeSent args={args} />;
+  if (schedule === 'create') return <ScheduleSummary args={args} fallback={fallback} />;
+  if (schedule !== null) return <ScheduleChangeCall tool={schedule} args={args} current={current} fallback={fallback} />;
+  return fallback;
 }
-
-/** The call's arguments as its card shows them: a schedule in words, any other call as labelled values. */
-const CallPreview = ({ args, schedule }: { args: string; schedule: boolean }) =>
-  schedule ? <ScheduleSummary args={args} /> : <WhatWillBeSent args={args} />;
 
 function Sources({ reason }: { reason: ApprovalReason }) {
   const { t } = useTranslation();
@@ -416,8 +340,13 @@ export function ApprovalCard({
 }: ApprovalCardProps) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
+  const schedule = scheduleToolOf(approval);
+  const change = schedule === 'update' || schedule === 'delete' ? schedule : null;
+  const current = useCardSchedule(change, approval.args, approval.schedule);
+  // ADR-SCH-03 D5: a schedule change is titled with what it does to which schedule ("Pause Standup summary").
+  const changeWords = useScheduleChangeWords(change, approval.editedArgs ?? approval.args, current);
   // AP-06: an approved edit that changed where the call sends names the new place, as it ran.
-  const title = interactionTitle(t, editedDestination(approval));
+  const title = changeWords?.title ?? interactionTitle(t, editedDestination(approval));
   const why = interactionWhy(t, approval);
   const open = (approval.status === 'pending' || approval.status === 'sending') && onDecide !== undefined;
   const sending = approval.status === 'sending';
@@ -433,9 +362,11 @@ export function ApprovalCard({
     [approval.reason],
   );
   // ADR-GRANT-01 D9: allowing a call for the whole chat is the run's own person's decision, never another participant's.
-  const offerConversation = conversationChoice && offersConversation(approval.reason) && canApprove && authority?.edit !== false;
+  // A schedule tool asks every time (ADR-SCH-01 D2, ADR-SCH-03 D5): never for the conversation, never as a rule.
+  const offerConversation =
+    schedule === null && conversationChoice && offersConversation(approval.reason) && canApprove && authority?.edit !== false;
   // Main's "Don't ask again" (BUGS-B): the answer becomes the person's own rule, so only in their conversation.
-  const offerRule = (ruleChoice ?? conversationChoice) && approval.reason?.ruleGrant === true;
+  const offerRule = schedule === null && (ruleChoice ?? conversationChoice) && approval.reason?.ruleGrant === true;
   const [remember, setRemember] = useState(false);
   const [denying, setDenying] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -491,7 +422,6 @@ export function ApprovalCard({
   // WP-63: a clone shows what it brings, not its arguments; the upload hold is decided for this run only.
   const clone = isClone(approval) && cloneDetails(approval.reason?.destination) !== null;
   const siteUpload = isSiteUpload(approval);
-  const schedule = isScheduleCreate(approval);
   const conversationText = clone
     ? isMobile
       ? t('approvalCard.clone.allowConversationShort')
@@ -579,7 +509,7 @@ export function ApprovalCard({
           <EditedReceipt
             args={approval.args}
             editedArgs={edited}
-            renderAll={(args) => <CallPreview args={args} schedule={schedule} />}
+            renderAll={(args) => <CallPreview args={args} schedule={schedule} current={current} />}
           />
         ) : effect?.diff ? (
           // UX-03: an edit shows what it changes; its arguments are the same text before and after.
@@ -587,7 +517,7 @@ export function ApprovalCard({
         ) : clone ? (
           <CloneSummary approval={approval} />
         ) : siteUpload ? null : (
-          <CallPreview args={approval.args} schedule={schedule} />
+          <CallPreview args={approval.args} schedule={schedule} current={current} />
         )}
         {effect?.costEstimate ? <EffectCost usd={effect.costEstimate.usd} /> : null}
         {!argsHidden && reason ? <Sources reason={reason} /> : null}

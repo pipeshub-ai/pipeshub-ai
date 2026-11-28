@@ -566,7 +566,7 @@
       "default": false,
       "parse": "featureFlags[key] === true; absent, unreadable or failing: false",
       "changedBy": "org admin (Labs)",
-      "gates": "scheduled and triggered agent runs (P8a): off, every schedule route answers 404 scheduled_runs_disabled except delete, webhooks answer 404, and a due slot is refused scheduled_runs_disabled (recorded, the schedule stays active)",
+      "gates": "scheduled and triggered agent runs (P8a), on every install whatever the org's harness (ADR-SCH-02 D1): off, every schedule route answers 404 scheduled_runs_disabled except delete, webhooks answer 404, and a due slot is refused scheduled_runs_disabled (recorded, the schedule stays active)",
       "dimension": "rollout.ENABLE_SCHEDULED_RUNS",
       "readers": {
         "node": [
@@ -1521,8 +1521,8 @@
         {
           "feature": "durable_chat",
           "on": true,
-          "whenNot": "refused",
-          "reason": "rollout_legacy (a firing whose org rollout says legacy is refused, not run on the legacy route)"
+          "whenNot": "legacy",
+          "reason": "the firing runs as the classic chat turn a person would start (ADR-SCH-02 D2, D3); a cost cap per run does not apply (D6)"
         },
         {
           "flag": "ENABLE_SCHEDULED_RUNS",

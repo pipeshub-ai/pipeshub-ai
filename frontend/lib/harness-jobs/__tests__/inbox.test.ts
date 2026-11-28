@@ -192,6 +192,14 @@ describe('a feed item as the design row', () => {
     expect(inboxWords(item({ ...ran, kind: 'schedule_failed', subject: { workflow: 'Escalation digest', outcome: 'failed' } }), words).description).toBe("Couldn't finish.");
   });
 
+  it('ADR-SCH-02: a classic run’s notice (no run id) still opens its conversation, and offers View run', () => {
+    const ran = item({ id: 'n:w3', kind: 'schedule_ran', title: 'A workflow ran', description: 'Done.', pointer: { type: 'schedule', scheduleId: 's1', conversationId: 'c9' }, link: '/chat/?conversationId=c9', subject: { workflow: 'Joke', outcome: 'ran' } });
+    const row = inboxRow(ran, NOW, words);
+    expect(row.href).toBe('/chat/?conversationId=c9');
+    expect(row).not.toHaveProperty('runId');
+    expect(row.actions?.map((a) => a.id)).toContain('viewRun');
+  });
+
   it('a firing that never started and one waiting on an approval are worded from the subject', () => {
     const refused = item({ id: 'n:w2', kind: 'schedule_failed', severity: 'warning', title: 'A scheduled run could not start', description: '"Nightly sync" did not run.', pointer: { type: 'schedule', scheduleId: 's2' }, link: '/workspace/schedules/', subject: { workflow: 'Nightly sync', outcome: 'refused', reason: 'workflow_changed' } });
     // UIADOPT2-FU-2: each reason of the closed set is worded; a notice with none keeps the general line.

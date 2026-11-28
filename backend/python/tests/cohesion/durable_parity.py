@@ -177,6 +177,11 @@ INVENTORY: tuple[Capability, ...] = (
     ),
     Capability("register_coding_sandbox_tools", "registration", "ported", "SandboxSource (agent-code, P5.11)"),
     Capability("register_skill_tools", "registration", "ported", "SkillsSource (pinned skills)"),
+    Capability(
+        "register_schedule_tool", "registration", "different",
+        reason="classic chat's schedule tools act with the request's own credential (ADR-SCH-02 D5); the "
+        "durable run's are assembler.schedule_tools, journal-bound (ADR-SCH-01 D3, ADR-SCH-03 D6)",
+    ),
     Capability("register_skill_preloading", "registration", "ported", "build_hooks"),
     Capability("register_tool_preloading", "registration", "ported", "build_hooks"),
     Capability("register_lazy_tool_meta_tools", "registration", "ported", "MetaToolSource; Disclosure (journaled)"),

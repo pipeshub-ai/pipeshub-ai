@@ -19,6 +19,11 @@ export interface AICommandOptions {
   timeoutMs?: number;
   maxAttempts?: number;
   signal?: AbortSignal;
+  /**
+   * A schedule's classic turn (ADR-SCH-02 D4): its firing and ask deadline, sent past the header allowlist. Given
+   * only by the turn's own handler, never read from the request, so no client can send them.
+   */
+  scheduledTurnHeaders?: Record<string, string>;
 }
 
 interface FetchCommandError extends Error {
@@ -40,6 +45,7 @@ const AI_SERVICE_TIMEOUT_MS = 620_000;
 export const AI_RESOLVED_TURN_HEADER = 'x-pipeshub-resolved';
 
 export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
+  private scheduledTurn: Record<string, string> | undefined;
   private method: HttpMethod;
   private body?: any;
   private timeoutMs: number;
@@ -51,6 +57,7 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
     this.method = options.method;
     this.signal = options.signal;
     this.body = this.sanitizeBody(options.body);
+    this.scheduledTurn = { ...(options.scheduledTurnHeaders ?? {}) };
     this.headers = this.sanitizeHeaders(options.headers!);
     this.timeoutMs = options.timeoutMs ?? AI_SERVICE_TIMEOUT_MS;
     this.maxAttempts = options.maxAttempts ?? 3;
@@ -59,7 +66,10 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
   protected override sanitizeHeaders(
     headers: Record<string, string>,
   ): Record<string, string> {
-    const sanitized = super.sanitizeHeaders(headers);
+    const sanitized = {
+      ...super.sanitizeHeaders(headers),
+      ...(this.scheduledTurn ?? {}),
+    };
     const resolved = headers[AI_RESOLVED_TURN_HEADER];
     return typeof resolved === 'string' && resolved.length > 0
       ? { ...sanitized, [AI_RESOLVED_TURN_HEADER]: resolved }

@@ -354,11 +354,14 @@ export function diffTarget(diff: string): string | null {
   return target && target !== '/dev/null' ? target : null;
 }
 
+/** When a schedule runs, as its card reads it; a webhook's or connector's trigger is not a time and is never one. */
+export type ScheduleWhenShown = { kind: 'once'; at: string; timeZone: string } | { kind: 'cron'; cron: string; timeZone: string };
+
 /** `schedule_create`'s arguments (ADR-SCH-01 D2) as its card shows them: each text masked and display-safe. */
 export interface ScheduleCallPreview {
   name: PreviewField;
   ask: PreviewField;
-  when: { kind: 'once'; at: string; timeZone: string } | { kind: 'cron'; cron: string; timeZone: string };
+  when: ScheduleWhenShown;
   notify: string[];
 }
 
@@ -369,31 +372,112 @@ function textField(key: string, value: string, mode: DisplayMode, limit: number)
   return { key, label: '', value: truncated ? `${full.slice(0, limit).trimEnd()}…` : full, redacted, truncated, full };
 }
 
+function whenOf(value: unknown): ScheduleWhenShown | null {
+  if (!isRecord(value)) return null;
+  const timeZone = typeof value.timeZone === 'string' ? safeText(value.timeZone) : '';
+  if (value.kind === 'once' && typeof value.at === 'string' && !Number.isNaN(Date.parse(value.at))) {
+    return { kind: 'once', at: value.at, timeZone };
+  }
+  if (value.kind === 'cron' && typeof value.cron === 'string' && value.cron.trim() !== '') {
+    return { kind: 'cron', cron: safeText(value.cron), timeZone };
+  }
+  return null;
+}
+
+const notifyOf = (value: unknown): string[] | null =>
+  Array.isArray(value) && value.every((channel) => typeof channel === 'string')
+    ? value.map((channel: string) => safeText(channel))
+    : null;
+
+const filledText = (value: unknown): value is string => typeof value === 'string' && value.trim() !== '';
+
 /**
  * The schedule a `schedule_create` call would make, or null when its arguments are not one (the card then lists
  * them as any call's): the name, when it runs, what each run is asked and where its notices go.
  */
 export function scheduleCallOf(args: string, limit = PREVIEW_CHARS): ScheduleCallPreview | null {
   const parsed = parseArgs(args);
-  if (!isRecord(parsed) || typeof parsed.name !== 'string' || typeof parsed.ask !== 'string') return null;
-  if (parsed.name.trim() === '' || parsed.ask.trim() === '' || !isRecord(parsed.when)) return null;
-  const when = parsed.when;
-  const timeZone = typeof when.timeZone === 'string' ? safeText(when.timeZone) : '';
-  let shown: ScheduleCallPreview['when'];
-  if (when.kind === 'once' && typeof when.at === 'string' && !Number.isNaN(Date.parse(when.at))) {
-    shown = { kind: 'once', at: when.at, timeZone };
-  } else if (when.kind === 'cron' && typeof when.cron === 'string' && when.cron.trim() !== '') {
-    shown = { kind: 'cron', cron: safeText(when.cron), timeZone };
-  } else {
-    return null;
-  }
-  const notify = Array.isArray(parsed.notify)
-    ? parsed.notify.filter((channel): channel is string => typeof channel === 'string').map((channel) => safeText(channel))
-    : [];
+  if (!isRecord(parsed) || !filledText(parsed.name) || !filledText(parsed.ask)) return null;
+  const when = whenOf(parsed.when);
+  if (when === null) return null;
   return {
     name: textField('name', parsed.name, 'identifier', limit),
     ask: textField('ask', parsed.ask, 'prose', limit),
-    when: shown,
-    notify,
+    when,
+    notify: Array.isArray(parsed.notify)
+      ? parsed.notify.filter((channel): channel is string => typeof channel === 'string').map((channel) => safeText(channel))
+      : [],
   };
+}
+
+/** What `schedule_update` does with no field changed (ADR-SCH-03 D4). */
+export type ScheduleAction = 'pause' | 'resume' | 'skip_next' | 'run_now';
+const SCHEDULE_ACTIONS: ReadonlySet<string> = new Set<ScheduleAction>(['pause', 'resume', 'skip_next', 'run_now']);
+
+/** A field `schedule_update` changes, before and after; `when` and `notify` stay structured for their words. */
+export type ScheduleFieldChange =
+  | { field: 'name' | 'ask'; before: PreviewField; after: PreviewField }
+  | { field: 'when'; before: ScheduleWhenShown; after: ScheduleWhenShown }
+  | { field: 'notify'; before: string[]; after: string[] };
+
+/**
+ * What a `schedule_update` or `schedule_delete` call does to the schedule it names (ADR-SCH-03 D5), with the
+ * schedule's current values as the server read them before asking.
+ */
+export type ScheduleChangePreview =
+  | { kind: 'action'; action: ScheduleAction; name: PreviewField }
+  | { kind: 'edit'; name: PreviewField; changes: ScheduleFieldChange[] }
+  | { kind: 'delete'; name: PreviewField; when: ScheduleWhenShown | null; ask: PreviewField | null };
+
+const UPDATE_FIELDS = ['name', 'ask', 'when', 'notify'] as const;
+
+const sameWhen = (a: ScheduleWhenShown, b: ScheduleWhenShown): boolean =>
+  a.kind === b.kind && a.timeZone === b.timeZone && (a.kind === 'once' ? a.at === (b as typeof a).at : a.cron === (b as typeof a).cron);
+
+/**
+ * The change, or null whenever a before and after can't both be told for certain: no current values, current
+ * values of another schedule or of another revision than the call names, a field the current values leave out,
+ * arguments that are not a change. The card
+ * then lists the call's arguments as any call's, never a guessed "before".
+ */
+export function scheduleChangeOf(
+  tool: 'update' | 'delete',
+  args: string,
+  current: unknown,
+  limit = PREVIEW_CHARS,
+): ScheduleChangePreview | null {
+  const parsed = parseArgs(args);
+  if (!isRecord(parsed) || !filledText(parsed.id) || !isRecord(current)) return null;
+  if (current.id !== parsed.id || !filledText(current.name)) return null;
+  // The before is the schedule as the call was written against it: one that moved on since is not that "before".
+  if (typeof parsed.revision !== 'number' || current.revision !== parsed.revision) return null;
+  const name = textField('name', current.name, 'identifier', limit);
+  const currentAsk = filledText(current.ask) ? textField('ask', current.ask, 'prose', limit) : null;
+  const currentWhen = whenOf(current.when);
+  if (tool === 'delete') return { kind: 'delete', name, when: currentWhen, ask: currentAsk };
+  const named = UPDATE_FIELDS.filter((field) => parsed[field] !== undefined);
+  if (parsed.action !== undefined) {
+    if (named.length > 0 || typeof parsed.action !== 'string' || !SCHEDULE_ACTIONS.has(parsed.action)) return null;
+    return { kind: 'action', action: parsed.action as ScheduleAction, name };
+  }
+  if (named.length === 0) return null;
+  const changes: ScheduleFieldChange[] = [];
+  for (const field of named) {
+    const value = parsed[field];
+    if (field === 'name' || field === 'ask') {
+      const before = field === 'name' ? name : currentAsk;
+      if (!filledText(value) || before === null) return null;
+      if (value !== current[field]) changes.push({ field, before, after: textField(field, value, field === 'name' ? 'identifier' : 'prose', limit) });
+    } else if (field === 'when') {
+      const after = whenOf(value);
+      if (after === null || currentWhen === null) return null;
+      if (!sameWhen(currentWhen, after)) changes.push({ field, before: currentWhen, after });
+    } else {
+      const after = notifyOf(value);
+      const before = notifyOf(current.notify);
+      if (after === null || before === null) return null;
+      if (after.join(',') !== before.join(',')) changes.push({ field, before, after });
+    }
+  }
+  return changes.length === 0 ? null : { kind: 'edit', name, changes };
 }

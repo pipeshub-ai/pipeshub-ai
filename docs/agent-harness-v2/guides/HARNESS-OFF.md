@@ -41,8 +41,14 @@ behaviour a person or an organisation sees follows it; only process start-up fol
 turn is admitted (`org_disabled`), so no run is claimed, no sandbox is started and the harness makes no model call.
 The kill switch and infrastructure readiness only stop new runs: an org that turned the harness on keeps its
 surfaces while an operator works on them. Its pages and settings stay (among them AI settings, where an admin lifts a
-stop), the composer's **New agent harness** switch stays, off and disabled, saying new runs are paused, and Schedules
-says its schedules won't run until the harness is back.
+stop), and the composer's **New agent harness** switch stays, off and disabled, saying new runs are paused.
+
+**Schedules are not the harness's** ([ADR-SCH-02](../adr/ADR-SCH-02-schedules-without-the-harness.md)). Labs
+**Scheduled runs** (`ENABLE_SCHEDULED_RUNS`) is listed and saved on every install, the schedule and trigger routes
+are served whatever the switch (they answer 404 while the org's flag is off), the schedule firer starts with the app,
+and the Schedules page shows on the flag alone. With the harness off for the org a firing runs as the classic chat
+turn a person would start (a new conversation named after the schedule); a cost cap per run applies only to firings
+that run on the harness.
 
 | With Labs off, as with the server setting off | Node / Python / browser |
 |---|---|
@@ -94,17 +100,17 @@ switches so that an admin can turn it on.
 | Area | With the switch off |
 |---|---|
 | Processes (image entrypoint `deployment/process_monitor.sh`) | No durable worker (`app.harness_main`), so no Tool Gateway `:8098`. No Model Gateway `:8096` unless `MODEL_GATEWAY_ENABLED=true` says otherwise. Test: `backend/python/tests/unit/deployment/test_process_monitor_harness_switch.py`. |
-| Durable admission (Node) | `isAgentHarnessInfrastructureReady` is false, so every chat, agent, Slack and assistant turn takes the classic handler (`infrastructure_unavailable`). No harness background service starts: run sweeper, schedule firer, audit anchoring, capability refresh, relay wakeups. |
-| Labs | `ENABLE_AGENT_HARNESS`, `ENABLE_SCHEDULED_RUNS` and `ENABLE_KNOWLEDGE_PUBLICATIONS` are not listed (`/platform/feature-flags/available`), not answered (`/effective`, `/platform/settings`), and a save that names one, or `agentHarness`, is refused: `400` with "The agent harness is not enabled on this install…" (`reasonCode: agent_harness_off`). Other Labs flags save as before. |
-| Effective flags | `agentHarness: null`, `continuePrivately`, `engineRuns` and `harnessReconcile` are `false`; `featureFlags` has none of the three harness flags. |
-| Public harness routes | Not served. Every path in the harness's own namespace, `/api/v1/agent-harness/*`, answers a JSON `404` "The agent harness is not enabled on this install." for every method. This covers admin, runs, model and engine accounts, schedules, triggers, publications, memories, inbox and data exports. Upstream answered an unknown GET with the web app's HTML page; an API client gets one plain answer instead. Families nested in classic prefixes are not mounted, so the request reaches the classic router and gets the answer a release without the harness gives. These are `/api/v1/conversations/…/runs…`, `…/workspace`, `…/sandbox`, `…/grants` and `…/compact`, and `/api/v1/agents/{key}/runs`, `…/conversations/…` and `…/export\|import`. Wiring: `app.ts` (`harnessNamespaceWhileOff`, `whenHarnessSwitchedOn`). |
+| Durable admission (Node) | `isAgentHarnessInfrastructureReady` is false, so every chat, agent, Slack and assistant turn takes the classic handler (`infrastructure_unavailable`). No harness background service starts: run sweeper, audit anchoring, capability refresh, relay wakeups. The schedule firer is not the harness's and starts on every install (ADR-SCH-02); its firings run as classic chat turns. |
+| Labs | `ENABLE_AGENT_HARNESS` and `ENABLE_KNOWLEDGE_PUBLICATIONS` are not listed (`/platform/feature-flags/available`), not answered (`/effective`, `/platform/settings`), and a save that names one, or `agentHarness`, is refused: `400` with "The agent harness is not enabled on this install…" (`reasonCode: agent_harness_off`). Other Labs flags save as before. |
+| Effective flags | `agentHarness: null`, `continuePrivately`, `engineRuns` and `harnessReconcile` are `false`; `featureFlags` has neither harness flag. |
+| Public harness routes | Not served. Every path in the harness's own namespace, `/api/v1/agent-harness/*`, answers a JSON `404` "The agent harness is not enabled on this install." for every method. This covers admin, runs, model and engine accounts, publications, memories, inbox and data exports. Schedules (`/api/v1/agent-harness/schedules`) and triggers (`/api/v1/agent-harness/triggers`) are served on every install (ADR-SCH-02) and answer 404 while the org's Labs scheduled runs is off. Upstream answered an unknown GET with the web app's HTML page; an API client gets one plain answer instead. Families nested in classic prefixes are not mounted, so the request reaches the classic router and gets the answer a release without the harness gives. These are `/api/v1/conversations/…/runs…`, `…/workspace`, `…/sandbox`, `…/grants` and `…/compact`, and `/api/v1/agents/{key}/runs`, `…/conversations/…` and `…/export\|import`. Wiring: `app.ts` (`harnessNamespaceWhileOff`, `whenHarnessSwitchedOn`). |
 | Chat commands | Node sends `/name …` to the model as typed; the server-side expansion (SLASH1/2) is off. In the browser, typing `/` opens no menu and no catalog is read. |
 | Control-plane pin | `CONTROL_PLANE_PIN` unset reads `off`, so no `X-PipesHub-Resolved` pin is computed for a classic turn and no `503 RUN_CONFIG_UNAVAILABLE` path exists. An explicit value still decides. |
 | Gated questions | A classic turn reads no "answers a gated question" check, so no 503 when it can't be read. |
 | Classic agent loop (Python) | No flow guard on external writes (`HARNESS_FLOW_GUARD`), as before the harness. An agent chat runs the saved agent, not its latest published version (OWD-14 versions are a harness feature). |
 | Query service | `/api/v1/harness/*` (the in-process run claimer) is not mounted. |
 | MCP hub | `MCP_HUB` unset follows the switch, so it stays off: per-request MCP sessions. The MCP list's `mcpHub` and `mcpToolApproval` read `false`. |
-| Browser | No harness entry or page. Hidden: Jobs and Needs you, the inbox poll, Security, AI access, Run settings, Memory policy, File downloads, Schedules, Memories and AI accounts (each page guarded by address too). Also hidden: the plus-menu harness switch and run gates, Continue privately, the agent builder's engine, gates and environment, agent versions (one "Save changes" as before), agent export and import, organisation deletion, "Your data" exports and the composer's pasted-token check. |
+| Browser | No harness entry or page. Hidden: Jobs and Needs you, the inbox poll, Security, AI access, Run settings, Memory policy, File downloads, Memories and AI accounts (each page guarded by address too). Also hidden: the plus-menu harness switch and run gates, Continue privately, the agent builder's engine, gates and environment, agent versions (one "Save changes" as before), agent export and import, organisation deletion, "Your data" exports and the composer's pasted-token check. |
 
 ## Security profile: what an upgrade keeps (`PIPESHUB_HARDENED`)
 

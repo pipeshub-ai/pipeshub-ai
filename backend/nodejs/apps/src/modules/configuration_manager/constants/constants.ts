@@ -119,6 +119,8 @@ export interface PlatformFeatureFlagDef {
    * effective flags leave it out, as a release without the harness.
    */
   requiresAgentHarness?: boolean;
+  /** Labs marks it **Beta**: a feature still in beta, whether or not it is the agent harness's. */
+  beta?: boolean;
 }
 
 export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
@@ -132,6 +134,7 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     defaultEnabled: false,
     previousDefault: true,
     requiresAgentHarness: true,
+    beta: true,
   },
   {
     key: 'ENABLE_BETA_CONNECTORS',
@@ -250,9 +253,9 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     key: 'ENABLE_SCHEDULED_RUNS',
     label: 'Scheduled and Triggered Agent Runs (Experimental)',
     description:
-      'Let people run an agent on a schedule (for example every Monday at 9:00) or when a webhook or a connector event arrives. Each run acts as the person who created the schedule, with their access checked again every time; a run that needs an approval waits for them until its deadline. Needs the durable agent harness.',
+      'Let people run an agent on a schedule (for example every Monday at 9:00), once at a later time, or when a webhook or a connector event arrives. Each run acts as the person who created the schedule, with their access checked again every time; a run that needs an approval waits for them until its deadline. Runs use the agent harness where it is on for the organization and standard chat otherwise; a cost cap per run applies only on the agent harness.',
     defaultEnabled: false,
-    requiresAgentHarness: true,
+    beta: true,
   },
   {
     key: 'ENABLE_KNOWLEDGE_PUBLICATIONS',
@@ -261,6 +264,7 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
       'Let owners of a knowledge base or record group publish it to chosen people, teams or the whole organization, for answers only or with full access, until an expiry. Searches and agents then use what is published to the reader as well as what the reader can open; content published for answers only can be quoted in an answer but never opened, downloaded or shared beyond the audience. Service-account agents then answer each caller only from what that caller can read or was published to them.',
     defaultEnabled: false,
     requiresAgentHarness: true,
+    beta: true,
   },
   {
     key: 'ENABLE_RECORD_PREVIEW_CACHE',

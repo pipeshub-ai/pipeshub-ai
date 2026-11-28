@@ -7,7 +7,10 @@ import type {
   NotifyChannel,
   RunTrigger,
   RunTriggerContext,
+  ScheduleChangedFrom,
   ScheduleFiring,
+  ScheduleTrigger,
+  ScheduleRunnerKind,
   ScheduleStatus,
 } from '../domain/schedules';
 import type { RunDigest } from '../projection/run-digest';
@@ -15,6 +18,17 @@ import type { RunDigest } from '../projection/run-digest';
 export interface ScheduleLimits {
   perActor: number;
   perOrg: number;
+}
+
+/** What a person's edit writes (ADR-SCH-03 D4); every field optional, each present one replaced. */
+export interface ScheduleChange {
+  name?: string;
+  input?: RunInputSnapshot;
+  trigger?: ScheduleTrigger;
+  notify?: NotifyChannel[];
+  nextFireAt?: number | null;
+  skipNextAt?: number | null;
+  lastChangedFrom?: ScheduleChangedFrom;
 }
 
 /** Where schedules and their firings live (P8a); both adapters pass `schedule-store-contract`. */
@@ -46,9 +60,25 @@ export interface ScheduleStore {
       to: ScheduleStatus;
       reason: string | null;
       nextFireAt: number | null;
+      /** The chat a person made this change from (ADR-SCH-03 D3). */
+      lastChangedFrom?: ScheduleChangedFrom;
+      /** Only if the schedule is still at this revision (ADR-SCH-03 D5); another refuses `SCHEDULE_CHANGED`. */
+      expectedRevision?: number;
     },
     now: number,
   ): Promise<AgentSchedule | null>;
+  /**
+   * Changes what a person may edit of a schedule (ADR-SCH-03 D4) if its revision is still `expectedRevision`, and
+   * bumps the revision; `changed` when another change came first, null when it is gone. `skipNextAt: null` clears it;
+   * a number marks that slot only while the schedule is active with its cursor on it, else `changed` (a stale skip).
+   */
+  update(
+    orgId: string,
+    id: string,
+    expectedRevision: number,
+    change: ScheduleChange,
+    now: number,
+  ): Promise<AgentSchedule | 'changed' | null>;
   /** Moves an agent schedule's version pin (OWD-14); null when it is gone, disabled or not an agent's. */
   setAgentVersion(
     orgId: string,
@@ -56,8 +86,15 @@ export interface ScheduleStore {
     agentVersion: AgentVersionPin,
     now: number,
   ): Promise<AgentSchedule | null>;
-  /** Deletes the schedule and its firings; false when it was not there. */
-  delete(orgId: string, id: string): Promise<boolean>;
+  /**
+   * Deletes the schedule and its firings; false when it was not there. With `expectedRevision`, only a schedule still
+   * at that revision, in the same write: one another change moved on is refused `SCHEDULE_CHANGED` (ADR-SCH-03 D5).
+   */
+  delete(
+    orgId: string,
+    id: string,
+    expectedRevision?: number,
+  ): Promise<boolean>;
   /** Active cron schedules whose cursor is due, oldest cursor first. */
   dueCron(now: number, limit: number): Promise<AgentSchedule[]>;
   /**
@@ -65,13 +102,19 @@ export interface ScheduleStore {
    * schedule's cursor from `expectedNextFireAt` to `nextFireAt`, together;
    * `disable`, a reason, also disables the schedule in that write (a
    * one-time schedule's only slot). Null (nothing written) when another
-   * scheduler already moved the cursor or claimed the slot.
+   * scheduler already moved the cursor or claimed the slot, or when a run
+   * (`pending`) would take the slot its owner marked skipped since the read.
    */
   claimCronSlot(
     firing: ScheduleFiring,
     expectedNextFireAt: number,
     nextFireAt: number | null,
     disable?: string,
+    /**
+     * The revision the firer read: a person's change since (an edit, a skip, a pause) makes the claim miss, and the
+     * next read decides on the schedule as it is now. Absent: no revision check.
+     */
+    expectedRevision?: number,
   ): Promise<ScheduleFiring | null>;
   /** Claims a manual or event slot: the slot's existing firing when it was claimed before. */
   claimSlot(
@@ -163,6 +206,17 @@ export interface ScheduleStore {
     context: RunTriggerContext,
   ): Promise<RunTriggerContext>;
   /**
+   * Fixes which runner a firing starts on, before its first start, and answers the one fixed: a retake after a crash
+   * uses it even if the org's path changed, so one firing never starts on both. `from` allows the one move there is:
+   * a harness admission that refused (it started nothing) handing the firing to classic. Null: no such firing.
+   */
+  fixRunner(
+    orgId: string,
+    firingId: string,
+    runner: ScheduleRunnerKind,
+    from?: ScheduleRunnerKind,
+  ): Promise<ScheduleRunnerKind | null>;
+  /**
    * Counts one authenticated webhook delivery in the schedule's window
    * starting `windowStart` and answers the window's count, across replicas
    * (TR-04). The count is kept until `expiresAt`.
@@ -215,6 +269,8 @@ export interface ActorAuthority {
   authorize(
     orgId: string,
     actorId: string,
+    /** `ttlS`: how long the credential lives; absent, `ACTOR_CREDENTIAL_TTL` (a durable run's admission only). */
+    options?: { ttlS?: number },
   ): Promise<{ authorization: string } | { refused: ActorRefusal }>;
   /** Whether the user is an org admin (an admin may trigger runs from connector events). */
   isOrgAdmin(orgId: string, userId: string): Promise<boolean>;
@@ -251,6 +307,8 @@ export interface ScheduledAdmission {
   agentKey?: string;
   /** The agent version the schedule pinned (OWD-14); absent: the latest published. */
   agentVersion?: number;
+  /** The coding engine the schedule keeps for its run's new chat (an engine kind or `none`); absent: the default. */
+  codingEngine?: string;
   idempotencyKey: string;
   deadlineMs: number;
   input: RunInputSnapshot;
@@ -297,7 +355,10 @@ export interface ScheduleNotifier {
     /** The agent the run is a conversation of; the link opens that agent's chat. */
     agentKey?: string;
     sessionId: string;
+    /** The runner's reference to the run (a classic turn's: its conversation). */
     runId: string;
+    /** Absent: the harness. */
+    runner?: ScheduleRunnerKind;
     deadlineAt: number;
   }): Promise<void>;
   /** A firing was refused (UX3, R1 F14): at most once a day per schedule, so a broken schedule is not silent. */
@@ -321,8 +382,15 @@ export interface RunEndedNotice {
   scheduleName: string;
   agentKey?: string;
   sessionId: string;
+  /** The runner's reference to the run: a durable run's id, a classic turn's conversation. */
   runId: string;
+  /** Which runner ran it (ADR-SCH-02 D2); absent: the harness. */
+  runner?: ScheduleRunnerKind;
   status: 'completed' | 'failed' | 'cancelled';
+  /** Why a failed run failed, where the runner says (`ask_expired`: an approval nobody gave by the deadline). */
+  reason?: string;
+  /** The schedule's cost cap did not apply: the run was a classic turn (D6). */
+  costCapIgnored?: true;
   channels: NotifyChannel[];
   /** What the run did (G-07), folded from its journal; absent when it could not be read. In the app only. */
   digest?: RunDigest;

@@ -1576,6 +1576,28 @@
       }
     },
     {
+      "code": "SCHEDULED_RUNS_STORE_UNAVAILABLE",
+      "status": 503,
+      "retryable": false,
+      "group": "schedule",
+      "meaning": "Scheduling needs a document store with multi-document transactions (a MongoDB replica set, as the default install runs, or PostgreSQL); this install's MongoDB runs without one (`REPLICA_SET_AVAILABLE=false`), so no schedule is made or run (ADR-SCH-02).",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "Scheduled runs need a database setup this server doesn't have. Ask your administrator to run MongoDB as a replica set."
+      }
+    },
+    {
+      "code": "SCHEDULE_CHANGED",
+      "status": 409,
+      "retryable": false,
+      "group": "schedule",
+      "meaning": "The schedule changed since the caller read it (its revision moved): a change asked about an older version of it is not applied (ADR-SCH-03 D5).",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "This schedule changed since you looked at it. Look at it again and make the change again."
+      }
+    },
+    {
       "code": "SCHEDULE_NOT_APPROVED",
       "status": 403,
       "retryable": false,

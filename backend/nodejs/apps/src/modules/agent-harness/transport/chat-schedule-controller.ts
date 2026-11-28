@@ -14,6 +14,9 @@ import {
 } from '../domain/errors';
 import { ZodError as ContractZodError } from 'zod/v3';
 import { scheduleCreateArgumentsSchema } from '../contracts/generated/ext/pipeshub/api/schedule-create-arguments';
+import { scheduleUpdateArgumentsSchema } from '../contracts/generated/ext/pipeshub/api/schedule-update-arguments';
+import { scheduleDeleteArgumentsSchema } from '../contracts/generated/ext/pipeshub/api/schedule-delete-arguments';
+import { scheduleFindArgumentsSchema } from '../contracts/generated/ext/pipeshub/api/schedule-find-arguments';
 import { HarnessAttemptRequest, logAuthorityRefusal } from './internal-auth';
 import { attemptClaims, transportError } from './internal-controller';
 import { scheduleHttpError } from './schedule-routes';
@@ -39,8 +42,40 @@ export const createChatScheduleSchema = z.object({
         .string()
         .regex(/^sha256:[0-9a-f]{64}$/)
         .optional(),
+      /** The name the model's `call_tool` wrapper named, when it called the tool through it (ADR-SCH-03 D8). */
+      calledAs: z.string().min(1).max(256).optional(),
     })
     .strict(),
+});
+
+const attemptFields = {
+  attemptId: boundedId,
+  fence: z.coerce.number().int().nonnegative(),
+};
+const scheduleParams = z.object({ runId: boundedId, scheduleId: boundedId });
+
+/** ADR-SCH-03 D2: `schedule_find`'s arguments in the query, `madeHere` as text. */
+export const findChatSchedulesSchema = z.object({
+  params: z.object({ runId: boundedId }),
+  query: z
+    .object({
+      ...attemptFields,
+      query: z.string().max(200).optional(),
+      status: z.string().max(16).optional(),
+      madeHere: z.enum(['true', 'false']).optional(),
+    })
+    .strict(),
+});
+
+export const readChatScheduleSchema = z.object({
+  params: scheduleParams,
+  query: z.object(attemptFields).strict(),
+});
+
+/** ADR-SCH-03 D6: the approved call of `schedule_update` or `schedule_delete`, its `arguments.id` the path's. */
+export const changeChatScheduleSchema = z.object({
+  params: scheduleParams,
+  body: createChatScheduleSchema.shape.body,
 });
 
 /**
@@ -71,6 +106,7 @@ export class AgentHarnessChatScheduleController {
           interactionId: body.interactionId,
           toolId: body.toolId,
           arguments: toolArguments(body.arguments),
+          ...(body.calledAs !== undefined ? { calledAs: body.calledAs } : {}),
           ...(body.callArgsDigest !== undefined
             ? { callArgsDigest: body.callArgsDigest }
             : {}),
@@ -83,6 +119,113 @@ export class AgentHarnessChatScheduleController {
       next(this.refused(req, error));
     }
   };
+
+  /** ADR-SCH-03 D2: the run's person's own schedules; a read, so no approval. */
+  find = async (
+    req: HarnessAttemptRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const claims = attemptClaims(req);
+      const { query } = findChatSchedulesSchema.parse(req);
+      await this.authority.authorizeAttempt(claims, query);
+      const args = scheduleFindArgumentsSchema.parse({
+        ...(query.query !== undefined ? { query: query.query } : {}),
+        ...(query.status !== undefined ? { status: query.status } : {}),
+        ...(query.madeHere !== undefined
+          ? { madeHere: query.madeHere === 'true' }
+          : {}),
+      });
+      res.status(HTTP_STATUS.OK).json({
+        schedules: await this.schedules.find(claims.orgId, claims.runId, args),
+      });
+    } catch (error) {
+      next(this.refused(req, error));
+    }
+  };
+
+  /** ADR-SCH-03 D5: one schedule's current values, for the card of a change. */
+  read = async (
+    req: HarnessAttemptRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const claims = attemptClaims(req);
+      const { params, query } = readChatScheduleSchema.parse(req);
+      await this.authority.authorizeAttempt(claims, query);
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          await this.schedules.read(
+            claims.orgId,
+            claims.runId,
+            params.scheduleId,
+          ),
+        );
+    } catch (error) {
+      next(this.refused(req, error));
+    }
+  };
+
+  update = this.change('update');
+  delete = this.change('delete');
+
+  private change(
+    kind: 'update' | 'delete',
+  ): (
+    req: HarnessAttemptRequest,
+    res: Response,
+    next: NextFunction,
+  ) => Promise<void> {
+    return async (
+      req: HarnessAttemptRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        const claims = attemptClaims(req);
+        const { params, body } = changeChatScheduleSchema.parse(req);
+        await this.authority.authorizeAttempt(claims, body);
+        const call = {
+          interactionId: body.interactionId,
+          toolId: body.toolId,
+          ...(body.calledAs !== undefined ? { calledAs: body.calledAs } : {}),
+          ...(body.callArgsDigest !== undefined
+            ? { callArgsDigest: body.callArgsDigest }
+            : {}),
+        };
+        const done =
+          kind === 'update'
+            ? await this.schedules.update(
+                claims.orgId,
+                claims.runId,
+                params.scheduleId,
+                {
+                  ...call,
+                  arguments: scheduleUpdateArgumentsSchema.parse(
+                    body.arguments,
+                  ),
+                },
+              )
+            : await this.schedules.delete(
+                claims.orgId,
+                claims.runId,
+                params.scheduleId,
+                {
+                  ...call,
+                  arguments: scheduleDeleteArgumentsSchema.parse(
+                    body.arguments,
+                  ),
+                },
+              );
+        res.status(HTTP_STATUS.OK).json(done);
+      } catch (error) {
+        next(this.refused(req, error));
+      }
+    };
+  }
 
   private refused(req: HarnessAttemptRequest, error: unknown): unknown {
     if (error instanceof HarnessUnauthorizedError) {

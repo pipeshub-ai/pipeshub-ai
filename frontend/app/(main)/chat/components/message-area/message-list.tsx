@@ -8,6 +8,7 @@ import { ChatResponse } from './chat-response';
 import { FollowupChips } from './followup-chips';
 import { CopiedHistoryNote, lastCopiedPairIndex } from './copied-history-note';
 import { ForkedIntoLine, ForkOriginHeader, ForkOriginLine } from './fork-origin-line';
+import { ScheduleOriginHeader } from './schedule-origin-header';
 import { useChatStore } from '../../store';
 import { useCompareStore } from '../../compare/compare-store';
 import { useCompareLifecycle } from '../../compare/use-compare-lifecycle';
@@ -114,6 +115,9 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   );
   const messagePagination = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.messagePagination ?? null : null
+  );
+  const scheduleOrigin = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.scheduleOrigin ?? null : null
   );
   const forkedFrom = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.forkedFrom ?? null : null
@@ -1184,6 +1188,8 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
                 <LottieLoader variant="loader" size={48} showLabel />
               </Flex>
             )}
+
+            {scheduleOrigin && <ScheduleOriginHeader origin={scheduleOrigin} />}
 
             {forkedFrom && (
               <ForkOriginHeader origin={forkedFrom} agentId={threadAgentId} projectId={slotProjectId} />

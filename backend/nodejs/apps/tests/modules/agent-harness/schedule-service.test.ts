@@ -97,21 +97,11 @@ describe('P8a schedule service (SV)', () => {
     expect(JSON.stringify(await service.get(alice, schedule.id))).to.not.include('pxt_secret_1');
   });
 
-  it('UX3 SE-1: with durable agent chat off for the org, no schedule is made that could never run', async () => {
-    let useHarness = false;
-    const gated = new ScheduleService({ transaction: testControlPlane(),
-      store,
-      firer: new ScheduleFirer({ store, admission, actors, setting }),
-      actors,
-      setting,
-      rollout: {
-        decideForOrg: async () => ({ useHarness, harnessMajor: 2, reason: useHarness ? 'enabled' : 'kill_switch', harnessOn: true, resumeInFlightRuns: true }),
-      },
-    });
-    expect(await code(gated.create(alice, CRON))).to.equal('SCHEDULED_RUNS_UNAVAILABLE');
-    expect(await store.list(ORG, { actorId: ALICE }, 10)).to.deep.equal([]);
-    useHarness = true;
-    expect((await gated.create(alice, CRON)).schedule.status).to.equal('active');
+  it('ADR-SCH-02 D1: with durable agent chat off for the org a schedule is still made; its firings run classic', async () => {
+    const made = await service.create(alice, { ...CRON, maxCostUsd: 1 });
+    expect(made.schedule.status).to.equal('active');
+    // D6: the cap is kept, to apply whenever a firing runs on the harness.
+    expect(made.schedule.maxCostUsd).to.equal(1);
   });
 
   it('SV-1: a service account cannot own a schedule; the flag off refuses', async () => {

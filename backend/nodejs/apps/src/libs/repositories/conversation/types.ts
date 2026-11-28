@@ -380,13 +380,24 @@ export interface UserSessionDto {
   updatedAt?: Date;
 }
 
+/** A caller-allocated session id that a session already holds (`NewSession.id`): nothing was written. */
+export class SessionExistsError extends Error {
+  constructor(readonly id: string) {
+    super('A conversation with this id already exists');
+    this.name = 'SessionExistsError';
+  }
+}
+
 export interface ConversationRepository {
   /** False when the store is not connected (unit tests); callers skip optional reads then. */
   isConnected(): boolean;
   /** A session by id alone, for reloading a row the caller already authorised. */
   findById(id: string): Promise<ChatSessionDto | null>;
   // ---- sessions: create and read
-  /** Creates the session and its first message together (one `Tx` when given). */
+  /**
+   * Creates the session and its first message together (one `Tx` when given). A `fields.id` some session already
+   * holds is refused `SessionExistsError` and writes nothing, so a caller-derived id makes a create happen once.
+   */
   openSession(
     fields: NewSession,
     firstMessage: NewMessage,

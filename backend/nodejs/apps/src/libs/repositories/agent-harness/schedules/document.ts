@@ -9,7 +9,9 @@ import type {
   NotifyChannel,
   OverlapPolicy,
   RunTriggerContext,
+  ScheduleChangedFrom,
   ScheduleOrigin,
+  ScheduleRunnerKind,
   ScheduleStatus,
   ScheduleTrigger,
 } from '../../../../modules/agent-harness/domain/schedules';
@@ -37,6 +39,10 @@ export interface ScheduleDocument {
   overlap?: OverlapPolicy;
   notify?: NotifyChannel[];
   origin?: ScheduleOrigin;
+  revision?: number;
+  lastChangedFrom?: ScheduleChangedFrom;
+  skipNextAt?: number;
+  codingEngine?: string;
   /** A tombstone's (ScheduleTombstoneDocument) only. */
   deletedAt?: number;
   createdAt: number;
@@ -98,4 +104,7 @@ export interface ScheduleFiringDocument {
   context?: RunTriggerContext;
   queuedBehind?: string;
   watchEndedAt?: number;
+  runner?: ScheduleRunnerKind;
+  runRef?: string;
+  costCapIgnored?: true;
 }

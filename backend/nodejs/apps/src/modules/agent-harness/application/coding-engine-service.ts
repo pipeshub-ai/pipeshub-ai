@@ -63,8 +63,9 @@ export const ENGINE_SANDBOX_MISSING_MESSAGE =
 export const ENGINE_PROFILE_UNTRUSTED = 'engine_profile_untrusted';
 export const ENGINE_PROFILE_UNTRUSTED_MESSAGE =
   "This engine's profile isn't signed for this deployment";
+/** Not a setting anyone can change in the app: the server has no image for it, which its operator builds. */
 export const ENGINE_NOT_INSTALLED_MESSAGE =
-  'This coding engine is not installed on this deployment';
+  "This coding engine isn't installed on this server. It isn't a setting: whoever runs the server installs it with deployment/sandbox-images/engine-build.sh and the engine's name";
 
 /** What the coding-engine pickers show (the `CodingEngineView` contract). */
 export type { CodingEngineView };

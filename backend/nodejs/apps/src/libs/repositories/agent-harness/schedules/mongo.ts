@@ -11,9 +11,15 @@ import {
   SCHEDULE_TOMBSTONE_STATUS,
   type ScheduleStatus,
   WATCH_GRACE_MS,
+  settledRun,
+  leavesTombstone,
+  scheduleChanged,
+  type ScheduleChangedFrom,
+  type ScheduleRunnerKind,
 } from '../../../../modules/agent-harness/domain/schedules';
 import type {
   ScheduleEraser,
+  ScheduleChange,
   ScheduleLimits,
   ScheduleStore,
 } from '../../../../modules/agent-harness/ports/schedules';
@@ -35,6 +41,12 @@ import {
   ScheduleFiringDocument,
 } from './schema/schedules.schema';
 import type { ScheduleTombstoneDocument } from './document';
+
+/** A schedule at `revision`; one made before revisions holds none and is at revision 0. */
+const atRevision = (revision: number): Record<string, unknown> =>
+  revision === 0
+    ? { $or: [{ revision: { $exists: false } }, { revision: 0 }] }
+    : { revision };
 
 /** Every read of schedules leaves out the tombstones deleted chat-made schedules leave (ADR-SCH-01 D3). */
 const LIVE = { status: { $ne: SCHEDULE_TOMBSTONE_STATUS } } as const;
@@ -264,22 +276,54 @@ export class MongoScheduleStore implements ScheduleStore, ScheduleEraser {
       to: ScheduleStatus;
       reason: string | null;
       nextFireAt: number | null;
+      lastChangedFrom?: ScheduleChangedFrom;
+      expectedRevision?: number;
     },
     now: number,
   ): Promise<AgentSchedule | null> {
     const updated = await AgentScheduleModel.findOneAndUpdate(
-      { _id: id, orgId, status: { $in: [...change.from] } },
+      {
+        _id: id,
+        orgId,
+        status: { $in: [...change.from] },
+        ...(change.expectedRevision !== undefined
+          ? atRevision(change.expectedRevision)
+          : {}),
+      },
       {
         $set: {
           status: change.to,
           statusReason: change.reason,
           nextFireAt: change.nextFireAt,
+          ...(change.lastChangedFrom !== undefined
+            ? { lastChangedFrom: change.lastChangedFrom }
+            : {}),
           updatedAt: now,
         },
+        $inc: { revision: 1 },
       },
       { returnDocument: 'after', ...MAJORITY_WRITE },
     ).lean<ScheduleDocument>();
-    return updated === null ? null : toSchedule(this.inputs, updated);
+    if (updated !== null) return toSchedule(this.inputs, updated);
+    if (change.expectedRevision !== undefined) {
+      await this.assertAtRevision(orgId, id, change.expectedRevision);
+    }
+    return null;
+  }
+
+  /** Refuses `SCHEDULE_CHANGED` when the live schedule is at another revision; nothing when it is gone. */
+  private async assertAtRevision(
+    orgId: string,
+    id: string,
+    expectedRevision: number,
+  ): Promise<void> {
+    const live = await AgentScheduleModel.findOne(
+      { _id: id, orgId, ...LIVE },
+      { revision: 1 },
+    ).lean<Pick<ScheduleDocument, '_id' | 'revision'>>();
+    if (live !== null && (live.revision ?? 0) !== expectedRevision) {
+      throw scheduleChanged();
+    }
   }
 
   async setAgentVersion(
@@ -295,23 +339,84 @@ export class MongoScheduleStore implements ScheduleStore, ScheduleEraser {
         agentKey: idOperator({ $exists: true }),
         status: { $ne: 'disabled' },
       },
-      { $set: { agentVersion, updatedAt: now } },
+      { $set: { agentVersion, updatedAt: now }, $inc: { revision: 1 } },
       { returnDocument: 'after', ...MAJORITY_WRITE },
     ).lean<ScheduleDocument>();
     return updated === null ? null : toSchedule(this.inputs, updated);
   }
 
+  async update(
+    orgId: string,
+    id: string,
+    expectedRevision: number,
+    change: ScheduleChange,
+    now: number,
+  ): Promise<AgentSchedule | 'changed' | null> {
+    const { input, skipNextAt, ...fields } = change;
+    if (
+      typeof skipNextAt === 'number' &&
+      change.nextFireAt !== undefined &&
+      change.nextFireAt !== skipNextAt
+    ) {
+      return (await this.get(orgId, id)) === null ? null : 'changed';
+    }
+    const set: Record<string, unknown> = { ...fields, updatedAt: now };
+    if (input !== undefined) {
+      set['input'] = await this.inputs.sealInput(
+        orgId,
+        { scheduleId: id },
+        input,
+      );
+    }
+    if (skipNextAt !== undefined && skipNextAt !== null) {
+      set['skipNextAt'] = skipNextAt;
+    }
+    const updated = await AgentScheduleModel.findOneAndUpdate(
+      {
+        _id: id,
+        orgId,
+        ...LIVE,
+        ...atRevision(expectedRevision),
+        // A skip marks the slot the cursor is on: a firing that moved it since the read makes this a stale skip.
+        ...(typeof skipNextAt === 'number' && change.nextFireAt === undefined
+          ? { status: 'active', nextFireAt: skipNextAt }
+          : {}),
+      },
+      {
+        $set: set,
+        ...(skipNextAt === null ? { $unset: { skipNextAt: '' } } : {}),
+        $inc: { revision: 1 },
+      },
+      { returnDocument: 'after', ...MAJORITY_WRITE },
+    ).lean<ScheduleDocument>();
+    if (updated !== null) return toSchedule(this.inputs, updated);
+    return (await this.get(orgId, id)) === null ? null : 'changed';
+  }
+
   /** A chat-made schedule leaves its tombstone in the same write (ADR-SCH-01 D3); any other goes. */
-  async delete(orgId: string, id: string): Promise<boolean> {
+  async delete(
+    orgId: string,
+    id: string,
+    expectedRevision?: number,
+  ): Promise<boolean> {
     return inMongoTransaction(async (session) => {
       const found = await AgentScheduleModel.findOne(
         { _id: id, orgId, ...LIVE },
-        { actorId: 1, origin: 1 },
+        { actorId: 1, origin: 1, revision: 1 },
       )
         .session(session)
-        .lean<Pick<ScheduleDocument, '_id' | 'actorId' | 'origin'>>();
+        .lean<
+          Pick<ScheduleDocument, '_id' | 'actorId' | 'origin' | 'revision'>
+        >();
       if (found === null) return false;
-      if (found.origin !== undefined) {
+      // Read in the transaction: an edit committed after this read fails its write, and the retry reads it.
+      if (
+        expectedRevision !== undefined &&
+        (found.revision ?? 0) !== expectedRevision
+      ) {
+        throw scheduleChanged();
+      }
+      if (found.origin !== undefined && leavesTombstone(found)) {
         const now = await this.time.read();
         const tombstone: ScheduleTombstoneDocument = {
           _id: id,
@@ -354,6 +459,7 @@ export class MongoScheduleStore implements ScheduleStore, ScheduleEraser {
     expectedNextFireAt: number,
     nextFireAt: number | null,
     disable?: string,
+    expectedRevision?: number,
   ): Promise<ScheduleFiring | null> {
     try {
       return await inMongoTransaction(async (session) => {
@@ -363,6 +469,13 @@ export class MongoScheduleStore implements ScheduleStore, ScheduleEraser {
             orgId: firing.orgId,
             status: 'active',
             nextFireAt: expectedNextFireAt,
+            ...(expectedRevision !== undefined
+              ? atRevision(expectedRevision)
+              : {}),
+            // A slot its owner asked to skip after the firer read it is never claimed to run (ADR-SCH-03 D4).
+            ...(firing.status === 'pending'
+              ? { skipNextAt: { $ne: firing.slotAt } }
+              : {}),
           },
           {
             $set: {
@@ -372,6 +485,8 @@ export class MongoScheduleStore implements ScheduleStore, ScheduleEraser {
                 : {}),
               updatedAt: firing.createdAt,
             },
+            // Disabling it is a change an edit must see: one read before the claim is refused SCHEDULE_CHANGED.
+            ...(disable !== undefined ? { $inc: { revision: 1 } } : {}),
           },
           { session },
         );
@@ -452,6 +567,7 @@ export class MongoScheduleStore implements ScheduleStore, ScheduleEraser {
           reason: admitted ? null : outcome.reason,
           watchUntil: admitted ? outcome.watchUntil : null,
           settledAt: now,
+          ...settledRun(outcome),
         },
       },
       MAJORITY_WRITE,
@@ -666,6 +782,31 @@ export class MongoScheduleStore implements ScheduleStore, ScheduleEraser {
     return existing.context;
   }
 
+  async fixRunner(
+    orgId: string,
+    firingId: string,
+    runner: ScheduleRunnerKind,
+    from?: ScheduleRunnerKind,
+  ): Promise<ScheduleRunnerKind | null> {
+    const unset = { runner: { $exists: false } };
+    await AgentScheduleFiringModel.updateOne(
+      {
+        _id: firingId,
+        orgId,
+        ...(from !== undefined ? { $or: [unset, { runner: from }] } : unset),
+      },
+      { $set: { runner } },
+      MAJORITY_WRITE,
+    );
+    const found = await AgentScheduleFiringModel.findOne({
+      _id: firingId,
+      orgId,
+    })
+      .read('primary')
+      .lean<ScheduleFiringDocument>();
+    return found === null ? null : (found.runner ?? null);
+  }
+
   async countDelivery(
     orgId: string,
     scheduleId: string,
@@ -762,6 +903,8 @@ export class MongoScheduleStore implements ScheduleStore, ScheduleEraser {
           nextFireAt: null,
           updatedAt: now,
         },
+        // A change an edit must see: one read before it is refused SCHEDULE_CHANGED, never written back over it.
+        $inc: { revision: 1 },
       },
     );
     return result.modifiedCount;
@@ -782,6 +925,8 @@ export class MongoScheduleStore implements ScheduleStore, ScheduleEraser {
         webhookSigningKey: null,
         updatedAt: now,
       },
+      // A change an edit must see: an edit read before it cannot write the erased content back.
+      $inc: { revision: 1 },
     });
     return result.modifiedCount;
   }

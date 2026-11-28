@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.hooks.middleware.context import AgentLifecycleContext
@@ -93,7 +94,7 @@ def tool_preloading(
         unlocked, pointers, unlock_names = _select_toolsets(
             registry, matches, grant=grant,
             preload_threshold=preload_threshold, mention_threshold=mention_threshold,
-            visible=scope.visible_tools,
+            visible=scope.visible_tools, cued=_cued(registry, ctx.goal.description),
         )
 
         if unlock_names:
@@ -127,6 +128,24 @@ def _best_match_per_toolset(matches: "list[ToolMatch]") -> dict[str, "ToolMatch"
     return best
 
 
+# What a group's own patterns score (`ToolsetGroup.cues` / `hints`): a cue clears any preload threshold, a hint only
+# the pointer band's default.
+_CUE_RELEVANCE = 1.0
+_HINT_RELEVANCE = 0.5
+
+
+def _cued(registry: "ToolRegistry", goal: str) -> dict[str, float]:
+    """Each group whose own patterns the goal matches, with the relevance they give it. A request's words for "later"
+    or "every Monday" are rarely in any tool's name or description, so the keyword index cannot find them."""
+    cued: dict[str, float] = {}
+    for group in registry.toolsets():
+        if any(re.search(p, goal, re.IGNORECASE) for p in group.cues):
+            cued[group.name] = _CUE_RELEVANCE
+        elif any(re.search(p, goal, re.IGNORECASE) for p in group.hints):
+            cued[group.name] = _HINT_RELEVANCE
+    return cued
+
+
 def _select_toolsets(
     registry: "ToolRegistry",
     matches: "list[ToolMatch]",
@@ -135,6 +154,7 @@ def _select_toolsets(
     preload_threshold: float,
     mention_threshold: float,
     visible: set[str] | None = None,
+    cued: dict[str, float] | None = None,
 ) -> tuple[list[tuple[str, str]], list[tuple[str, str]], list[str]]:
     """Returns `(unlocked, pointers, unlock_names)`:
     - `unlocked` / `pointers`: `(toolset_name, toolset_description)` pairs
@@ -149,7 +169,11 @@ def _select_toolsets(
     unlock_names: list[str] = []
     groups_by_name = {g.name: g for g in registry.toolsets()}
 
-    for toolset_name, best in _best_match_per_toolset(matches).items():
+    relevance = {name: match.relevance for name, match in _best_match_per_toolset(matches).items()}
+    for name, score in (cued or {}).items():
+        relevance[name] = max(score, relevance.get(name, 0.0))
+
+    for toolset_name, best in sorted(relevance.items(), key=lambda pair: pair[1], reverse=True):
         group = groups_by_name.get(toolset_name)
         if group is None:
             continue
@@ -161,10 +185,10 @@ def _select_toolsets(
         # Best match first; a toolset that would take the request past the tool limit is only
         # pointed at (the provider refuses a request with more).
         fits = len((visible or set()) | set(unlock_names) | set(names)) <= MAX_TOOLS_PER_REQUEST
-        if best.relevance >= preload_threshold and fits:
+        if best >= preload_threshold and fits:
             unlocked.append((group.name, group.description))
             unlock_names.extend(names)
-        elif best.relevance >= mention_threshold:
+        elif best >= mention_threshold:
             pointers.append((group.name, group.description))
 
     return unlocked, pointers, unlock_names

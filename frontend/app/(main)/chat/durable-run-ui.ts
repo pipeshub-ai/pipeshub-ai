@@ -47,6 +47,7 @@ export function approvalFromPart(part: MessagePart): PendingApproval | null {
     ...(part.reason ? { reason: part.reason } : {}),
     ...(part.scope === 'conversation' ? { scope: part.scope } : {}),
     ...(effect ? { effect } : {}),
+    ...(part.schedule !== undefined && part.schedule !== null ? { schedule: part.schedule } : {}),
     ...(status === 'denied' && typeof part.denyReason === 'string' && part.denyReason.trim()
       ? { denyReason: part.denyReason.trim().slice(0, MAX_DENY_REASON_CHARS) }
       : {}),

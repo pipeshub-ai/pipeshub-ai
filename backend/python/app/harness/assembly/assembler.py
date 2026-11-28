@@ -147,18 +147,21 @@ from app.harness.run_policy.resolved import bind_run_tuning
 from app.harness.run_policy.select import RunPolicies
 from app.harness.schedules import (
     SCHEDULE_CREATE_TOOL,
-    SCHEDULE_TOOL_ID,
     NodeSchedules,
-    ScheduleCreateTool,
     schedule_asks,
+    schedule_reader,
 )
+from app.harness.schedules import schedule_tools as schedule_toolset
 from app.harness.tool_provenance import platform_rule
 from app.harness.web_addresses import run_addresses
 from app.harness.worker.claimer import RUN_JOB_SOURCE
 from app.harness.write_identity.ports import write_identity_port
 from app.harness.write_identity.settings import use_write_identity
+from app.schedules.arguments import TOOL_IDS
+from app.schedules.toolset import register_schedules_toolset
 from app.services.featureflag.platform_settings import (
     bind_pinned_stages,
+    is_agent_harness_on,
     is_scheduled_runs_on,
 )
 from app.services.rate_budget import priority_for_run_kind, rate_priority_for_class
@@ -770,7 +773,9 @@ class PipesHubRuntimeAssembler:
             .gate(rules, route=getattr(claim, "attempt_route", None), claim=claim, log=log)
             .policy
         )
-        rules = schedule_asks(rules, offered=tools.registry.has(SCHEDULE_CREATE_TOOL))
+        rules = schedule_asks(
+            rules, offered=tools.registry.has(SCHEDULE_CREATE_TOOL), read=schedule_reader(tools.registry),
+        )
         return AssembledRuntime(
             model=model_port,
             model_policy=model_policy,
@@ -1190,10 +1195,10 @@ async def load_run_tools(
     if remember is not None:
         sourced.append(remember)
         by_source["memory"] = 1
-    scheduling = await schedule_tool(services, run, claim, registry)
-    if scheduling is not None:
-        sourced.append(scheduling)
-        by_source["schedules"] = 1
+    scheduling = await schedule_tools(services, run, claim, registry)
+    if scheduling:
+        sourced.extend(scheduling)
+        by_source["schedules"] = len(scheduling)
     for viewing in workspace_tools(workspace):
         registry.register_tool(viewing)
         workspace_id = f"{PLATFORM}@workspace/{viewing.name}"
@@ -1643,21 +1648,26 @@ def remember_tool(memory: _RunMemory | None, registry: ToolRegistry) -> SourcedT
     return SourcedTool(REMEMBER_TOOL, f"{PLATFORM}@memory/{REMEMBER_TOOL}", None, provenance=NO_CONTENT_RULE)
 
 
-async def schedule_tool(
+async def schedule_tools(
     services: RunServices, run: RunContext, claim: NodeClaim, registry: ToolRegistry
-) -> SourcedTool | None:
-    """Registers ``schedule_create`` (ADR-SCH-01 D2) for a run a person started in chat, when the org's harness and
-    its Labs scheduled runs are on; the loop and an engine run are offered it the same way, through the run's tool
-    gateway. A child run (a sub-agent, or a ``code_task`` engine child, which has no sub-agent ref) and a run a
-    schedule fired are not: a schedule is asked for in chat, by the person."""
+) -> list[SourcedTool]:
+    """Registers the ``schedules`` toolset (ADR-SCH-01 D2, ADR-SCH-03 D1: create, find, update, delete) for a run a
+    person started in chat, when the org has scheduling (its Labs flag, ADR-SCH-02 D1) and the harness is still on,
+    since its writes are bound to the run's journal; the loop and an engine run are offered it the same way, through
+    the run's tool gateway, as one on-demand toolset (D8). A child run (a sub-agent, or a ``code_task`` engine child,
+    which has no sub-agent ref) and a run a schedule fired are not: a schedule is asked for in chat, by the person."""
     route = getattr(claim, "attempt_route", None)
     child = claim.spec.run_kind == "child" or run.sub_agent is not None
     if route is None or child or getattr(claim, "trigger_context", None) is not None:
-        return None
-    if not await is_scheduled_runs_on(services.config_service()):
-        return None
-    registry.register_tool(ScheduleCreateTool(NodeSchedules(route), timezone=run.timezone))
-    return SourcedTool(SCHEDULE_CREATE_TOOL, SCHEDULE_TOOL_ID, None, provenance=NO_CONTENT_RULE)
+        return []
+    config = services.config_service()
+    if not (await is_scheduled_runs_on(config) and await is_agent_harness_on(config)):
+        return []
+    tools = schedule_toolset(NodeSchedules(route), timezone=run.timezone)
+    for tool in tools:
+        registry.register_tool(tool)
+    register_schedules_toolset(registry, [t.name for t in tools])
+    return [SourcedTool(t.name, TOOL_IDS[t.name], None, provenance=NO_CONTENT_RULE) for t in tools]
 
 
 def run_memory(run: RunContext, claim: NodeClaim, log: HarnessLog) -> _RunMemory | None:

@@ -329,6 +329,54 @@ export function createAgentHarnessInternalRouter(container: Container): Router {
       ),
       chatSchedules.create,
     );
+    // ADR-SCH-03: the schedules toolset's find, the current values a card shows, and the changes the person approved.
+    const changeLimit = createKeyedRateLimiter(
+      container.isBound('Logger')
+        ? container.get<Logger>('Logger')
+        : Logger.getInstance({ service: 'AgentHarnessInternal' }),
+      {
+        prefix: 'harness-chat-schedule-changes',
+        maxRequestsPerMinute: CHAT_SCHEDULES_PER_RUN_PER_MINUTE,
+        message: 'Too many schedule requests for this run',
+        anonymousSubKey: (req) => String(req.params['runId']),
+      },
+    );
+    // Reads have their own budget, so a run that looks its schedules up does not spend what its changes may use.
+    const readLimit = createKeyedRateLimiter(
+      container.isBound('Logger')
+        ? container.get<Logger>('Logger')
+        : Logger.getInstance({ service: 'AgentHarnessInternal' }),
+      {
+        prefix: 'harness-chat-schedule-reads',
+        maxRequestsPerMinute: CHAT_SCHEDULES_PER_RUN_PER_MINUTE,
+        message: 'Too many schedule requests for this run',
+        anonymousSubKey: (req) => String(req.params['runId']),
+      },
+    );
+    router.get(
+      '/runs/:runId/schedules',
+      attempt,
+      readLimit,
+      chatSchedules.find,
+    );
+    router.get(
+      '/runs/:runId/schedules/:scheduleId',
+      attempt,
+      readLimit,
+      chatSchedules.read,
+    );
+    router.post(
+      '/runs/:runId/schedules/:scheduleId/update',
+      attempt,
+      changeLimit,
+      chatSchedules.update,
+    );
+    router.post(
+      '/runs/:runId/schedules/:scheduleId/delete',
+      attempt,
+      changeLimit,
+      chatSchedules.delete,
+    );
   }
 
   if (container.isBound(AGENT_HARNESS_GATEWAY_TOKENS)) {

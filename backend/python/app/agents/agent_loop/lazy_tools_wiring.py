@@ -88,6 +88,8 @@ __all__ = [
     "register_lazy_tool_meta_tools",
     "register_tool_preloading",
     "make_lazy_tools_decider",
+    "make_lazy_tools_planner",
+    "listed_in_full",
     "META_TOOL_NAMES",
     "LAZY_ONLY_TOOL_NAMES",
     "HARNESS_TOOLSET",
@@ -227,6 +229,8 @@ def group_connector_toolsets(
         if group.parent is None
         and group.name not in (CONNECTORS_PARENT, MCP_PARENT)
         and group.name not in exclude
+        # An on-demand group keeps its own line in the overview (ADR-SCH-03 D8).
+        and not group.on_demand
         and any(name in tool_name_set for name in group.tool_names)
     ]
     # A group an earlier call already nested (a domain child's decision before the top level's, or the
@@ -467,7 +471,7 @@ def register_tool_preloading(hooks: "HookRegistry") -> None:
     ))
 
 
-def make_lazy_tools_decider(
+def make_lazy_tools_planner(
     *,
     apply: bool,
     essential_names: frozenset[str] = frozenset(),
@@ -501,22 +505,65 @@ def make_lazy_tools_decider(
     `toolDisclosure.mode`): `eager` lists every tool, `lazy` (and
     `filesystem`, which the loop has no files for) goes lazy whatever the
     count; `None` keeps the threshold.
+
+    On-demand toolsets (`ToolsetGroup.on_demand`, ADR-SCH-03 D8) are never
+    counted, and a grant holding one goes lazy whatever its size: when the
+    grant would otherwise be eager, every other top-level group it holds is
+    returned as the third element (groups to pin, so they stay listed in full)
+    and only the on-demand groups wait behind discovery. `apply=False` and
+    `mode="eager"` (an operator's or the agent's choice to list everything)
+    still list everything.
     """
 
-    def _decide(tool_registry: "ToolRegistry", tool_names: list[str]) -> tuple[list[str], str]:
-        uncounted = uncounted_names | harness_granted(tool_registry, tool_names)
+    def _plan(tool_registry: "ToolRegistry", tool_names: list[str]) -> tuple[list[str], str, list[str]]:
+        on_demand = tool_registry.on_demand_tool_names() & set(tool_names)
+        uncounted = uncounted_names | harness_granted(tool_registry, tool_names) | on_demand
         counted = sum(1 for name in tool_names if name not in uncounted)
         if not apply or mode == "eager":
-            return tool_names, "eager"
-        if mode not in ("lazy", "filesystem") and not should_apply_lazy_tools(counted):
-            return tool_names, "eager"
-        if not group_connector_toolsets(tool_registry, tool_names, exclude=essential_names):
-            return tool_names, "eager"
-        register_lazy_tool_meta_tools(tool_registry, context)
-        augmented = list(tool_names)
-        for meta_name in META_TOOL_NAMES:
-            if meta_name not in augmented:
-                augmented.append(meta_name)
-        return augmented, "lazy"
+            return tool_names, "eager", []
+        past = mode in ("lazy", "filesystem") or should_apply_lazy_tools(counted)
+        if past and group_connector_toolsets(tool_registry, tool_names, exclude=essential_names):
+            return _with_meta_tools(tool_registry, tool_names, context), "lazy", []
+        if on_demand:
+            pins = listed_in_full(tool_registry, tool_names)
+            return _with_meta_tools(tool_registry, tool_names, context), "lazy", pins
+        return tool_names, "eager", []
+
+    return _plan
+
+
+def make_lazy_tools_decider(
+    *,
+    apply: bool,
+    essential_names: frozenset[str] = frozenset(),
+    context: "AgentContext | None" = None,
+    uncounted_names: frozenset[str] = frozenset(),
+    mode: str | None = None,
+) -> "Callable[[ToolRegistry, list[str]], tuple[list[str], str]]":
+    """`make_lazy_tools_planner` without the pins, for a call site whose grant holds no on-demand toolset (a domain
+    child's claim) or that pins its own."""
+    plan = make_lazy_tools_planner(
+        apply=apply, essential_names=essential_names, context=context, uncounted_names=uncounted_names, mode=mode,
+    )
+
+    def _decide(tool_registry: "ToolRegistry", tool_names: list[str]) -> tuple[list[str], str]:
+        names, disclosure, _pins = plan(tool_registry, tool_names)
+        return names, disclosure
 
     return _decide
+
+
+def _with_meta_tools(tool_registry: "ToolRegistry", tool_names: list[str], context: "AgentContext | None") -> list[str]:
+    register_lazy_tool_meta_tools(tool_registry, context)
+    return [*tool_names, *(m for m in META_TOOL_NAMES if m not in tool_names)]
+
+
+def listed_in_full(tool_registry: "ToolRegistry", tool_names: list[str]) -> list[str]:
+    """The top-level groups holding a tool of ``tool_names`` (a category by its descendants), on-demand ones aside:
+    what stays listed in full when only on-demand toolsets go behind discovery."""
+    names = set(tool_names)
+    return [
+        g.name
+        for g in tool_registry.toolsets()
+        if g.parent is None and not g.on_demand and any(n in names for n in tool_registry.tools_in_toolset(g.name))
+    ]

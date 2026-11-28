@@ -11,12 +11,14 @@ import sinon from 'sinon';
 import { scheduleCreateArgumentsSchema } from '../../../src/modules/agent-harness/contracts/generated/ext/pipeshub/api/schedule-create-arguments';
 import { InMemoryScheduleStore } from '../../../src/modules/agent-harness/adapters/in-memory-schedules';
 import {
+  type ChatScheduleOptions,
   ChatScheduleService,
   chatScheduleId,
   SCHEDULE_CREATE_TOOL_ID,
   SCHEDULE_CREATED_EVENT,
   type ScheduleToolArguments,
 } from '../../../src/modules/agent-harness/application/chat-schedules';
+import { RunAdmissionScheduledRuns } from '../../../src/modules/agent-harness/application/scheduled-run-admission';
 import { ScheduleFirer } from '../../../src/modules/agent-harness/application/schedule-firer';
 import {
   type ScheduleCaller,
@@ -204,7 +206,7 @@ describe('ADR-SCH-01 D1: a one-time schedule', () => {
       expect(notifier.refusals.map((n) => n.reason)).to.deep.equal([ONCE_TOO_LATE]);
     });
 
-    it('too late while the org cannot run schedules: skipped and disabled, nobody told', async () => {
+    it('too late while the org has scheduled runs off: skipped and disabled, nobody told', async () => {
       const { schedule } = await once();
       clock.value = AT_MS + MAX_ONCE_LATENESS_MS + MIN;
       const off = new FakeSetting();
@@ -212,6 +214,7 @@ describe('ADR-SCH-01 D1: a one-time schedule', () => {
       await new ScheduleFirer({ store, admission, actors, setting: off, notifier }).fireDue();
       expect((await store.get(ORG, schedule.id))?.status).to.equal('disabled');
       expect(notifier.refusals).to.deep.equal([]);
+      // ADR-SCH-02 D1: the org's harness is not part of scheduling, so with it off the person is still told.
       clock.value = T0;
       const { schedule: other } = await once();
       clock.value = AT_MS + 2 * MAX_ONCE_LATENESS_MS;
@@ -224,7 +227,7 @@ describe('ADR-SCH-01 D1: a one-time schedule', () => {
         harnessOn: async () => false,
       }).fireDue();
       expect((await store.get(ORG, other.id))?.status).to.equal('disabled');
-      expect(notifier.refusals).to.deep.equal([]);
+      expect(notifier.refusals.map((n) => n.reason)).to.deep.equal([ONCE_TOO_LATE]);
     });
 
     it('run now takes its one slot: two at once, or with a tick, make one firing; the loser is told it ran', async () => {
@@ -257,7 +260,7 @@ describe('ADR-SCH-01 D1: a one-time schedule', () => {
       expect(await code(service.resume(alice, schedule.id))).to.equal('SCHEDULE_RAN_ONCE');
     });
 
-    it('due while the org’s harness is off: the firing is settled, nobody is told', async () => {
+    it('due while the org’s harness is off and the deployment has no classic runner: refused, never admitted durable', async () => {
       const { schedule } = await once();
       clock.value = AT_MS;
       await new ScheduleFirer({
@@ -270,9 +273,9 @@ describe('ADR-SCH-01 D1: a one-time schedule', () => {
       }).fireDue();
       expect(admission.admitted).to.equal(0);
       expect((await store.firings(ORG, schedule.id, 10)).map((f) => [f.status, f.reason])).to.deep.equal([
-        ['refused', 'scheduled_runs_disabled'],
+        ['refused', 'runner_unavailable'],
       ]);
-      expect(notifier.refusals).to.deep.equal([]);
+      expect(notifier.refusals.map((n) => n.reason)).to.deep.equal(['runner_unavailable']);
     });
 
     it('more than a day late: skipped, disabled, and its person told', async () => {
@@ -413,6 +416,8 @@ describe('ADR-SCH-01 D3: a schedule made on the person’s approval in chat', ()
     store: InMemoryScheduleStore;
     clock: TestClock;
     schedules: ScheduleService;
+    admission: FakeAdmission;
+    firer: ScheduleFirer;
     call(body: Record<string, unknown>): Promise<{ status: number; body?: unknown; code?: string }>;
     /** The error the last refused call passed to `next`, as the error middleware would write it. */
     lastError(): unknown;
@@ -437,15 +442,17 @@ describe('ADR-SCH-01 D3: a schedule made on the person’s approval in chat', ()
       ),
     }) as unknown as JournalEvent;
 
-  function world(): World {
+  function world(engines?: ChatScheduleOptions['engines']): World {
     const clock = new TestClock();
     const store = new InMemoryScheduleStore(clock);
     const actors = new FakeActors();
     const setting = new FakeSetting();
+    const admission = new FakeAdmission();
+    const firer = new ScheduleFirer({ store, admission, actors, setting });
     const schedules = new ScheduleService({
       transaction: testControlPlane(),
       store,
-      firer: new ScheduleFirer({ store, admission: new FakeAdmission(), actors, setting }),
+      firer,
       actors,
       setting,
     });
@@ -468,6 +475,7 @@ describe('ADR-SCH-01 D3: a schedule made on the person’s approval in chat', ()
     const events: JournalEvent[] = [];
     const marked: Array<{ interactionId: string; scheduleId: string }> = [];
     const service = new ChatScheduleService({
+      ...(engines !== undefined ? { engines } : {}),
       runs: {
         get: async (orgId, runId) => (orgId === ORG && runId === RUN ? run : null),
         runEvents: async () => events,
@@ -511,7 +519,7 @@ describe('ADR-SCH-01 D3: a schedule made on the person’s approval in chat', ()
       }
       return { status: res.statusCode, body: res.payload };
     };
-    return { controller, events, marked, setting, actors, store, clock, schedules, call, lastError: () => refused };
+    return { controller, events, marked, setting, actors, store, clock, schedules, admission, firer, call, lastError: () => refused };
   }
 
   const body = (args: unknown = ARGS, interactionId = ixOf(ARGS)) => ({
@@ -533,10 +541,72 @@ describe('ADR-SCH-01 D3: a schedule made on the person’s approval in chat', ()
       actorId: ALICE,
       agentKey: 'helper',
       agentVersion: 3,
-      origin: { conversationId: 'ses-chat', runId: RUN, interactionId: ixOf(ARGS) },
+      origin: { conversationId: 'ses-chat', runId: RUN, interactionId: ixOf(ARGS), agentKey: 'helper' },
     });
     expect(stored?.input).to.deep.include({ query: ARGS.ask, locale: 'de-DE' });
     expect(stored?.input?.model).to.deep.include({ chatMode: 'quick', modelKey: 'm-1', modelName: 'gpt-x' });
+  });
+
+  it('keeps the chat’s coding engine, and each firing’s new chat is asked to use it', async () => {
+    // The owner's chat chose no engine; without this its run took their personal default (Codex) instead.
+    const asked: Array<[string, string]> = [];
+    const w = world({ sessionChoice: async (orgId, sessionId) => (asked.push([orgId, sessionId]), 'none') });
+    w.events.push(...approvedCall());
+    const made = (await w.call(body())).body as { schedule: { id: string; nextFireAt: string } };
+    expect(asked).to.deep.equal([[ORG, 'ses-chat']]);
+    expect((await w.store.get(ORG, made.schedule.id))?.codingEngine).to.equal('none');
+    w.clock.set(made.schedule.nextFireAt);
+    expect(await w.firer.fireDue()).to.equal(1);
+    expect(w.admission.requests.map((r) => r.codingEngine)).to.deep.equal(['none']);
+  });
+
+  it('a chat with no engine choice, or one that cannot be read, makes the schedule on the person’s default', async () => {
+    for (const engines of [{ sessionChoice: async () => null }, { sessionChoice: async () => Promise.reject(new Error('down')) }]) {
+      const w = world(engines);
+      w.events.push(...approvedCall());
+      const made = (await w.call(body())).body as { schedule: { id: string; nextFireAt: string } };
+      expect((await w.store.get(ORG, made.schedule.id))?.codingEngine).to.equal(undefined);
+      w.clock.set(made.schedule.nextFireAt);
+      await w.firer.fireDue();
+      expect(w.admission.requests[0]).to.not.have.property('codingEngine');
+    }
+  });
+
+  it('the firing asks admission for that engine as a new chat’s first message does (CMDUI2 checks it)', async () => {
+    const submitted: unknown[] = [];
+    const firing = (codingEngine?: string) =>
+      new RunAdmissionScheduledRuns({
+        submit: async (request) => {
+          submitted.push(request);
+          return { route: 'legacy' } as never;
+        },
+      }).admit({
+        orgId: ORG,
+        actorId: ALICE,
+        idempotencyKey: 'k',
+        deadlineMs: 9_000,
+        input: { query: 'q', recordIds: [], filters: {}, attachments: [], model: { chatMode: 'agent' } },
+        authorization: 'Bearer user',
+        trigger: { kind: 'schedule', scheduleId: 'sch-1', firingId: 'fire-1' } as never,
+        ...(codingEngine !== undefined ? { codingEngine } : {}),
+      });
+    await firing('none');
+    await firing();
+    expect(submitted[0]).to.deep.include({ codingEngine: 'none', durableRequested: true });
+    expect(submitted[1]).to.not.have.property('codingEngine');
+  });
+
+  it('a coding engine not named as an engine is refused SCHEDULE_INVALID', async () => {
+    const w = world();
+    const create = (codingEngine: string) =>
+      w.schedules.create(alice, { name: 'n', input: { query: 'q' }, trigger: { kind: 'cron', cron: '0 9 * * 1', timeZone: 'Europe/Berlin' }, codingEngine });
+    for (const bad of ['', 'Codex', '../x', 'x'.repeat(65), 'a b']) {
+      const refused = await create(bad).then(() => null, (error: unknown) => error as { code?: string });
+      expect(refused?.code, bad).to.equal('SCHEDULE_INVALID');
+    }
+    expect((await create('claude-code')).schedule.id).to.be.a('string');
+    // A chat's choice may name a dotted kind; a schedule takes the same names.
+    expect((await create('acp.qwen')).schedule.id).to.be.a('string');
   });
 
   it('a repeat of the same decision: 200, the same schedule, nothing new', async () => {

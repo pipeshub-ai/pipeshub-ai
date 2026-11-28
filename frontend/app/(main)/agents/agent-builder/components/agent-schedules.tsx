@@ -9,7 +9,7 @@ import { SchedulesApi } from '@/app/(main)/workspace/schedules/api';
 import { isSystemStatus, firingReasonKey, ranOnce } from '@/app/(main)/workspace/schedules/copy';
 import { onceWords } from '@/app/(main)/workspace/schedules/schedule-words';
 import { formatDateTime } from '@/app/(main)/workspace/harness-ui/format';
-import { CreateScheduleDialog } from '@/app/(main)/workspace/schedules/components/create-schedule-dialog';
+import { ScheduleDrawer } from '@/app/(main)/workspace/schedules/components/schedule-drawer';
 import { WebhookSecretDialog, type WebhookCredential } from '@/app/(main)/workspace/schedules/components/webhook-secret-dialog';
 import type { NewSchedule, Schedule } from '@/app/(main)/workspace/schedules/types';
 import { Section } from './core-node-section';
@@ -71,6 +71,7 @@ export function AgentSchedules({ readOnly = false }: { readOnly?: boolean }) {
           })
         : t(`${K}.pausedByYou`);
     }
+    if (schedule.skipNextAt !== null) return t('schedules.skippedNext');
     if (schedule.trigger.kind === 'once') {
       return onceWords(t, schedule.trigger.at, schedule.trigger.timeZone, i18n.language);
     }
@@ -159,7 +160,7 @@ export function AgentSchedules({ readOnly = false }: { readOnly?: boolean }) {
       </Flex>
       {agentKey !== null ? (
         <>
-          <CreateScheduleDialog
+          <ScheduleDrawer
             open={creating}
             onOpenChange={setCreating}
             agents={[{ id: agentKey, name: t(`${K}.thisAgent`) }]}

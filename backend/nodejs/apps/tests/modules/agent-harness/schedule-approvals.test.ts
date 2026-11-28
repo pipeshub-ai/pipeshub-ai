@@ -70,6 +70,7 @@ describe('P8a an approval in a scheduled run (AP)', () => {
         ...(schedule.agentKey !== undefined ? { agentKey: schedule.agentKey } : {}),
         sessionId: run.sessionId,
         runId: run.runId,
+        runner: 'harness',
         deadlineAt: firing.watchUntil,
       },
     ]);

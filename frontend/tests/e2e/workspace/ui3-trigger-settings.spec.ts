@@ -244,7 +244,7 @@ test.describe('WP-24 / WP-25 settings UI (UI-3)', { tag: '@disposable' }, () => 
     const row = page.getByRole('group', { name, exact: true });
     await expect(row).toBeVisible({ timeout: 30_000 });
     await expect(row).toContainText('Run once for each missed time');
-    await row.getByRole('button', { name: 'History' }).click();
+    await row.getByRole('button', { name: 'History', exact: true }).click();
     const items = row.getByRole('list', { name: `Runs of ${name}` }).getByRole('listitem');
     await expect(items).toHaveCount(4);
     await expect(items.nth(0)).toContainText('Waiting for the last run to finish');

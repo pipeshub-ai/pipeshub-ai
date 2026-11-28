@@ -26,7 +26,7 @@ import {
   RasterImageFormat,
   sharp,
 } from '../../../libs/utils/image.utils';
-import { Response, NextFunction } from 'express';
+import { Request, Response, NextFunction } from 'express';
 import type { Readable } from 'stream';
 import { refuseIfDraining } from '../../../libs/repositories/drain';
 import { randomBytes } from 'crypto';
@@ -140,6 +140,7 @@ import {
 import { apiRecord, apiStoredRecords } from '../utils/internal-record-fields';
 import {
   attachUpstreamAbort,
+  DETACHED_RUN_MAX_MS,
   runGuarded,
   StreamedContentAccumulator,
 } from '../utils/stream-lifecycle';
@@ -176,6 +177,14 @@ import type { AgentErasureQueue } from '../../agent-harness/ports/agent-erasures
 import { AGENT_DELETE_CONFIRM_AFTER_MS } from '../../agent-harness/domain/session-erasure';
 import { principalRefFor } from '../../agent-harness/domain/run-spec';
 import { resolvedProxyHeaders } from '../../agent-harness/transport/resolved-turn-header';
+import {
+  scheduledConversationOrigin,
+  type ScheduledConversationOrigin,
+  scheduledTurnDetachMs,
+  scheduledTurnHeaders,
+  scheduledTurnOf,
+  scheduledTurnOrigin,
+} from '../../agent-harness/transport/scheduled-turn-mark';
 import { shapedForViewer } from '../../agent-harness/domain/token-redaction';
 import {
   inDurableTransaction,
@@ -300,6 +309,27 @@ const saveAskUserQuestion = (
 };
 const unitOfWork = createUnitOfWork(envFlag('REPLICA_SET_AVAILABLE'));
 const convRepo = (): ConversationRepository => getConversationRepository();
+
+/** `origin` on a conversation a schedule's firing made (ADR-SCH-02 D3); nothing on any other. */
+const scheduleOriginField = (
+  metadata: Map<string, unknown> | Record<string, unknown> | undefined,
+): { origin?: ScheduledConversationOrigin } => {
+  const origin = scheduledConversationOrigin(metadata);
+  return origin === null ? {} : { origin };
+};
+
+/** A schedule's classic turn (ADR-SCH-02 D3): its conversation is named after the schedule and records which made it. */
+const scheduledSessionFields = (
+  req: Request,
+): Pick<NewSession, 'id' | 'title' | 'metadata'> => {
+  const mark = scheduledTurnOf(req);
+  if (mark === null) return {};
+  return {
+    id: mark.conversationId,
+    title: mark.title,
+    metadata: { origin: scheduledTurnOrigin(mark) },
+  };
+};
 const searches = (): SemanticSearchRepository => getSemanticSearchRepository();
 
 const CHAT_SCOPE: SessionScope = { kind: 'chat' };
@@ -1130,6 +1160,7 @@ export const streamChat =
         // Store model and mode information
         modelInfo: modelInfo,
         sessionType: 'chat',
+        ...scheduledSessionFields(req),
         ...(projectLink.projectId
           ? {
               projectId: projectLink.projectId,
@@ -1210,6 +1241,7 @@ export const streamChat =
           'Content-Type': 'application/json',
         },
         body: aiPayload,
+        scheduledTurnHeaders: scheduledTurnHeaders(req),
       };
 
       // Variables to collect complete response data
@@ -1222,28 +1254,44 @@ export const streamChat =
       let streamSettled = false;
       const contentAccumulator = new StreamedContentAccumulator();
 
-      const upstreamAbort = attachUpstreamAbort(res, () => {
-        if (streamSettled || !savedConversation) return;
-        if (completeData || upstreamAiErrorEventForwarded) {
-          runGuarded(finalizeRun);
-          return;
-        }
-        streamSettled = true;
-        void savePartialConversation(
-          savedConversation,
-          contentAccumulator.getText(),
-          null,
-          { parts: contentAccumulator.getParts() },
-        ).then(
-          () => run.end({ kind: 'abandoned' }),
-          (error: unknown) => run.end({ kind: 'failed', error }),
-        );
-      });
-      const stream = await run.open(() =>
-        startAIStream(aiCommandOptions, 'Chat Stream', upstreamAbort.signal),
+      const upstreamAbort = attachUpstreamAbort(
+        res,
+        () => {
+          if (streamSettled || !savedConversation) return;
+          if (completeData || upstreamAiErrorEventForwarded) {
+            runGuarded(finalizeRun);
+            return;
+          }
+          streamSettled = true;
+          void savePartialConversation(
+            savedConversation,
+            contentAccumulator.getText(),
+            null,
+            { parts: contentAccumulator.getParts() },
+          ).then(
+            () => {
+              run.end({ kind: 'abandoned' });
+            },
+            (error: unknown) => {
+              run.end({ kind: 'failed', error });
+            },
+          );
+        },
+        scheduledTurnDetachMs(req) ?? DETACHED_RUN_MAX_MS,
+        { detached: scheduledTurnDetachMs(req) !== null },
       );
+      // Opening failed: no stream will ever close the detached cap, so it is ended here (a scheduled turn's).
+      const stream = await run
+        .open(() =>
+          startAIStream(aiCommandOptions, 'Chat Stream', upstreamAbort.signal),
+        )
+        .catch((error: unknown) => {
+          upstreamAbort.dispose();
+          throw error;
+        });
 
       if (!stream) {
+        upstreamAbort.dispose();
         if (upstreamAbort.isAborted()) return;
         throw new Error('Failed to get stream from AI service');
       }
@@ -1723,8 +1771,12 @@ export const addMessageStream =
             parts: contentAccumulator.getParts(),
           },
         ).then(
-          () => run.end({ kind: 'abandoned' }),
-          (error: unknown) => run.end({ kind: 'failed', error }),
+          () => {
+            run.end({ kind: 'abandoned' });
+          },
+          (error: unknown) => {
+            run.end({ kind: 'failed', error });
+          },
         );
       });
       const stream = await run.open(() =>
@@ -2442,6 +2494,7 @@ export const getConversationById =
           ...conversationResponse,
           ...(forkedFrom && { forkedFrom }),
           ...(forks.length > 0 && { forks }),
+          ...scheduleOriginField(session.metadata),
         },
         filters: filtersMetadata,
         meta: {
@@ -3918,8 +3971,12 @@ async function regenerateAnswersInternal(
           await dropReplacedTurn();
         })
         .then(
-          () => run.end({ kind: 'abandoned' }),
-          (error: unknown) => run.end({ kind: 'failed', error }),
+          () => {
+            run.end({ kind: 'abandoned' });
+          },
+          (error: unknown) => {
+            run.end({ kind: 'failed', error });
+          },
         )
         .finally(() => releaseRun(reservation));
     });
@@ -6734,8 +6791,8 @@ export const streamAgentConversation =
     try {
       // Before the stream opens; see streamChat.
       projectLink = await resolveProjectLink(
-        orgId as unknown as string,
-        userId as unknown as string,
+        orgId,
+        userId,
         req.body as Record<string, unknown>,
         projectCallerFromRequest(req, appConfig),
       );
@@ -6778,6 +6835,7 @@ export const streamAgentConversation =
         // Set explicitly: the legacy agentConversations schema defaulted this,
         // the unified chatSessions schema can't (it also backs plain chats).
         conversationSource: 'agent_chat',
+        ...scheduledSessionFields(req),
         ...(projectLink.projectId
           ? {
               projectId: projectLink.projectId,
@@ -6856,6 +6914,7 @@ export const streamAgentConversation =
           'Content-Type': 'application/json',
         },
         body: aiPayload,
+        scheduledTurnHeaders: scheduledTurnHeaders(req),
       };
 
       // Variables to collect complete response data
@@ -6868,32 +6927,48 @@ export const streamAgentConversation =
       let streamSettled = false;
       const contentAccumulator = new StreamedContentAccumulator();
 
-      const upstreamAbort = attachUpstreamAbort(res, () => {
-        if (streamSettled || !savedConversation) return;
-        if (completeData || upstreamAiErrorEventForwarded) {
-          runGuarded(finalizeRun);
-          return;
-        }
-        streamSettled = true;
-        void savePartialConversation(
-          savedConversation,
-          contentAccumulator.getText(),
-          null,
-          { parts: contentAccumulator.getParts() },
-        ).then(
-          () => run.end({ kind: 'abandoned' }),
-          (error: unknown) => run.end({ kind: 'failed', error }),
-        );
-      });
-      const stream = await run.open(() =>
-        startAIStream(
-          aiCommandOptions,
-          'Agent Chat Stream',
-          upstreamAbort.signal,
-        ),
+      const upstreamAbort = attachUpstreamAbort(
+        res,
+        () => {
+          if (streamSettled || !savedConversation) return;
+          if (completeData || upstreamAiErrorEventForwarded) {
+            runGuarded(finalizeRun);
+            return;
+          }
+          streamSettled = true;
+          void savePartialConversation(
+            savedConversation,
+            contentAccumulator.getText(),
+            null,
+            { parts: contentAccumulator.getParts() },
+          ).then(
+            () => {
+              run.end({ kind: 'abandoned' });
+            },
+            (error: unknown) => {
+              run.end({ kind: 'failed', error });
+            },
+          );
+        },
+        scheduledTurnDetachMs(req) ?? DETACHED_RUN_MAX_MS,
+        { detached: scheduledTurnDetachMs(req) !== null },
       );
+      // Opening failed: no stream will ever close the detached cap, so it is ended here (a scheduled turn's).
+      const stream = await run
+        .open(() =>
+          startAIStream(
+            aiCommandOptions,
+            'Agent Chat Stream',
+            upstreamAbort.signal,
+          ),
+        )
+        .catch((error: unknown) => {
+          upstreamAbort.dispose();
+          throw error;
+        });
 
       if (!stream) {
+        upstreamAbort.dispose();
         if (upstreamAbort.isAborted()) return;
         throw new Error('Failed to get stream from AI service');
       }
@@ -7350,8 +7425,12 @@ export const addMessageStreamToAgentConversation =
             parts: contentAccumulator.getParts(),
           },
         ).then(
-          () => run.end({ kind: 'abandoned' }),
-          (error: unknown) => run.end({ kind: 'failed', error }),
+          () => {
+            run.end({ kind: 'abandoned' });
+          },
+          (error: unknown) => {
+            run.end({ kind: 'failed', error });
+          },
         );
       });
       const stream = await run.open(() =>
@@ -8023,6 +8102,7 @@ export const getAgentConversationById =
           ...conversationResponse,
           ...(forkedFrom && { forkedFrom }),
           ...(forks.length > 0 && { forks }),
+          ...scheduleOriginField(session.metadata),
         },
         filters: filtersMetadata,
         meta: {

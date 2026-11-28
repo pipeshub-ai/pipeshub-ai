@@ -70,6 +70,13 @@ class ToolsetGroup(BaseModel):
     description: str
     tool_names: list[str] = Field(default_factory=list)
     parent: str | None = None
+    # On demand (ADR-SCH-03 D8): always behind discovery, whatever the grant's size, and never counted toward a
+    # lazy threshold; listed as its one line until loaded.
+    on_demand: bool = False
+    # Patterns (regular expressions, case-insensitive) in a request that clearly calls for the group (`cues`,
+    # preloaded before the first turn) or may (`hints`, pointed at): what preloading reads besides tool text.
+    cues: list[str] = Field(default_factory=list)
+    hints: list[str] = Field(default_factory=list)
 
 
 def _validate_path(path: str) -> None:
@@ -232,15 +239,22 @@ class ToolRegistry:
 
     def register_toolset(
         self, name: str, description: str, tool_names: list[str], *, parent: str | None = None,
+        on_demand: bool = False, cues: tuple[str, ...] = (), hints: tuple[str, ...] = (),
     ) -> None:
         """Group already-registered tool names under a named, overview-only
         capability. Registering the same name again replaces it. `parent`
         nests this group under another (already- or later-registered —
         resolution is by name at lookup time, not at registration time)
-        group name, e.g. `register_toolset("jira", ..., parent="connectors")`."""
+        group name, e.g. `register_toolset("jira", ..., parent="connectors")`.
+        `on_demand`, `cues`, `hints`: see `ToolsetGroup`."""
         self._groups[name] = ToolsetGroup(
             name=name, description=description, tool_names=list(tool_names), parent=parent,
+            on_demand=on_demand, cues=list(cues), hints=list(hints),
         )
+
+    def on_demand_tool_names(self) -> frozenset[str]:
+        """Every tool of an on-demand group (`ToolsetGroup.on_demand`)."""
+        return frozenset(name for g in self._groups.values() if g.on_demand for name in g.tool_names)
 
     def register_toolset_provider(self, provider: "ToolsetProvider") -> None:
         """Register a toolset whose tools are materialized on demand (see

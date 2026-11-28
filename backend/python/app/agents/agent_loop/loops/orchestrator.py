@@ -286,10 +286,15 @@ def domain_spec_factory(
     child's tools with what the loop would grant it mid-run (R4: its list is
     fixed at its first request)."""
 
+    from app.schedules.arguments import SCHEDULE_TOOL_NAMES
+
     def _factory(role_name: str, **overrides: Any) -> AgentSpec:  # noqa: ANN401
         tool_names = overrides["tool_names"] if "tool_names" in overrides else default_tool_names
         if grant is not None and tool_names:
             tool_names = grant(list(tool_names))
+        # ADR-SCH-03 D1: a schedule is a person's, made in their own chat; a delegated child never holds the tools,
+        # whatever list the spawning call names.
+        tool_names = [name for name in tool_names if name not in SCHEDULE_TOOL_NAMES]
         model = overrides.get("model") or model_name
         return AgentSpec(
             name=f"pipeshub-subagent-{role_name}",

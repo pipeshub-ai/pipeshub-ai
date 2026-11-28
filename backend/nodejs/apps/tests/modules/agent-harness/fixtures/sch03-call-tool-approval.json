@@ -1,0 +1,36 @@
+{
+  "create": {
+    "bindingDigest": "sha256:42cd97f31580b374b3bd77daa7717eb60062b12f830e66c7db8e89bab37e1a02",
+    "body": {
+      "arguments": {
+        "ask": "Tell me a short, clean joke.",
+        "name": "Joke in five minutes",
+        "when": {
+          "at": "2026-11-26T15:47:00-08:00",
+          "kind": "once",
+          "timeZone": "America/Los_Angeles"
+        }
+      },
+      "callArgsDigest": "sha256:fc94f1cf7dbc16d082a2b28d49b86b1b7f512b47dcd0118318f0ff2384680998",
+      "calledAs": "schedule_create",
+      "interactionId": "ix.approve.t1.0",
+      "toolId": "pipeshub@schedules/create"
+    },
+    "runId": "run1"
+  },
+  "update": {
+    "bindingDigest": "sha256:7384852e99bdac00967086b71de87344802b28224103e171626701f764122938",
+    "body": {
+      "arguments": {
+        "action": "pause",
+        "id": "sch_1",
+        "revision": 3
+      },
+      "callArgsDigest": "sha256:ae4480ac0190cfa4e06974213ffe5380129c9385a1ffe9af65fe2311a15c8ee2",
+      "calledAs": "schedule_update",
+      "interactionId": "ix.approve.t1.0",
+      "toolId": "pipeshub@schedules/update"
+    },
+    "runId": "run1"
+  }
+}

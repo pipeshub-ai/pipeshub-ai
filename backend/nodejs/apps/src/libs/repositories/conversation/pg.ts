@@ -77,6 +77,7 @@ import type {
   SessionDeletionDto,
   UserSessionDto,
 } from './types';
+import { SessionExistsError } from './types';
 import type { StoredMessage } from './pg-rows';
 import type { Importable, ImportStats, NeutralDoc } from '../import';
 import { importConversationDocs } from './pg-import';
@@ -535,6 +536,7 @@ export class PgConversationRepository
         (org_id, id, session_type, user_id, initiator, title, last_activity_at, status, model_info, agent_key, conversation_source,
          project_id, project_visibility, metadata, created_at, updated_at, harness_version, harness_ledger)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14::jsonb, $15, $15, $16, $17::jsonb)
+        ON CONFLICT (org_id, id) DO NOTHING
         RETURNING @{S}`),
       [
         k.orgId,
@@ -558,7 +560,9 @@ export class PgConversationRepository
           : null,
       ],
     );
-    return sessionDto(rows[0] as SessionRow, k.orgId, {
+    // A caller's id some session already holds (a new id never collides): nothing is written, the caller is told.
+    if (rows[0] === undefined) throw new SessionExistsError(id);
+    return sessionDto(rows[0], k.orgId, {
       ...DOC_SHAPE,
       withInternals: true,
     });

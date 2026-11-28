@@ -129,6 +129,8 @@ export const AGENT_HARNESS_RUN_FEEDBACK = 'AgentHarnessRunFeedback';
 export const AGENT_HARNESS_RATED_ANSWER_SINK = 'AgentHarnessRatedAnswerSink';
 export const AGENT_HARNESS_SCHEDULES = 'AgentHarnessSchedules';
 export const AGENT_HARNESS_SCHEDULE_FIRER = 'AgentHarnessScheduleFirer';
+/** Classic chat turns started in this process for a schedule's firing (ADR-SCH-02 D3); bound by the chat module. */
+export const AGENT_HARNESS_CLASSIC_TURNS = 'AgentHarnessClassicTurns';
 /** ADR-SCH-01: schedules a harness chat asked for, made on its person's approval (the worker's route). */
 export const AGENT_HARNESS_CHAT_SCHEDULES = 'AgentHarnessChatSchedules';
 /** Who may see and act on schedules other people own (`ScheduleReach`); unbound: only their owners. */

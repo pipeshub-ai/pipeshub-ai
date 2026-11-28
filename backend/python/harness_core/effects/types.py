@@ -90,6 +90,9 @@ class ToolContext:
     # The digest of the arguments the model called with, which that interaction is keyed on: an approved edit runs
     # other arguments under the same identity.
     args_digest: str | None = None
+    # The ``name`` the model's ``call_tool`` named, when the call came through it: ``args_digest`` is then the digest of
+    # that wrapper ``{name, arguments}``, not of the arguments the tool runs with. None: called directly.
+    called_as: str | None = None
 
 
 @dataclass(frozen=True)

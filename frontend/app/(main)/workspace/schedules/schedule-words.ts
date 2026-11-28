@@ -1,4 +1,5 @@
 import type { TFunction } from 'i18next';
+import type { PreviewField, ScheduleChangePreview, ScheduleFieldChange } from '@/app/(main)/chat/approval-preview';
 
 /**
  * When a schedule runs, in the reader's words (ADR-SCH-01 D4): "Every weekday at 9:00 AM (America/Los_Angeles)",
@@ -176,4 +177,120 @@ export function whenWords(t: TFunction, when: ScheduleWhen, language: string, no
   return when.timeZone
     ? t('schedules.when.withZone', { when: cronWords(t, when.cron, language), timeZone: when.timeZone })
     : cronWords(t, when.cron, language);
+}
+
+/** The title of the card that asks to make a schedule, on the harness's card and on classic chat's. */
+export const SCHEDULE_CREATE_TITLE = 'interaction.titleSchedule';
+
+const NOTICE_CHANNEL_LABELS: Readonly<Record<string, string>> = {
+  in_app: 'schedules.create.notifyInApp',
+  email: 'schedules.create.notifyEmail',
+  slack: 'schedules.create.notifySlack',
+};
+
+/** The parts of a schedule call the words are made from; its name and ask are shown by the card, masked. */
+export interface ScheduleCallShape {
+  when: ScheduleWhen;
+  notify: readonly string[];
+}
+
+/** A `schedule_create` call in the reader's words, the same on every approval card (ADR-SCH-01 D4, ADR-SCH-02 D5). */
+export interface ScheduleCallWords {
+  title: string;
+  labels: { name: string; when: string; ask: string; notify: string };
+  when: string;
+  /** "In PipesHub, Email"; null when the call names no channel. */
+  notify: string | null;
+  where: string;
+}
+
+export function scheduleCallWords(
+  t: TFunction,
+  call: ScheduleCallShape,
+  language: string,
+  now: Date = new Date(),
+): ScheduleCallWords {
+  return {
+    title: t(SCHEDULE_CREATE_TITLE),
+    labels: {
+      name: t('approvalCard.schedule.name'),
+      when: t('approvalCard.schedule.when'),
+      ask: t('approvalCard.schedule.ask'),
+      notify: t('approvalCard.schedule.notify'),
+    },
+    when: whenWords(t, call.when, language, now),
+    notify: call.notify.length > 0 ? channelWords(t, call.notify) : null,
+    where: t('approvalCard.schedule.where'),
+  };
+}
+
+/** A value a change card shows: masked and display-safe text, cut where it is long ("Show all" gives `full`). */
+export type ShownValue = Pick<PreviewField, 'value' | 'full' | 'truncated' | 'redacted'>;
+
+const shown = (text: string): ShownValue => ({ value: text, full: text, truncated: false, redacted: false });
+
+/** A `schedule_update` or `schedule_delete` call in the reader's words, the same on every approval card (ADR-SCH-03 D5). */
+export interface ScheduleChangeWords {
+  /** "Change Joke in two minutes", "Move Standup summary", "Pause Standup summary", "Delete Joke in two minutes". */
+  title: string;
+  /** Each changed field: "What it asks: a short joke → a short animal joke". */
+  changes: Array<{ field: ScheduleFieldChange['field']; label: string; before: ShownValue; after: ShownValue }>;
+  /** What the schedule is, for a call that changes no field (a delete, a pause): when it runs and what it asks. */
+  context: Array<{ key: 'when' | 'ask'; label: string; value: ShownValue }>;
+  /** What the decision means, in a sentence. */
+  note: string;
+}
+
+const CHANGE_LABELS: Readonly<Record<ScheduleFieldChange['field'], string>> = {
+  name: 'approvalCard.schedule.name',
+  ask: 'approvalCard.schedule.change.ask',
+  when: 'approvalCard.schedule.when',
+  notify: 'approvalCard.schedule.notify',
+};
+
+function channelWords(t: TFunction, channels: readonly string[]): string {
+  if (channels.length === 0) return t('approvalCard.schedule.change.notifyNone');
+  return channels.map((channel) => (NOTICE_CHANNEL_LABELS[channel] ? t(NOTICE_CHANNEL_LABELS[channel]) : channel)).join(', ');
+}
+
+function changeSides(t: TFunction, change: ScheduleFieldChange, language: string, now: Date): { before: ShownValue; after: ShownValue } {
+  switch (change.field) {
+    case 'name':
+    case 'ask':
+      return { before: change.before, after: change.after };
+    case 'when':
+      return { before: shown(whenWords(t, change.before, language, now)), after: shown(whenWords(t, change.after, language, now)) };
+    case 'notify':
+      return { before: shown(channelWords(t, change.before)), after: shown(channelWords(t, change.after)) };
+  }
+}
+
+export function scheduleChangeWords(
+  t: TFunction,
+  change: ScheduleChangePreview,
+  language: string,
+  now: Date = new Date(),
+): ScheduleChangeWords {
+  const name = change.name.value;
+  if (change.kind === 'action') {
+    return {
+      title: t(`approvalCard.schedule.change.title.${change.action}`, { name }),
+      changes: [],
+      context: [],
+      note: t(`approvalCard.schedule.change.note.${change.action}`),
+    };
+  }
+  if (change.kind === 'delete') {
+    const context: ScheduleChangeWords['context'] = [];
+    if (change.when !== null) context.push({ key: 'when', label: t('approvalCard.schedule.when'), value: shown(whenWords(t, change.when, language, now)) });
+    if (change.ask !== null) context.push({ key: 'ask', label: t('approvalCard.schedule.change.ask'), value: change.ask });
+    return { title: t('approvalCard.schedule.change.title.delete', { name }), changes: [], context, note: t('approvalCard.schedule.change.note.delete') };
+  }
+  const onlyWhen = change.changes.every((c) => c.field === 'when');
+  return {
+    title: t(onlyWhen ? 'approvalCard.schedule.change.title.move' : 'approvalCard.schedule.change.title.change', { name }),
+    changes: change.changes.map((c) => ({ field: c.field, label: t(CHANGE_LABELS[c.field]), ...changeSides(t, c, language, now) })),
+    context: [],
+    note: t('approvalCard.schedule.change.note.edit'),
+  };
 }

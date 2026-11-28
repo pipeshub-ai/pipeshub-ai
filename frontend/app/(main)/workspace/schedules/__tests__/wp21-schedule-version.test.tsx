@@ -13,7 +13,7 @@ import { nodeRefusal } from '../../harness-ui/__tests__/fake-refusal';
 import { SchedulesApi, toSchedule } from '../api';
 import { SchedulesPage } from '../components/schedules-page';
 import { pinOf, versionChoices } from '../components/schedule-version';
-import { emptyForm, toNewSchedule } from '../components/create-schedule-dialog';
+import { emptyForm, toNewSchedule } from '../components/schedule-drawer';
 import { useSchedulesStore } from '../store';
 import { scheduleView } from './fixtures';
 

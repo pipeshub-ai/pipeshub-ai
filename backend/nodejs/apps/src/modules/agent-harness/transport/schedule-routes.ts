@@ -38,6 +38,7 @@ import {
   MIN_DEADLINE_S,
   NOTIFY_CHANNELS,
   type NotifyChannel,
+  type ScheduleChangedFrom,
 } from '../domain/schedules';
 import { transportError } from './errors';
 import {
@@ -123,9 +124,22 @@ const trigger = z.discriminatedUnion('kind', [
     .strict(),
 ]);
 
+/** The caller's own chat a change or a create is made from (ADR-SCH-03 D3); checked to be theirs. */
+const fromConversation = z.object({ conversationId: id }).strict();
+const revision = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
+const channels = z
+  .array(z.enum(['in_app', 'email', 'slack']))
+  .min(1)
+  .max(NOTIFY_CHANNELS.length)
+  .refine(
+    (list): list is NotifyChannel[] => new Set(list).size === list.length,
+    'Each channel once',
+  );
+
 export const createScheduleSchema = z.object({
   body: z
     .object({
+      fromConversation: fromConversation.optional(),
       name,
       agentKey: id.optional(),
       agentVersion: agentVersion.optional(),
@@ -156,6 +170,14 @@ export const listSchedulesSchema = z.object({
     .object({
       scope: z.enum(['mine']).default('mine'),
       limit: z.coerce.number().int().min(1).max(200).default(50),
+      /** ADR-SCH-03 D2: a part of the name, the state, and the chat asking (its schedules first). */
+      query: z.string().trim().min(1).max(200).optional(),
+      status: z.enum(['active', 'paused', 'disabled']).optional(),
+      conversationId: id.optional(),
+      madeHere: z
+        .enum(['true', 'false'])
+        .transform((v) => v === 'true')
+        .optional(),
     })
     .strict(),
 });
@@ -166,6 +188,73 @@ export const noticeChannelsSchema = z.object({
 
 export const scheduleParamsSchema = z.object({
   params: z.object({ scheduleId: id }),
+});
+
+function scheduleParamsSchemaOf<T extends z.ZodRawShape>(
+  shape: T,
+): ReturnType<typeof scheduleParamsSchema.extend<T>> {
+  return scheduleParamsSchema.extend(shape);
+}
+
+/** ADR-SCH-03 D4: one change, checked as a create checks it, against the revision the caller read. */
+export const updateScheduleSchema = scheduleParamsSchemaOf({
+  body: z
+    .object({
+      revision,
+      name: name.optional(),
+      input: z
+        .object({ query: z.string().min(1).max(MAX_SCHEDULE_QUERY_CHARS) })
+        .strict()
+        .optional(),
+      trigger: z
+        .discriminatedUnion('kind', [
+          z
+            .object({
+              kind: z.literal('cron'),
+              cron: z.string().min(9).max(120),
+              timeZone: z.string().min(1).max(64),
+              catchUp: z.enum(['skip', 'run_latest', 'run_all']).optional(),
+            })
+            .strict(),
+          z
+            .object({
+              kind: z.literal('once'),
+              at: z.string().min(16).max(40),
+              timeZone: z.string().min(1).max(64),
+            })
+            .strict(),
+        ])
+        .optional(),
+      notify: channels.optional(),
+      fromConversation: fromConversation.optional(),
+    })
+    .strict(),
+});
+
+/** ADR-SCH-03 D5: a delete may name the revision its person was shown. */
+export const deleteScheduleSchema = scheduleParamsSchemaOf({
+  query: z
+    .object({
+      // A decimal integer as written: `Number('')` is 0, so a blank `?revision=` would otherwise check against 0.
+      revision: z
+        .string()
+        .regex(/^\d{1,16}$/)
+        .transform(Number)
+        .pipe(z.number().int().min(0).max(Number.MAX_SAFE_INTEGER))
+        .optional(),
+    })
+    .strict(),
+});
+
+/** Pause, resume and skip: optionally the revision read and the chat it was asked in. */
+export const scheduleActionSchema = scheduleParamsSchemaOf({
+  body: z
+    .object({
+      revision: revision.optional(),
+      fromConversation: fromConversation.optional(),
+    })
+    .strict()
+    .default({}),
 });
 
 export const scheduleFiringsSchema = scheduleParamsSchema.extend({
@@ -251,6 +340,19 @@ const handle =
     }
   };
 
+/** A check that lets the request on to the next handler, or passes its refusal on as the route would. */
+const handleThen =
+  (check: (req: AuthenticatedUserRequest) => Promise<void>) =>
+  async (req: AuthenticatedUserRequest, _res: Response, next: NextFunction) => {
+    try {
+      await check(req);
+    } catch (error) {
+      next(scheduleHttpError(error));
+      return;
+    }
+    next();
+  };
+
 function service(container: Container): ScheduleService {
   if (!container.isBound(AGENT_HARNESS_SCHEDULES)) {
     throw new ServiceUnavailableError(
@@ -295,17 +397,44 @@ const param = (req: Request): string => String(req.params['scheduleId']);
 export function createScheduleRouter(container: Container): Router {
   const router = Router();
   const auth = container.get<AuthMiddleware>('AuthMiddleware');
+  // Before validation: an org without scheduling is told so, not that its request was malformed (ADR-SCH-02 D1).
+  const schedulesOn = handleThen(async (req) => {
+    await service(container).assertOn(scheduleCaller(req).orgId);
+  });
 
   router.post(
     '/',
     auth.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+    schedulesOn,
     ValidationMiddleware.validate(createScheduleSchema),
     handle(async (req, res) => {
-      const body = req.body as z.infer<typeof createScheduleSchema>['body'];
-      res
-        .status(201)
-        .json(await service(container).create(scheduleCaller(req), body));
+      const { fromConversation: made, ...body } = req.body as z.infer<
+        typeof createScheduleSchema
+      >['body'];
+      const caller = scheduleCaller(req);
+      const schedules = service(container);
+      // ADR-SCH-03 D3: a schedule a classic chat made records that chat, as one a harness chat made does.
+      const origin =
+        made === undefined
+          ? undefined
+          : await schedules.changedFrom(caller, made.conversationId);
+      res.status(201).json(
+        await schedules.create(
+          caller,
+          body,
+          origin === undefined
+            ? undefined
+            : {
+                origin: {
+                  conversationId: origin.conversationId,
+                  ...(origin.agentKey !== null
+                    ? { agentKey: origin.agentKey }
+                    : {}),
+                },
+              },
+        ),
+      );
     }),
   );
 
@@ -313,6 +442,7 @@ export function createScheduleRouter(container: Container): Router {
     '/',
     auth.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
+    schedulesOn,
     ValidationMiddleware.validate(listSchedulesSchema),
     handle(async (req, res) => {
       const query = req.query as unknown as z.infer<
@@ -322,6 +452,17 @@ export function createScheduleRouter(container: Container): Router {
         schedules: await service(container).list(
           scheduleCaller(req),
           query.limit,
+          false,
+          {
+            ...(query.query !== undefined ? { query: query.query } : {}),
+            ...(query.status !== undefined ? { status: query.status } : {}),
+            ...(query.conversationId !== undefined
+              ? { conversationId: query.conversationId }
+              : {}),
+            ...(query.madeHere !== undefined
+              ? { madeHere: query.madeHere }
+              : {}),
+          },
         ),
       });
     }),
@@ -331,6 +472,7 @@ export function createScheduleRouter(container: Container): Router {
     '/notify-channels',
     auth.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
+    schedulesOn,
     ValidationMiddleware.validate(noticeChannelsSchema),
     handle(async (req, res) => {
       const query = req.query as unknown as z.infer<
@@ -349,6 +491,7 @@ export function createScheduleRouter(container: Container): Router {
     '/:scheduleId',
     auth.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
+    schedulesOn,
     ValidationMiddleware.validate(scheduleParamsSchema),
     handle(async (req, res) => {
       res
@@ -361,6 +504,7 @@ export function createScheduleRouter(container: Container): Router {
     '/:scheduleId/firings',
     auth.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
+    schedulesOn,
     ValidationMiddleware.validate(scheduleFiringsSchema),
     handle(async (req, res) => {
       const query = req.query as unknown as z.infer<
@@ -380,10 +524,71 @@ export function createScheduleRouter(container: Container): Router {
     '/:scheduleId',
     auth.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
-    ValidationMiddleware.validate(scheduleParamsSchema),
+    ValidationMiddleware.validate(deleteScheduleSchema),
     handle(async (req, res) => {
-      await service(container).delete(scheduleCaller(req), param(req));
+      const query = req.query as unknown as z.infer<
+        typeof deleteScheduleSchema
+      >['query'];
+      const caller = scheduleCaller(req);
+      await service(container).delete(caller, param(req), query.revision);
       res.status(204).end();
+    }),
+  );
+
+  const changedFrom = async (
+    req: AuthenticatedUserRequest,
+    body: { fromConversation?: { conversationId: string } },
+  ): Promise<ScheduleChangedFrom | undefined> =>
+    body.fromConversation === undefined
+      ? undefined
+      : service(container).changedFrom(
+          scheduleCaller(req),
+          body.fromConversation.conversationId,
+        );
+
+  router.patch(
+    '/:scheduleId',
+    auth.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+    schedulesOn,
+    ValidationMiddleware.validate(updateScheduleSchema),
+    handle(async (req, res) => {
+      const body = req.body as z.infer<typeof updateScheduleSchema>['body'];
+      res.status(200).json(
+        await service(container).update(
+          scheduleCaller(req),
+          param(req),
+          {
+            revision: body.revision,
+            ...(body.name !== undefined ? { name: body.name } : {}),
+            ...(body.input !== undefined ? { query: body.input.query } : {}),
+            ...(body.trigger !== undefined ? { trigger: body.trigger } : {}),
+            ...(body.notify !== undefined ? { notify: body.notify } : {}),
+          },
+          await changedFrom(req, body),
+        ),
+      );
+    }),
+  );
+
+  router.post(
+    '/:scheduleId/skip',
+    auth.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+    schedulesOn,
+    ValidationMiddleware.validate(scheduleActionSchema),
+    handle(async (req, res) => {
+      const body = req.body as z.infer<typeof scheduleActionSchema>['body'];
+      res
+        .status(200)
+        .json(
+          await service(container).skipNext(
+            scheduleCaller(req),
+            param(req),
+            body.revision,
+            await changedFrom(req, body),
+          ),
+        );
     }),
   );
 
@@ -392,12 +597,21 @@ export function createScheduleRouter(container: Container): Router {
       `/:scheduleId/${action}`,
       auth.authenticate,
       requireScopes(OAuthScopeNames.AGENT_EXECUTE),
-      ValidationMiddleware.validate(scheduleParamsSchema),
+      schedulesOn,
+      ValidationMiddleware.validate(scheduleActionSchema),
       handle(async (req, res) => {
+        const body = req.body as z.infer<typeof scheduleActionSchema>['body'];
+        const schedules = service(container);
+        const caller = scheduleCaller(req);
         res
           .status(200)
           .json(
-            await service(container)[action](scheduleCaller(req), param(req)),
+            await schedules[action](
+              caller,
+              param(req),
+              await changedFrom(req, body),
+              body.revision,
+            ),
           );
       }),
     );
@@ -407,6 +621,7 @@ export function createScheduleRouter(container: Container): Router {
     '/:scheduleId/agent-version',
     auth.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+    schedulesOn,
     ValidationMiddleware.validate(scheduleAgentVersionSchema),
     handle(async (req, res) => {
       const body = req.body as z.infer<
@@ -428,6 +643,7 @@ export function createScheduleRouter(container: Container): Router {
     '/:scheduleId/run',
     auth.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+    schedulesOn,
     ValidationMiddleware.validate(runScheduleSchema),
     handle(async (req, res) => {
       const key = String(req.headers['idempotency-key']);

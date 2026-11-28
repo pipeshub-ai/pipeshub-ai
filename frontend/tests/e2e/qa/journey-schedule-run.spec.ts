@@ -74,7 +74,7 @@ test('QA-J3: a schedule made in the dialog runs now, and its conversation and Hi
   // History: the run, by its kind, linking the same conversation.
   await page.goto('/workspace/schedules/');
   const again = page.getByRole('group', { name, exact: true });
-  await again.getByRole('button', { name: 'History' }).click();
+  await again.getByRole('button', { name: 'History', exact: true }).click();
   const history = page.getByRole('list', { name: `Runs of ${name}` });
   const firing = history.getByRole('listitem');
   await expect(firing).toHaveCount(1, { timeout: 30_000 });

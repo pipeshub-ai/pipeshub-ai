@@ -92,6 +92,50 @@ describe('stream-lifecycle', () => {
       expect(onAbandon.calledOnce).to.be.true
     })
 
+    it('a run no browser watches (a schedule\'s turn) is detached from the start and stopped at its cap', () => {
+      const clock = sinon.useFakeTimers()
+      const res = createMockRes()
+      const onAbandon = sinon.stub()
+      const handle = attachUpstreamAbort(res, onAbandon, CAP_MS, { detached: true })
+      handle.bindStream(new Readable({ read() {} }))
+      expect(handle.isClientDisconnected()).to.be.true
+      clock.tick(CAP_MS - 1)
+      expect(onAbandon.called).to.be.false
+      clock.tick(1)
+      expect(handle.isAborted()).to.be.true
+      expect(onAbandon.calledOnce).to.be.true
+      // A close later (the turn's own end) arms nothing again.
+      res.emit('close')
+      clock.tick(CAP_MS * 2)
+      expect(onAbandon.calledOnce).to.be.true
+    })
+
+    it('a detached run whose stream never opened is never stopped later over its recorded failure', () => {
+      const clock = sinon.useFakeTimers()
+      const res = createMockRes()
+      const onAbandon = sinon.stub()
+      const handle = attachUpstreamAbort(res, onAbandon, CAP_MS, { detached: true })
+      handle.dispose()
+      clock.tick(CAP_MS * 2)
+      res.emit('close')
+      clock.tick(CAP_MS * 2)
+      expect(onAbandon.called).to.be.false
+      expect(handle.isAborted()).to.be.false
+    })
+
+    it('a detached run that finishes before its cap is never stopped', () => {
+      const clock = sinon.useFakeTimers()
+      const res = createMockRes()
+      const onAbandon = sinon.stub()
+      const handle = attachUpstreamAbort(res, onAbandon, CAP_MS, { detached: true })
+      const stream = new Readable({ read() {} })
+      handle.bindStream(stream)
+      stream.destroy()
+      clock.tick(CAP_MS * 2)
+      expect(handle.isAborted()).to.be.false
+      expect(onAbandon.called).to.be.false
+    })
+
     it('does not abandon a run whose stream already ended', () => {
       const clock = sinon.useFakeTimers()
       const res = createMockRes()

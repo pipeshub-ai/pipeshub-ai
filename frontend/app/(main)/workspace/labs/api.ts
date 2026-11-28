@@ -58,6 +58,8 @@ export interface AvailableFlag {
   advanced?: boolean;
   /** A switch of the agent harness, which is in beta; listed only where the install turned the harness on. */
   requiresAgentHarness?: boolean;
+  /** A feature in beta, whatever it needs (Scheduled runs, ADR-SCH-02): Labs marks it Beta. */
+  beta?: boolean;
 }
 
 export interface AvailableFlagsResponse {

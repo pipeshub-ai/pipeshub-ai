@@ -249,6 +249,11 @@ class ChatState(TypedDict):
     is_assistant_chat: bool
     chat_streaming: bool
     tool_approval: dict[str, Any] | None
+    # A turn a schedule fired (`app.schedules.firing.scheduled_turn`): its asks wait for the person (ADR-SCH-02 D4).
+    schedule_firing: dict[str, Any] | None
+    # The request's own Authorization, for a tool that acts in Node as this person (`schedule_create`). Taken out
+    # of the state by `AgentContext.from_chat_state`, so it is never kept with it.
+    node_authorization: str | None
 
 def _build_tool_to_toolset_map(toolsets: list[dict[str, Any]]) -> dict[str, str]:
     """
@@ -792,4 +797,6 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "is_assistant_chat": bool(chat_query.get("isAssistantChat", False)),
         "chat_streaming": chat_query.get("chatStreaming", True) is not False,
         "tool_approval": chat_query.get("toolApproval"),
+        "schedule_firing": chat_query.get("scheduleFiring"),
+        "node_authorization": chat_query.get("nodeAuthorization"),
     }

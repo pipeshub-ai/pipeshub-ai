@@ -81,6 +81,7 @@ import { useHydrateUnreadConversations } from '@/chat/hooks/use-hydrate-unread-c
 import { engineKinds } from '@/chat/sandbox-commands';
 import { agentGatesOf } from '@/app/(main)/agents/agent-gates';
 import { chatPreviewProps } from './preview-props';
+import { scheduleOriginOf } from './schedule-origin';
 
 /** Empties the agent fields the chat page fills from the agent detail. */
 function clearAgentContext(): void {
@@ -780,6 +781,7 @@ function ChatContent() {
           durable: (detail.conversation as { durable?: boolean }).durable === true,
           sharedWith: detail.conversation.sharedWith ?? null,
           forkedFrom: detail.conversation.forkedFrom ?? null,
+          scheduleOrigin: scheduleOriginOf(detail.conversation),
           forks: detail.conversation.forks ?? [],
           messagePagination: {
             currentPage: apiPagination.page,

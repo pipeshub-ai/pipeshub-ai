@@ -230,6 +230,20 @@ export function WorkspaceRightPanel({
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onOpenChange]);
 
+  // Focus moves into the drawer when it opens and back to what opened it when it closes, unless the person has
+  // already put it somewhere else (a field inside that focused itself, or a click outside).
+  useEffect(() => {
+    if (!open || typeof document === 'undefined') return;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const panel = panelRef.current;
+    if (panel && !panel.contains(document.activeElement)) panel.focus({ preventScroll: true });
+    return () => {
+      const now = document.activeElement;
+      const lost = now === null || now === document.body || !now.isConnected || Boolean(panel?.contains(now));
+      if (lost && opener?.isConnected) opener.focus({ preventScroll: true });
+    };
+  }, [open]);
+
   useEffect(() => {
     if (!open || typeof document === 'undefined') return;
     const prev = document.body.style.overflow;
@@ -269,6 +283,7 @@ export function WorkspaceRightPanel({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        tabIndex={-1}
         style={{
           ...sidePanelFrame(isMobile),
           padding: 0,
@@ -280,6 +295,7 @@ export function WorkspaceRightPanel({
           display: 'flex',
           flexDirection: 'column',
           boxShadow: '0 20px 48px 0 rgba(0, 0, 0, 0.25)',
+          outline: 'none',
           ...style,
           pointerEvents: 'auto',
         }}

@@ -79,12 +79,35 @@ export function CodingEngineSelect({
       <Text id={`${id}-helper`} size="1" color="gray">
         {helper}
       </Text>
+      <NotInstalled engines={engines} />
       {error && (
         <Text id={`${id}-error`} size="1" role="alert" style={{ color: 'var(--red-11)' }}>
           {error}
         </Text>
       )}
     </Flex>
+  );
+}
+
+/**
+ * An engine the server has no image for is not a setting anyone can turn on here: it says who installs it and how
+ * (`engine-build.sh KIND` on the server), so the person reading it can act or pass it on.
+ */
+function NotInstalled({ engines }: { engines: readonly CodingEngineOption[] }) {
+  const { t } = useTranslation();
+  const missing = engines.filter((engine) => !engine.available && engine.reason === 'engine_unavailable');
+  if (missing.length === 0) return null;
+  return (
+    <>
+      {missing.map((engine) => (
+        <Text key={engine.kind} size="1" color="gray" data-testid={`engine-not-installed-${engine.kind}`}>
+          {t('aiAccounts.codingEngine.notInstalledHow', {
+            engine: engineName(engine.kind),
+            command: `deployment/sandbox-images/engine-build.sh ${engine.kind}`,
+          })}
+        </Text>
+      ))}
+    </>
   );
 }
 

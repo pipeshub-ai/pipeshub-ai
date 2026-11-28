@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Badge, Box, Button, Checkbox, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -8,7 +8,15 @@ import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
 import { useChatStore } from '../../store';
 import { useRenderSlotId } from './render-slot';
-import { approvalArgumentLines, approvalToolLabel, toolApprovalResumeQuery, type SettledToolApproval } from '../../tool-approval';
+import {
+  approvalArgumentLines,
+  approvalToolLabel,
+  scheduleToolOfApproval,
+  toolApprovalResumeQuery,
+  type SettledToolApproval,
+} from '../../tool-approval';
+import { scheduleTitle } from '../../interaction-wording';
+import { ScheduleChangeSummary, ScheduleSummary, useScheduleChangeWords } from './schedule-summary';
 import type { ToolApprovalDecision, ToolApprovalDetails } from '../../types';
 
 /** Whole minutes left (rounded up), re-read every half minute; 0 once the request has expired. */
@@ -43,16 +51,31 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
   const renderSlotId = useRenderSlotId();
   const canSend = useChatStore((s) => (renderSlotId ? s.slots[renderSlotId]?.isOwner ?? null : null)) !== false;
 
-  const tool = approvalToolLabel(approval);
+  // ADR-SCH-02 D5, ADR-SCH-03 D5: PipesHub's own schedule tools are said as the schedule, and ask every time (no
+  // "Don't ask again").
+  const scheduleTool = scheduleToolOfApproval(approval);
+  const schedule = scheduleTool !== null;
+  const callArgs = useMemo(() => (approval.arguments ? JSON.stringify(approval.arguments) : ''), [approval.arguments]);
+  const changeWords = useScheduleChangeWords(
+    scheduleTool === 'update' || scheduleTool === 'delete' ? scheduleTool : null,
+    callArgs,
+    approval.schedule,
+  );
+  const tool = scheduleTool !== null ? (changeWords?.title ?? scheduleTitle(t, scheduleTool)) : approvalToolLabel(approval);
   const server = approval.serverName;
   const expired = minutesLeft === 0;
+  const canRemember = !schedule && approval.canRemember !== false;
 
   if (expired || !isLatest || !canSend) {
     const notice = expired ? 'expired' : canSend ? 'passed' : 'waiting';
     return (
       <Flex data-testid="tool-approval-card" align="start" gap="2" style={{ color: 'var(--slate-11)' }}>
         <MaterialIcon name={expired ? 'timer_off' : 'pending_actions'} size={16} color="var(--slate-11)" style={{ marginTop: 3 }} />
-        <Text size="2">{t(`chat.toolApproval.notice.${notice}`, { tool, server })}</Text>
+        <Text size="2">
+          {schedule
+            ? t(`chat.toolApproval.schedule.notice.${scheduleTool}.${notice}`)
+            : t(`chat.toolApproval.notice.${notice}`, { tool, server })}
+        </Text>
       </Flex>
     );
   }
@@ -67,54 +90,15 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
     const request = buildStreamChatRequestForSlot(slotId, query, undefined, {
       approvalId: approval.approvalId,
       decision,
-      ...(remember && approval.canRemember !== false ? { remember: true } : {}),
+      ...(remember && canRemember ? { remember: true } : {}),
     });
     if (!request) return;
     void streamMessageForSlot(slotId, query, request, { reuseRowId: rowId });
   };
 
-  return (
-    <Box
-      data-testid="tool-approval-card"
-      role="group"
-      aria-label={t('chat.toolApproval.needsApproval')}
-      style={{
-        border: '1px solid var(--amber-a6)',
-        borderRadius: 'var(--radius-4)',
-        backgroundColor: 'var(--amber-a2)',
-        padding: 'var(--space-3) var(--space-4) var(--space-4)',
-      }}
-    >
-      <Flex gap="3" align="start">
-        <Flex
-          align="center"
-          justify="center"
-          style={{ width: 32, height: 32, borderRadius: 'var(--radius-3)', backgroundColor: 'var(--amber-a4)', flexShrink: 0 }}
-        >
-          <MaterialIcon name="pending_actions" size={18} color="var(--amber-11)" />
-        </Flex>
-        <Box style={{ flex: 1, minWidth: 0 }}>
-          <Flex align="center" gap="2" wrap="wrap">
-            <Text size="3" weight="medium" title={approval.toolName} style={{ color: 'var(--slate-12)', overflowWrap: 'anywhere' }}>
-              {tool}
-            </Text>
-            <Badge size="1" variant="soft" color="gray">{server}</Badge>
-            {approval.kind === 'destructive' && (
-              <Badge size="1" variant="soft" color="red">
-                {t('chat.toolApproval.cantBeUndone')}
-              </Badge>
-            )}
-          </Flex>
-          <Text as="p" size="1" style={{ color: 'var(--slate-11)' }}>
-            {t('chat.toolApproval.needsApproval')}
-            {' · '}
-            {minutesLeft <= 1 ? t('chat.toolApproval.expiresSoon') : t('chat.toolApproval.expiresIn', { count: minutesLeft })}
-          </Text>
-        </Box>
-      </Flex>
-
+  const argumentList = (
+    <>
       <Box
-        mt="3"
         style={{
           border: '1px solid var(--slate-a5)',
           borderRadius: 'var(--radius-3)',
@@ -157,6 +141,58 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
           {showAll ? t('chat.toolApproval.showLess') : t('chat.toolApproval.showAll')}
         </Button>
       )}
+    </>
+  );
+
+  return (
+    <Box
+      data-testid="tool-approval-card"
+      role="group"
+      aria-label={t('chat.toolApproval.needsApproval')}
+      style={{
+        border: '1px solid var(--amber-a6)',
+        borderRadius: 'var(--radius-4)',
+        backgroundColor: 'var(--amber-a2)',
+        padding: 'var(--space-3) var(--space-4) var(--space-4)',
+      }}
+    >
+      <Flex gap="3" align="start">
+        <Flex
+          align="center"
+          justify="center"
+          style={{ width: 32, height: 32, borderRadius: 'var(--radius-3)', backgroundColor: 'var(--amber-a4)', flexShrink: 0 }}
+        >
+          <MaterialIcon name="pending_actions" size={18} color="var(--amber-11)" />
+        </Flex>
+        <Box style={{ flex: 1, minWidth: 0 }}>
+          <Flex align="center" gap="2" wrap="wrap">
+            <Text size="3" weight="medium" title={approval.toolName} style={{ color: 'var(--slate-12)', overflowWrap: 'anywhere' }}>
+              {tool}
+            </Text>
+            {!schedule && <Badge size="1" variant="soft" color="gray">{server}</Badge>}
+            {approval.kind === 'destructive' && (
+              <Badge size="1" variant="soft" color="red">
+                {t('chat.toolApproval.cantBeUndone')}
+              </Badge>
+            )}
+          </Flex>
+          <Text as="p" size="1" style={{ color: 'var(--slate-11)' }}>
+            {t('chat.toolApproval.needsApproval')}
+            {' · '}
+            {minutesLeft <= 1 ? t('chat.toolApproval.expiresSoon') : t('chat.toolApproval.expiresIn', { count: minutesLeft })}
+          </Text>
+        </Box>
+      </Flex>
+
+      <Box mt="3">
+        {scheduleTool === 'create' && approval.arguments ? (
+          <ScheduleSummary args={callArgs} fallback={argumentList} />
+        ) : changeWords !== null ? (
+          <ScheduleChangeSummary words={changeWords} />
+        ) : (
+          argumentList
+        )}
+      </Box>
 
       <Flex mt="3" align="center" gap="4" wrap="wrap">
         <Flex gap="2">
@@ -167,7 +203,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
             {t('chat.toolApproval.deny')}
           </Button>
         </Flex>
-        {approval.canRemember !== false && (
+        {canRemember && (
           <Text as="label" size="1" style={{ color: 'var(--slate-11)', cursor: 'pointer' }}>
             <Flex gap="2" align="center">
               <Checkbox size="1" checked={remember} onCheckedChange={(value) => setRemember(value === true)} />
@@ -197,9 +233,11 @@ export function ToolApprovalReceipts({ items }: { items: SettledToolApproval[] }
         <Flex key={item.key} align="center" gap="2">
           <MaterialIcon name={RECEIPT_ICON[item.answer].name} size={16} color={RECEIPT_ICON[item.answer].color} />
           <Text size="2" style={{ color: 'var(--slate-11)' }}>
-            {t(`chat.toolApproval.receipt.${item.answer}`, { tool: item.tool })}
+            {item.schedule
+              ? t(`chat.toolApproval.schedule.receipt.${item.schedule}.${item.answer}`)
+              : t(`chat.toolApproval.receipt.${item.answer}`, { tool: item.tool })}
           </Text>
-          {item.server && <Badge size="1" variant="soft" color="gray">{item.server}</Badge>}
+          {item.server && !item.schedule && <Badge size="1" variant="soft" color="gray">{item.server}</Badge>}
         </Flex>
       ))}
     </Flex>

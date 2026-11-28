@@ -1,4 +1,5 @@
 import { toolDisplayName } from '../workspace/mcp-servers/tool-rules';
+import type { ScheduleTool } from './interaction-wording';
 import type { MessagePart, ToolApprovalDecision, ToolApprovalDetails } from './types';
 
 const MAX_VALUE_CHARS = 300;
@@ -37,6 +38,10 @@ export function toolApprovalDetails(value: unknown): ToolApprovalDetails | null 
     expiresAt: raw.expiresAt,
     arguments: args && typeof args === 'object' && !Array.isArray(args) ? (args as Record<string, unknown>) : null,
     ...(text('argumentsPreview') ? { argumentsPreview: text('argumentsPreview') as string } : {}),
+    ...(text('source') ? { source: text('source') as string } : {}),
+    ...(raw.schedule && typeof raw.schedule === 'object' && !Array.isArray(raw.schedule)
+      ? { schedule: raw.schedule as Record<string, unknown> }
+      : {}),
   };
 }
 
@@ -59,6 +64,26 @@ export function hasApprovedCall(parts: MessagePart[] | undefined): boolean {
   return (parts ?? []).some((part) => (part.type === 'tool_call' && part.approved === true) || hasApprovedCall(part.parts));
 }
 
+/**
+ * PipesHub's own `schedule_create` on classic chat (ADR-SCH-02 D5): its card says the schedule in words and asks
+ * every time. Matched by the tool's owner as well as its name, so an MCP or toolset tool also called
+ * `schedule_create` is never dressed as one.
+ */
+export function isScheduleCreateApproval(details: Pick<ToolApprovalDetails, 'source' | 'toolName'>): boolean {
+  return scheduleToolOfApproval(details) === 'create';
+}
+
+const CLASSIC_SCHEDULE_TOOLS: ReadonlyMap<string, ScheduleTool> = new Map([
+  ['schedule_create', 'create'],
+  ['schedule_update', 'update'],
+  ['schedule_delete', 'delete'],
+]);
+
+/** Which of PipesHub's schedule tools (ADR-SCH-03 D1) a classic card is for: only a `platform` tool can be one. */
+export function scheduleToolOfApproval(details: Pick<ToolApprovalDetails, 'source' | 'toolName'>): ScheduleTool | null {
+  return details.source === 'platform' ? (CLASSIC_SCHEDULE_TOOLS.get(details.toolName) ?? null) : null;
+}
+
 /** How a card names its tool: the server's title, else its name made readable. */
 export function approvalToolLabel(details: Pick<ToolApprovalDetails, 'toolTitle' | 'toolName'>): string {
   return toolDisplayName(details.toolName, details.toolTitle);
@@ -70,6 +95,8 @@ export interface SettledToolApproval {
   server: string;
   /** `allowedNotRun`: allowed, but stopped before it ran (a Deny set since, or the tool is gone). */
   answer: NonNullable<MessagePart['approvalAnswer']> | 'allowedNotRun';
+  /** One of PipesHub's schedule tools: its receipt says the schedule, not the tool. */
+  schedule?: ScheduleTool;
 }
 
 /** The cards this reply answered, in order, at any depth. */
@@ -79,11 +106,13 @@ export function settledToolApprovals(parts: MessagePart[] | undefined): SettledT
     for (const part of list ?? []) {
       if (part.type === 'tool_call' && part.approvalAnswer) {
         const details = toolApprovalDetails(part.approval);
+        const scheduleTool = details === null ? null : scheduleToolOfApproval(details);
         settled.push({
           key: part.toolCallId ?? String(settled.length),
           tool: details ? approvalToolLabel(details) : part.displayName || toolDisplayName(part.toolName ?? ''),
           server: details?.serverName ?? '',
           answer: part.approvalAnswer === 'allowed' && part.status === 'blocked' ? 'allowedNotRun' : part.approvalAnswer,
+          ...(scheduleTool !== null ? { schedule: scheduleTool } : {}),
         });
       }
       walk(part.parts);

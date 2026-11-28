@@ -322,6 +322,7 @@ from harness_core.security.secrets import NO_SECRETS
 from harness_core.telemetry import genai
 from harness_core.telemetry.memory import NOOP_TRACER
 from harness_core.telemetry.ports import RunRef
+from harness_core.tools.call_tool import CALL_TOOL
 from harness_core.workspace.events import workspace_committed
 from harness_core.workspace.forks import JoinedChild
 from harness_core.workspace.types import WorkspaceStoreUnavailable
@@ -821,6 +822,8 @@ class _ClaimedRun:
         self._redacting: set[str] = set()
         # Invocations a person approved with changed arguments (AP-06): what runs, and what the model is told ran.
         self._edited: dict[str, dict[str, JsonValue]] = {}
+        # By invocation: the name a ``call_tool`` wrapper named, whose digest the invocation is journaled under.
+        self._called_as: dict[str, str] = {}
         # The connect waits this attempt saw open: its tools were assembled before the owner connected (G-12).
         self._open_connects: set[str] = set()
         # Asks this attempt left to the next plan once a conversation grant answered them (FLOWGRANT D3), each once.
@@ -2726,7 +2729,10 @@ class _ClaimedRun:
         for inv in self.run.invocations_for(turn):
             if inv.state == "completed":
                 continue
-            call = self.tool_lists.unwrap(calls.get(inv.call_id) or ToolCall(id=inv.call_id, name=inv.name))
+            raw = calls.get(inv.call_id) or ToolCall(id=inv.call_id, name=inv.name)
+            call = self.tool_lists.unwrap(raw)
+            if raw.name == CALL_TOOL and call.name != CALL_TOOL and isinstance(raw.arguments.get("name"), str):
+                self._called_as[inv.invocation_id] = str(raw.arguments["name"])
             if call.name in renamed:
                 call = call.model_copy(update={"name": renamed[call.name]})
             if message.truncated and inv.state == "pending":
@@ -3421,7 +3427,10 @@ class _ClaimedRun:
         return replace(call, redaction=self.effects.redaction(call) or POLICY_REDACTION)
 
     def _ctx(self, inv: Invocation) -> ToolContext:
-        return self.invoker.context(inv.invocation_id, self._turn_text, inv.interaction_id, inv.args_digest)
+        return self.invoker.context(
+            inv.invocation_id, self._turn_text, inv.interaction_id, inv.args_digest,
+            self._called_as.get(inv.invocation_id),
+        )
 
     # ---- child runs (P6.1, K-L) ----
 

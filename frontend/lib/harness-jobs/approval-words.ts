@@ -1,5 +1,5 @@
 import type { TFunction } from 'i18next';
-import { VERBS, appOf, bareTool, isScheduleCreate, shownName } from '@/chat/interaction-wording';
+import { VERBS, appOf, bareTool, scheduleToolOf, scheduleVerb, shownName } from '@/chat/interaction-wording';
 import { humanizeToolName } from '@/chat/utils/tool-display';
 import type { Words } from './words';
 
@@ -36,7 +36,8 @@ function actionWords(call: AskedCall): string {
 export function countedAction(t: Words, call: AskedCall, count = 1): string {
   const bare = bareTool(call.toolName);
   if (VERBS.has(bare)) return (t as unknown as TFunction)(`interaction.verb.${bare}`, { count });
-  if (isScheduleCreate(call)) return (t as unknown as TFunction)('interaction.verb.scheduleCreate', { count });
+  const scheduleWords = scheduleVerb(t as unknown as TFunction, call, count);
+  if (scheduleWords !== null) return scheduleWords;
   const words = actionWords(call);
   if (count <= 1) return words;
   const parts = words.split(' ');
@@ -48,7 +49,7 @@ export function countedAction(t: Words, call: AskedCall, count = 1): string {
 /** "Create 2 issues in Jira": the app named once, when the action does not already say it. */
 export function plainAction(t: Words, call: AskedCall, count = 1): string {
   const action = countedAction(t, call, count);
-  const app = VERBS.has(bareTool(call.toolName)) || isScheduleCreate(call) ? null : appOf({ toolName: call.toolName, displayName: call.displayName ?? undefined });
+  const app = VERBS.has(bareTool(call.toolName)) || scheduleToolOf(call) !== null ? null : appOf({ toolName: call.toolName, displayName: call.displayName ?? undefined });
   return app && !action.toLowerCase().includes(app.toLowerCase()) ? t('ui.approval.actionIn', { action, app }) : action;
 }
 

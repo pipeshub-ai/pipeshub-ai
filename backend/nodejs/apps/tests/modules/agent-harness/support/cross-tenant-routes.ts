@@ -365,6 +365,21 @@ export const CROSS_TENANT_ROUTES: Readonly<Record<string, CrossTenantRow>> = {
     toolId: 'pipeshub@schedules/create',
     arguments: { name: 'qa26', ask: 'qa26?', when: { kind: 'once', at: '2030-01-01T09:00:00Z', timeZone: 'UTC' } },
   })),
+  // ADR-SCH-03: the schedules toolset's find, the card's read and the approved changes, as the run's person.
+  [`GET ${INTERNAL}/runs/:runId/schedules`]: attempt(),
+  [`GET ${INTERNAL}/runs/:runId/schedules/:scheduleId`]: attempt(),
+  [`POST ${INTERNAL}/runs/:runId/schedules/:scheduleId/update`]: attempt(() => ({
+    ...fenced(),
+    interactionId: 'ix.approve.kqa26',
+    toolId: 'pipeshub@schedules/update',
+    arguments: { id: 'qa26', revision: 0, name: 'qa26' },
+  })),
+  [`POST ${INTERNAL}/runs/:runId/schedules/:scheduleId/delete`]: attempt(() => ({
+    ...fenced(),
+    interactionId: 'ix.approve.kqa26',
+    toolId: 'pipeshub@schedules/delete',
+    arguments: { id: 'qa26', revision: 0 },
+  })),
   [`POST ${INTERNAL}/runs/:runId/gateway-token`]: {
     guard: 'worker',
     role: 'egress-proxy',
@@ -412,6 +427,9 @@ export const CROSS_TENANT_ROUTES: Readonly<Record<string, CrossTenantRow>> = {
   [`POST ${SCHEDULES_PREFIX}/:scheduleId/resume`]: { guard: 'actor-or-admin' },
   [`PUT ${SCHEDULES_PREFIX}/:scheduleId/agent-version`]: { guard: 'owner', body: () => ({ agentVersion: 'latest' }) },
   [`POST ${SCHEDULES_PREFIX}/:scheduleId/run`]: { guard: 'owner', headers: () => ({ 'idempotency-key': 'qa26-run-now' }) },
+  // ADR-SCH-03 D4: an edit and a skip are the owner's alone.
+  [`PATCH ${SCHEDULES_PREFIX}/:scheduleId`]: { guard: 'owner', body: () => ({ revision: 0, name: 'qa26' }) },
+  [`POST ${SCHEDULES_PREFIX}/:scheduleId/skip`]: { guard: 'owner', body: () => ({}) },
   [`POST ${PUBLICATIONS_PREFIX}/`]: {
     guard: 'relay',
     body: () => ({ containerKind: 'kb', containerId: 'kb-qa26', audience: { userIds: [], teamIds: [], org: true }, access: 'full' }),

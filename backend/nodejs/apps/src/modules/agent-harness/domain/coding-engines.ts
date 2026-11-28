@@ -4,6 +4,8 @@ import type { StoredCodingEngines } from '../ports/coding-engines';
 export const ORG_DEFAULT_CHOICE = 'org_default';
 /** The person's (or nobody's) choice of no engine: code runs in the built-in sandbox. */
 export const NO_ENGINE = 'none';
+/** How an engine choice is named (an engine kind, or `none`): every place that takes one checks this. */
+export const ENGINE_KIND_PATTERN = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
 
 export type CodingEngineSource = 'session' | 'user' | 'org' | 'none';
 

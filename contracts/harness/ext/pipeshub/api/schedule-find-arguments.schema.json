@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/api/schedule-find-arguments.schema.json",
+  "title": "ScheduleFindArguments",
+  "description": "The arguments of the `schedule_find` tool (`pipeshub@schedules/find`, ADR-SCH-03 D2): a read of the caller's own schedules, at most 20, this chat's first and then the next to run. `query` matches the name (case-insensitive, a substring); `madeHere` keeps the ones this chat made. It changes nothing, so it asks nothing. The same filters are `GET /api/v1/agent-harness/schedules` `query`, `status` and `conversationId`.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "query": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "\\S",
+      "description": "Words of the schedule's name; not only spaces."
+    },
+    "status": {
+      "enum": [
+        "active",
+        "paused",
+        "disabled"
+      ],
+      "description": "Only schedules in this state."
+    },
+    "madeHere": {
+      "type": "boolean",
+      "description": "Only the schedules this chat made."
+    }
+  },
+  "examples": [
+    {},
+    {
+      "query": "standup"
+    },
+    {
+      "madeHere": true,
+      "status": "active"
+    }
+  ]
+}

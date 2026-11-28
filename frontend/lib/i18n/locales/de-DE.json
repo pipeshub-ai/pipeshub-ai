@@ -1691,6 +1691,45 @@
         "declined": "Sie haben {{tool}} abgelehnt",
         "expired": "{{tool}} wurde nicht ausgeführt: Die Anfrage ist abgelaufen",
         "allowedNotRun": "Sie haben {{tool}} zugelassen, es wurde aber nicht ausgeführt"
+      },
+      "schedule": {
+        "notice": {
+          "create": {
+            "expired": "Der Zeitplan wurde nicht eingerichtet: Die Anfrage ist abgelaufen. Fragen Sie erneut, wenn Sie ihn noch möchten.",
+            "passed": "Der Zeitplan wurde nicht genehmigt und daher nicht eingerichtet.",
+            "waiting": "Dieser Zeitplan wartet auf die Genehmigung der Person, der die Unterhaltung gehört."
+          },
+          "update": {
+            "expired": "Der Zeitplan wurde nicht geändert: Die Anfrage ist abgelaufen. Fragen Sie erneut, wenn Sie es noch möchten.",
+            "passed": "Die Änderung wurde nicht genehmigt, daher wurde der Zeitplan nicht geändert.",
+            "waiting": "Diese Änderung an einem Zeitplan wartet auf die Genehmigung der Person, der die Unterhaltung gehört."
+          },
+          "delete": {
+            "expired": "Der Zeitplan wurde nicht gelöscht: Die Anfrage ist abgelaufen. Fragen Sie erneut, wenn Sie es noch möchten.",
+            "passed": "Das Löschen des Zeitplans wurde nicht genehmigt, daher bleibt er bestehen.",
+            "waiting": "Das Löschen dieses Zeitplans wartet auf die Genehmigung der Person, der die Unterhaltung gehört."
+          }
+        },
+        "receipt": {
+          "create": {
+            "allowed": "Sie haben den Zeitplan zugelassen",
+            "declined": "Sie haben den Zeitplan abgelehnt",
+            "expired": "Der Zeitplan wurde nicht eingerichtet: Die Anfrage ist abgelaufen",
+            "allowedNotRun": "Sie haben den Zeitplan zugelassen, aber er wurde nicht eingerichtet"
+          },
+          "update": {
+            "allowed": "Sie haben die Änderung am Zeitplan zugelassen",
+            "declined": "Sie haben die Änderung am Zeitplan abgelehnt",
+            "expired": "Der Zeitplan wurde nicht geändert: Die Anfrage ist abgelaufen",
+            "allowedNotRun": "Sie haben die Änderung zugelassen, aber der Zeitplan wurde nicht geändert"
+          },
+          "delete": {
+            "allowed": "Sie haben das Löschen des Zeitplans zugelassen",
+            "declined": "Sie haben das Löschen des Zeitplans abgelehnt",
+            "expired": "Der Zeitplan wurde nicht gelöscht: Die Anfrage ist abgelaufen",
+            "allowedNotRun": "Sie haben das Löschen des Zeitplans zugelassen, aber er wurde nicht gelöscht"
+          }
+        }
       }
     },
     "selectedAlone": "{{name}} (nur dieses Element)",
@@ -1873,7 +1912,12 @@
       "unnamedFile_one": "eine der angehängten Dateien",
       "unnamedFile_other": "{{count}} der angehängten Dateien"
     },
-    "archiveChatTitle": "Diesen Chat archivieren?"
+    "archiveChatTitle": "Diesen Chat archivieren?",
+    "scheduleOrigin": {
+      "startedBy": "Gestartet vom Zeitplan",
+      "startedByUnnamed": "Von einem Zeitplan gestartet",
+      "manage": "Zeitpläne verwalten"
+    }
   },
   "workspaceMenu": {
     "appearance": "Darstellung",
@@ -7060,7 +7104,29 @@
       "when": "Wann",
       "ask": "Jeder Lauf wird gefragt",
       "notify": "Benachrichtigen über",
-      "where": "Jeder Lauf startet eine eigene Unterhaltung. Pausieren oder löschen Sie ihn jederzeit unter Workspace > Zeitpläne."
+      "where": "Jeder Lauf startet eine eigene Unterhaltung. Pausieren oder löschen Sie ihn jederzeit unter Workspace > Zeitpläne.",
+      "manage": "Verwalten Sie ihn jederzeit unter Arbeitsbereich > Zeitpläne.",
+      "change": {
+        "ask": "Was er fragt",
+        "notifyNone": "Nirgends",
+        "title": {
+          "change": "{{name}} ändern",
+          "move": "{{name}} verschieben",
+          "pause": "{{name}} pausieren",
+          "resume": "{{name}} fortsetzen",
+          "skip_next": "Nächsten Lauf von {{name}} überspringen",
+          "run_now": "{{name}} jetzt ausführen",
+          "delete": "{{name}} löschen"
+        },
+        "note": {
+          "edit": "Änderungen gelten ab dem nächsten Lauf; ein laufender Lauf wird nicht geändert.",
+          "pause": "Er läuft erst wieder, wenn Sie ihn fortsetzen.",
+          "resume": "Er läuft ab seinem nächsten Termin wieder; die während der Pause verpassten Termine werden übersprungen.",
+          "skip_next": "Nur der nächste Lauf wird übersprungen; danach läuft er wie gewohnt.",
+          "run_now": "Er läuft jetzt einmal; sein Zeitplan bleibt gleich.",
+          "delete": "Er läuft nicht mehr und sein Verlauf wird gelöscht. Unterhaltungen, die seine Läufe gestartet haben, bleiben erhalten."
+        }
+      }
     }
   },
   "codeTaskCard": {
@@ -7765,6 +7831,7 @@
         "engine_isolation_unavailable": "Benötigt die gVisor-Sandbox-Laufzeit auf diesem Server",
         "engine_group_required": "Nur einige Gruppen Ihrer Organisation können sie nutzen"
       },
+      "notInstalledHow": "{{engine}} ist auf diesem Server nicht installiert und kann daher noch nicht gewählt werden. Das ist keine Einstellung: Wer Ihren PipesHub-Server betreibt, installiert es mit {{command}}; danach kann es hier gewählt werden.",
       "isolation": {
         "required": "Coding-Engines benötigen die gVisor-Sandbox-Laufzeit auf diesem Server —",
         "guide": "Installationsanleitung",
@@ -8005,7 +8072,9 @@
       "resume": "Fortsetzen",
       "runNow": "Jetzt ausführen",
       "history": "Verlauf",
-      "delete": "Löschen"
+      "delete": "Löschen",
+      "edit": "Bearbeiten",
+      "editNamed": "{{name}} bearbeiten"
     },
     "delete": {
       "title": "{{name}} löschen?",
@@ -8027,7 +8096,9 @@
       "skippedQueueFull": "Übersprungen: ein Lauf wartete bereits",
       "waitingForLastRun": "Wartet, bis der letzte Lauf fertig ist",
       "pending": "Wird gestartet…",
-      "none": "Noch keine Läufe."
+      "none": "Noch keine Läufe.",
+      "classic": "Im klassischen Chat gelaufen",
+      "classicCapIgnored": "Im klassischen Chat gelaufen; die Kostengrenze gilt nicht"
     },
     "create": {
       "title": "Neuer Zeitplan",
@@ -8076,7 +8147,11 @@
       "onceAtHint": "In Ihrer Zeitzone ({{timeZone}}). Frühestens in einer Minute, höchstens ein Jahr im Voraus.",
       "onceNotExisting": "Diese Uhrzeit gibt es an diesem Tag in Ihrer Zeitzone nicht: Die Uhren springen darüber. Wählen Sie eine andere Uhrzeit.",
       "onceTooSoon": "Wählen Sie eine Zeit frühestens in einer Minute.",
-      "onceTooFar": "Wählen Sie eine Zeit höchstens ein Jahr im Voraus."
+      "onceTooFar": "Wählen Sie eine Zeit höchstens ein Jahr im Voraus.",
+      "discardTitle": "Diesen Zeitplan verwerfen?",
+      "discardMessage": "Was Sie hier eingegeben haben, ist nicht gespeichert und geht verloren.",
+      "discardConfirm": "Verwerfen",
+      "keepEditing": "Weiter bearbeiten"
     },
     "webhook": {
       "title": "Ihr Webhook",
@@ -8101,11 +8176,13 @@
       "scheduleDisabled": "Dieser Zeitplan wurde ausgeschaltet, weil sein Eigentümer ihn nicht mehr ausführen kann.",
       "limit": "Sie haben die zulässige Anzahl an Zeitplänen erreicht. Löschen Sie zuerst einen.",
       "budgetCeiling": "Das Budget pro Lauf ist zu hoch.",
-      "unavailable": "Geplante Läufe benötigen den dauerhaften Agent-Chat, der für Ihre Organisation ausgeschaltet ist.",
+      "unavailable": "Geplante Läufe können für Ihre Organisation gerade nicht eingerichtet werden. Versuchen Sie es später erneut.",
       "triggerTokenInvalid": "Das Trigger-Token des Webhooks stimmt nicht. Kopieren Sie das aktuelle Token aus dem Zeitplan und versuchen Sie es erneut.",
       "ranOnce": "Dieser Zeitplan ist schon einmal gelaufen. Er läuft nicht noch einmal; Sie können ihn löschen.",
       "notApproved": "Dieser Zeitplan wurde nicht genehmigt und daher nicht angelegt.",
-      "approvalUsed": "Mit dieser Genehmigung wurde bereits ein Zeitplan angelegt, der gelöscht wurde. Fragen Sie erneut, um einen neuen einzurichten."
+      "approvalUsed": "Mit dieser Genehmigung wurde bereits ein Zeitplan angelegt, der gelöscht wurde. Fragen Sie erneut, um einen neuen einzurichten.",
+      "changed": "Dieser Zeitplan wurde während Ihrer Bearbeitung an anderer Stelle geändert. Jetzt wird der gespeicherte Stand gezeigt; nehmen Sie Ihre Änderung erneut vor.",
+      "storeUnavailable": "Geplante Läufe brauchen eine Datenbankeinrichtung, die dieser Server nicht hat. Bitten Sie Ihre Administration, MongoDB als Replikatgruppe zu betreiben."
     },
     "reason": {
       "scheduledRunsDisabled": "geplante Läufe wurden für die Organisation ausgeschaltet",
@@ -8114,6 +8191,7 @@
       "actorNotPerson": "sein Eigentümer ist keine Person",
       "orgInactive": "die Organisation ist inaktiv",
       "agentForbidden": "sein Eigentümer darf diesen Agenten nicht mehr verwenden",
+      "agentVersionNotLatest": "er verwendet eine ältere Version seines Agenten, und der Chat ohne Agent-Harness führt nur die neueste aus: Ändern Sie ihn so, dass er der neuesten Version folgt",
       "agentDeleted": "sein Agent wurde gelöscht",
       "narrowing": "die Einstellungen des Agenten erlauben diesen Lauf nicht mehr",
       "rolloutLegacy": "das Durable Agent Harness ist für die Organisation aus",
@@ -8156,6 +8234,16 @@
       "onceTomorrow": "Einmal, morgen um {{time}}",
       "onceOn": "Einmal, {{date}}",
       "withZone": "{{when}} ({{timeZone}})"
+    },
+    "budgetNotApplied": "Die Kostengrenze von {{amount}} USD gilt nicht: Die Läufe Ihrer Organisation nutzen den klassischen Chat, der keine Kostengrenze hat.",
+    "lastChangedFrom": "Zuletzt aus einem Chat geändert",
+    "skippedNext": "Nächster Lauf übersprungen",
+    "skippedNextAt": "Der Lauf am {{date}} wird übersprungen",
+    "edit": {
+      "title": "Zeitplan bearbeiten",
+      "submit": "Speichern",
+      "fixedHint": "Agent, Budget, Frist und der Umgang mit überlappenden oder verpassten Läufen bleiben wie festgelegt. Um sie zu ändern, erstellen Sie einen neuen Zeitplan.",
+      "discardTitle": "Änderungen verwerfen?"
     }
   },
   "unknownEffectCard": {
@@ -8942,7 +9030,11 @@
       "install_packages_one": "Pakete installieren",
       "install_packages_other": "{{count}}-mal Pakete installieren",
       "scheduleCreate_one": "Zeitplan einrichten",
-      "scheduleCreate_other": "{{count}} Zeitpläne einrichten"
+      "scheduleCreate_other": "{{count}} Zeitpläne einrichten",
+      "scheduleUpdate_one": "Zeitplan ändern",
+      "scheduleUpdate_other": "{{count}} Zeitpläne ändern",
+      "scheduleDelete_one": "Zeitplan löschen",
+      "scheduleDelete_other": "{{count}} Zeitpläne löschen"
     },
     "engineWants": "{{engine}} möchte:",
     "childWants": "Die Code-Aufgabe möchte:",
@@ -9011,7 +9103,9 @@
     "waitingForOwner_other": "Wartet darauf, dass der Besitzer der Unterhaltung über {{count}} Schritte entscheidet",
     "denyAllLabel": "Alle ablehnen: {{title}}",
     "titleSiteUpload": "Uploads an {{destination}} für diesen Lauf erlauben?",
-    "titleSchedule": "Zeitplan einrichten"
+    "titleSchedule": "Zeitplan einrichten",
+    "titleScheduleUpdate": "Zeitplan ändern",
+    "titleScheduleDelete": "Zeitplan löschen"
   },
   "engineSignIn": {
     "title": "Anmeldung für Coding-Engines",

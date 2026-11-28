@@ -1,13 +1,28 @@
 'use client';
 
-import React, { useEffect, useId, useState } from 'react';
+import React, { useContext, useEffect, useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Checkbox, Dialog, Flex, RadioGroup, Select, Text, TextArea, TextField } from '@radix-ui/themes';
-import { LoadingButton } from '@/app/components/ui/loading-button';
+import { Checkbox, Flex, RadioGroup, Select, Text, TextArea, TextField } from '@radix-ui/themes';
+import { selectAgentHarnessOn, useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
+import { ConfirmationDialog } from '../../components/confirmation-dialog';
+import {
+  useWorkspaceDrawerNestedModalHost,
+  WorkspaceRightPanel,
+  WorkspaceRightPanelBodyPortalContext,
+} from '../../components/workspace-right-panel';
 import { isHarnessError, refusalText, toHarnessError } from '../../harness-ui/refusal';
 import { NOTIFY_CHANNELS, SchedulesApi } from '../api';
 import { SCHEDULE_REFUSALS } from '../copy';
-import type { CatchUpPolicy, NewSchedule, NoticeChannelChoice, NotifyChannel, OverlapPolicy } from '../types';
+import { whenWords } from '../schedule-words';
+import type {
+  CatchUpPolicy,
+  NewSchedule,
+  NoticeChannelChoice,
+  NotifyChannel,
+  OverlapPolicy,
+  Schedule,
+  SchedulePatch,
+} from '../types';
 
 export interface AgentOption {
   id: string;
@@ -270,37 +285,115 @@ function useNoticeChannels(open: boolean, agentKey: string | null) {
   return { choices, failed };
 }
 
-/** A new schedule: what runs (agent, prompt), when (cron in a zone, or a webhook) and its limits. */
-export function CreateScheduleDialog({
+/** The form as a schedule fills it, for its edit (ADR-SCH-03 D4). */
+export function formOf(schedule: Schedule): ScheduleForm {
+  const trigger = schedule.trigger;
+  return {
+    ...emptyForm(),
+    name: schedule.name,
+    agent: schedule.agentKey ?? ASSISTANT,
+    query: schedule.query ?? '',
+    kind: trigger.kind === 'cron' || trigger.kind === 'once' ? trigger.kind : 'webhook',
+    cron: trigger.kind === 'cron' ? trigger.cron : '',
+    onceAt: trigger.kind === 'once' ? localInputValue(new Date(trigger.at)) : '',
+    timeZone: trigger.kind === 'cron' ? trigger.timeZone : browserTimeZone(),
+    catchUp: trigger.kind === 'cron' ? trigger.catchUp : 'skip',
+    overlap: schedule.overlap,
+    notify: [...schedule.notify],
+    tokenAuth: trigger.kind === 'webhook' && trigger.auth === 'token',
+    budget: schedule.maxCostUsd === null ? '' : String(schedule.maxCostUsd),
+    deadlineHours: schedule.deadlineS > 0 ? String(schedule.deadlineS / 3600) : '',
+    version: schedule.agentVersion === 'latest' ? 'latest' : 'pinned',
+  };
+}
+
+const sameForm = (a: ScheduleForm, b: ScheduleForm): boolean => JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * What an edit changes, as `PATCH /schedules/{id}` takes it: only the fields that differ from the schedule, a
+ * changed one-off's time checked against `now` as a create's is. The agent, its version, the budget, the deadline,
+ * overlap and catch-up are set when a schedule is made and are not part of an edit.
+ */
+export function checkedPatch(
+  schedule: Schedule,
+  form: ScheduleForm,
+  now: Date = new Date(),
+): { patch: SchedulePatch } | { problem: OnceProblem } {
+  const before = formOf(schedule);
+  const patch: SchedulePatch = { revision: schedule.revision };
+  if (form.name.trim() !== before.name.trim()) patch.name = form.name.trim();
+  if (form.query !== before.query) patch.query = form.query;
+  if (form.kind === 'cron' && (before.kind !== 'cron' || form.cron.trim() !== before.cron.trim() || form.timeZone.trim() !== before.timeZone.trim())) {
+    patch.trigger = { kind: 'cron', cron: form.cron.trim(), timeZone: form.timeZone.trim() };
+  }
+  if (form.kind === 'once' && (before.kind !== 'once' || form.onceAt !== before.onceAt)) {
+    const instant = onceInstant(form.onceAt, now);
+    if ('problem' in instant) return instant;
+    patch.trigger = { kind: 'once', at: instant.at, timeZone: browserTimeZone() };
+  }
+  const notify = NOTIFY_CHANNELS.filter((channel) => form.notify.includes(channel));
+  if (notify.join(',') !== NOTIFY_CHANNELS.filter((channel) => before.notify.includes(channel)).join(',')) patch.notify = notify;
+  return { patch };
+}
+
+const changes = (patch: SchedulePatch): boolean => Object.keys(patch).some((key) => key !== 'revision');
+
+/**
+ * Making a schedule, and changing one (ADR-SCH-03 D4), in the workspace's side drawer: what runs (agent, prompt),
+ * when (cron in a zone, once, or a webhook), its notices and its limits. Closing with unsaved changes asks first.
+ */
+export function ScheduleDrawer({
   open,
   onOpenChange,
   agents,
   initialAgent,
+  schedule,
   onSubmit,
+  onUpdate,
+  onStale,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   agents: AgentOption[];
-  /** The agent chosen when the dialog opens (the agent card's "Add a schedule"); absent: the assistant. */
+  /** The agent chosen when the drawer opens (the agent card's "Add a schedule"); absent: the assistant. */
   initialAgent?: string;
-  /** Rejects with a `HarnessError`; the dialog stays open and says why. */
+  /** Present: the drawer edits this schedule, prefilled. */
+  schedule?: Schedule;
+  /** Rejects with a `HarnessError`; the drawer stays open and says why. */
   onSubmit: (input: NewSchedule) => Promise<void>;
+  /** An edit's save. Rejects with a `HarnessError`; the drawer stays open and says why. */
+  onUpdate?: (id: string, patch: SchedulePatch) => Promise<void>;
+  /** The schedule as it is now, after an edit was refused because it changed (`SCHEDULE_CHANGED`); null: gone. */
+  onStale?: (id: string) => Promise<Schedule | null>;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const id = useId();
+  const editing = schedule !== undefined;
+  const [base, setBase] = useState<Schedule | undefined>(schedule);
+  const [initial, setInitial] = useState<ScheduleForm>(emptyForm);
   const [form, setForm] = useState<ScheduleForm>(emptyForm);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmClose, setConfirmClose] = useState(false);
   // A one-off's time found stale at submit; any change to the form asks again.
   const [submitProblem, setSubmitProblem] = useState<Exclude<OnceProblem, 'missing'> | null>(null);
+  // ADR-SCH-02 D6: a cost cap is the harness's budget ledger; a classic run has none to hold it to.
+  const costCap = useFeatureFlagsStore(selectAgentHarnessOn);
+  const modalHost = useWorkspaceDrawerNestedModalHost(open);
+
+  const start = (from: ScheduleForm) => {
+    setInitial(from);
+    setForm(from);
+    setSubmitProblem(null);
+  };
 
   useEffect(() => {
-    if (open) {
-      setForm(initialAgent ? { ...emptyForm(), agent: initialAgent } : emptyForm());
-      setError(null);
-      setSubmitProblem(null);
-    }
-  }, [open, initialAgent]);
+    if (!open) return;
+    setBase(schedule);
+    start(schedule ? formOf(schedule) : initialAgent ? { ...emptyForm(), agent: initialAgent } : emptyForm());
+    setError(null);
+    setConfirmClose(false);
+  }, [open, initialAgent, schedule]);
 
   const set = <K extends keyof ScheduleForm>(key: K, value: ScheduleForm[K]) => {
     setSubmitProblem(null);
@@ -320,20 +413,68 @@ export function CreateScheduleDialog({
       return notify.length === prev.notify.length ? prev : { ...prev, notify };
     });
   }, [choices]);
+  const dirty = !sameForm(form, initial);
   const once = form.kind === 'once' ? onceInstant(form.onceAt) : null;
+  // An edit that leaves a one-off's time as it was does not check it again: only a changed time must be ahead.
+  const onceKept = editing && initial.kind === 'once' && form.kind === 'once' && form.onceAt === initial.onceAt;
   const onceProblem =
-    submitProblem ?? (once !== null && 'problem' in once && once.problem !== 'missing' ? once.problem : null);
+    submitProblem ?? (once !== null && !onceKept && 'problem' in once && once.problem !== 'missing' ? once.problem : null);
   const complete =
     submitProblem === null &&
     form.name.trim() !== '' &&
     form.query.trim() !== '' &&
     (form.kind === 'webhook' ||
-      (form.kind === 'once' ? once !== null && 'at' in once : form.cron.trim() !== '' && form.timeZone.trim() !== ''));
+      (form.kind === 'once'
+        ? onceKept || (once !== null && 'at' in once)
+        : form.cron.trim() !== '' && form.timeZone.trim() !== '')) &&
+    (!editing || dirty);
+  const cronSaid = useMemo(
+    () =>
+      form.kind === 'cron' && form.cron.trim().split(/\s+/).length === 5
+        ? whenWords(t, { kind: 'cron', cron: form.cron.trim(), timeZone: form.timeZone.trim() }, i18n.language)
+        : null,
+    [form.kind, form.cron, form.timeZone, t, i18n.language],
+  );
 
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const requestClose = (next: boolean) => {
+    if (next || busy || confirmClose) return;
+    if (dirty) setConfirmClose(true);
+    else onOpenChange(false);
+  };
+
+  const failWith = (failure: unknown) =>
+    setError(refusalText(t, SCHEDULE_REFUSALS, isHarnessError(failure) ? failure : toHarnessError(failure, true)));
+
+  const save = async () => {
     if (!complete || busy) return;
-    const checked = checkedSchedule(form, new Date());
+    const now = new Date();
+    if (base !== undefined) {
+      const checked = checkedPatch(base, form, now);
+      if ('problem' in checked) {
+        setSubmitProblem(checked.problem === 'missing' ? 'tooSoon' : checked.problem);
+        return;
+      }
+      if (!changes(checked.patch) || onUpdate === undefined) return;
+      setBusy(true);
+      setError(null);
+      try {
+        await onUpdate(base.id, checked.patch);
+      } catch (failure) {
+        failWith(failure);
+        // ADR-SCH-03 D5: it changed since it was read; show it as it is now, to be changed again from there.
+        if (isHarnessError(failure) && failure.code === 'SCHEDULE_CHANGED' && onStale !== undefined) {
+          const fresh = await onStale(base.id).catch(() => null);
+          if (fresh !== null) {
+            setBase(fresh);
+            start(formOf(fresh));
+          }
+        }
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    const checked = checkedSchedule(costCap ? form : { ...form, budget: '' }, now);
     if ('problem' in checked) {
       setSubmitProblem(checked.problem === 'missing' ? 'tooSoon' : checked.problem);
       return;
@@ -343,38 +484,51 @@ export function CreateScheduleDialog({
     try {
       await onSubmit(checked.schedule);
     } catch (failure) {
-      setError(refusalText(t, SCHEDULE_REFUSALS, isHarnessError(failure) ? failure : toHarnessError(failure, true)));
+      failWith(failure);
     } finally {
       setBusy(false);
     }
   };
 
+  const agentName = base?.agentKey ? (base.agentName ?? base.agentKey) : t('schedules.assistant');
+  // An edit changes a cron's or a one-off's time, never a webhook's or a connector's trigger.
+  const timed = !editing || initial.kind !== 'webhook';
+
   return (
-    <Dialog.Root open={open} onOpenChange={(next) => !busy && onOpenChange(next)}>
-      <Dialog.Content style={{ maxWidth: '36rem' }} aria-describedby={undefined}>
-        <Dialog.Title>{t('schedules.create.title')}</Dialog.Title>
-        <form onSubmit={(event) => void submit(event)}>
+    <>
+      <WorkspaceRightPanel
+        open={open}
+        onOpenChange={requestClose}
+        title={editing ? t('schedules.edit.title') : t('schedules.create.title')}
+        icon="schedule"
+        iconSize={20}
+        primaryLabel={editing ? t('schedules.edit.submit') : t('schedules.create.submit')}
+        secondaryLabel={t('common.cancel')}
+        primaryDisabled={!complete}
+        primaryLoading={busy}
+        onPrimaryClick={() => void save()}
+      >
+        <form
+          aria-label={editing ? t('schedules.edit.title') : t('schedules.create.title')}
+          onSubmit={(event) => {
+            event.preventDefault();
+            void save();
+          }}
+        >
           <Flex direction="column" gap="3">
             <Field id={`${id}-name`} label={t('schedules.create.name')}>
               <TextField.Root id={`${id}-name`} value={form.name} maxLength={200} onChange={(e) => set('name', e.target.value)} />
             </Field>
-            <Flex direction="column" gap="1">
-              <Text as="label" id={`${id}-agent-label`} size="2" weight="medium">
-                {t('schedules.create.agent')}
-              </Text>
-              <Select.Root value={form.agent} onValueChange={(value) => set('agent', value)}>
-                <Select.Trigger aria-labelledby={`${id}-agent-label`} />
-                <Select.Content>
-                  <Select.Item value={ASSISTANT}>{t('schedules.assistant')}</Select.Item>
-                  {agents.map((agent) => (
-                    <Select.Item key={agent.id} value={agent.id}>
-                      {agent.name}
-                    </Select.Item>
-                  ))}
-                </Select.Content>
-              </Select.Root>
-            </Flex>
-            {form.agent !== ASSISTANT && (
+            {editing ? (
+              <Field id={`${id}-agent`} label={t('schedules.create.agent')}>
+                <Text id={`${id}-agent`} size="2">
+                  {agentName}
+                </Text>
+              </Field>
+            ) : (
+              <AgentPicker id={id} value={form.agent} agents={agents} onChange={(value) => set('agent', value)} />
+            )}
+            {!editing && form.agent !== ASSISTANT && (
               <Flex direction="column" gap="1">
                 <Text as="span" id={`${id}-version-label`} size="2" weight="medium">
                   {t('schedules.version.label')}
@@ -396,20 +550,22 @@ export function CreateScheduleDialog({
               <TextArea id={`${id}-query`} value={form.query} maxLength={10000} rows={3} onChange={(e) => set('query', e.target.value)} />
             </Field>
 
-            <Flex direction="column" gap="1">
-              <Text as="span" id={`${id}-kind-label`} size="2" weight="medium">
-                {t('schedules.create.when')}
-              </Text>
-              <RadioGroup.Root
-                aria-labelledby={`${id}-kind-label`}
-                value={form.kind}
-                onValueChange={(value) => set('kind', value === 'webhook' || value === 'once' ? value : 'cron')}
-              >
-                <RadioGroup.Item value="cron">{t('schedules.create.kindCron')}</RadioGroup.Item>
-                <RadioGroup.Item value="once">{t('schedules.create.kindOnce')}</RadioGroup.Item>
-                <RadioGroup.Item value="webhook">{t('schedules.create.kindWebhook')}</RadioGroup.Item>
-              </RadioGroup.Root>
-            </Flex>
+            {timed && (
+              <Flex direction="column" gap="1">
+                <Text as="span" id={`${id}-kind-label`} size="2" weight="medium">
+                  {t('schedules.create.when')}
+                </Text>
+                <RadioGroup.Root
+                  aria-labelledby={`${id}-kind-label`}
+                  value={form.kind}
+                  onValueChange={(value) => set('kind', value === 'webhook' || value === 'once' ? value : 'cron')}
+                >
+                  <RadioGroup.Item value="cron">{t('schedules.create.kindCron')}</RadioGroup.Item>
+                  <RadioGroup.Item value="once">{t('schedules.create.kindOnce')}</RadioGroup.Item>
+                  {!editing && <RadioGroup.Item value="webhook">{t('schedules.create.kindWebhook')}</RadioGroup.Item>}
+                </RadioGroup.Root>
+              </Flex>
+            )}
 
             {form.kind === 'cron' ? (
               <>
@@ -420,19 +576,27 @@ export function CreateScheduleDialog({
                     placeholder="0 9 * * 1"
                     maxLength={120}
                     style={{ fontFamily: 'monospace' }}
+                    aria-describedby={cronSaid !== null ? `${id}-cron-said` : undefined}
                     onChange={(e) => set('cron', e.target.value)}
                   />
+                  {cronSaid !== null && (
+                    <Text id={`${id}-cron-said`} size="1" data-testid="schedule-cron-said" style={{ color: 'var(--slate-12)' }}>
+                      {cronSaid}
+                    </Text>
+                  )}
                 </Field>
                 <Field id={`${id}-zone`} label={t('schedules.create.timeZone')}>
                   <TextField.Root id={`${id}-zone`} value={form.timeZone} maxLength={64} onChange={(e) => set('timeZone', e.target.value)} />
                 </Field>
-                <Choice
-                  id={`${id}-catchup`}
-                  label={t('schedules.create.catchUp')}
-                  value={form.catchUp}
-                  options={CATCH_UP}
-                  onChange={(value) => set('catchUp', value)}
-                />
+                {!editing && (
+                  <Choice
+                    id={`${id}-catchup`}
+                    label={t('schedules.create.catchUp')}
+                    value={form.catchUp}
+                    options={CATCH_UP}
+                    onChange={(value) => set('catchUp', value)}
+                  />
+                )}
               </>
             ) : form.kind === 'once' ? (
               <Field
@@ -441,7 +605,7 @@ export function CreateScheduleDialog({
                 hint={t('schedules.create.onceAtHint', { timeZone: browserTimeZone() })}
               >
                 {/* No native min or max: `onceInstant` alone bounds the time, against the clock when it checks, so a
-                    bound fixed when the dialog opened can never block a time it accepts. */}
+                    bound fixed when the drawer opened can never block a time it accepts. */}
                 <TextField.Root
                   id={`${id}-once`}
                   type="datetime-local"
@@ -455,7 +619,7 @@ export function CreateScheduleDialog({
                   </Text>
                 )}
               </Field>
-            ) : (
+            ) : editing ? null : (
               <Flex direction="column" gap="2">
                 <Text size="2" style={{ color: 'var(--slate-11)' }}>
                   {t('schedules.create.webhookHint')}
@@ -480,7 +644,7 @@ export function CreateScheduleDialog({
               </Flex>
             )}
 
-            {form.kind !== 'once' && (
+            {!editing && form.kind !== 'once' && (
               <Choice
                 id={`${id}-overlap`}
                 label={t('schedules.create.overlap')}
@@ -536,50 +700,96 @@ export function CreateScheduleDialog({
               )}
             </Flex>
 
-            <Flex gap="3" wrap="wrap">
-              <Field id={`${id}-budget`} label={t('schedules.create.budget')} hint={t('schedules.create.budgetHint')}>
-                <TextField.Root
-                  id={`${id}-budget`}
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  inputMode="decimal"
-                  value={form.budget}
-                  onChange={(e) => set('budget', e.target.value)}
-                />
-              </Field>
-              <Field id={`${id}-deadline`} label={t('schedules.create.deadline')} hint={t('schedules.create.deadlineHint')}>
-                <TextField.Root
-                  id={`${id}-deadline`}
-                  type="number"
-                  min="0"
-                  step="0.5"
-                  inputMode="decimal"
-                  value={form.deadlineHours}
-                  onChange={(e) => set('deadlineHours', e.target.value)}
-                />
-              </Field>
-            </Flex>
+            {editing ? (
+              <Text size="1" role="note" data-testid="schedule-edit-fixed" style={{ color: 'var(--slate-11)' }}>
+                {t('schedules.edit.fixedHint')}
+              </Text>
+            ) : (
+              <Flex gap="3" wrap="wrap">
+                {costCap && (
+                  <Field id={`${id}-budget`} label={t('schedules.create.budget')} hint={t('schedules.create.budgetHint')}>
+                    <TextField.Root
+                      id={`${id}-budget`}
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      inputMode="decimal"
+                      value={form.budget}
+                      onChange={(e) => set('budget', e.target.value)}
+                    />
+                  </Field>
+                )}
+                <Field id={`${id}-deadline`} label={t('schedules.create.deadline')} hint={t('schedules.create.deadlineHint')}>
+                  <TextField.Root
+                    id={`${id}-deadline`}
+                    type="number"
+                    min="0"
+                    step="0.5"
+                    inputMode="decimal"
+                    value={form.deadlineHours}
+                    onChange={(e) => set('deadlineHours', e.target.value)}
+                  />
+                </Field>
+              </Flex>
+            )}
 
             {error && (
               <Text size="2" role="alert" style={{ color: 'var(--red-11)' }}>
                 {error}
               </Text>
             )}
-
-            <Flex justify="end" gap="2" mt="2">
-              <Dialog.Close>
-                <Button type="button" variant="soft" color="gray" disabled={busy}>
-                  {t('common.cancel')}
-                </Button>
-              </Dialog.Close>
-              <LoadingButton type="submit" loading={busy} disabled={!complete}>
-                {t('schedules.create.submit')}
-              </LoadingButton>
-            </Flex>
+            {/* Enter in a field saves, as the footer's button does. */}
+            <button type="submit" hidden aria-hidden tabIndex={-1} />
           </Flex>
         </form>
-      </Dialog.Content>
-    </Dialog.Root>
+      </WorkspaceRightPanel>
+      <ConfirmationDialog
+        open={confirmClose}
+        onOpenChange={setConfirmClose}
+        title={editing ? t('schedules.edit.discardTitle') : t('schedules.create.discardTitle')}
+        message={t('schedules.create.discardMessage')}
+        confirmLabel={t('schedules.create.discardConfirm')}
+        cancelLabel={t('schedules.create.keepEditing')}
+        container={modalHost}
+        onConfirm={() => {
+          setConfirmClose(false);
+          onOpenChange(false);
+        }}
+      />
+    </>
+  );
+}
+
+/** The agent a new schedule runs; its menu opens inside the drawer so it stacks above it. */
+function AgentPicker({
+  id,
+  value,
+  agents,
+  onChange,
+}: {
+  id: string;
+  value: string;
+  agents: AgentOption[];
+  onChange: (value: string) => void;
+}) {
+  const { t } = useTranslation();
+  const container = useContext(WorkspaceRightPanelBodyPortalContext) ?? undefined;
+  return (
+    <Flex direction="column" gap="1">
+      <Text as="label" id={`${id}-agent-label`} size="2" weight="medium">
+        {t('schedules.create.agent')}
+      </Text>
+      <Select.Root value={value} onValueChange={onChange}>
+        <Select.Trigger aria-labelledby={`${id}-agent-label`} />
+        <Select.Content container={container}>
+          <Select.Item value={ASSISTANT}>{t('schedules.assistant')}</Select.Item>
+          {agents.map((agent) => (
+            <Select.Item key={agent.id} value={agent.id}>
+              {agent.name}
+            </Select.Item>
+          ))}
+        </Select.Content>
+      </Select.Root>
+    </Flex>
   );
 }

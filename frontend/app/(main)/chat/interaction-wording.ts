@@ -8,6 +8,7 @@ import { humanizeToolName, isWebTool } from './utils/tool-display';
 import { displaySafe } from '@/lib/utils/display-safe';
 import { engineName, isAcpEngine } from '@/app/(main)/workspace/ai-accounts/access-copy';
 import { approvalAskRules } from '@/config';
+import { SCHEDULE_CREATE_TITLE } from '@/app/(main)/workspace/schedules/schedule-words';
 import type { ApprovalReason, PendingApproval } from './types';
 
 /** A destination is the call's own text: masked like its arguments (QA-11) and display-safe (SEC-B-04). */
@@ -57,7 +58,8 @@ export function interactionAction(
 ): string {
   const bare = bareTool(approval.toolName);
   if (VERBS.has(bare)) return t(`interaction.verb.${bare}`, { count });
-  if (isScheduleCreate(approval)) return t('interaction.verb.scheduleCreate', { count });
+  const scheduleWords = scheduleVerb(t, approval, count);
+  if (scheduleWords !== null) return scheduleWords;
   const display = shownName(approval.displayName);
   const dotted = display?.split(' · ');
   // "E2Esaas · create_ticket" and a bare tool id are ids, worded "Create ticket"; a written name stays as written.
@@ -82,10 +84,39 @@ const REPOSITORY_TITLES: Readonly<Record<string, string>> = {
  * `pipeshub@schedules/create` (ADR-SCH-01 D2), by its tool id or its model name. Matched whole: an MCP server's
  * `mcp_x_schedule_create` never passes for PipesHub's own schedule card (SEC-B-04).
  */
-const SCHEDULE_CREATE_TOOLS: ReadonlySet<string> = new Set(['pipeshub@schedules/create', 'schedule_create', 'pipeshub__schedule_create']);
+export type ScheduleTool = 'create' | 'update' | 'delete';
 
-export const isScheduleCreate = (approval: Pick<PendingApproval, 'toolName'>): boolean =>
-  SCHEDULE_CREATE_TOOLS.has(approval.toolName);
+const SCHEDULE_TOOLS: ReadonlyMap<string, ScheduleTool> = new Map(
+  (['create', 'update', 'delete'] as const).flatMap((tool) =>
+    [`pipeshub@schedules/${tool}`, `schedule_${tool}`, `pipeshub__schedule_${tool}`].map((id) => [id, tool] as const),
+  ),
+);
+
+/** Which of PipesHub's schedule tools (ADR-SCH-03 D1) a harness approval is for, by its id or model name; else null. */
+export const scheduleToolOf = (approval: Pick<PendingApproval, 'toolName'>): ScheduleTool | null =>
+  SCHEDULE_TOOLS.get(approval.toolName) ?? null;
+
+export const isScheduleCreate = (approval: Pick<PendingApproval, 'toolName'>): boolean => scheduleToolOf(approval) === 'create';
+
+const SCHEDULE_VERBS: Readonly<Record<ScheduleTool, string>> = {
+  create: 'interaction.verb.scheduleCreate',
+  update: 'interaction.verb.scheduleUpdate',
+  delete: 'interaction.verb.scheduleDelete',
+};
+const SCHEDULE_TITLES: Readonly<Record<ScheduleTool, string>> = {
+  create: SCHEDULE_CREATE_TITLE,
+  update: 'interaction.titleScheduleUpdate',
+  delete: 'interaction.titleScheduleDelete',
+};
+
+/** "Set up a schedule", "Change a schedule", "Delete a schedule": a schedule tool's title before its card knows more. */
+export const scheduleTitle = (t: TFunction, tool: ScheduleTool): string => t(SCHEDULE_TITLES[tool]);
+
+/** "Set up a schedule", "Change 2 schedules": a schedule tool's verb; null for any other tool. */
+export function scheduleVerb(t: TFunction, approval: Pick<PendingApproval, 'toolName'>, count = 1): string | null {
+  const tool = scheduleToolOf(approval);
+  return tool === null ? null : t(SCHEDULE_VERBS[tool], { count });
+}
 
 /** WP-63: the upload hold of a read-write site after a private read, asked once per run and site. */
 export const SITE_UPLOAD_RULE = 'site_upload';
@@ -137,7 +168,9 @@ export function interactionTitle(
     return t('interaction.titleSiteUpload', { destination: masked(approval.reason?.destination) ?? t('interaction.outside') });
   }
   // ADR-SCH-01 D4: the card's body says the schedule; its title is the app's words, never the tool's name.
-  if (isScheduleCreate(approval)) return t('interaction.titleSchedule');
+  // ADR-SCH-03 D5: a change's card titles it with the schedule's name once it knows it (scheduleChangeWords).
+  const scheduleTool = scheduleToolOf(approval);
+  if (scheduleTool !== null) return scheduleTitle(t, scheduleTool);
   // WP-63: a clone names its repository ("Clone github.com/o/r?", its size in the card's body); a push its branch.
   const repository = REPOSITORY_TITLES[bareTool(approval.toolName)];
   const where = masked(approval.reason?.destination);

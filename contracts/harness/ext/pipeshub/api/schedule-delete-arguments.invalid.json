@@ -1,0 +1,22 @@
+[
+  {
+    "description": "no id",
+    "instance": {
+      "revision": 1
+    }
+  },
+  {
+    "description": "no revision",
+    "instance": {
+      "id": "sch_1"
+    }
+  },
+  {
+    "description": "an unknown field",
+    "instance": {
+      "id": "sch_1",
+      "revision": 1,
+      "name": "x"
+    }
+  }
+]

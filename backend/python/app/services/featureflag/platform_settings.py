@@ -380,9 +380,10 @@ async def is_agent_harness_on(config_service: ConfigurationService | None) -> bo
 
 
 async def is_scheduled_runs_on(config_service: ConfigurationService | None) -> bool:
-    """Whether the org's harness runs may make schedules (ADR-SCH-01 D2): the org's harness predicate and its Labs
-    ``ENABLE_SCHEDULED_RUNS``. A setting that cannot be read is off; Node checks the flag again at the create."""
-    if not await is_agent_harness_on(config_service):
+    """Whether the org has scheduling (ADR-SCH-02 D1): its Labs ``ENABLE_SCHEDULED_RUNS`` alone, whichever path its
+    chats run on; the agent harness plays no part. A setting that cannot be read is off; Node checks the flag again
+    at the create."""
+    if config_service is None:
         return False
     return await _platform_flag(config_service, CONFIG.ENABLE_SCHEDULED_RUNS, fail_closed=True)
 
